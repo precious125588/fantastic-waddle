@@ -1,0 +1,32 @@
+{
+    "name": "draxen-ai-bot",
+    "version": "4.9.9",
+    "description": "MIAS MDX Bot v4.9.8 \u2014 gcban, video cmd, pdftotext, menu3, panel, moviedl doc mode, M4A MIME fix, kickadmins/demoteall/promoteall, more hope quotes, broadcast DM-only, reaction sticker-first, repo/dev buttons cleaned",
+    "private": true,
+    "type": "module",
+    "scripts": {
+        "start": "node --expose-gc --max-old-space-size=896 index.js",
+        "dev": "node --expose-gc --max-old-space-size=896 --watch index.js"
+    },
+    "dependencies": {
+        "@distube/ytdl-core": "^4.16.10",
+        "@hapi/boom": "^10.0.1",
+        "@kelvdra/baileys": "github:WhiskeySockets/Baileys",
+        "axios": "^1.7.9",
+        "chalk": "^5.6.2",
+        "dotenv": "^16.4.7",
+        "express": "^4.21.2",
+        "form-data": "^4.0.1",
+        "jimp": "^0.22.12",
+        "awesome-phonenumber": "^2.64.0",
+        "moment-timezone": "^0.5.45",
+        "pdfkit": "^0.15.0",
+        "pino": "^9.6.0",
+        "qrcode": "^1.5.4",
+        "ws": "^8.18.1",
+        "yt-search": "^2.13.1"
+    },
+    "engines": {
+        "node": ">=18"
+    }
+}
