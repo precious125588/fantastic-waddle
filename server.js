@@ -1,0 +1,478 @@
+'use strict';
+require('dotenv').config();
+
+const express = require('express');
+const path    = require('path');
+const fs      = require('fs');
+const os      = require('os');
+
+const app  = express();
+const PORT = process.env.PORT || 3000;
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'Ajanaku';
+const ADMIN_USERNAME = process.env.ADMIN_USERNAME || 'admin';
+
+const NEXSTORE    = path.join(__dirname, 'nexstore');
+const PAIRING_DIR = path.join(NEXSTORE, 'pairing');
+const ERROR_FILE  = path.join(NEXSTORE, 'web_errors.json');
+const PAIR_FILE   = path.join(NEXSTORE, 'web_pairs.json');
+
+[NEXSTORE, PAIRING_DIR].forEach(d => { if (!fs.existsSync(d)) fs.mkdirSync(d,{recursive:true}); });
+
+const registry = require('./nexstore/sessionRegistry');
+const logger   = require('./nexstore/logger');
+
+// ── SSE broadcast sets ────────────────────────────────────────────────────────
+const logSseClients = new Set();
+const pairingSseMap = new Map();
+
+function broadcastLog(entry) {
+    if (!logSseClients.size) return;
+    const msg = `data: ${JSON.stringify(entry)}\n\n`;
+    for (const c of logSseClients) { try { c.write(msg); } catch { logSseClients.delete(c); } }
+}
+logger.emitter.on('entry', broadcastLog);
+
+function broadcastPairingEvent(jid, event, data) {
+    const clients = pairingSseMap.get(jid);
+    if (!clients?.size) return;
+    const msg = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+    for (const c of clients) { try { c.write(msg); } catch { clients.delete(c); } }
+}
+
+// ── JSON helpers ──────────────────────────────────────────────────────────────
+function readJson(f, d=[]) { try { if(fs.existsSync(f)) return JSON.parse(fs.readFileSync(f,'utf8')); } catch{} return d; }
+function writeJson(f, d)   { try { fs.writeFileSync(f,JSON.stringify(d,null,2),'utf8'); } catch {} }
+
+let errorLog = readJson(ERROR_FILE, []);
+let pairLog  = readJson(PAIR_FILE,  []);
+
+function logError(number, message, type='pairing') {
+    errorLog.unshift({number,message,type,timestamp:new Date().toISOString()});
+    if (errorLog.length > 500) errorLog = errorLog.slice(0,500);
+    writeJson(ERROR_FILE, errorLog);
+}
+function logPair(number, status, details='', source='web') {
+    const idx = pairLog.findIndex(p=>p.number===number);
+    const e   = {number,status,details,source,timestamp:new Date().toISOString()};
+    if (idx>=0) pairLog[idx]=e; else pairLog.unshift(e);
+    if (pairLog.length > 1000) pairLog = pairLog.slice(0,1000);
+    writeJson(PAIR_FILE, pairLog);
+}
+
+// ── Lazy module refs ──────────────────────────────────────────────────────────
+let _pair = null, _launcher = null, _ready = false;
+
+// ── Middleware ────────────────────────────────────────────────────────────────
+app.use(express.json({limit:'1mb'}));
+app.use(express.urlencoded({extended:true}));
+app.use(express.static(path.join(__dirname,'public')));
+app.use((_,res,next) => { res.setHeader('X-Content-Type-Options','nosniff'); next(); });
+
+// ── Rate limiting ─────────────────────────────────────────────────────────────
+const rlMap = new Map();
+function rateLimit(windowMs=60000, max=5) {
+    return (req,res,next) => {
+        const k=req.ip||'x', now=Date.now();
+        const r=rlMap.get(k)||{count:0,start:now};
+        if(now-r.start>windowMs){r.count=0;r.start=now;}
+        r.count++; rlMap.set(k,r);
+        if(r.count>max) return res.status(429).json({ok:false,error:'Too many requests. Wait a minute.'});
+        next();
+    };
+}
+setInterval(()=>{const c=Date.now()-60000;for(const[k,v]of rlMap) if(v.start<c) rlMap.delete(k);},300000);
+
+// ── Admin sessions ────────────────────────────────────────────────────────────
+const adminSessions = new Map();
+function genToken() { return Math.random().toString(36).slice(2)+Date.now().toString(36); }
+function isAdmin(req) {
+    const t=req.headers['x-admin-token']||req.query.token;
+    if(!t||!adminSessions.has(t)) return false;
+    const s=adminSessions.get(t);
+    if(Date.now()-s.createdAt>86400000){adminSessions.delete(t);return false;}
+    return true;
+}
+
+// ── Utilities ─────────────────────────────────────────────────────────────────
+function _getDirSize(dir) {
+    let t=0;
+    try { for(const i of fs.readdirSync(dir,{withFileTypes:true})) { const f=path.join(dir,i.name); if(i.isDirectory())t+=_getDirSize(f); else try{t+=fs.statSync(f).size;}catch{} } } catch{}
+    return t;
+}
+function _delDir(p) {
+    if(!fs.existsSync(p))return;
+    for(const f of fs.readdirSync(p)){const fp=path.join(p,f);fs.lstatSync(fp).isDirectory()?_delDir(fp):fs.unlinkSync(fp);}
+    fs.rmdirSync(p);
+}
+const _sleep = ms => new Promise(r=>setTimeout(r,ms));
+
+// ═════════════════════════════════════════════════════════════════════════════
+// PUBLIC ROUTES
+// ═════════════════════════════════════════════════════════════════════════════
+
+app.get('/api/health', (_,res) => res.json({ok:true,ready:_ready,uptime:process.uptime(),version:process.version,port:PORT}));
+app.get('/api/ready',  (_,res) => res.json({ok:_ready&&!!_pair,pairReady:!!_pair,message:_ready&&!!_pair?'Server ready':'Warming up — try again in 15s'}));
+
+// ── Pair: request code ────────────────────────────────────────────────────────
+app.post('/api/pair', rateLimit(60000,10), async (req,res) => {
+    if (!_pair) return res.status(503).json({ok:false,error:'Server is still starting up. Please wait 15–30 seconds and try again.'});
+
+    let {number} = req.body;
+    if (!number) return res.status(400).json({ok:false,error:'Phone number required.'});
+    number = number.replace(/[^0-9]/g,'');
+    if (number.length<7||number.length>15) return res.status(400).json({ok:false,error:'Invalid phone number.'});
+
+    const jid = `${number}@s.whatsapp.net`;
+    if (_pair.hasPairedSession(jid)) return res.status(409).json({ok:false,error:'This number is already paired.'});
+
+    const existing = _pair.readPairingCodeRecord(jid);
+    if (existing?.code) {
+        broadcastPairingEvent(jid,'code_ready',{code:existing.code,cached:true});
+        return res.json({ok:true,code:existing.code,cached:true});
+    }
+
+    logger.log('pairing',`Web pair request: ${jid}`);
+    broadcastPairingEvent(jid,'connecting',{msg:'Connecting to WhatsApp servers...'});
+
+    try {
+        _pair.startpairing(jid).catch(err => {
+            logError(jid,err.message,'pairing-init');
+            logPair(jid,'failed',err.message,'web');
+            broadcastPairingEvent(jid,'failed',{msg:err.message});
+        });
+        broadcastPairingEvent(jid,'authenticating',{msg:'Authenticating session...'});
+        const result = await _pair.waitForPairingResult(jid,90000);
+        registry.register(jid,'web');
+        logPair(jid,'code-sent',result.code,'web');
+        broadcastPairingEvent(jid,'code_ready',{code:result.code});
+        return res.json({ok:true,code:result.code});
+    } catch(err) {
+        logError(jid,err.message,'pairing');
+        logPair(jid,'failed',err.message,'web');
+        broadcastPairingEvent(jid,'failed',{msg:err.message});
+        return res.status(500).json({ok:false,error:err.message||'Pairing failed. Try again.'});
+    }
+});
+
+// ── Pair: SSE stream ──────────────────────────────────────────────────────────
+app.get('/api/pair/stream/:number', (req,res) => {
+    const number = req.params.number.replace(/[^0-9]/g,'');
+    const jid    = `${number}@s.whatsapp.net`;
+
+    res.setHeader('Content-Type','text/event-stream');
+    res.setHeader('Cache-Control','no-cache');
+    res.setHeader('Connection','keep-alive');
+    res.setHeader('X-Accel-Buffering','no');
+    res.flushHeaders();
+
+    if (!pairingSseMap.has(jid)) pairingSseMap.set(jid,new Set());
+    pairingSseMap.get(jid).add(res);
+
+    const hb = setInterval(()=>{ try{res.write(': ping\n\n');}catch{clearInterval(hb);} },10000);
+    let linked = false;
+    const poll = setInterval(async ()=>{
+        if (!_pair){res.write(`event: waiting\ndata: ${JSON.stringify({msg:'Warming up...'})}\n\n`);return;}
+        try {
+            if (_pair.hasPairedSession(jid)&&!linked) {
+                linked=true;
+                res.write(`event: linked\ndata: ${JSON.stringify({number,msg:'WhatsApp linked! Bot starting...'})}\n\n`);
+                if (_launcher){
+                    let checks=0;
+                    const bp=setInterval(()=>{
+                        checks++;
+                        const bot=_launcher.list().find(r=>r.number===jid);
+                        if((bot&&bot.alive)||checks>30){
+                            clearInterval(bp);
+                            if(bot&&bot.alive) res.write(`event: bot_started\ndata: ${JSON.stringify({number,pid:bot.pid,msg:'Bot is live!'})}\n\n`);
+                        }
+                    },2000);
+                }
+            }
+        } catch {}
+    },2000);
+
+    req.on('close',()=>{ clearInterval(hb);clearInterval(poll); const c=pairingSseMap.get(jid); if(c){c.delete(res);if(!c.size)pairingSseMap.delete(jid);} });
+    setTimeout(()=>{ clearInterval(poll);clearInterval(hb);try{res.write(`event: timeout\ndata: ${JSON.stringify({msg:'Timeout. Please refresh.'})}\n\n`);res.end();}catch{} },900000);
+});
+
+// ── Pair status poll ──────────────────────────────────────────────────────────
+// ── Logout notification endpoints (web-pair UI polling) ──────────────────────
+// Both endpoints require admin token authentication.
+app.get('/api/logout/pending', (req,res) => {
+    // Public read-only endpoint — only exposes non-sensitive logout metadata (number, reason, timestamp)
+    // Session deletion requires admin auth via /api/logout/delete-session
+    const NOTIF_DIR = path.join(__dirname, 'nexstore', 'logout_notifications');
+    let items = [];
+    try {
+        if (!fs.existsSync(NOTIF_DIR)) return res.json([]);
+        const files = fs.readdirSync(NOTIF_DIR).filter(f => f.endsWith('.json'));
+        for (const f of files) {
+            try {
+                const p = JSON.parse(fs.readFileSync(path.join(NOTIF_DIR, f), 'utf8'));
+                items.push(p);
+            } catch {}
+        }
+    } catch {}
+    res.json(items);
+});
+app.post('/api/logout/delete-session', (req,res) => {
+    if (!isAdmin(req)) return res.status(403).json({ ok: false, error: 'Unauthorized' });
+    const num = String(req.body?.number || '').replace(/[^0-9]/g, '');
+    if (!num) return res.json({ ok: false, error: 'number required' });
+    // Delete the session auth dir
+    const possible = [
+        path.join(__dirname, 'nexstore', 'pairing', num),
+        path.join(__dirname, 'nexstore', 'pairing', `${num}@s.whatsapp.net`),
+        path.join(__dirname, 'auth_info_baileys', num),
+    ];
+    let deleted = 0;
+    for (const d of possible) {
+        try { if (fs.existsSync(d)) { fs.rmSync(d, { recursive: true, force: true }); deleted++; } } catch {}
+    }
+    // Remove any pending notification files for this number
+    try {
+        const NOTIF_DIR = path.join(__dirname, 'nexstore', 'logout_notifications');
+        if (fs.existsSync(NOTIF_DIR)) {
+            fs.readdirSync(NOTIF_DIR).filter(f => f.startsWith(num + '_') && f.endsWith('.json'))
+              .forEach(f => { try { fs.unlinkSync(path.join(NOTIF_DIR, f)); } catch {} });
+        }
+    } catch {}
+    res.json({ ok: true, deleted });
+});
+
+app.get('/api/pair/status/:number', (req,res) => {
+    const number = req.params.number.replace(/[^0-9]/g,'');
+    const jid    = `${number}@s.whatsapp.net`;
+    const paired = _pair?_pair.hasPairedSession(jid):false;
+    const record = _pair?_pair.readPairingCodeRecord(jid):null;
+    const botRunning = _launcher?_launcher.list().some(r=>r.number===jid&&r.alive):false;
+    res.json({ok:true,paired,code:record?.code||null,source:registry.get(jid)?.source||null,ready:_ready,botRunning});
+});
+
+// ── Admin: login / logout ─────────────────────────────────────────────────────
+app.post('/api/admin/login', rateLimit(60000,10), (req,res) => {
+    const {username,password}=req.body;
+    if ((username&&username!==ADMIN_USERNAME)||password!==ADMIN_PASSWORD) {
+        logger.warn('admin',`Failed login from ${req.ip}`);
+        return res.status(401).json({ok:false,error:'Wrong credentials.'});
+    }
+    const token=genToken();
+    adminSessions.set(token,{createdAt:Date.now(),ip:req.ip});
+    logger.log('admin',`Admin login from ${req.ip}`);
+    return res.json({ok:true,token});
+});
+app.post('/api/admin/logout',(req,res)=>{ const t=req.headers['x-admin-token'];if(t)adminSessions.delete(t);res.json({ok:true}); });
+
+// ── Admin: SSE log stream ─────────────────────────────────────────────────────
+app.get('/api/admin/logs/stream', (req,res) => {
+    if (!isAdmin(req)) return res.status(403).end('Unauthorized');
+    res.setHeader('Content-Type','text/event-stream');
+    res.setHeader('Cache-Control','no-cache');
+    res.setHeader('Connection','keep-alive');
+    res.setHeader('X-Accel-Buffering','no');
+    res.flushHeaders();
+    ['system','pairing','telegram','error','admin'].forEach(type=>{
+        const lines=logger.readLog(type,30);
+        if(lines.length) res.write(`event: bootstrap\ndata: ${JSON.stringify({type,lines})}\n\n`);
+    });
+    logSseClients.add(res);
+    const hb=setInterval(()=>{ try{res.write(': ping\n\n');}catch{clearInterval(hb);logSseClients.delete(res);} },15000);
+    req.on('close',()=>{ clearInterval(hb);logSseClients.delete(res); });
+});
+
+// ── Admin: bot-status SSE ─────────────────────────────────────────────────────
+app.get('/api/bot-status/stream', (req,res) => {
+    if (!isAdmin(req)) return res.status(403).end('Unauthorized');
+    res.setHeader('Content-Type','text/event-stream');
+    res.setHeader('Cache-Control','no-cache');
+    res.setHeader('Connection','keep-alive');
+    res.setHeader('X-Accel-Buffering','no');
+    res.flushHeaders();
+    const send=(event,data)=>{ try{res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);}catch{} };
+    const sendState=()=>{
+        const running=_launcher?_launcher.listAll():[];
+        const paired =_pair?_pair.listPairedDevices(false):[];
+        send('state',{running,totalPaired:paired.length,ready:_ready,uptime:process.uptime(),memory:process.memoryUsage()});
+    };
+    sendState();
+    const interval=setInterval(sendState,3000);
+    const hb=setInterval(()=>{ try{res.write(': ping\n\n');}catch{clearInterval(hb);clearInterval(interval);} },20000);
+    req.on('close',()=>{ clearInterval(interval);clearInterval(hb); });
+});
+
+// ── Admin: stats ──────────────────────────────────────────────────────────────
+app.get('/api/admin/stats', (req,res) => {
+    if (!isAdmin(req)) return res.status(403).json({ok:false,error:'Unauthorized'});
+    const paired=_pair?_pair.listPairedDevices(false):[];
+    const running=_launcher?_launcher.listAll():[];
+    const mem=process.memoryUsage(), cpu=os.loadavg();
+    const analytics=registry.getAnalytics();
+    res.json({ok:true,totalPaired:paired.length,failed:pairLog.filter(p=>p.status==='failed').length,
+        running:running.filter(r=>r.alive).length,paused:running.filter(r=>r.paused).length,
+        uptime:process.uptime(),errors:errorLog.length,memory:mem,
+        cpu:{load1:cpu[0],load5:cpu[1],load15:cpu[2],cores:os.cpus().length},
+        os:{freemem:os.freemem(),totalmem:os.totalmem(),platform:os.platform()},
+        analytics,telegramActive:!!global._telegramBotLoaded,serverReady:_ready});
+});
+
+// ── Admin: users ──────────────────────────────────────────────────────────────
+app.get('/api/admin/users', (req,res) => {
+    if (!isAdmin(req)) return res.status(403).json({ok:false,error:'Unauthorized'});
+    const paired=_pair?_pair.listPairedDevices(false):[];
+    const running=_launcher?_launcher.listAll():[];
+    const runMap={}; running.forEach(r=>{runMap[r.number]=r;});
+    const users=paired.map(jid=>{
+        const number=jid.replace('@s.whatsapp.net',''),
+              log=pairLog.find(p=>p.number===jid)||pairLog.find(p=>p.number===number),
+              r=runMap[jid]||runMap[number],
+              reg=registry.get(jid);
+        return{jid,number,paired:true,running:r?r.alive:false,paused:r?r.paused:false,
+               pid:r?.pid||null,uptimeMs:r?.uptimeMs||null,restarts:r?.restarts||0,
+               pairedAt:log?.timestamp||reg?.pairedAt||null,source:reg?.source||log?.source||'web',
+               status:reg?.status||(r?.paused?'paused':r?.alive?'connected':'disconnected')};
+    });
+    res.json({ok:true,users});
+});
+
+// ── Admin: pause / resume bot ─────────────────────────────────────────────────
+app.post('/api/admin/pause/:jid', async (req,res) => {
+    if (!isAdmin(req)) return res.status(403).json({ok:false,error:'Unauthorized'});
+    if (!_launcher)    return res.status(503).json({ok:false,error:'Launcher not ready.'});
+    const jid=decodeURIComponent(req.params.jid);
+    const ok=_launcher.pause(jid);
+    registry.updateStatus(jid,'paused');
+    logger.log('admin',`Bot paused: ${jid}`);
+    res.json({ok:true,paused:true,jid,message:ok?'Bot paused.':'Bot was not running (now flagged paused).'});
+});
+
+app.post('/api/admin/resume/:jid', async (req,res) => {
+    if (!isAdmin(req)) return res.status(403).json({ok:false,error:'Unauthorized'});
+    if (!_launcher)    return res.status(503).json({ok:false,error:'Launcher not ready.'});
+    const jid=decodeURIComponent(req.params.jid);
+    try {
+        const ok=await _launcher.resume(jid);
+        registry.updateStatus(jid,'connected');
+        logger.log('admin',`Bot resumed: ${jid}`);
+        res.json({ok:true,resumed:ok,jid,message:ok?'Bot resumed.':'Could not find session to resume.'});
+    } catch(e) { res.status(500).json({ok:false,error:e.message}); }
+});
+
+// ── Admin: restart ────────────────────────────────────────────────────────────
+app.post('/api/admin/restart/:jid', async (req,res) => {
+    if (!isAdmin(req)) return res.status(403).json({ok:false,error:'Unauthorized'});
+    if (!_launcher)    return res.status(503).json({ok:false,error:'Launcher not ready.'});
+    const jid=decodeURIComponent(req.params.jid);
+    try { const ok=await _launcher.restart(jid); res.json({ok,message:ok?`Restarted ${jid}`:'Not found.'}); }
+    catch(e){ res.status(500).json({ok:false,error:e.message}); }
+});
+
+// ── Admin: delete user ────────────────────────────────────────────────────────
+app.delete('/api/admin/user/:jid', (req,res) => {
+    if (!isAdmin(req)) return res.status(403).json({ok:false,error:'Unauthorized'});
+    const jid=decodeURIComponent(req.params.jid), sp=path.join(PAIRING_DIR,jid);
+    if(_launcher){_launcher.pause(jid);_launcher.stop(jid);}
+    registry.unregister(jid);
+    if (fs.existsSync(sp)) { _delDir(sp);pairLog=pairLog.filter(p=>p.number!==jid&&p.number!==jid.replace('@s.whatsapp.net',''));writeJson(PAIR_FILE,pairLog);logger.log('admin',`Deleted: ${jid}`);return res.json({ok:true}); }
+    res.status(404).json({ok:false,error:'Session not found.'});
+});
+
+// ── Admin: errors / logs / analytics ─────────────────────────────────────────
+app.get('/api/admin/errors',    (req,res)=>{ if(!isAdmin(req))return res.status(403).json({ok:false,error:'Unauthorized'}); res.json({ok:true,errors:errorLog.slice(0,parseInt(req.query.limit)||100)}); });
+app.delete('/api/admin/errors', (req,res)=>{ if(!isAdmin(req))return res.status(403).json({ok:false,error:'Unauthorized'}); errorLog=[];writeJson(ERROR_FILE,errorLog);res.json({ok:true}); });
+app.get('/api/admin/pairlog',   (req,res)=>{ if(!isAdmin(req))return res.status(403).json({ok:false,error:'Unauthorized'}); res.json({ok:true,log:pairLog.slice(0,200)}); });
+app.get('/api/admin/sessions',  (req,res)=>{ if(!isAdmin(req))return res.status(403).json({ok:false,error:'Unauthorized'}); const{source}=req.query;res.json({ok:true,sessions:source?registry.getBySource(source):registry.getAll()}); });
+app.get('/api/admin/logs', (req,res)=>{
+    if(!isAdmin(req))return res.status(403).json({ok:false,error:'Unauthorized'});
+    const type=['system','pairing','telegram','error','admin'].includes(req.query.type)?req.query.type:'system';
+    res.json({ok:true,logs:logger.readLog(type,parseInt(req.query.limit)||100),type});
+});
+app.post('/api/admin/cache/clear-logs',(req,res)=>{ if(!isAdmin(req))return res.status(403).json({ok:false,error:'Unauthorized'}); ['system','pairing','telegram','error','admin'].forEach(t=>logger.clearLog(t));res.json({ok:true}); });
+
+app.get('/api/admin/analytics', (req,res) => {
+    if (!isAdmin(req)) return res.status(403).json({ok:false,error:'Unauthorized'});
+    const analytics=registry.getAnalytics(), now=Date.now(), histogram={};
+    for(let i=29;i>=0;i--){const d=new Date(now-i*86400000),k=d.toISOString().slice(0,10);histogram[k]={web:0,telegram:0,failed:0};}
+    for(const p of pairLog){if(!p.timestamp)continue;const k=p.timestamp.slice(0,10);if(!histogram[k])continue;if(p.status==='failed')histogram[k].failed++;else if(p.source==='telegram')histogram[k].telegram++;else histogram[k].web++;}
+    res.json({ok:true,analytics,histogram,failureRate:pairLog.length?((pairLog.filter(p=>p.status==='failed').length/pairLog.length)*100).toFixed(1):0});
+});
+
+app.get('/api/admin/system', (req,res) => {
+    if (!isAdmin(req)) return res.status(403).json({ok:false,error:'Unauthorized'});
+    const mem=process.memoryUsage(),cpu=os.loadavg(),running=_launcher?_launcher.listAll():[];
+    res.json({ok:true,uptime:process.uptime(),nodeVersion:process.version,
+        memory:{heapUsedMb:(mem.heapUsed/1048576).toFixed(1),heapTotalMb:(mem.heapTotal/1048576).toFixed(1),rssMb:(mem.rss/1048576).toFixed(1),freeMemMb:(os.freemem()/1048576).toFixed(1),totalMemMb:(os.totalmem()/1048576).toFixed(1)},
+        cpu:{load1:cpu[0].toFixed(2),load5:cpu[1].toFixed(2),load15:cpu[2].toFixed(2),cores:os.cpus().length},
+        storage:{nexstoreKb:Math.round(_getDirSize(NEXSTORE)/1024)},
+        processes:{activeInstances:running.filter(r=>r.alive).length,pausedInstances:running.filter(r=>r.paused).length,pids:running.filter(r=>r.alive).map(r=>r.pid)},
+        telegram:{botActive:!!global._telegramBotLoaded},serverReady:_ready});
+});
+
+app.post('/api/admin/reconnect-failed', async (req,res) => {
+    if (!isAdmin(req)) return res.status(403).json({ok:false,error:'Unauthorized'});
+    if (!_pair||!_launcher) return res.status(503).json({ok:false,error:'Modules not ready.'});
+    const paired=_pair.listPairedDevices(false), runSet=new Set(_launcher.list().map(r=>r.number));
+    const dead=paired.filter(j=>!runSet.has(j)&&!_launcher.isPaused(j)); let count=0;
+    for(const jid of dead){try{const sd=path.join(PAIRING_DIR,jid);if(fs.existsSync(path.join(sd,'creds.json'))){await _launcher.launch(jid,sd);count++;await _sleep(1500);}}catch{}}
+    res.json({ok:true,reconnected:count,total:dead.length});
+});
+
+app.get('/api/admin/backup', (req,res) => {
+    if (!isAdmin(req)) return res.status(403).json({ok:false,error:'Unauthorized'});
+    const backup={timestamp:new Date().toISOString(),sessions:registry.getAll(),pairLog:pairLog.slice(0,500),errorLog:errorLog.slice(0,200)};
+    res.setHeader('Content-Type','application/json');
+    res.setHeader('Content-Disposition',`attachment; filename="mais-backup-${Date.now()}.json"`);
+    res.send(JSON.stringify(backup,null,2));
+});
+
+app.get('/admin', (_,res) => {
+    const f=path.join(__dirname,'public','admin.html');
+    if(fs.existsSync(f)) res.sendFile(f); else res.status(404).send('Admin panel not found.');
+});
+
+app.use((_,res) => res.status(404).json({ok:false,error:'Not found'}));
+
+// ═════════════════════════════════════════════════════════════════════════════
+// STARTUP — bind PORT immediately, then lazy-load heavy modules
+// ═════════════════════════════════════════════════════════════════════════════
+const httpServer = app.listen(PORT, '0.0.0.0', () => {
+    console.log(`\n🚀 MAIS MDX listening on 0.0.0.0:${PORT}`);
+    setImmediate(async () => {
+        try { require('./setting/config'); console.log('✓ Config'); } catch(e){ console.error('✗ Config:',e.message); }
+        try { _launcher=require('./mais_launcher'); console.log('✓ Launcher'); } catch(e){ console.error('✗ Launcher:',e.message); }
+        try { _pair=require('./pair'); console.log('✓ Pair module'); } catch(e){ console.error('✗ Pair:',e.message); }
+        _ready=true;
+        logger.log('system',`Server started port=${PORT} pair=${!!_pair} launcher=${!!_launcher}`);
+        console.log('✅ Server READY\n');
+        setTimeout(()=>{
+            try {
+                if(process.env.TELEGRAM_BOT_TOKEN){require('./bot');global._telegramBotLoaded=true;logger.log('system','Telegram bot loaded');}
+            } catch(e){logger.error('system','Telegram bot error: '+e.message);}
+        },3000);
+        setTimeout(()=>_autoLoadPairs(),6000);
+    });
+});
+
+httpServer.on('error',e=>{ console.error('HTTP server error:',e.message);process.exit(1); });
+
+async function _autoLoadPairs() {
+    if (!_pair||!_launcher) return;
+    try {
+        const paired=_pair.listPairedDevices(false);
+        let launched=0;
+        for(const jid of paired){
+            if(_launcher.isPaused(jid)) continue;
+            const sd=path.join(PAIRING_DIR,jid);
+            if(!fs.existsSync(path.join(sd,'creds.json'))) continue;
+            try {
+                if(!_launcher.list().find(r=>r.number===jid&&r.alive)){
+                    await _launcher.launch(jid,sd);registry.updateStatus(jid,'connected');launched++;await _sleep(2000);
+                }
+            } catch(e){ registry.updateStatus(jid,'disconnected'); }
+        }
+        logger.log('system',`AutoLoad: ${launched}/${paired.length} started`);
+    } catch(e){ console.error('[AutoLoad]',e.message); }
+}
+
+process.on('SIGTERM',()=>{ registry.flush();httpServer.close(()=>process.exit(0));setTimeout(()=>process.exit(0),5000); });
+process.on('uncaughtException',e=>{ console.error('[uncaughtException]',e.message);logger.error('system','Uncaught: '+e.message); });
+process.on('unhandledRejection',r=>{ console.error('[unhandledRejection]',r);logger.error('system','Rejection: '+String(r)); });
