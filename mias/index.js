@@ -21984,12 +21984,17 @@ cmd(["ffstalk","stalkff","freefire"], { desc: "Get Free Fire account info — .f
     };
   };
 
-  // 0) NexRay — primary endpoint
-  if (!d && nx) {
+  // 0) NexRay — primary endpoint (stores raw result separately for rich display)
+  let _nxRaw = null; let _nxParsed = null;
+  if (nx) {
     try {
       const _nr = await nx.stalker.freefire({ uid });
       const _nd = _nr?.result || _nr?.data || _nr;
-      if (_nd && (_nd.nickname || _nd.name || _nd.playerName)) d = _norm(_nd);
+      if (_nd && (_nd.name || _nd.nickname)) {
+        _nxRaw = _nd;
+        try { _nxParsed = typeof _nd.raw_data === "string" ? JSON.parse(_nd.raw_data) : (_nd.raw_data || {}); } catch { _nxParsed = {}; }
+        d = _norm(_nd); // still set d so fallbacks know NexRay succeeded
+      }
     } catch {}
   }
 
@@ -22087,32 +22092,42 @@ cmd(["ffstalk","stalkff","freefire"], { desc: "Get Free Fire account info — .f
   }
   const _n = (v, def = "N/A") => (v !== null && v !== undefined && v !== "") ? Number(v).toLocaleString() : def;
   const _s = (v, def = "N/A") => (v !== null && v !== undefined && v !== "" && v !== "null") ? String(v) : def;
-  // ── Parse NexRay stalker.freefire response directly ──
+  // ── Prefer rich NexRay data when available, fall back to _norm()'d d ──
+  const _r = _nxRaw || {};                          // top-level result
+  const _p = _nxParsed || {};                       // parsed raw_data
+  const _ai  = _p?.AccountInfo        || {};
+  const _api = _p?.AccountProfileInfo || {};
+  const _si  = _p?.SocialInfo         || {};
+  const _gi  = _p?.GuildInfo          || {};
+  const _pi  = _p?.PetInfo            || {};
+  const _ci  = _p?.CreditScoreInfo    || {};
   const _nd = d;
   const _ffName   = _s(_nd.name || _nd.nickname || _nd.playerName);
   const _ffUid    = _s(_nd.uid || _nd.userId || uid);
   const _ffLevel  = _s(_nd.level);
-  const _ffExp    = _n(_nd.exp || _nd.experience);
-  const _ffRegion = _s(_nd.region || _nd.server);
-  const _ffLikes  = _n(_nd.likes || _nd.likeCount);
-  const _ffSig    = _s(_nd.signature || _nd.bio);
-  const _brPts    = _n(_nd.br_rank_point || _nd.brRankPoint || _nd.rankingPoints);
-  const _brMax    = _s(_nd.br_max_rank   || _nd.brMaxRank);
-  const _csPts    = _n(_nd.cs_rank_point || _nd.csRankPoint || _nd.csRankingPoints);
-  const _csMax    = _s(_nd.cs_max_rank   || _nd.csMaxRank);
-  const _guildNm  = _s(_nd.guild_name  || _nd.clanName  || _nd.clan);
-  const _guildLv  = _s(_nd.guild_level || _nd.guildLevel);
-  const _guildMb  = _nd.guild_member ? `${_nd.guild_member}/${_nd.guild_capacity || "?"}` : "N/A";
-  const _gLeader  = _s(_nd.guild_leader_name);
-  const _gLeaderL = _s(_nd.guild_leader_level);
-  const _petNm    = _s(_nd.pet_name);
-  const _petLv    = _s(_nd.pet_level);
-  const _credit   = _s(_nd.credit_score);
-  const _season   = _s(_nd.season_id);
-  const _ver      = _s(_nd.release_version);
-  const _gender   = _s(_nd.gender || "").replace("Gender_","").toLowerCase();
-  const _mode     = _s(_nd.mode_prefer || "").replace("ModePrefer_","");
-  const _lastLogin = _nd.last_login ? new Date(_nd.last_login).toLocaleDateString("en-GB") : "N/A";
+  const _ffExp    = _n(_r.exp || _nd.experience);
+  const _ffRegion = _s(_r.region || _nd.region || _nd.server);
+  const _ffLikes  = _n(_r.likes || _si.liked || _nd.likes || _nd.likeCount);
+  const _ffSig    = _s(_r.signature || _si.signature || _nd.signature || _nd.bio);
+  const _brPts    = _n(_api.BrRankPoint || _nd.br_rank_point || _nd.brRankPoint || _nd.rankingPoints);
+  const _brMax    = _s(_api.BrMaxRank || _nd.br_max_rank || _nd.brMaxRank);
+  const _csPts    = _n(_api.CsRankPoint || _nd.cs_rank_point || _nd.csRankPoint || _nd.csRankingPoints);
+  const _csMax    = _s(_api.CsMaxRank || _nd.cs_max_rank || _nd.csMaxRank);
+  const _guildNm  = _s(_r.guild_name || _gi.GuildName || _nd.guild_name || _nd.clanName || _nd.clan);
+  const _guildLv  = _s(_r.guild_level || _gi.GuildLevel || _nd.guild_level || _nd.guildLevel);
+  const _gMember  = _gi.GuildMember || _r.guild_members || _nd.guild_member;
+  const _gCap     = _gi.GuildCapacity || _r.guild_capacity || _nd.guild_capacity;
+  const _guildMb  = _gMember ? `${_gMember}/${_gCap || "?"}` : "N/A";
+  const _gLeader  = _s(_r.guild_leader_name || _nd.guild_leader_name);
+  const _gLeaderL = _s(_r.guild_leader_level || _nd.guild_leader_level);
+  const _petNm    = _s(_r.pet_name || (_pi.id ? `ID:${_pi.id}` : null) || _nd.pet_name);
+  const _petLv    = _s(_r.pet_level || _pi.level || _nd.pet_level);
+  const _credit   = _s(_ci.creditScore || _nd.credit_score);
+  const _season   = _s(_ai.AccountSeasonId || _nd.season_id);
+  const _ver      = _s(_p.ReleaseVersion || _nd.release_version);
+  const _gender   = _s(_si.gender || _nd.gender || "").replace("Gender_","").toLowerCase();
+  const _mode     = _s(_si.modePrefer || _nd.mode_prefer || "").replace("ModePrefer_","");
+  const _lastLogin = (_r.last_login || _nd.last_login) ? new Date(_r.last_login || _nd.last_login).toLocaleDateString("en-GB") : "N/A";
   const out = `🔫 *FREE FIRE ACCOUNT INFO*
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━
 👤 *Name:* ${_ffName}
@@ -34438,6 +34453,12 @@ Aliases: ${CONFIG.PREFIX}airtoreal | ${CONFIG.PREFIX}img2real | ${CONFIG.PREFIX}
   await react(sock, msg, "🌀");
   const jid = msg.key.remoteJid;
   try {
+    // Download the image first
+    const _stream = await downloadContentFromMessage(_imgMsg, "image");
+    let _imgBuf = Buffer.from([]);
+    for await (const c of _stream) _imgBuf = Buffer.concat([_imgBuf, c]);
+    if (!_imgBuf.length) { await react(sock, msg, "❌"); return; }
+
     const _mime = _imgMsg.mimetype || "image/jpeg";
 
     // Helper: POST image buffer to a URL, retry up to maxTries, return image Buffer or null
