@@ -22085,21 +22085,62 @@ cmd(["ffstalk","stalkff","freefire"], { desc: "Get Free Fire account info — .f
     await sendReply(sock, msg, `❌ Could not fetch Free Fire info for UID *${uid}*.\n\n_Make sure the UID is correct and the account is public._\n_Try with region: *${CONFIG.PREFIX}ffstalk ${uid} IND* or *BR* or *VN*_`);
     return;
   }
-  const _n = (v) => Number(v || 0).toLocaleString();
-  const _ffName = d.name || d.nickname || d.playerName || "N/A";
-  const _ffUid  = String(d.uid || d.userId || uid);
-  const out =
-`🎮 *Free Fire Account*
-━━━━━━━━━━━━━━━━━━━━
-
+  const _n = (v, def = "N/A") => (v !== null && v !== undefined && v !== "") ? Number(v).toLocaleString() : def;
+  const _s = (v, def = "N/A") => (v !== null && v !== undefined && v !== "" && v !== "null") ? String(v) : def;
+  // ── Parse NexRay stalker.freefire response directly ──
+  const _nd = d;
+  const _ffName   = _s(_nd.name || _nd.nickname || _nd.playerName);
+  const _ffUid    = _s(_nd.uid || _nd.userId || uid);
+  const _ffLevel  = _s(_nd.level);
+  const _ffExp    = _n(_nd.exp || _nd.experience);
+  const _ffRegion = _s(_nd.region || _nd.server);
+  const _ffLikes  = _n(_nd.likes || _nd.likeCount);
+  const _ffSig    = _s(_nd.signature || _nd.bio);
+  const _brPts    = _n(_nd.br_rank_point || _nd.brRankPoint || _nd.rankingPoints);
+  const _brMax    = _s(_nd.br_max_rank   || _nd.brMaxRank);
+  const _csPts    = _n(_nd.cs_rank_point || _nd.csRankPoint || _nd.csRankingPoints);
+  const _csMax    = _s(_nd.cs_max_rank   || _nd.csMaxRank);
+  const _guildNm  = _s(_nd.guild_name  || _nd.clanName  || _nd.clan);
+  const _guildLv  = _s(_nd.guild_level || _nd.guildLevel);
+  const _guildMb  = _nd.guild_member ? `${_nd.guild_member}/${_nd.guild_capacity || "?"}` : "N/A";
+  const _gLeader  = _s(_nd.guild_leader_name);
+  const _gLeaderL = _s(_nd.guild_leader_level);
+  const _petNm    = _s(_nd.pet_name);
+  const _petLv    = _s(_nd.pet_level);
+  const _credit   = _s(_nd.credit_score);
+  const _season   = _s(_nd.season_id);
+  const _ver      = _s(_nd.release_version);
+  const _gender   = _s(_nd.gender || "").replace("Gender_","").toLowerCase();
+  const _mode     = _s(_nd.mode_prefer || "").replace("ModePrefer_","");
+  const _lastLogin = _nd.last_login ? new Date(_nd.last_login).toLocaleDateString("en-GB") : "N/A";
+  const out = `🔫 *FREE FIRE ACCOUNT INFO*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
 👤 *Name:* ${_ffName}
 🆔 *UID:* ${_ffUid}
-⭐ *Level:* ${d.level || d.playerLevel || "N/A"}
-🏆 *Rank:* ${d.rank || d.rankName || d.rankScore ? `${d.rank || d.rankName || "N/A"} (${_n(d.rankScore || d.rankPoint || 0)} pts)` : "N/A"}
-❤️ *Likes:* ${_n(d.likes || d.likeCount)}
-🏅 *Clan:* ${d.clan || d.clanName || d.guildName || d.guild?.name || "None"}
-🌍 *Region:* ${d.region || d.server || "N/A"}
-📊 *K/D Ratio:* ${d.kd || d.kdRatio || d.kdratio || "N/A"}`;
+🌍 *Region:* ${_ffRegion}
+🎯 *Level:* ${_ffLevel}
+⭐ *EXP:* ${_ffExp}
+❤️ *Likes:* ${_ffLikes}
+🏅 *Season:* ${_season}  |  📦 *Version:* ${_ver}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🎮 *RANKED STATS*
+🏆 *BR Rank Points:* ${_brPts}  |  Peak: ${_brMax}
+⚔️ *CS Rank Points:* ${_csPts}  |  Peak: ${_csMax}
+🎯 *Mode Preference:* ${_mode}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🛡️ *GUILD*
+🏰 *Name:* ${_guildNm}
+📊 *Level:* ${_guildLv}  |  👥 *Members:* ${_guildMb}
+👑 *Leader:* ${_gLeader} (Lv.${_gLeaderL})
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🐾 *PET*
+🐕 *Name:* ${_petNm}  |  📈 *Level:* ${_petLv}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📋 *OTHER*
+⚥ *Gender:* ${_gender}
+💳 *Credit Score:* ${_credit}
+🕐 *Last Login:* ${_lastLogin}
+${_ffSig !== "N/A" ? `💬 *Bio:* ${_ffSig}` : ""}`;
   await sendReply(sock, msg, out);
   await react(sock, msg, "✅");
 });
@@ -34396,20 +34437,7 @@ Aliases: ${CONFIG.PREFIX}airtoreal | ${CONFIG.PREFIX}img2real | ${CONFIG.PREFIX}
   }
   await react(sock, msg, "🌀");
   const jid = msg.key.remoteJid;
-  const _trSt = await sock.sendMessage(jid, { text: `🖼️ *${CONFIG.BOT_NAME} — Image to Real*\n\n⬡ Downloading image...\n⬡ Processing with AI...\n⬡ Sending result...` }, { quoted: msg });
-  const _trKey = _trSt.key;
-
   try {
-    // Download the image
-    const _stream = await downloadContentFromMessage(_imgMsg, "image");
-    let _imgBuf = Buffer.from([]);
-    for await (const c of _stream) _imgBuf = Buffer.concat([_imgBuf, c]);
-    if (!_imgBuf.length) {
-      await editMessage(sock, jid, _trKey, `❌ Could not download image. Try again.`);
-      return;
-    }
-    await editMessage(sock, jid, _trKey, `🖼️ *${CONFIG.BOT_NAME} — Image to Real*\n\n⬢ Downloading image... ✅\n⬡ Processing with AI...\n⬡ Sending result...`);
-
     const _mime = _imgMsg.mimetype || "image/jpeg";
 
     // Helper: POST image buffer to a URL, retry up to maxTries, return image Buffer or null
@@ -34443,7 +34471,7 @@ Aliases: ${CONFIG.PREFIX}airtoreal | ${CONFIG.PREFIX}img2real | ${CONFIG.PREFIX}
     if (!_resultBuf && nx) {
       try {
         // Upload the image to NexRay's uploader first to get a URL
-        const _nxUpload = await nx.uploader.upload({ image: _imgBuf });
+        const _nxUpload = await nx.uploader.upload({ file: _imgBuf });
         const _imgUrl = _nxUpload?.result?.url || _nxUpload?.data?.url || _nxUpload?.url;
         if (_imgUrl) {
           // Try remini (HD enhancement)
@@ -34505,17 +34533,14 @@ Aliases: ${CONFIG.PREFIX}airtoreal | ${CONFIG.PREFIX}img2real | ${CONFIG.PREFIX}
     if (!_resultBuf) _resultBuf = await _tryProvider("https://api.davidcyril.name.ng/api/ai/toreal", 2);
 
     if (!_resultBuf || _resultBuf.length < 500) {
-      await editMessage(sock, jid, _trKey, `🖼️ *Image to Real*\n\n❌ All AI providers failed. Try again later.`);
-      await react(sock, msg, "❌");
+            await react(sock, msg, "❌");
       return;
     }
 
     await sock.sendMessage(jid, { image: _resultBuf, caption: `🖼️ *Image to Real* ✅\n_Powered by ${CONFIG.BOT_NAME}_` }, { quoted: msg });
-    await editMessage(sock, jid, _trKey, `🖼️ *${CONFIG.BOT_NAME} — Image to Real*\n\n⬢ Image downloaded ✅\n⬢ AI processing ✅\n⬢ Sending ✅\n\n✅ *Done!*`);
-    await react(sock, msg, "✅");
+        await react(sock, msg, "✅");
   } catch (e) {
-    await editMessage(sock, jid, _trKey, `🖼️ *Image to Real Error:* ${e?.message || e}`).catch(() => {});
-    await react(sock, msg, "❌");
+        await react(sock, msg, "❌");
   }
 });
 
@@ -34524,7 +34549,7 @@ Aliases: ${CONFIG.PREFIX}airtoreal | ${CONFIG.PREFIX}img2real | ${CONFIG.PREFIX}
 // Registered via mias/nexray_bot.js using the bot's own cmd() system.
 // ════════════════════════════════════════════════════════════════════════════
 try {
-  const _registerNexrayCmds = require('./nexray_bot');
+  const _registerNexrayCmds = require('./nexray_bot.cjs');
   _registerNexrayCmds(cmd, CONFIG, sendReply, react, downloadContentFromMessage, axios, nx);
   console.log('[nexray_bot] ✅ All NexRay commands registered.');
 } catch (_nxErr) {
