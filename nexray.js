@@ -420,6 +420,8 @@ const editor = {
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 const ephoto = {
   /** Ephoto anime effect | text* */
+  /** Convert image to photorealistic | url* */
+  real:       o => { _req(['url'],  o); return _get('/ephoto/real',        { url: o.url }); },
   anime:      o => { _req(['text'], o); return _get('/ephoto/anime',      { text: o.text }); },
   /** Ephoto art effect | text* */
   art:        o => { _req(['text'], o); return _get('/ephoto/art',        { text: o.text }); },
@@ -916,7 +918,11 @@ const tools = {
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 const uploader = {
   /** Upload file to Nexray CDN | file*(Buffer), ttl? */
-  upload: o => { _req(['file'], o); return _post('/upload', { file: o.file, ttl: o.ttl }); },
+  upload: o => {
+    const _f = o.file || o.buffer;  // accept both param names
+    if (!_f) throw new Error('Missing required param: file or buffer');
+    return _post('/upload', { file: _f, ttl: o.ttl });
+  },
 };
 
 // ── exports ───────────────────────────────────────────────────────────────────
