@@ -296,7 +296,7 @@ module.exports = function registerNexrayCmds(cmd, CONFIG, sendReply, react, down
     if (!args.length) return sendReply(sock, msg, `Usage: ${P}magicstudio <image prompt>`);
     await react(sock, msg, '🌀');
     try {
-      const r = await nx.ai.magicstudio({ text: args.join(' ') });
+      const r = await nx.ai.magicstudio({ prompt: args.join(' ') });
       const buf = await _nxMedia(r, axios); if (!buf) throw new Error('No image');
       await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: `✨ *Magic Studio*\n${args.join(' ')}` }, { quoted: msg });
       await react(sock, msg, '✅');
@@ -373,7 +373,7 @@ module.exports = function registerNexrayCmds(cmd, CONFIG, sendReply, react, down
     if (!args.length) return sendReply(sock, msg, `Usage: ${P}ailogo <logo text>`);
     await react(sock, msg, '🌀');
     try {
-      const r = await nx.ai.sologo({ text: args.join(' ') });
+      const r = await nx.ai.sologo({ prompt: args.join(' ') });
       const buf = await _nxMedia(r, axios); if (!buf) throw new Error('No image');
       await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: `🎨 *AI Logo*\n${args.join(' ')}` }, { quoted: msg });
       await react(sock, msg, '✅');
@@ -384,7 +384,7 @@ module.exports = function registerNexrayCmds(cmd, CONFIG, sendReply, react, down
     if (!args.length) return sendReply(sock, msg, `Usage: ${P}aistory <story theme>`);
     await react(sock, msg, '📖');
     try {
-      const r = await nx.ai.story({ text: args.join(' ') });
+      const r = await nx.ai.story({ prompt: args.join(' ') });
       const t = _nxText(r); if (!t) throw new Error('No response');
       await sendReply(sock, msg, `📖 *AI Story*\n\n${t}`);
       await react(sock, msg, '✅');
@@ -395,7 +395,7 @@ module.exports = function registerNexrayCmds(cmd, CONFIG, sendReply, react, down
     if (!args.length) return sendReply(sock, msg, `Usage: ${P}aimusic <music description>`);
     await react(sock, msg, '🌀');
     try {
-      const r = await nx.ai.suno({ text: args.join(' ') });
+      const r = await nx.ai.suno({ prompt: args.join(' ') });
       const buf = await _nxMedia(r, axios);
       if (buf && _isAudBuf(buf)) {
         await sock.sendMessage(msg.key.remoteJid, { audio: buf, mimetype: 'audio/mpeg', ptt: false }, { quoted: msg });
@@ -433,7 +433,7 @@ module.exports = function registerNexrayCmds(cmd, CONFIG, sendReply, react, down
     if (!args.length) return sendReply(sock, msg, `Usage: ${P}veo2 <video prompt>`);
     await react(sock, msg, '🌀');
     try {
-      const r = await nx.ai.veo2({ text: args.join(' ') });
+      const r = await nx.ai.veo2({ prompt: args.join(' ') });
       const buf = await _nxMedia(r, axios);
       if (buf && buf.length > 1000) {
         await sock.sendMessage(msg.key.remoteJid, { video: buf, mimetype: 'video/mp4', caption: `🎬 *Veo2 AI Video*\n${args.join(' ')}` }, { quoted: msg });
@@ -446,7 +446,7 @@ module.exports = function registerNexrayCmds(cmd, CONFIG, sendReply, react, down
     if (!args.length) return sendReply(sock, msg, `Usage: ${P}veo3 <video prompt>`);
     await react(sock, msg, '🌀');
     try {
-      const r = await nx.ai.veo3({ text: args.join(' ') });
+      const r = await nx.ai.veo3({ prompt: args.join(' ') });
       const buf = await _nxMedia(r, axios);
       if (buf && buf.length > 1000) {
         await sock.sendMessage(msg.key.remoteJid, { video: buf, mimetype: 'video/mp4', caption: `🎬 *Veo3 AI Video*\n${args.join(' ')}` }, { quoted: msg });
@@ -459,7 +459,7 @@ module.exports = function registerNexrayCmds(cmd, CONFIG, sendReply, react, down
     if (!args.length) return sendReply(sock, msg, `Usage: ${P}webpilot <website url>`);
     await react(sock, msg, '🌐');
     try {
-      const r = await nx.ai.webpilot({ url: args[0] });
+      const r = await nx.ai.webpilot({ text: args.join(' ') });
       const t = _nxText(r); if (!t) throw new Error('No response');
       await sendReply(sock, msg, `🌐 *WebPilot*\n\n${t}`);
       await react(sock, msg, '✅');
@@ -1256,7 +1256,7 @@ module.exports = function registerNexrayCmds(cmd, CONFIG, sendReply, react, down
     if (!args.length) return sendReply(sock, msg, `Usage: ${P}shopee <product name>`);
     await react(sock, msg, '🛍️');
     try {
-      const r = await nx.search.shopee({ text: args.join(' ') });
+      const r = await nx.search.shopee({ query: args.join(' ') });
       const items = r?.result || r?.data || r;
       const t = Array.isArray(items) ? `🛍️ *Shopee Search: ${args.join(' ')}*\n━━━━━━━━━━━━━━━━━━━━\n` +
         items.slice(0,5).map((i, n) => `${n+1}. *${i.name||i.title||'No name'}*\n   💰 ${i.price||i.harga||'?'}\n   🔗 ${i.link||i.url||''}`).join('\n\n')
@@ -1624,7 +1624,7 @@ module.exports = function registerNexrayCmds(cmd, CONFIG, sendReply, react, down
     if (!args.length) return sendReply(sock, msg, `Usage: ${P}tiktokearnings <follower count>`);
     await react(sock, msg, '💰');
     try {
-      const r = await nx.tools.tiktokearnings({ followers: args[0] });
+      const r = await nx.tools.tiktokearnings({ username: args[0] });
       const t = _nxText(r) || JSON.stringify(r?.result || r?.data || r);
       await sendReply(sock, msg, `💰 *TikTok Earnings*\n━━━━━━━━━━━━━━━━━━━━\n${t}`);
       await react(sock, msg, '✅');
@@ -1635,7 +1635,7 @@ module.exports = function registerNexrayCmds(cmd, CONFIG, sendReply, react, down
     if (!args.length) return sendReply(sock, msg, `Usage: ${P}tiktokhashtags <niche/topic>`);
     await react(sock, msg, '#️⃣');
     try {
-      const r = await nx.tools.tiktokhashtags({ text: args.join(' ') });
+      const r = await nx.tools.tiktokhashtags({ hashtags: args.join(' ') });
       const t = _nxText(r) || JSON.stringify(r?.result || r?.data || r);
       await sendReply(sock, msg, `#️⃣ *TikTok Hashtags*\n━━━━━━━━━━━━━━━━━━━━\n${t}`);
       await react(sock, msg, '✅');

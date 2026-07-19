@@ -11,6 +11,24 @@ import axios from 'axios';
 const ZERO_BASE  = 'https://zeroapi2-production.up.railway.app';
 const ZERO_KEY   = process.env.ZERO_API_KEY || 'ZERO-ADMIN-4e8a479a618e7a43d0a4edd1';
 const PREXZY_BASE = "https://apis.prexzyvilla.site";
+const NX_BASE    = 'https://api.nexray.eu.cc';
+
+/** Nexray direct GET helper — works in ES modules (no require) */
+async function nxGet(path, params = {}, timeoutMs = 90000) {
+  try {
+    const qs = new URLSearchParams(Object.fromEntries(Object.entries(params).filter(([,v]) => v !== undefined && v !== null)));
+    const url = `${NX_BASE}${path}${qs.toString() ? '?' + qs.toString() : ''}`;
+    const res = await axios.get(url, { timeout: timeoutMs, headers: { 'User-Agent': 'Mozilla/5.0' }, responseType: 'arraybuffer' });
+    const ct = res.headers['content-type'] || '';
+    if (ct.startsWith('image/') || ct.startsWith('audio/') || ct.startsWith('video/') || ct.startsWith('application/octet-stream')) {
+      return { ok: true, media: true, buffer: Buffer.from(res.data), contentType: ct };
+    }
+    const json = JSON.parse(Buffer.from(res.data).toString('utf-8'));
+    return { ok: json.status !== false, data: json, result: json.result };
+  } catch (e) {
+    return { ok: false, error: e?.message };
+  }
+}
 
 const api = axios.create({
   timeout: 30000,
@@ -164,7 +182,15 @@ const APIs = {
       if (reply) return { msg: reply };
     } catch (e) { }
 
-    // 6. popcat
+    // 6. Nexray GPT-3.5
+    try {
+      const rnx = await nxGet('/ai/gpt35', { text }, 30000);
+      if (rnx.ok && !rnx.media) {
+        const reply = rnx.result;
+        if (reply && typeof reply === 'string') return { msg: reply };
+      }
+    } catch (e) { }
+    // 7. popcat
     try {
       const response = await api.get(`https://api.popcat.xyz/chat?msg=${encodeURIComponent(text)}`);
       if (response.data && response.data.response) {
@@ -204,7 +230,25 @@ const APIs = {
       if (videoUrl) return { videoUrl, title };
     } catch (e) { }
 
-    // 4. tikwm.com
+    // 4. Nexray tiktok
+    try {
+      const rnx = await nxGet('/downloader/tiktok', { url }, 45000);
+      if (rnx.ok && !rnx.media) {
+        const d = rnx.result;
+        const videoUrl = d?.video?.[0] || d?.play || d?.url || d?.download;
+        if (videoUrl) return { videoUrl, title: d?.title || 'TikTok Video' };
+      }
+    } catch (e) { }
+    // 4b. Nexray tiktok v2
+    try {
+      const rnx2 = await nxGet('/downloader/v2/tiktok', { url }, 45000);
+      if (rnx2.ok && !rnx2.media) {
+        const d = rnx2.result;
+        const videoUrl = d?.video?.[0] || d?.play || d?.url;
+        if (videoUrl) return { videoUrl, title: d?.title || 'TikTok Video' };
+      }
+    } catch (e) { }
+    // 5. tikwm.com
     try {
       const response = await axios.get(`https://tikwm.com/api/?url=${encodeURIComponent(url)}`, {
         timeout: 15000,
@@ -331,6 +375,15 @@ const APIs = {
       const title = d?.title || "Spotify Track";
       if (dlUrl) return { download: dlUrl, title, cover: null, artist: "" };
     } catch (e) { }
+    // 3. Nexray spotify
+    try {
+      const rnx = await nxGet('/downloader/spotify', { url }, 60000);
+      if (rnx.ok && !rnx.media) {
+        const d = rnx.result;
+        const dlUrl = d?.url || d?.download || d?.audio;
+        if (dlUrl) return { download: dlUrl, title: d?.title || 'Spotify Track', cover: d?.image || null, artist: d?.artist || '' };
+      }
+    } catch (e) { }
 
     throw new Error('Spotify download failed');
   },
@@ -375,7 +428,15 @@ const APIs = {
         return d?.result || d?.text || d?.translated || (typeof d === "string" ? d : null);
       }
     } catch (e) { }
-    // 2. MyMemory
+    // 2. Nexray translate
+    try {
+      const r2 = await nxGet('/tools/translate', { text, lang: to }, 20000);
+      if (r2.ok && r2.result) {
+        const res = r2.result;
+        return res?.translated_text || (typeof res === 'string' ? res : null);
+      }
+    } catch (e) { }
+    // 3. MyMemory
     try {
       const { data } = await axios.get(
         `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=${from === "auto" ? "en" : from}|${to}`,
@@ -496,5 +557,190 @@ APIs.apk = async (packageId) => {
   return { ok: false };
 };
 
+// ══════════════════════════════════════════════════════════════
+// NEXRAY-POWERED UTILITY FUNCTIONS
+// Usable from any bot via: import APIs from './api.js'
+// ══════════════════════════════════════════════════════════════
+
+/** Remove background from image URL */
+APIs.removebg = async (imageUrl) => {
+  // 1. Nexray (multiple versions)
+  for (const path of ['/tools/removebg', '/tools/v1/removebg', '/tools/v2/removebg']) {
+    try {
+      const r = await nxGet(path, { url: imageUrl }, 60000);
+      if (r.ok) {
+        if (r.media && r.buffer.length > 500) return { ok: true, buffer: r.buffer, contentType: r.contentType };
+        const url = r.result?.url || r.result;
+        if (url && typeof url === 'string' && url.startsWith('http')) {
+          const rb = await axios.get(url, { responseType: 'arraybuffer', timeout: 30000 });
+          return { ok: true, buffer: Buffer.from(rb.data) };
+        }
+      }
+    } catch (e) { }
+  }
+  return { ok: false, error: 'removebg failed' };
+};
+
+/** Upscale image from URL */
+APIs.upscale = async (imageUrl) => {
+  for (const path of ['/tools/upscale', '/tools/v1/upscale', '/tools/v2/upscale']) {
+    try {
+      const r = await nxGet(path, { url: imageUrl }, 90000);
+      if (r.ok) {
+        if (r.media && r.buffer.length > 500) return { ok: true, buffer: r.buffer, contentType: r.contentType };
+        const url = r.result?.url || r.result;
+        if (url && typeof url === 'string') {
+          const rb = await axios.get(url, { responseType: 'arraybuffer', timeout: 30000 });
+          return { ok: true, buffer: Buffer.from(rb.data) };
+        }
+      }
+    } catch (e) { }
+  }
+  return { ok: false, error: 'upscale failed' };
+};
+
+/** Get lyrics — uses nexray /search/lirik */
+APIs.getLyrics = async (query) => {
+  try {
+    const r = await nxGet('/search/lirik', { query }, 20000);
+    if (r.ok && r.result) {
+      const d = r.result;
+      if (typeof d === 'string') return { ok: true, lyrics: d, title: query };
+      return { ok: true, lyrics: d?.lyrics || d?.lirik || JSON.stringify(d), title: d?.title || d?.judul || query, artist: d?.artist || d?.artis || '' };
+    }
+  } catch (e) { }
+  return { ok: false, error: 'Lyrics not found' };
+};
+
+/** Indonesian weather forecast — /information/cuaca */
+APIs.getCuaca = async (kota) => {
+  try {
+    const r = await nxGet('/information/cuaca', { kota }, 20000);
+    if (r.ok && r.result) return { ok: true, data: r.result };
+  } catch (e) { }
+  return { ok: false };
+};
+
+/** Indonesian prakiraan cuaca forecast — /information/prakiraan */
+APIs.getPrakiraan = async (kota) => {
+  try {
+    const r = await nxGet('/information/prakiraan', { kota }, 20000);
+    if (r.ok && r.result) return { ok: true, data: r.result };
+  } catch (e) { }
+  return { ok: false };
+};
+
+/** YouTube search — /search/youtube */
+APIs.ytSearch = async (query) => {
+  try {
+    const r = await nxGet('/search/youtube', { query }, 20000);
+    if (r.ok && r.result) return { ok: true, data: r.result };
+  } catch (e) { }
+  return { ok: false };
+};
+
+/** YouTube mp3 download — /downloader/ytmp3 */
+APIs.ytmp3 = async (url) => {
+  // 1. Nexray ytmp3
+  try {
+    const r = await nxGet('/downloader/ytmp3', { url }, 90000);
+    if (r.ok && !r.media) {
+      const d = r.result;
+      const dlUrl = d?.url || d?.download || d?.audio;
+      if (dlUrl) return { ok: true, url: dlUrl, title: d?.title || 'YouTube Audio' };
+    }
+  } catch (e) { }
+  // 2. Nexray v1
+  try {
+    const r = await nxGet('/downloader/v1/youtube', { url }, 90000);
+    if (r.ok && !r.media) {
+      const d = r.result;
+      const dlUrl = d?.url || d?.download || d?.audio;
+      if (dlUrl) return { ok: true, url: dlUrl, title: d?.title || 'YouTube Audio' };
+    }
+  } catch (e) { }
+  return { ok: false, error: 'ytmp3 failed' };
+};
+
+/** Instagram download — nexray + zero fallback */
+APIs.instagramDl = async (url) => {
+  // 1. Nexray
+  try {
+    const r = await nxGet('/downloader/instagram', { url }, 45000);
+    if (r.ok && !r.media) {
+      const d = r.result;
+      const mediaUrl = Array.isArray(d) ? d[0]?.url : d?.url || d?.video || d?.image;
+      if (mediaUrl) return { ok: true, url: mediaUrl, data: d };
+    }
+  } catch (e) { }
+  // 2. ZeroAPI fallback
+  const zr = await zeroGet('/api/instagram', { url }, 60000);
+  if (zr.ok) { const d = zr.data?.data || zr.data; return { ok: true, url: d?.url || null, data: d }; }
+  return { ok: false };
+};
+
+/** Stalk Instagram user — /stalker/instagram */
+APIs.stalkIG = async (username) => {
+  try {
+    const r = await nxGet('/stalker/instagram', { username }, 20000);
+    if (r.ok && r.result) return { ok: true, data: r.result };
+  } catch (e) { }
+  return { ok: false };
+};
+
+/** Stalk TikTok user — /stalker/tiktok */
+APIs.stalkTT = async (username) => {
+  try {
+    const r = await nxGet('/stalker/tiktok', { username }, 20000);
+    if (r.ok && r.result) return { ok: true, data: r.result };
+  } catch (e) { }
+  return { ok: false };
+};
+
+/** Stalk GitHub user — /stalker/github */
+APIs.stalkGH = async (username) => {
+  try {
+    const r = await nxGet('/stalker/github', { username }, 20000);
+    if (r.ok && r.result) return { ok: true, data: r.result };
+  } catch (e) { }
+  return { ok: false };
+};
+
+/** OCR — extract text from image URL | /tools/ocr */
+APIs.ocr = async (imageUrl) => {
+  try {
+    const r = await nxGet('/tools/ocr', { url: imageUrl }, 30000);
+    if (r.ok && r.result) {
+      const text = typeof r.result === 'string' ? r.result : r.result?.text || JSON.stringify(r.result);
+      return { ok: true, text };
+    }
+  } catch (e) { }
+  return { ok: false };
+};
+
+/** Screenshot a website — /tools/ssweb */
+APIs.screenshot = async (url) => {
+  try {
+    const r = await nxGet('/tools/ssweb', { url }, 30000);
+    if (r.ok) {
+      if (r.media && r.buffer.length > 500) return { ok: true, buffer: r.buffer };
+      const imgUrl = r.result?.url || r.result;
+      if (imgUrl && typeof imgUrl === 'string') {
+        const rb = await axios.get(imgUrl, { responseType: 'arraybuffer', timeout: 20000 });
+        return { ok: true, buffer: Buffer.from(rb.data) };
+      }
+    }
+  } catch (e) { }
+  return { ok: false };
+};
+
+/** Nexray image download helper — fetches buffer from URL result */
+APIs.nxFetchBuffer = async (url) => {
+  try {
+    const { data } = await axios.get(url, { responseType: 'arraybuffer', timeout: 60000, headers: { 'User-Agent': 'Mozilla/5.0' } });
+    return Buffer.from(data);
+  } catch (e) { return null; }
+};
+
 export default APIs;
-export { zeroGet, zeroPost, prexzyGet };
+export { zeroGet, zeroPost, prexzyGet, nxGet };
