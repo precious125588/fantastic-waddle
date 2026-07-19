@@ -6,6 +6,8 @@
  * All fixes are idempotent — safe to run multiple times.
  */
 'use strict';
+
+try {
 const fs   = require('fs');
 const path = require('path');
 
@@ -356,4 +358,47 @@ bot.on('polling_error', function (err) {
   console.log('[fix_all] FIX-3: mias/index.js — corrupted gst-v17 IIFE removed, _prefix line restored. ✓');
 })();
 
+// ─────────────────────────────────────────────────────────────────────────────
+// FIX 4 — Railway volume overlays nexstore/ and hides module files
+//
+// When a Railway volume is mounted at /app/nexstore, the entire directory is
+// replaced by the (initially empty) volume. This makes logger.js,
+// sessionRegistry.js, token.js, and myfunc.js disappear, causing server.js
+// to crash before it can even bind the HTTP port ("service unavailable").
+//
+// Fix: copies the module files from nexstore_modules/ (outside the volume)
+// into nexstore/ at every startup, so they are always present.
+// ─────────────────────────────────────────────────────────────────────────────
+(function restoreNexstoreModules() {
+  const SRC  = path.join(__dirname, 'nexstore_modules');
+  const DEST = path.join(__dirname, 'nexstore');
+  const FILES = ['logger.js', 'sessionRegistry.js', 'token.js', 'myfunc.js'];
+
+  if (!fs.existsSync(SRC)) {
+    console.log('[fix_all] FIX-4: nexstore_modules/ not found — skip.');
+    return;
+  }
+
+  if (!fs.existsSync(DEST)) fs.mkdirSync(DEST, { recursive: true });
+
+  let restored = 0;
+  for (const f of FILES) {
+    const src  = path.join(SRC, f);
+    const dest = path.join(DEST, f);
+    if (!fs.existsSync(src)) { console.log('[fix_all] FIX-4: backup missing: ' + f); continue; }
+    try {
+      fs.copyFileSync(src, dest);
+      restored++;
+    } catch(e) {
+      console.log('[fix_all] FIX-4: could not copy ' + f + ': ' + e.message);
+    }
+  }
+  console.log('[fix_all] FIX-4: restored ' + restored + '/' + FILES.length + ' nexstore module files. ✓');
+})();
+
 console.log('[fix_all] All done.\n');
+
+} catch (_outerErr) {
+  console.error('[fix_all] Outer guard caught:', _outerErr && _outerErr.message || _outerErr);
+  process.exit(0); // always exit 0 so server.js still runs
+}
