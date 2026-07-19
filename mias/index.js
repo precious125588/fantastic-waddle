@@ -7912,16 +7912,10 @@ cmd(["play", "music", "song"], { desc: "Play/download song (audio)", category: "
     } catch (e) { console.error("[PLAY] local fallback raised:", e.message); }
 
     await editMessage(sock, jid, statusKey, `🎵 *${CONFIG.BOT_NAME} Player*\n\n🔍 Searching for *"${query}"*... ✅\n📌 Found: *${title}*\n⏳ Downloading audio... ❌\n\n⚠️ All audio providers failed or returned a corrupt file. Try again in a bit.\n🔗 ${videoUrl}`);
-  
-  // ── FALLBACK ENDPOINTS (merged from duplicate cmd registrations) ──
-  // fallback URL: https://www.google.com/
-  // fallback URL: https://api.toxicapis.com/download/xnxx?url=${encodeURIComponent(pageU
-  } catch (e) {
-    console.error("[PLAY]", e?.message || e);
-  }
+  } catch (e) { console.error("[play] error:", e.message); }
 });
 
-cmd(["playvid", "playvideo", "vidplay"], { desc: "Download song as video (mp4)", category: "DOWNLOAD" }, async (sock, msg, args) => {
+cmd(["playvid","playvideo","vidplay"], { desc: "Download song as video (mp4)", category: "DOWNLOAD" }, async (sock, msg, args) => {
   if (!args.length) { await sendReply(sock, msg, `❌ Usage: ${CONFIG.PREFIX}playvid <song name or YouTube URL>`); return; }
   await react(sock, msg, "🎬");
   const query = args.join(" ").trim();
@@ -15816,24 +15810,19 @@ cmd("settheme", { desc: "Set bot theme", category: "CONFIG", ownerOnly: true }, 
 //  SESSION COMMANDS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-cmd(["ytmp4", "ytvideo", "yt4", "ytv"], { desc: "Download YouTube video (MP4) with quality picker", category: "DOWNLOAD" }, async (sock, msg, args) => {
-  const input = args.join(" ").trim();
-  if (!input) { await sendReply(sock, msg, `❌ Usage: ${CONFIG.PREFIX}ytmp4 <url> [quality]\n\nExamples:\n• ${CONFIG.PREFIX}ytmp4 https://youtu.be/xxx\n• ${CONFIG.PREFIX}ytmp4 https://youtu.be/xxx 720`); return; }
-  const _parts = input.split(" ");
-  let url = _parts[0], quality = null, qualityLabel = null;
-  if (_parts.length > 1) {
-    const _q = _parts[_parts.length - 1];
-    if (/^\d+$/.test(_q)) { quality = _q; qualityLabel = _q + "p"; url = _parts.slice(0, -1).join(" "); }
-  }
-  const videoId = url.match(/(?:v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/)?.[1];
-
-  if (!quality && !qualityLabel) {
+cmd(["ytmp4","ytvideo","yt4","ytv"], { desc: "Download YouTube video as mp4", category: "DOWNLOAD" }, async (sock, msg, args) => {
+  if (!args.length) { await sendReply(sock, msg, `❌ Usage: ${CONFIG.PREFIX}ytmp4 <YouTube URL> [quality]`); return; }
+  await react(sock, msg, "🎬");
+  const _input = args.join(" ").trim();
+  const quality = /^\d+p?$/.test(args[args.length-1]) ? args[args.length-1].replace("p","") : null;
+  const qualityLabel = quality ? `${quality}p` : null;
+  const url = /^https?:\/\//i.test(_input) ? _input : null;
+  if (!quality) {
     let availableQualities = null;
-    if (videoId) {
-      const _invInstances = ["https://inv.nadeko.net","https://invidious.io.lol","https://yt.cdaut.de","https://invidious.privacyredirect.com"];
-      for (const _inst of _invInstances) {
+    if (url) {
+      for (const _inv of ["https://inv.tux.pizza","https://invidious.privacydev.net","https://vid.puffyan.us"]) {
         try {
-          const _vi = (await axios.get(`${_inst}/api/v1/videos/${videoId}?fields=title,formatStreams,adaptiveFormats`, { timeout: 10000 })).data;
+          const _vi = (await axios.get(_inv + "/api/v1/videos/" + (new URL(url).searchParams.get("v") || url.split("v=")[1]) + `?fields=title,formatStreams,adaptiveFormats`, { timeout: 10000 })).data;
           const _fmts = [
             ...(_vi?.formatStreams || []).map(f => f.qualityLabel || f.quality),
             ...(_vi?.adaptiveFormats || []).filter(f => f.type?.includes("video")).map(f => f.qualityLabel || f.quality),
@@ -22111,13 +22100,7 @@ cmd(["ffstalk","stalkff","freefire"], { desc: "Get Free Fire account info — .f
 🏅 *Clan:* ${d.clan || d.clanName || d.guildName || d.guild?.name || "None"}
 🌍 *Region:* ${d.region || d.server || "N/A"}
 📊 *K/D Ratio:* ${d.kd || d.kdRatio || d.kdratio || "N/A"}`;
-  try {
-    await sendCTAButtons(sock, msg.key.remoteJid, msg, out, [
-      { type: "copy", text: "📋 Copy UID",        value: _ffUid,  id: "ff_uid" },
-      { type: "copy", text: "👤 Copy Name",       value: _ffName, id: "ff_name" },
-      { type: "url",  text: "🔍 Look Up on FFES", url: `https://freefiremobile.com/` },
-    ], `${CONFIG.BOT_NAME} • Free Fire Stalk`);
-  } catch { await sendReply(sock, msg, out); }
+  await sendReply(sock, msg, out);
   await react(sock, msg, "✅");
 });
 

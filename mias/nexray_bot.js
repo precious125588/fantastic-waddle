@@ -492,13 +492,21 @@ module.exports = function registerNexrayCmds(cmd, CONFIG, sendReply, react, down
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  cmd(['lirikcard', 'lyriccard'], { desc: 'Generate lyric card — .lirikcard <text>', category: 'CANVAS' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}lirikcard <song lyric text>`);
+  cmd(['musiccard', 'lirikcard', 'lyriccard'], { desc: 'Generate music card — .musiccard <title> | <artist>', category: 'CANVAS' }, async (sock, msg, args) => {
+    if (!args.length) return sendReply(sock, msg, `Usage: ${P}musiccard <song title> | <artist name>`);
     await react(sock, msg, '🌀');
     try {
-      const r = await nx.canvas.lirik({ text: args.join(' ') });
-      const buf = await _nxMedia(r, axios); if (!buf) throw new Error('No image');
-      await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: `🎵 *Lyric Card*` }, { quoted: msg });
+      const _raw = args.join(' ');
+      const [_title, _artist = 'Unknown Artist'] = _raw.split('|').map(s => s.trim());
+      // get sender pfp as image_url, fallback to a placeholder
+      let _imgUrl = 'https://i.imgur.com/8sCo1iw.png';
+      try { _imgUrl = await sock.profilePictureUrl(msg.key.remoteJid, 'image'); } catch {}
+      const r = await nx.canvas.musiccard({ judul: _title, nama: _artist, image_url: _imgUrl });
+      // musiccard returns direct image buffer
+      let buf = r?.buffer || null;
+      if (!buf || !Buffer.isBuffer(buf) || buf.length < 500) buf = await _nxMedia(r, axios);
+      if (!buf) throw new Error('No image returned from musiccard');
+      await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: `🎵 *${_title}*\n👤 ${_artist}` }, { quoted: msg });
       await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
