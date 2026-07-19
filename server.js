@@ -1,4 +1,13 @@
 'use strict';
+// ══ CRASH SHIELD — registered first so nothing can kill the process ══════════
+process.on('uncaughtException', e => {
+    console.error('[SHIELD] uncaughtException:', e && e.message || e);
+});
+process.on('unhandledRejection', r => {
+    console.error('[SHIELD] unhandledRejection:', r && r.message || String(r));
+});
+// ═════════════════════════════════════════════════════════════════════════════
+
 require('dotenv').config();
 
 const express = require('express');
@@ -18,8 +27,19 @@ const PAIR_FILE   = path.join(NEXSTORE, 'web_pairs.json');
 
 [NEXSTORE, PAIRING_DIR].forEach(d => { if (!fs.existsSync(d)) fs.mkdirSync(d,{recursive:true}); });
 
-const registry = require('./nexstore/sessionRegistry');
-const logger   = require('./nexstore/logger');
+// ── nexstore modules (restored by fix_all.cjs at startup; safe fallback below) ──
+let registry, logger;
+try { registry = require('./nexstore/sessionRegistry'); } catch(e) {
+  console.error('[server] sessionRegistry unavailable:', e.message);
+  registry = { register:()=>{}, updateStatus:()=>{}, unregister:()=>{}, get:()=>null,
+               getAll:()=>[], getBySource:()=>[], has:()=>false, count:()=>0,
+               getAnalytics:()=>({total:0,web:0,telegram:0,today:0,week:0,connected:0}), flush:()=>{} };
+}
+try { logger = require('./nexstore/logger'); } catch(e) {
+  console.error('[server] logger unavailable:', e.message);
+  const {EventEmitter}=require('events'); const _em=new EventEmitter();
+  logger = { log:()=>{}, warn:()=>{}, error:()=>{}, readLog:()=>[], clearLog:()=>{}, emitter:_em };
+}
 
 // ── SSE broadcast sets ────────────────────────────────────────────────────────
 const logSseClients = new Set();
@@ -452,7 +472,7 @@ const httpServer = app.listen(PORT, '0.0.0.0', () => {
     });
 });
 
-httpServer.on('error',e=>{ console.error('HTTP server error:',e.message);process.exit(1); });
+httpServer.on('error',e=>{ console.error('[HTTP server error]',e.message,' — staying alive, will retry'); if(e.code==='EADDRINUSE'){ setTimeout(()=>httpServer.listen(PORT,'0.0.0.0'),3000); } });
 
 async function _autoLoadPairs() {
     if (!_pair||!_launcher) return;
