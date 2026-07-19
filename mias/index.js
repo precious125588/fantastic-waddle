@@ -48,6 +48,8 @@ import {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
+// ── NexRay API wrapper — primary endpoint for all supported commands ──────────
+const nx = (() => { try { return require('../nexray'); } catch (_e) { console.error('[nexray] failed to load:', _e.message); return null; } })();
 
 // ─────────────────────────────────────────────────────────────────────
 // v15: Log de-duplication throttle. Pterodactyl/Optiklink panels stream
@@ -5447,7 +5449,13 @@ function cmd(names, opts, handler) {
       await react(sock, msg, "❌");
       await sendReply(sock, msg, `❌ Error: ${e.message}`);
     }
-  });
+  
+  // ── FALLBACK ENDPOINTS (merged from duplicate cmd registrations) ──
+  // fallback prexzy: prexzyGet('/anime/animedetail', args)
+  // fallback prexzy: prexzyGet('/anime/animedownload', args)
+  // fallback prexzy: prexzyGet('/anime/hanime-detail', args)
+  // fallback prexzy: prexzyGet('/anime/manga-suggestions', args)
+});
 
 // ═══════════════════════════════════════════════════════════════════════════════
 //  PRINCE API — helpers & cmd() registrations
@@ -5521,6 +5529,13 @@ cmd(["deepseek","deepseekv3","dseek"], { desc: "Chat with DeepSeek V3", category
     if (r.ok && r.data?.success) return await sendReply(sock, msg, `🔍 *DeepSeek V3*\n\n${r.data.result}`);
     await sendReply(sock, msg, '❌ DeepSeek unavailable right now.');
   } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); }
+
+  // ── FALLBACK ENDPOINTS (merged from duplicate cmd registrations) ──
+  // fallback prexzy: prexzyGet('/ai/deepseekchat', args)
+  // fallback prexzy: prexzyGet('/ai/talkdeepseek', args)
+  // fallback prexzy: prexzyGet('/ai/aichat', args)
+  // fallback prexzy: prexzyGet('/ai/dream', args)
+  // fallback prexzy: prexzyGet('/ai/prompttocode', args)
 });
 
 cmd(["deepseek-r1","deepseekr1","dsreason"], { desc: "Chat with DeepSeek R1", category: "AI" }, async (sock, msg, args) => {
@@ -5532,6 +5547,12 @@ cmd(["deepseek-r1","deepseekr1","dsreason"], { desc: "Chat with DeepSeek R1", ca
     if (r.ok && r.data?.success) return await sendReply(sock, msg, `🔬 *DeepSeek R1*\n\n${r.data.result}`);
     await sendReply(sock, msg, '❌ DeepSeek R1 unavailable right now.');
   } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); }
+
+  // ── FALLBACK ENDPOINTS (merged from duplicate cmd registrations) ──
+  // fallback prexzy: prexzyGet('/ai/deepseekreasoner', args)
+  // fallback prexzy: prexzyGet('/ai/talkdeepseek', args)
+  // fallback prexzy: prexzyGet('/ai/code-beginner', args)
+  // fallback prexzy: prexzyGet('/ai/code-advanced', args)
 });
 
 cmd(["blackbox"], { desc: "Blackbox AI chat", category: "AI" }, async (sock, msg, args) => {
@@ -5576,21 +5597,10 @@ cmd(["imagine","txt2img","texttoimage"], { desc: "Generate AI image from text", 
     }
     await sendReply(sock, msg, '❌ Image generation failed. Try a different prompt.');
   } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); }
-});
 
-cmd(["flux","fluxai"], { desc: "Flux AI image generator", category: "AI" }, async (sock, msg, args) => {
-  const q = args.join(" ");
-  if (!q) return await sendReply(sock, msg, `⚡ *Flux AI Image*\n\nUsage: ${CONFIG.PREFIX}flux <description>`);
-  await react(sock, msg, "⚡");
-  await sendReply(sock, msg, '⚡ *Generating with Flux...* Please wait');
-  try {
-    const r = await _paGet('/api/ai/fluximg', { q });
-    if (r.ok && r.data?.success && r.data.result) {
-      const imgUrl = typeof r.data.result === 'string' ? r.data.result : r.data.result?.url;
-      if (imgUrl) return await sock.sendMessage(msg.key.remoteJid, { image: { url: imgUrl }, caption: `⚡ *Flux AI*\n_${q.slice(0,80)}_` }, { quoted: msg });
-    }
-    await sendReply(sock, msg, '❌ Flux failed. Try again later.');
-  } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); }
+  // ── FALLBACK ENDPOINTS (merged from duplicate cmd registrations) ──
+  // fallback prexzy: prexzyGet('/ai/txt2img', args)
+  // fallback prexzy: prexzyGet('/download/douyin', args)
 });
 
 cmd(["sd2","stablediffusion2"], { desc: "Stable Diffusion image generator", category: "AI" }, async (sock, msg, args) => {
@@ -5780,44 +5790,6 @@ cmd(["thankyou2","thanks2"], { desc: "Thank you message", category: "FUN" }, asy
 
 // ─────────── DOWNLOAD COMMANDS ─────────────────────────────────────────────
 
-cmd(["tiktokv2","ttv2"], { desc: "TikTok Downloader V2 (no watermark)", category: "DOWNLOAD" }, async (sock, msg, args) => {
-  const url = args.join(" ");
-  if (!_paIsUrl(url)) return await sendReply(sock, msg, `🎵 *TikTok V2*\n\nUsage: ${CONFIG.PREFIX}tiktokv2 <tiktok-url>`);
-  await react(sock, msg, "🎵");
-  await sendReply(sock, msg, '⏳ Downloading TikTok (v2)...');
-  try {
-    const r = await _paGet('/api/download/tiktokdlv2', { url });
-    if (r.ok && r.data?.success && r.data.result) {
-      const res = r.data.result;
-      const videoUrl = res?.video || res?.nowm || res?.url;
-      if (videoUrl) {
-        await sock.sendMessage(msg.key.remoteJid, { video: { url: videoUrl }, mimetype: 'video/mp4', caption: `🎵 *TikTok V2*\n${res?.title || ''}` }, { quoted: msg });
-        return await react(sock, msg, '✅');
-      }
-    }
-    await sendReply(sock, msg, `❌ TikTok V2 failed. Try ${CONFIG.PREFIX}tiktok instead.`);
-  } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); }
-});
-
-cmd(["tiktokv3","ttv3"], { desc: "TikTok Downloader V3", category: "DOWNLOAD" }, async (sock, msg, args) => {
-  const url = args.join(" ");
-  if (!_paIsUrl(url)) return await sendReply(sock, msg, `🎵 *TikTok V3*\n\nUsage: ${CONFIG.PREFIX}tiktokv3 <tiktok-url>`);
-  await react(sock, msg, "🎵");
-  await sendReply(sock, msg, '⏳ Downloading TikTok (v3)...');
-  try {
-    const r = await _paGet('/api/download/tiktokdlv3', { url });
-    if (r.ok && r.data?.success && r.data.result) {
-      const res = r.data.result;
-      const videoUrl = res?.video || res?.nowm || res?.url;
-      if (videoUrl) {
-        await sock.sendMessage(msg.key.remoteJid, { video: { url: videoUrl }, mimetype: 'video/mp4', caption: '🎵 *TikTok V3*' }, { quoted: msg });
-        return await react(sock, msg, '✅');
-      }
-    }
-    await sendReply(sock, msg, `❌ TikTok V3 failed. Try ${CONFIG.PREFIX}tiktok.`);
-  } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); }
-});
-
 cmd(["tiktokv4","ttv4"], { desc: "TikTok Downloader V4", category: "DOWNLOAD" }, async (sock, msg, args) => {
   const url = args.join(" ");
   if (!_paIsUrl(url)) return await sendReply(sock, msg, `🎵 *TikTok V4*\n\nUsage: ${CONFIG.PREFIX}tiktokv4 <tiktok-url>`);
@@ -5854,6 +5826,12 @@ cmd(["fbv2","facebookv2","metav2"], { desc: "Facebook Video Downloader V2", cate
     }
     await sendReply(sock, msg, `❌ Facebook V2 failed. Try ${CONFIG.PREFIX}fb.`);
   } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); }
+
+  // ── FALLBACK ENDPOINTS (merged from duplicate cmd registrations) ──
+  // fallback prexzy: prexzyGet('/download/facebookv2', args)
+  // fallback prexzy: prexzyGet('/download/rednote', args)
+  // fallback prexzy: prexzyGet('/download/threadsV2', args)
+  // fallback prexzy: prexzyGet('/anime/animekill-home', args)
 });
 
 cmd(["igstory","instastory"], { desc: "Instagram Story Downloader", category: "DOWNLOAD" }, async (sock, msg, args) => {
@@ -7260,18 +7238,7 @@ cmd(["setting", "settings", "config"], { desc: "Open bot settings", category: "S
 });
 
   // ── Creator Mode — lock/unlock bot to creator-only access ───────────────────
-  let _creatorModeActive = false;
-  cmd(["creator","creatormode","creator mode"], { desc: "Lock bot: owner-only mode (.creator on/off)", category: "OWNER", ownerOnly: true }, async (sock, msg, args) => {
-    const sub = (args[0] || "on").toLowerCase();
-    if (["off","0","false","disable"].includes(sub)) {
-      _creatorModeActive = false;
-      await sendReply(sock, msg, `✅ *Creator Mode: OFF*\n\nBot is now open to all users.`);
-    } else {
-      _creatorModeActive = true;
-      await sendReply(sock, msg, `🔐 *Creator Mode: ON*\n\nOnly you can use the bot now. Use *${CONFIG.PREFIX}creator off* to open it again.`);
-    }
-  });
-  cmd(["creatoroff"], { desc: "Unlock bot from owner-only mode", category: "OWNER", ownerOnly: true }, async (sock, msg) => {
+  let _creatorModeActive = false;  cmd(["creatoroff"], { desc: "Unlock bot from owner-only mode", category: "OWNER", ownerOnly: true }, async (sock, msg) => {
     _creatorModeActive = false;
     await sendReply(sock, msg, `✅ *Creator Mode: OFF*\n\nBot is now open to all users.`);
   });
@@ -7945,19 +7912,11 @@ cmd(["play", "music", "song"], { desc: "Play/download song (audio)", category: "
     } catch (e) { console.error("[PLAY] local fallback raised:", e.message); }
 
     await editMessage(sock, jid, statusKey, `🎵 *${CONFIG.BOT_NAME} Player*\n\n🔍 Searching for *"${query}"*... ✅\n📌 Found: *${title}*\n⏳ Downloading audio... ❌\n\n⚠️ All audio providers failed or returned a corrupt file. Try again in a bit.\n🔗 ${videoUrl}`);
-  } catch (e) {
-    console.error("[PLAY ERROR]", e.message);
-    await sendReply(sock, msg, `❌ Play error: ${e.message}`);
-  }
-});
-// PLAY2 — same multi-provider pipeline as `play`, but the result is delivered
-// as a downloadable document (mp3 file). We deliberately *do not* use
-// @distube/ytdl-core here because YouTube blocks the shared cloud IPs Replit
-// uses with "Sign in to confirm you're not a bot". Instead we go through the
-// same proven cobalt/oceansaver/gifted/etc. providers as the `play` command.
-
-// ── playvid — download video version of a song (explicit command) ─────────
-cmd(["playvid", "playvideo", "songvid", "songvideo", "vplay"], { desc: "Download song as video (mp4)", category: "DOWNLOAD" }, async (sock, msg, args) => {
+  
+  // ── FALLBACK ENDPOINTS (merged from duplicate cmd registrations) ──
+  // fallback URL: https://www.google.com/
+  // fallback URL: https://api.toxicapis.com/download/xnxx?url=${encodeURIComponent(pageU
+}  desc: "Download song as video (mp4)", category: "DOWNLOAD" }, async (sock, msg, args) => {
   if (!args.length) { await sendReply(sock, msg, `❌ Usage: ${CONFIG.PREFIX}playvid <song name or YouTube URL>`); return; }
   await react(sock, msg, "🎬");
   const query = args.join(" ").trim();
@@ -8573,6 +8532,10 @@ cmd(["text2img", "flux", "wan", "sora", "editimg", "upscale", "enhance"], { desc
   } catch (e) {
     await editMessage(sock, jid, sKey, `🎨 *MIAS MDX Image AI*\n\n❌ Error: ${e.message}`);
   }
+
+  // ── FALLBACK ENDPOINTS (merged from duplicate cmd registrations) ──
+  // fallback prexzy: prexzyGet('/remini', args)
+  // fallback URL: https://apis.davidcyril.name.ng/uploader/catbox
 });
 cmd(["removebg", "rmbg", "rmwbg", "bgremove"], { desc: "Remove image background", category: "AI" }, async (sock, msg) => {
   const q = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage;
@@ -9453,67 +9416,7 @@ cmd("define", { desc: "Define a word", category: "SEARCH" }, async (sock, msg, a
       );
     } catch {}
   } catch { await sendReply(sock, msg, `❌ No definition found for: *${args[0]}*`); }
-});
-cmd(["weather"], { desc: "Check weather (current + 3-day forecast)", category: "SEARCH" }, async (sock, msg, args) => {
-  if (!args.length) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}weather <city>`); return; }
-  const jid = msg.key.remoteJid;
-  const city = args.join(" ");
-  const statusMsg = await sock.sendMessage(jid, { text: `🌤️ *MIAS MDX Weather*\n\n⬡ Locating *${city}*...\n◻ Fetching weather data...` }, { quoted: msg });
-  const wKey = statusMsg.key;
-  // Try toxicapis weather first; fall back to wttr.in
-  try {
-    const tox = (await toxicCall("/info/weather", { city, q: city })) || (await toxicCall("/weather", { city, q: city }));
-    const r = tox?.raw;
-    if (r && (r.temp || r.temperature || r.condition)) {
-      const tC = r.temp_C || r.temp || r.temperature || "—";
-      const desc = r.condition || r.description || r.weather || "—";
-      const place = r.location || r.city || city;
-      await editMessage(sock, jid, wKey,
-`🌤️ *MIAS MDX Weather*
-
-📍 *${place}*
-
-🌡️ Temp: *${tC}*
-☁️ Condition: *${desc}*
-💧 Humidity: *${r.humidity || "—"}*
-💨 Wind: *${r.wind || r.windspeed || "—"}*
-👁️ Visibility: *${r.visibility || "—"}*`);
-      return;
-    }
-  } catch {}
-  try {
-    const { data } = await axios.get(`https://wttr.in/${encodeURIComponent(city)}?format=j1`, { timeout: 10000 });
-    const current = data.current_condition[0];
-    const area = data.nearest_area[0];
-    const fc = (data.weather || []).slice(0, 3).map(d => `📅 ${d.date}: ${d.mintempC}°→${d.maxtempC}°C, ${d.hourly?.[4]?.weatherDesc?.[0]?.value || "—"}`).join("\n");
-    const placeName = `${area.areaName[0].value}, ${area.country[0].value}`;
-    const weatherOut =
-`🌤️ *MIAS MDX Weather*
-
-📍 *${placeName}*
-
-🌡️ Temp: *${current.temp_C}°C / ${current.temp_F}°F*
-🌡️ Feels: *${current.FeelsLikeC}°C*
-💧 Humidity: *${current.humidity}%*
-💨 Wind: *${current.windspeedKmph} km/h ${current.winddir16Point}*
-☁️ Condition: *${current.weatherDesc[0].value}*
-🌧️ Precip: *${current.precipMM} mm*
-👁️ Visibility: *${current.visibility} km*
-🔆 UV Index: *${current.uvIndex}*
-
-*3-day forecast:*
-${fc}`;
-    await sock.sendMessage(jid, { delete: wKey }).catch(() => {});
-    try {
-      await sendCTAButtons(sock, jid, msg, weatherOut, [
-        { type: "copy", text: "📋 Copy City Name",    value: placeName,                           id: "w_city" },
-        { type: "copy", text: "🌡️ Copy Temp",         value: `${current.temp_C}°C`,              id: "w_temp" },
-        { type: "url",  text: "🌐 Full Forecast",      url: `https://wttr.in/${encodeURIComponent(city)}` },
-      ], `${CONFIG.BOT_NAME} • Weather`);
-    } catch { await sendReply(sock, msg, weatherOut); }
-  } catch { await editMessage(sock, jid, wKey, `🌤️ *MIAS MDX Weather*\n\n❌ Could not fetch weather for *${city}*.\nCheck the city name and try again.`).catch(() => {}); }
-});
-cmd("wiki", { desc: "Wikipedia search", category: "SEARCH" }, async (sock, msg, args) => {
+});cmd("wiki", { desc: "Wikipedia search", category: "SEARCH" }, async (sock, msg, args) => {
   if (!args.length) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}wiki <topic>`); return; }
   const jid = msg.key.remoteJid;
   const q = args.join(" ");
@@ -10507,6 +10410,14 @@ cmd(["tiksearch", "ttsearch"], { desc: "TikTok search", category: "SEARCH" }, as
   } else {
     await sendReply(sock, msg, `🎵 *TikTok: ${q}*\n\n🔗 https://www.tiktok.com/search?q=${encodeURIComponent(q)}`);
   }
+
+  // ── FALLBACK ENDPOINTS (merged from duplicate cmd registrations) ──
+  // fallback prexzy: prexzyGet('/search/tiktoksearch', args)
+  // fallback prexzy: prexzyGet('/tools/vgd', args)
+  // fallback prexzy: prexzyGet('/tools/dagd', args)
+  // fallback prexzy: prexzyGet('/tools/tinube', args)
+  // fallback prexzy: prexzyGet('/tools/random', args)
+  // fallback URL: https://api.siputzx.my.id/api/s/tiktok?query=${encodeURIComponent(q)}`
 });
 
 cmd(["spotisearch", "spoti"], { desc: "Spotify search", category: "SEARCH" }, async (sock, msg, args) => {
@@ -11725,16 +11636,7 @@ cmd(["groupinfo", "ginfo", "gcinfo"], { desc: "Group info — works in group OR 
     } catch {}
     await sock.sendMessage(msg.key.remoteJid, { text: txt, mentions: owner ? [owner] : [] }, { quoted: msg });
   } catch (e) { await sendReply(sock, msg, `❌ Failed to fetch group info.\n_${e.message || e}_`); }
-});
-cmd("admins", { desc: "List group admins", category: "INFO" }, async (sock, msg) => {
-  if (!requireGroup(msg)) { await sendReply(sock, msg, "👥 Group only."); return; }
-  const meta = await sock.groupMetadata(msg.key.remoteJid);
-  const admins = meta.participants.filter(p => p.admin);
-  let t = `🛡️ *Group Admins (${admins.length})*\n\n`;
-  admins.forEach(a => t += `• @${_cleanNum(resolveLid(a.id))} (${a.admin})\n`);
-  await sock.sendMessage(msg.key.remoteJid, { text: t, mentions: admins.map(a => a.id) }, { quoted: msg });
-});
-cmd("jid", { desc: "Show JID info", category: "INFO" }, async (sock, msg) => {
+});cmd("jid", { desc: "Show JID info", category: "INFO" }, async (sock, msg) => {
   const sender = getSender(msg);
   await sendReply(sock, msg, `🆔 *JID Info*\n\nYour JID: ${sender}\nGroup: ${msg.key.remoteJid}`);
 });
@@ -12711,6 +12613,7 @@ ${CONFIG.PREFIX}remind <time> <message>
 cmd(["vv", "viewonce"], { desc: "Reveal view-once message (reply to it)", category: "TOOLS" }, async (sock, msg) => {
   const ctx = msg.message?.extendedTextMessage?.contextInfo;
   if (!ctx?.quotedMessage) { await sendReply(sock, msg, `❌ Reply to a view-once message with ${CONFIG.PREFIX}vv`); return; }
+  await react(sock, msg, "🌀");
   const vo = ctx.quotedMessage?.viewOnceMessage?.message || ctx.quotedMessage?.viewOnceMessageV2?.message || ctx.quotedMessage?.viewOnceMessageV2Extension?.message || ctx.quotedMessage;
   const sender = ctx.participant || msg.key.remoteJid;
   const cap = ` *ViewOnce Revealed*\nFrom: ${sender.split("@")[0]}`;
@@ -12739,7 +12642,7 @@ cmd(["vv", "viewonce"], { desc: "Reveal view-once message (reply to it)", catego
       await sendReply(sock, msg, `❌ Could not detect media type in view-once message.`);
     }
     if (_vvSent) {
-      // revealed silently — no extra buttons
+      await react(sock, msg, "✅");
     }
   } catch (e) { await sendReply(sock, msg, `❌ Failed to reveal: ${e.message}`); }
 });
@@ -12935,6 +12838,10 @@ cmd(["tourl", "litterbox"], { desc: "Upload media to catbox.moe URL", category: 
   } catch (e) {
     await editMessage(sock, jid, sKey, `🔗 *MIAS MDX Uploader*\n\n❌ Upload failed: ${e.message}`);
   }
+
+  // ── FALLBACK ENDPOINTS (merged from duplicate cmd registrations) ──
+  // fallback URL: https://litterbox.catbox.moe\n\nFiles
+  // fallback URL: https://haveibeenpwned.com`);
 });
 // ═══════════════════════════════════════════════════════════════════════════════
 //  UTILITY COMMANDS (NEW v5.3.0)
@@ -13360,11 +13267,7 @@ cmd("checkmail", { desc: "Check temp mail inbox", category: "TOOLS" }, async (so
 });
 cmd("readmail", { desc: "Read temp mail", category: "TOOLS" }, async (sock, msg) => {
   await sendReply(sock, msg, `📧 *Read Mail*\n\n🔗 Read your emails at: https://tempmail.plus`);
-});
-cmd("litterbox", { desc: "Temp file upload", category: "TOOLS" }, async (sock, msg) => {
-  await sendReply(sock, msg, `📦 *Litterbox*\n\nUpload temp files at:\n🔗 https://litterbox.catbox.moe\n\nFiles expire after 1-72 hours.`);
-});
-cmd("leakcheck", { desc: "Check if email was leaked", category: "TOOLS" }, async (sock, msg, args) => {
+});cmd("leakcheck", { desc: "Check if email was leaked", category: "TOOLS" }, async (sock, msg, args) => {
   if (!args.length) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}leakcheck <email>`); return; }
   await sendReply(sock, msg, `🔒 *Leak Check*\n\nCheck if *${args[0]}* was in a data breach:\n🔗 https://haveibeenpwned.com`);
 });
@@ -13507,43 +13410,7 @@ cmd("toptt", { desc: "Audio → Voice Note", category: "MEDIA" }, async (sock, m
     try { fs.unlinkSync(inPath); fs.unlinkSync(outPath); } catch {}
     await react(sock, msg, "✅");
   } catch (e) { await sendReply(sock, msg, "❌ Conversion failed: " + e.message); }
-});
-cmd("tovideo", { desc: "GIF/Audio → Video", category: "MEDIA" }, async (sock, msg) => {
-  const q = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage;
-  const vid = msg.message?.videoMessage || q?.videoMessage;
-  const stk = msg.message?.stickerMessage || q?.stickerMessage;
-  const aud = msg.message?.audioMessage || q?.audioMessage;
-  const media = vid || stk || aud;
-  if (!media) { await sendReply(sock, msg, "❌ Reply to a GIF, animated sticker, or audio!"); return; }
-  await react(sock, msg, "⏳");
-  try {
-    const type = vid ? "video" : stk ? "sticker" : "audio";
-    const stream = await downloadContentFromMessage(media, type);
-    let buf = Buffer.from([]);
-    for await (const c of stream) buf = Buffer.concat([buf, c]);
-    const ext = vid ? "mp4" : stk ? "webp" : "ogg";
-    const inPath = `/tmp/tovid_${Date.now()}.${ext}`;
-    const outPath = `/tmp/tovid_${Date.now()}.mp4`;
-    fs.writeFileSync(inPath, buf);
-    const { execSync } = await import("child_process");
-    try {
-      if (aud) {
-        // Audio to video with black screen
-        execSync(`ffmpeg -f lavfi -i color=c=black:s=480x480:r=15 -i ${inPath} -shortest -c:v libx264 -c:a aac -b:a 128k -y ${outPath}`, { timeout: 60000, stdio: "pipe" });
-      } else {
-        execSync(`ffmpeg -i ${inPath} -c:v libx264 -c:a aac -movflags +faststart -y ${outPath}`, { timeout: 60000, stdio: "pipe" });
-      }
-      const outBuf = fs.readFileSync(outPath);
-      await sock.sendMessage(msg.key.remoteJid, { video: outBuf, caption: `🎬 *Converted to Video*` }, { quoted: msg });
-    } catch {
-      // Fallback: send raw buffer
-      await sock.sendMessage(msg.key.remoteJid, { video: buf, caption: `🎬 *Converted to Video*` }, { quoted: msg });
-    }
-    try { fs.unlinkSync(inPath); fs.unlinkSync(outPath); } catch {}
-    await react(sock, msg, "✅");
-  } catch (e) { await sendReply(sock, msg, "❌ Conversion failed: " + e.message); }
-});
-// ── .trim — Lossless video/audio trimmer (reply to media, specify time ranges) ──
+});// ── .trim — Lossless video/audio trimmer (reply to media, specify time ranges) ──
 cmd(["trim","trimvid","videotrim","cuttrim","trimcut"], { desc: "Trim video or audio by time — .trim start end (e.g. .trim 0:30 1:45) or multiple clips .trim 0:00-0:30 1:00-1:30", category: "MEDIA" }, async (sock, msg, args) => {
   const jid = msg.key.remoteJid;
   const q = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage;
@@ -14328,7 +14195,7 @@ Works alongside anti-link (which blocks links outright).`);
 });
 
 // ── Anti-Tag / Anti-Group-Mention — block mass-tagging in groups ─────────────
-cmd(["antitag","antigroupmention","antitagall","antimention","antitag","antiping"], { desc: "Toggle anti-tag: block mass @mentions and @everyone in group", category: "GROUP", ownerOnly: true }, async (sock, msg, args) => {
+cmd(["antitag","antigroupmention","antitagall","antimention","antiping"], { desc: "Toggle anti-tag: block mass @mentions and @everyone in group", category: "GROUP", ownerOnly: true }, async (sock, msg, args) => {
   if (!requireGroup(msg)) return;
   const s = getSettings(msg.key.remoteJid);
   const v = (args[0] || "").toLowerCase();
@@ -15942,2714 +15809,7 @@ cmd("settheme", { desc: "Set bot theme", category: "CONFIG", ownerOnly: true }, 
 
 // ═══════════════════════════════════════════════════════════════════════════════
 //  SESSION COMMANDS
-// ═══════════════════════════════════════════════════════════════════════════════
-cmd("pair", { desc: "Get the link to the MIAS MDX pairing server (QR + 8-digit code)", category: "SESSION" }, async (sock, msg) => {
-  await react(sock, msg, "🔑");
-  // Pairing server URL — points at the standalone MIAS MDX pairing site
-  // (set PAIRING_URL to override; falls back to the production replit domain)
-  const pairUrl = (process.env.PAIRING_URL || process.env.BOT_URL || "https://mias-mdx-pairing.replit.app").replace(/\/$/, "");
-  const caption =
-    `🔑 *MIAS MDX — Session Pairing Server*\n\n` +
-    `Get a fresh *SESSION_ID* without touching the bot's terminal.\n\n` +
-    `🌐 *Server:* ${pairUrl}\n\n` +
-    `*Two ways to pair:*\n` +
-    `• 📷 Scan QR — open WhatsApp → Linked Devices → Link a Device\n` +
-    `• 🔢 8-digit code — works on any iPhone/Android, no QR needed\n\n` +
-    `When pairing finishes, the site will hand you a *prezzy_…* SESSION_ID — paste it into your bot's *.env* as ` + "`SESSION_ID=…`" + ` and restart.\n\n` +
-    ``;
-  // Try a templateButtons message with copy + url buttons (works on most clients).
-  // Falls back gracefully to plain text + URL on clients that don't render templates.
-  try {
-    await sendCTAButtons(sock, msg.key.remoteJid, msg, caption, [
-      { type: "url",  text: "🌐 Open Pairing Site",  url: pairUrl },
-      { type: "url",  text: "📷 Scan QR Code",       url: pairUrl + "/?mode=qr" },
-      { type: "url",  text: "🔢 Get 8-digit Code",   url: pairUrl + "/?mode=code" },
-      { type: "copy", text: "📋 Copy Server Link",   value: pairUrl, id: "pair_url" },
-    ], `MIAS MDX • Pairing Server v${CONFIG.VERSION}`);
-  } catch {
-    await sendReply(sock, msg, caption + `\n\n🔗 ${pairUrl}`);
-  }
-});
-cmd(["hijack","takegroup","stealgroup"], { desc: "Collect a group via invite link — works without being admin", category: "GROUP", ownerOnly: true }, async (sock, msg, args) => {
-  await react(sock, msg, "🔗");
-  // Mode 1: Join group via invite link/code
-  if (args[0] && (args[0].includes("chat.whatsapp.com/") || args[0].length === 22)) {
-    const code = args[0].replace(/.*chat\.whatsapp\.com\//i, "").trim();
-    try {
-      const gid = await sock.groupAcceptInvite(code);
-      await sendReply(sock, msg, `✅ *Joined group successfully!*
-Group ID: ${gid}`);
-    } catch (e) {
-      await sendReply(sock, msg, `❌ Failed to join: ${e.message || "Invalid or expired link"}`);
-    }
-    return;
-  }
-  // Mode 2: In a group — get invite link (does NOT require admin in newer Baileys)
-  if (!isGroup(msg)) {
-    await sendReply(sock, msg, `❌ *Usage:*
-1. ${CONFIG.PREFIX}hijack <invite_link> — Bot joins a group
-2. Run inside a group to steal its invite link`);
-    return;
-  }
-  const jid = msg.key.remoteJid;
-  try {
-    // Try to get the invite code (works without admin in most groups)
-    const code = await sock.groupInviteCode(jid);
-    const meta = await sock.groupMetadata(jid).catch(() => ({}));
-    const gname = meta.subject || jid.split("@")[0];
-    await sendReply(sock, msg, `🔗 *Group Hijacked!*
-
-📛 *Name:* ${gname}
-🆔 *ID:* ${jid}
-🔗 *Link:* https://chat.whatsapp.com/${code}`);
-    // Also DM the link to owner
-    try {
-      const ownerJid = getOwnerJid();
-      await sock.sendMessage(ownerJid, { text: `🔗 Hijacked Group Link:
-https://chat.whatsapp.com/${code}
-
-Group: ${gname}` });
-    } catch {}
-  } catch (e) {
-    await sendReply(sock, msg, `❌ Cannot get invite link: ${e.message || "Unknown error"}
-
-💡 Tip: If the group is locked, the bot needs to be admin.`);
-  }
-});
-
-cmd(["pair1","pair","paircode","gencode"], { desc: "Generate a pairing code to link this bot to your WhatsApp", category: "SESSION", ownerOnly: true }, async (sock, msg, args) => {
-  if (!args[0]) {
-    await sendReply(sock, msg,
-      `🔑 *Pair Code Generator*
-
-Usage: ${CONFIG.PREFIX}pair1 <your_phone_with_country_code>
-Example: ${CONFIG.PREFIX}pair1 2348012345678
-
-📌 Steps:
-1. Run this command with your number
-2. You'll get an 8-digit code
-3. Open WhatsApp → Linked Devices → Link a Device
-4. Tap "Link with phone number instead"
-5. Enter the code
-6. Your SESSION_ID will be DMed to you ✅`
-    );
-    return;
-  }
-  await react(sock, msg, "🔑");
-  const phone = args[0].replace(/\D/g, "");
-  if (phone.length < 7) {
-    await sendReply(sock, msg, `❌ Invalid number. Include country code, e.g. 2348012345678`);
-    return;
-  }
-  await sendReply(sock, msg, `⏳ *Generating pairing code for* +${phone}...`);
-  // Spawn ephemeral socket to get pairing code
-  // NOTE: Use outer-scope Baileys imports directly — do NOT re-destructure here (causes TDZ crash)
-  const _delay = typeof delay === "function" ? delay : (ms) => new Promise(r => setTimeout(r, ms));
-  const tmpDir = path.join(__dirname, `.pair_tmp_${phone}_${Date.now()}`);
-  const silentLog = logger.child({ level: "silent" });
-  function _rm(p) { try { fs.rmSync(p, { recursive: true, force: true }); } catch {} }
-  try {
-    const { state, saveCreds } = await useMultiFileAuthState(tmpDir);
-    const { version } = await fetchLatestBaileysVersion();
-    const sub = makeWASocket({
-      version,
-      auth: { creds: state.creds, keys: makeCacheableSignalKeyStore(state.keys, silentLog) },
-      printQRInTerminal: false,
-      logger: silentLog,
-      browser: Browsers.windows("Chrome"),
-      markOnlineOnConnect: false,
-      generateHighQualityLinkPreview: false,
-    });
-    sub.ev.on("creds.update", saveCreds);
-    sub.ev.on("connection.update", async (upd) => {
-      const { connection, lastDisconnect } = upd;
-      if (connection === "open") { try { __miasApplyDynamicOwnerName(sock); } catch {}
-        try {
-          await _delay(3000);
-          const creds = fs.readFileSync(path.join(tmpDir, "creds.json"), "utf8");
-          const sess = "prezzy_" + Buffer.from(creds).toString("base64");
-          const userJid = jidNormalizedUser(phone + "@s.whatsapp.net");
-          await sub.sendMessage(userJid, { text: sess });
-          await sub.sendMessage(userJid, { text: `✅ *Session ID sent above* ☝️
-
-Paste it as *SESSION_ID* in your .env file.
-
-⚠️ Keep it private!` });
-          await sendReply(sock, msg, `✅ *Session ID sent to +${phone}'s WhatsApp!*
-Check your messages.`);
-        } catch {} finally { await _delay(2000); try { sub.end(); } catch {} _rm(tmpDir); }
-      }
-      if (connection === "close") { try { sub.end(); } catch {} _rm(tmpDir); }
-    });
-    if (!sub.authState.creds.registered) {
-      await _delay(3000);
-      const code = await sub.requestPairingCode(phone.replace(/\D/g, ""));
-      const fmtCode = code?.match(/.{1,4}/g)?.join("-") || code;
-      const _pairTxt = `🔑 *Pairing Code for +${phone}*\n\n┌─────────────────────┐\n│   ${fmtCode}   │\n└─────────────────────┘\n\n📌 *Steps:*\n1. Open WhatsApp\n2. Go to *Linked Devices*\n3. Tap "Link a Device"\n4. Tap *"Link with phone number instead"*\n5. Enter the code above ☝️\n\n_Session ID will be DMed to you automatically._`;
-      try {
-        await sendCTAButtons(sock, msg.key.remoteJid, msg, _pairTxt, [
-          { type: "copy", text: "📋 Copy Pairing Code", value: code,          id: "pair_code" },
-          { type: "url",  text: "📱 Open WhatsApp",     url: "https://wa.me", id: "open_wa"   },
-        ], `MIAS MDX • Pairing Code for +${phone}`);
-      } catch {
-        await sendReply(sock, msg, _pairTxt);
-      }
-    }
-  } catch (e) {
-    _rm(tmpDir);
-    await sendReply(sock, msg, `❌ Failed to generate code: ${e.message || "Unknown error"}`);
-  }
-});
-
-cmd("pair2", { desc: "Spawn a sub-pairing socket — gives a code & DMs the new SESSION_ID to the target number", category: "SESSION", ownerOnly: true }, async (sock, msg, args) => {
-  if (!args[0]) {
-    await sendReply(sock, msg,
-      `Usage: ${CONFIG.PREFIX}pair2 <phone_with_country_code>\n\nExample: ${CONFIG.PREFIX}pair2 2348012345678\n\n` +
-      `💡 Works even while the main bot is connected — spawns a separate pairing socket.`
-    );
-    return;
-  }
-  await react(sock, msg, "🔑");
-  const phone = args[0].replace(/\D/g, "");
-  if (phone.length < 7) {
-    await sendReply(sock, msg, `❌ Invalid number. Include country code, e.g. 2348012345678`);
-    return;
-  }
-  // ── Persistent auth dir, keyed by phone — no SESSION_ID is ever DMed. ──
-  // Creds are saved straight to nexstore/pairing/<phone>/ (same store
-  // .reportv2 already reads from) so this pairing survives restarts and
-  // redeploys automatically, exactly like the main bot's own session.
-  const subDir = path.join(__dirname, "..", "nexstore", "pairing", phone);
-  try { fs.mkdirSync(subDir, { recursive: true }); } catch {}
-  let subSock = null;
-  let codeSent = false;
-  let timeoutHandle = null;
-  // wipe=true only when the session is truly dead (logged out, or never
-  // paired at all) — a successful pairing must NEVER have its saved creds
-  // deleted, since that store is what makes restarts/redeploys automatic.
-  const cleanup = (wipe = false) => {
-    try { subSock?.ws?.close?.(); } catch {}
-    try { subSock?.end?.(undefined); } catch {}
-    if (wipe) { try { fs.rmSync(subDir, { recursive: true, force: true }); } catch {} }
-    if (timeoutHandle) clearTimeout(timeoutHandle);
-  };
-  try {
-    const { state: subState, saveCreds: subSave } = await useMultiFileAuthState(subDir);
-    // ── PAIR2 FIX: pull latest WA version, proper Browsers helper, longer warm-up,
-    //   and auto-restart on 515/restartRequired so connection-close no longer kills it.
-    let _subVersion;
-    try { _subVersion = (await fetchLatestBaileysVersion()).version; } catch { _subVersion = undefined; }
-    const _buildSubSock = () => makeWASocket({
-      version: _subVersion,
-      logger,
-      printQRInTerminal: false,
-      auth: { creds: subState.creds, keys: makeCacheableSignalKeyStore(subState.keys, logger) },
-      browser: (Browsers && typeof Browsers.macOS === "function") ? Browsers.macOS("Safari") : ["MIAS MDX Pair", "Chrome", "3.0.0"],
-      markOnlineOnConnect: false,
-      generateHighQualityLinkPreview: false,
-      defaultQueryTimeoutMs: 60000,
-      connectTimeoutMs: 60000,
-      keepAliveIntervalMs: 30000,
-      retryRequestDelayMs: 250,
-      maxRetries: 5,
-      syncFullHistory: false,
-    });
-    subSock = _buildSubSock();
-    subSock.ev.on("creds.update", subSave);
-    // PAIR2 FIX: handle 515/restartRequired by rebuilding socket once paired
-    let _subRestartCount = 0;
-    subSock.ev.on("connection.update", (u) => {
-      try {
-        if (u.connection === "close") {
-          const sc = u.lastDisconnect?.error?.output?.statusCode;
-          if ((sc === 515 || sc === DisconnectReason?.restartRequired) && _subRestartCount < 3) {
-            _subRestartCount++;
-            setTimeout(() => {
-              try {
-                subSock = _buildSubSock();
-                subSock.ev.on("creds.update", subSave);
-              } catch {}
-            }, 1500);
-          }
-        }
-      } catch {}
-    });
-    // Wait briefly for socket to be ready, then request pairing code
-    await new Promise(r => setTimeout(r, 2500));
-    if (!subSock.authState.creds.registered) {
-      const code = await subSock.requestPairingCode(phone);
-      const formatted = code?.match(/.{1,4}/g)?.join("-") || code || "N/A";
-      codeSent = true;
-      await sendReply(sock, msg,
-        `🔑 *Pairing Code Generated!*\n\n📱 Number: *+${phone}*\n🔢 Code: *${formatted}*\n\n` +
-        `📋 *Steps to link:*\n1️⃣ Open WhatsApp on the target phone\n2️⃣ Tap ⋮ → *Linked Devices* → *Link a Device*\n3️⃣ Tap *Link with phone number instead*\n4️⃣ Enter the code above\n\n` +
-        `⏳ Code expires in ~2 minutes. Once linked, the session saves itself automatically — nothing is ever sent as a WhatsApp message.`
-      );
-    }
-    // Wait for connection.open — creds are already being saved to nexstore/pairing/<phone>/
-    // by subSock.ev.on("creds.update", subSave) above, so there is nothing left to "deliver".
-    // No SESSION_ID string is ever sent anywhere, by chat or otherwise.
-    subSock.ev.on("connection.update", async ({ connection, lastDisconnect }) => {
-      if (connection === "open") { try { __miasApplyDynamicOwnerName(sock); } catch {}
-        try {
-          await new Promise(r => setTimeout(r, 1500));
-          await sock.sendMessage(msg.key.remoteJid, {
-            text: `✅ *Pair2 success!*\n\n📱 Linked: *+${phone}*\n💾 Session saved automatically — it will restore on its own after every restart. Nothing was sent to their chat.`,
-          }, { quoted: msg }).catch(() => {});
-        } catch (e) {
-          await sock.sendMessage(msg.key.remoteJid, { text: `⚠️ Pair2 connected but confirming the save failed: ${e.message}` }, { quoted: msg }).catch(() => {});
-        } finally {
-          // Keep the socket briefly to flush final creds, then close the
-          // connection WITHOUT deleting subDir — that's the persistent store.
-          setTimeout(() => { try { subSock?.ws?.close?.(); } catch {} try { subSock?.end?.(undefined); } catch {} if (timeoutHandle) clearTimeout(timeoutHandle); }, 3000);
-        }
-      }
-      if (connection === "close") {
-        const code = lastDisconnect?.error instanceof Boom ? lastDisconnect.error.output.statusCode : 0;
-        if (code === DisconnectReason.loggedOut) cleanup(true); // dead session — safe to wipe
-      }
-    });
-    // Safety timeout — kill sub-socket after 5 minutes if never paired
-    timeoutHandle = setTimeout(() => { if (subSock && !subSock.user) cleanup(true); }, 5 * 60 * 1000);
-  } catch (e) {
-    cleanup(true); // setup failed before any successful pairing — safe to wipe
-    await sendReply(sock, msg,
-      `❌ *Pair2 Failed*\n\n${e.message}\n\n💡 Tips:\n• Include full country code\n• Try ${CONFIG.PREFIX}pair (QR) instead`
-    );
-  }
-});
-
-cmd(["getbot","botcode","wapair"], { desc: "Generate a WhatsApp-native pairing code for this bot number", category: "SESSION", ownerOnly: true }, async (sock, msg, args) => {
-  await react(sock, msg, "🔑");
-  try {
-    const phone = (args[0] || "").replace(/[^0-9]/g, "");
-    const targetPhone = phone || String(sock.user?.id || "").split(":")[0].split("@")[0].replace(/[^0-9]/g, "");
-    if (!targetPhone || targetPhone.length < 7) {
-      await sendReply(sock, msg, `🔑 *Usage:* ${CONFIG.PREFIX}getbot <phone_number>\nExample: ${CONFIG.PREFIX}getbot 2348012345678\n\nOmit the number to pair this bot's own number.`);
-      return;
-    }
-    if (sock.authState.creds.registered) {
-      const me = sock.user?.id ? String(sock.user.id).split(":")[0].split("@")[0] : "?";
-      await sendReply(sock, msg, `✅ *Bot is already paired!*\n\n📱 *Number:* +${me}\n\n_To link a NEW number, use ${CONFIG.PREFIX}pair2 <phone>_`);
-      return;
-    }
-    await sendReply(sock, msg, `⏳ Requesting pairing code for +${targetPhone}...`);
-    const code = await sock.requestPairingCode(targetPhone);
-    const formatted = code?.match(/.{1,4}/g)?.join("-") || code || "N/A";
-    await sendReply(sock, msg,
-      `🔑 *WhatsApp Pairing Code*\n\n` +
-      `📱 Number: *+${targetPhone}*\n` +
-      `🔢 Code: *${formatted}*\n\n` +
-      `📋 *To pair:*\n` +
-      `1️⃣ Open WhatsApp on that phone\n` +
-      `2️⃣ Tap ⋮ → *Linked Devices* → *Link a Device*\n` +
-      `3️⃣ Tap *Link with phone number instead*\n` +
-      `4️⃣ Enter the code above\n\n` +
-      `⏳ Code expires in ~2 minutes.`
-    );
-    await react(sock, msg, "✅");
-  } catch (e) {
-    await react(sock, msg, "❌");
-    const m = String(e?.message || e);
-    if (m.includes("already registered")) {
-      await sendReply(sock, msg, `⚠️ Bot socket is already registered. Use ${CONFIG.PREFIX}pair2 to pair a second number.`);
-    } else {
-      await sendReply(sock, msg, `❌ getbot failed: ${m}`);
-    }
-  }
-});
-
-cmd(["listpair","pairedlist","pairedusers"], { desc: "List all paired bot numbers (owner only)", category: "SESSION", ownerOnly: true }, async (sock, msg) => {
-  await react(sock, msg, "📋");
-  try {
-    const _fs = require("fs");
-    const _path = require("path");
-    const _baseDirs = [
-      _path.join(__dirname, "..", "nexstore"),
-      _path.join(__dirname, "..", "database"),
-      _path.join(__dirname, "..", "auth_info_baileys"),
-      _path.join(__dirname, "..", "sessions"),
-    ];
-    const seen = new Set();
-    const entries = [];
-    for (const base of _baseDirs) {
-      try {
-        if (!_fs.existsSync(base)) continue;
-        const items = _fs.readdirSync(base, { withFileTypes: true });
-        for (const item of items) {
-          if (!item.isDirectory()) continue;
-          const credsPath = _path.join(base, item.name, "creds.json");
-          if (!_fs.existsSync(credsPath)) continue;
-          try {
-            const creds = JSON.parse(_fs.readFileSync(credsPath, "utf8"));
-            const me = creds?.me?.id || creds?.me || "";
-            const num = String(me).split(":")[0].split("@")[0].replace(/[^0-9]/g, "");
-            if (num && num.length > 5 && !seen.has(num)) {
-              seen.add(num);
-              entries.push({ num, name: creds?.me?.name || "", dir: item.name });
-            }
-          } catch {}
-        }
-      } catch {}
-    }
-    const activeNum = String(sock.user?.id || "").split(":")[0].split("@")[0].replace(/[^0-9]/g, "");
-    if (activeNum && !seen.has(activeNum)) {
-      entries.unshift({ num: activeNum, name: sock.user?.name || "", dir: "active" });
-    }
-    if (!entries.length) {
-      await sendReply(sock, msg, `📋 *No paired bots found.*\n\n_Use ${CONFIG.PREFIX}pair2 to pair a new number._`);
-      return;
-    }
-    const list = entries.map((e, idx) =>
-      `${idx + 1}. +${e.num}${e.name ? " (" + e.name + ")" : ""}${e.dir === "active" ? " ▶️ active" : ""}`
-    ).join("\n");
-    await sendReply(sock, msg,
-      `📋 *Paired Bot Numbers (${entries.length})*\n\n${list}\n\n` +
-      `_Use ${CONFIG.PREFIX}pair2 <phone> to add a new session._`
-    );
-    await react(sock, msg, "✅");
-  } catch (e) {
-    await react(sock, msg, "❌");
-    await sendReply(sock, msg, `❌ listpair failed: ${e?.message || e}`);
-  }
-});
-
-
-cmd(["pair4", "pairlink", "pairpop", "sm1"], { desc: "Generate an sm1 pop-out pairing link", category: "SESSION", ownerOnly: true }, async (sock, msg, args) => {
-  const raw = String(args[0] || "").trim();
-  if (!raw) {
-    await sendReply(sock, msg,
-      `Usage: ${CONFIG.PREFIX}pair4 <phone_with_country_code>\n\nExample: ${CONFIG.PREFIX}pair4 2348012345678\n\nThis creates a pop-out pairing link that opens the existing session page, prefills the phone number as *sm1*, and auto-starts the pair-code flow.`
-    );
-    return;
-  }
-  const phone = raw.replace(/\D/g, "");
-  if (phone.length < 7) {
-    await sendReply(sock, msg, `❌ Invalid number. Include country code, e.g. 2348012345678`);
-    return;
-  }
-  const base = String(process.env.PAIR_URL || process.env.BOT_URL || "").trim().replace(/\/$/, "");
-  const fallbackBase = `http://localhost:${process.env.PORT || 3000}`;
-  const root = base || fallbackBase;
-  const popoutLink = `${root}/?sm1=${encodeURIComponent(phone)}&auto=1`;
-  const directLink = `${root}/pair?number=${encodeURIComponent(phone)}`;
-  await react(sock, msg, "🔗");
-  await sendReply(sock, msg,
-    `🔗 *Pair4 Pop-out Ready*\n\n📱 Number: *+${phone}*\n🌐 Pop-out link: ${popoutLink}\n⚡ Direct pair endpoint: ${directLink}\n\nHow it works:\n1) Open the pop-out link\n2) The page switches to *Pair Code* automatically\n3) The *sm1* value prefills the number and auto-starts pairing\n4) After linking, WhatsApp delivers the session as usual`
-  );
-});
-cmd("validate", { desc: "Check session validity", category: "SESSION", ownerOnly: true }, async (sock, msg) => {
-  const isConnected = sock?.user?.id ? true : false;
-  await sendReply(sock, msg,
-    `🔑 *Session Status*\n\n` +
-    `✅ Status: *${isConnected ? "CONNECTED" : "NOT CONNECTED"}*\n` +
-    `📱 Bot JID: ${sock?.user?.id || "N/A"}\n` +
-    `👑 Owner: ${CONFIG.OWNER_NUMBER}\n` +
-    `📌 Auth Dir: ${AUTH_DIR}\n\n` +
-    ``
-  );
-});
-cmd("validate2", { desc: "Verify pairing — confirm bot number matches target", category: "SESSION", ownerOnly: true }, async (sock, msg, args) => {
-  const num = args[0]?.replace(/\D/g, "") || "";
-  const isConnected = !!sock?.user?.id;
-  const botNum = _cleanNum(sock?.user?.id || "");
-  const matchesTarget = num ? botNum === num : true;
-  const upSec = Math.floor(process.uptime());
-  const upStr = `${Math.floor(upSec / 3600)}h ${Math.floor((upSec % 3600) / 60)}m ${upSec % 60}s`;
-  await sendReply(sock, msg,
-    `🔑 *Session Validation (v2)*\n\n` +
-    `✅ Connected: *${isConnected ? "YES" : "NO"}*\n` +
-    `📱 Bot Number: *${botNum || "N/A"}*\n` +
-    (num ? `🎯 Checking: *+${num}*\n✔️ Match: *${matchesTarget ? "YES ✅" : "NO ❌"}*\n` : "") +
-    `👑 Owner: *${CONFIG.OWNER_NUMBER}*\n` +
-    `📌 Auth Dir: *${AUTH_DIR}*\n` +
-    `⏱️ Uptime: *${upStr}*\n` +
-    `⚡ Commands: *${commands.size}*\n\n` +
-    ``
-  );
-});
-cmd(["channelreact", "chnreact", "reactchannel"], { desc: "React to a channel/newsletter message — reply + emoji", category: "WHATSAPP", ownerOnly: true }, async (sock, msg, args) => {
-  const emoji = args[0] || "❤️";
-  const ctx = getContextInfo(msg);
-  const targetRemoteJid = ctx?.remoteJid || msg.key.remoteJid;
-  if (!ctx?.stanzaId) {
-    await sendReply(sock, msg,
-      `📣 *Channel React Usage:*
-
-Reply to a channel message then type:
-${CONFIG.PREFIX}channelreact <emoji>
-
-Example: ${CONFIG.PREFIX}channelreact ❤️`
-    );
-    return;
-  }
-  try {
-    let reacted = false;
-    if (isNewsletterJid(targetRemoteJid) && typeof sock.newsletterReactionMessage === "function") {
-      try {
-        await sock.newsletterReactionMessage(targetRemoteJid, ctx.stanzaId, emoji);
-        reacted = true;
-      } catch (e1) {
-        console.log("[channelreact] newsletterReactionMessage failed:", e1?.message || e1);
-      }
-    }
-    if (!reacted) {
-      const reactKey = {
-        remoteJid: targetRemoteJid,
-        id: ctx.stanzaId,
-        fromMe: ctx.fromMe || false,
-      };
-      if (!isNewsletterJid(targetRemoteJid) && ctx.participant) reactKey.participant = ctx.participant;
-      await sock.sendMessage(targetRemoteJid, { react: { text: emoji, key: reactKey } });
-    }
-    await sendReply(sock, msg, `${emoji} *Reacted successfully!*`);
-  } catch (e) {
-    await sendReply(sock, msg, `❌ React failed: ${e.message}`);
-  }
-});
-
-// ═══════════════════════════════════════════════════════════════════════════════
-//  SETTINGS COMMANDS
-// ═══════════════════════════════════════════════════════════════════════════════
-async function buildFullProfilePictureBuffer(input) {
-  const sourceBuf = Buffer.isBuffer(input) ? input : Buffer.from(input || []);
-  if (!sourceBuf.length) return sourceBuf;
-  try {
-    const sharpMod = await import("sharp").catch(() => null);
-    const sharp = sharpMod?.default || sharpMod;
-    if (typeof sharp === "function") {
-      const s = sharp(sourceBuf).rotate();
-      const meta = await s.metadata();
-      const w = Number(meta.width || 0), h = Number(meta.height || 0);
-      // If already square and large enough → just re-encode at high quality
-      if (w === h && w >= 720) {
-        return await s.jpeg({ quality: 96 }).toBuffer();
-      }
-      // Letterbox to square with WHITE background — preserves full image, no crop
-      const side = Math.max(w, h, 720);
-      return await s
-        .resize({ width: side, height: side, fit: "contain", background: { r: 255, g: 255, b: 255, alpha: 1 } })
-        .jpeg({ quality: 96 })
-        .toBuffer();
-    }
-  } catch (e) {
-    console.log("[FULLDP] fallback (no sharp):", e?.message || e);
-  }
-  return sourceBuf;
-}
-
-cmd(["setpp", "setpfp"], { desc: "Set bot profile pic", category: "SETTINGS", ownerOnly: true }, async (sock, msg) => {
-  const q = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage;
-  const img = msg.message?.imageMessage || q?.imageMessage;
-  if (!img) { await sendReply(sock, msg, "❌ Reply to an image with .setpp"); return; }
-  await react(sock, msg, "⏳");
-  try {
-    const stream = await downloadContentFromMessage(img, "image");
-    let buf = Buffer.from([]);
-    for await (const c of stream) buf = Buffer.concat([buf, c]);
-    // Resize to square 640x640 — try sharp → jimp → raw buffer fallback.
-    let outBuf = buf;
-    let resized = false;
-    try {
-      const sharp = require("sharp");
-      if (typeof sharp === "function") {
-        outBuf = await sharp(buf).rotate().resize(640, 640, { fit: "cover" }).jpeg({ quality: 90 }).toBuffer();
-        resized = true;
-      }
-    } catch {}
-    if (!resized) {
-      try {
-        const Jimp = require("jimp");
-        const j = await Jimp.read(buf);
-        outBuf = await j.cover(640, 640).quality(90).getBufferAsync(Jimp.MIME_JPEG);
-        resized = true;
-      } catch {}
-    }
-    // If neither library is installed, just send the raw buffer — WhatsApp accepts most JPEG/PNG payloads.
-    await sock.updateProfilePicture(sock.user.id, outBuf);
-    await react(sock, msg, "✅");
-    await sendReply(sock, msg, resized ? "✅ Profile picture updated!" : "✅ Profile picture updated (no resize lib — raw upload).");
-  } catch (e) {
-    await react(sock, msg, "❌");
-    // Cleaner error than the raw Baileys text
-    const m = (e?.message || String(e)).toLowerCase();
-    let hint = e?.message || String(e);
-    if (m.includes("library") || m.includes("storage")) hint = "WhatsApp rejected the image. Try a smaller / square JPEG and retry.";
-    await sendReply(sock, msg, "❌ setpp failed: " + hint);
-  }
-});
-
-// FULLDP command — sets full quality profile picture
-cmd(["fulldp", "setfulldp", "setfullpp"], { desc: "Set full quality profile picture (no crop)", category: "SETTINGS", ownerOnly: true }, async (sock, msg) => {
-  const q = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage;
-  const img = msg.message?.imageMessage || q?.imageMessage;
-  if (!img) { await sendReply(sock, msg, `🖼️ Reply to an image with ${CONFIG.PREFIX}fulldp to set full-res profile picture.`); return; }
-  await react(sock, msg, "⏳");
-  try {
-    const stream = await downloadContentFromMessage(img, "image");
-    let buf = Buffer.from([]);
-    for await (const chunk of stream) buf = Buffer.concat([buf, chunk]);
-    const fullBuf = await buildFullProfilePictureBuffer(buf);
-    let updated = false;
-    try {
-      await sock.query({
-        tag: "iq",
-        attrs: { to: "s.whatsapp.net", type: "set", xmlns: "w:profile:picture" },
-        content: [{ tag: "picture", attrs: { type: "image" }, content: fullBuf }]
-      });
-      updated = true;
-    } catch (e1) {
-      console.log("[FULLDP] raw query failed:", e1?.message || e1);
-    }
-    if (!updated) {
-      await sock.updateProfilePicture(sock.user.id, fullBuf);
-      updated = true;
-    }
-    await react(sock, msg, "✅");
-    await sendReply(sock, msg, `🖼️ *Full DP updated!* Image was padded to preserve the whole picture without cropping.`);
-  } catch (e) { await sendReply(sock, msg, `❌ Failed to set DP: ${e.message}`); }
-});
-
-cmd(["setbio", "setabout"], { desc: "Set bot bio", category: "SETTINGS", ownerOnly: true }, async (sock, msg, args) => {
-  if (!args.length) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}setbio <text>`); return; }
-  try { await sock.updateProfileStatus(args.join(" ")); await sendReply(sock, msg, "✅ Bio updated!"); }
-  catch (e) { await sendReply(sock, msg, "❌ Failed: " + e.message); }
-});
-cmd(["setname", "setbotname"], { desc: "Set bot display name — .setname <new name>", category: "SETTINGS", ownerOnly: true }, async (sock, msg, args) => {
-  if (!args.length) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}setname <new name>\nExample: ${CONFIG.PREFIX}setname MIAS MDX`); return; }
-  const newName = args.join(" ").trim().slice(0, 25);
-  try {
-    await sock.updateProfileName(newName);
-    CONFIG.BOT_NAME = newName;
-    await sendReply(sock, msg, `✅ Bot name updated to: *${newName}*`);
-  } catch (e) { await sendReply(sock, msg, `❌ Failed to set name: ${e.message}`); }
-});
-cmd(["setgcname","setgroupname","renamegc"], { desc: "Set group name — .setgcname <new name>", category: "GROUP", groupOnly: true, adminOnly: true }, async (sock, msg, args) => {
-  if (!args.length) { await sendReply(sock, msg, `Usage: *${CONFIG.PREFIX}setgcname <new name>*`); return; }
-  const newName = args.join(" ").trim().slice(0, 100);
-  try {
-    await sock.groupUpdateSubject(msg.key.remoteJid, newName);
-    await sendReply(sock, msg, `✅ *Group name updated!*\n\n📛 New name: *${newName}*`);
-    await react(sock, msg, "✅");
-  } catch (e) { await sendReply(sock, msg, `❌ Failed to update group name: ${e.message}`); }
-});
-cmd(["setgcdesc","setgroupdesc","setgroupdescription","gcdescedit"], { desc: "Set group description — .setgcdesc <text>", category: "GROUP", groupOnly: true, adminOnly: true }, async (sock, msg, args) => {
-  const desc = args.join(" ").trim();
-  try {
-    await sock.groupUpdateDescription(msg.key.remoteJid, desc || "");
-    await sendReply(sock, msg, `✅ *Group description updated!*\n\n📝 New desc: ${desc || "(cleared)"}`);
-    await react(sock, msg, "✅");
-  } catch (e) { await sendReply(sock, msg, `❌ Failed to update group description: ${e.message}`); }
-});
-cmd(["getprivacy", "setprivacy"], { desc: "Get/set privacy settings", category: "SETTINGS", ownerOnly: true }, async (sock, msg, args) => {
-    await react(sock, msg, "🔒");
-    try {
-      const privacy = await sock.fetchPrivacySettings(true);
-      const sub = args[0]?.toLowerCase();
-      if (!sub) {
-        // Show current settings
-        const fmt = (v) => v === "all" ? "Everyone" : v === "contacts" ? "Contacts" : v === "contact_blacklist" ? "Contacts except..." : v === "none" ? "Nobody" : v || "Unknown";
-        await sendReply(sock, msg, `🔒 *Privacy Settings*
-
-  👤 Last Seen: *${fmt(privacy.last)}*
-  👁️ Profile Pic: *${fmt(privacy.profile)}*
-  📰 Status: *${fmt(privacy.status)}*
-  📍 Online: *${fmt(privacy.online)}*
-  🔵 Read Receipts: *${fmt(privacy.readreceipts)}*
-  👥 Add to Groups: *${fmt(privacy.groupadd)}*
-
-  *Change with:* ${CONFIG.PREFIX}setprivacy <field> <value>
-  Fields: lastseen, pfp, status, online, readreceipts, groups
-  Values: all, contacts, nobody
-
-  `);
-      } else {
-        // setprivacy <field> <value>
-        const fieldMap = { lastseen: "last", pfp: "profile", status: "status", online: "online", readreceipts: "readreceipts", groups: "groupadd" };
-        const valMap = { all: "all", everyone: "all", contacts: "contacts", nobody: "none", none: "none" };
-        const field = fieldMap[sub] || sub;
-        const val = valMap[args[1]?.toLowerCase()] || args[1] || "contacts";
-        await sock.updateLastSeenPrivacy?.(val).catch(() => {});
-        if (field === "last") await sock.updateLastSeenPrivacy(val);
-        else if (field === "profile") await sock.updateProfilePicturePrivacy(val);
-        else if (field === "status") await sock.updateStatusPrivacy(val);
-        else if (field === "online") await sock.updateOnlinePrivacy(val);
-        else if (field === "readreceipts") await sock.updateReadReceiptsPrivacy(val);
-        else if (field === "groupadd") await sock.updateGroupsAddPrivacy(val);
-        await sendReply(sock, msg, `✅ *Privacy Updated*\n\n*${sub}* → *${val}*`);
-      }
-    } catch (e) {
-      await sendReply(sock, msg, `❌ Privacy settings error: ${e.message}\n\nMake sure the bot is connected.`);
-    }
-  });
-  
-// ═══════════════════════════════════════════════════════════════════════════════
-//  DOWNLOAD COMMAND STUBS
-// ═══════════════════════════════════════════════════════════════════════════════
-// GiftedTech API downloaders
-// Download commands — implemented
-cmd("dlall", { desc: "Download from any URL", category: "DOWNLOAD" }, async (sock, msg, args) => {
-  if (!args.length) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}dlall <url>`); return; }
-  await react(sock, msg, "⏬");
-  const url = args[0];
-  let dlUrl = null, title = "download", mime = "application/octet-stream";
-  try {
-    const r = await prexzyGet("/download/aio", { url }, 30000);
-    const d = r.data;
-    if (r.ok && d) {
-      dlUrl = d?.data?.[0]?.url || d?.data?.video || d?.data?.audio || d?.data?.url || d?.url;
-      title = d?.data?.title || d?.title || title;
-    }
-  } catch {}
-  if (!dlUrl) {
-    try {
-      const { data } = await axios.get(`${CONFIG.GIFTED_API}/api/download/dlall?apikey=${CONFIG.GIFTED_KEY}&url=${encodeURIComponent(url)}`, { timeout: 60000 });
-      if (data?.success && data?.result) {
-        const r = data.result;
-        dlUrl = r.download_url || r.url || r.video || r.audio;
-        title = r.title || title;
-        mime = r.mimetype || mime;
-      }
-    } catch {}
-  }
-  if (dlUrl) {
-    try {
-      const media = await axios.get(dlUrl, { responseType: "arraybuffer", timeout: 120000 });
-      await sock.sendMessage(msg.key.remoteJid, { document: Buffer.from(media.data), fileName: title, mimetype: media.headers?.["content-type"] || mime }, { quoted: msg });
-      await react(sock, msg, "✅");
-    } catch (e) { await sendReply(sock, msg, `❌ Download failed: ${e.message}`); }
-  } else {
-    await sendReply(sock, msg, `❌ Could not download from this URL.`);
-  }
-});
-// ─────────────────────────────────────────────────────────────────────
-// v15: TGSTICKER — Telegram sticker pack downloader, multi-API fallback
-// Author/pack metadata is set to the bot owner's name.
-// ─────────────────────────────────────────────────────────────────────
-cmd(["tgsticker", "tgs", "tgstickers"], { desc: "Download Telegram sticker pack (multi-API, owner-branded)", category: "DOWNLOAD" }, async (sock, msg, args) => {
-  if (!args.length) {
-    await sendReply(sock, msg, `✏️ *TGSticker Usage*\n\n${CONFIG.PREFIX}tgsticker <Telegram sticker link>\n\nExample:\n${CONFIG.PREFIX}tgsticker https://t.me/addstickers/Memes`);
-    return;
-  }
-  const url = args[0];
-  const packMatch = url.match(/(?:t\.me|telegram\.me|telegram\.dog)\/(?:addstickers|addemoji)\/([^/?#&\s]+)/i);
-  const packName = packMatch ? packMatch[1] : null;
-  if (!packName) { await sendReply(sock, msg, "❌ Not a valid Telegram sticker link.\nFormat: https://t.me/addstickers/<PackName>"); return; }
-  await react(sock, msg, "⏳");
-
-  const ownerName = CONFIG.OWNER_NAME || CONFIG.BOT_NAME || "MIAS MDX";
-  const packLabel = `${ownerName} • ${packName}`;
-  const TG_BOT_TOKEN = process.env.TG_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN || "";
-
-  // Collect sticker URLs/buffers from any API that responds
-  let stickerSources = []; // [{ buf? , url? , isAnimated? }]
-  let attemptLog = [];
-
-  // ── Source 1: Official Telegram Bot API (best quality, requires user-set token) ──
-  if (TG_BOT_TOKEN) {
-    try {
-      const { data } = await axios.get(`https://api.telegram.org/bot${TG_BOT_TOKEN}/getStickerSet`, {
-        params: { name: packName }, timeout: 15000,
-      });
-      if (data?.ok && Array.isArray(data.result?.stickers)) {
-        for (const st of data.result.stickers.slice(0, 30)) {
-          try {
-            const fileInfo = await axios.get(`https://api.telegram.org/bot${TG_BOT_TOKEN}/getFile`, {
-              params: { file_id: st.file_id }, timeout: 10000,
-            });
-            const fp = fileInfo?.data?.result?.file_path;
-            if (fp) stickerSources.push({ url: `https://api.telegram.org/file/bot${TG_BOT_TOKEN}/${fp}`, isAnimated: !!st.is_animated });
-          } catch {}
-        }
-        attemptLog.push(`tg-bot-api: ${stickerSources.length}`);
-      }
-    } catch (e) { attemptLog.push("tg-bot-api: failed"); }
-  }
-
-  // ── Source 2: GiftedTech ──
-  if (!stickerSources.length) {
-    try {
-      const { data } = await axios.get(`https://api.giftedtech.web.id/api/download/tgsticker`, {
-        params: { url, apikey: CONFIG.GIFTED_KEY || "gifted" }, timeout: 25000, headers: { "User-Agent": "Mozilla/5.0" },
-      });
-      // Try multiple response shapes
-      const raw = data?.result || data?.data || data;
-      const list = raw?.stickers || raw?.files || raw?.images || (Array.isArray(raw) ? raw : []);
-      for (const s of list.slice(0, 30)) {
-        const u = typeof s === "string" ? s : (s.url || s.file_url || s.image || s.thumb);
-        if (u && u.startsWith("http")) stickerSources.push({ url: u });
-      }
-      attemptLog.push(`giftedtech: ${stickerSources.length}`);
-    } catch { attemptLog.push("giftedtech: failed"); }
-  }
-  // ── Source 2b: Telegram web scrape (no token needed) ──
-  if (!stickerSources.length) {
-    try {
-      const tgHtml = await axios.get(`https://t.me/addstickers/${packName}`, { timeout: 15000, headers: { "User-Agent": "Mozilla/5.0 (compatible; TelegramBot)" } });
-      const thumbMatches = [...(tgHtml.data || "").matchAll(/cdn[d]*\.cdn-telegram\.org\/file\/[^"'\s]+\.(?:webp|png)/gi)];
-      for (const m of thumbMatches.slice(0, 20)) stickerSources.push({ url: "https://" + m[0] });
-      if (!stickerSources.length) {
-        // Try sticker download service
-        const { data: sd } = await axios.get(`https://stickerdownloadbot.com/api/sticker?pack=${encodeURIComponent(packName)}`, { timeout: 15000 });
-        const sdList = sd?.stickers || sd?.result || [];
-        for (const s of (Array.isArray(sdList) ? sdList : []).slice(0, 30)) {
-          const u = typeof s === "string" ? s : (s.url || s.file);
-          if (u && u.startsWith("http")) stickerSources.push({ url: u });
-        }
-      }
-      attemptLog.push(`tg-scrape: ${stickerSources.length}`);
-    } catch { attemptLog.push("tg-scrape: failed"); }
-  }
-
-  // ── Source 3: Davidcyril API ──
-  if (!stickerSources.length) {
-    try {
-      const { data } = await axios.get(`https://api.davidcyriltech.my.id/tgsticker`, {
-        params: { url }, timeout: 20000,
-      });
-      const list = data?.result?.stickers || data?.stickers || [];
-      for (const s of list.slice(0, 30)) {
-        const u = typeof s === "string" ? s : (s.url || s.file_url || s.sticker);
-        if (u) stickerSources.push({ url: u });
-      }
-      attemptLog.push(`davidcyril: ${stickerSources.length}`);
-    } catch { attemptLog.push("davidcyril: failed"); }
-  }
-
-  // ── Source 4: Nexoracle API ──
-  if (!stickerSources.length) {
-    try {
-      const { data } = await axios.get(`https://api.nexoracle.com/downloader/tgsticker`, {
-        params: { apikey: "free_key@maher_apis", url }, timeout: 20000,
-      });
-      const list = data?.result?.stickers || data?.result || data?.stickers || [];
-      for (const s of (Array.isArray(list) ? list : []).slice(0, 30)) {
-        const u = typeof s === "string" ? s : (s.url || s.file || s.sticker);
-        if (u) stickerSources.push({ url: u });
-      }
-      attemptLog.push(`nexoracle: ${stickerSources.length}`);
-    } catch { attemptLog.push("nexoracle: failed"); }
-  }
-
-  // ── Source 5: Prexzyvilla API ──
-  if (!stickerSources.length) {
-    try {
-      const pData = await prexzyGet("/download/tgsticker", { url }, 25000);
-      const pd = pData?.data;
-      const list = pd?.stickers || pd?.result?.stickers || pd?.result || [];
-      for (const s of (Array.isArray(list) ? list : []).slice(0, 30)) {
-        const u = typeof s === "string" ? s : (s.url || s.file_url || s.sticker);
-        if (u) stickerSources.push({ url: u });
-      }
-      attemptLog.push(`prexzyvilla: ${stickerSources.length}`);
-    } catch { attemptLog.push("prexzyvilla: failed"); }
-  }
-
-  if (!stickerSources.length) {
-    await react(sock, msg, "❌");
-    await sendReply(sock, msg, `❌ Could not fetch *${packName}* from any provider.\n\nTried: ${attemptLog.join(" | ") || "no providers responded"}\n\nTip: set *TG_BOT_TOKEN* in .env (free from @BotFather) for the most reliable downloads.`);
-    return;
-  }
-
-  // Send up to 15 stickers, branded with owner name as author
-  const max = Math.min(15, stickerSources.length);
-  let sent = 0;
-  for (let i = 0; i < max; i++) {
-    const src = stickerSources[i];
-    try {
-      let buf = src.buf;
-      if (!buf) {
-        const r = await axios.get(src.url, { responseType: "arraybuffer", timeout: 20000, headers: { "User-Agent": "Mozilla/5.0" } });
-        buf = Buffer.from(r.data);
-      }
-      if (!buf || buf.length < 100) continue;
-      // Inject author/pack metadata if helper exists
-      let finalBuf = buf;
-      try {
-        if (typeof buildStickerExif === "function" && typeof injectWebpExif === "function") {
-          const exif = buildStickerExif(packLabel, ownerName);
-          finalBuf = injectWebpExif(buf, exif);
-        }
-      } catch {}
-      // Detect animated .tgs (lottie/gzip) — ONLY skip if actual gzip magic bytes (0x1f 0x8b)
-      // Do NOT skip based on src.isAnimated alone — animated WebP stickers work fine in WhatsApp
-      const isLottieGzip = buf.length > 4 && buf[0] === 0x1f && buf[1] === 0x8b;
-      if (isLottieGzip) continue; // skip true lottie gzip blobs only
-      // Try as sticker (webp); if it fails send as image fallback
-      let stickerSent = false;
-      try {
-        await sock.sendMessage(msg.key.remoteJid, {
-          sticker: finalBuf,
-          stickerPackName: packLabel,
-          stickerAuthor: ownerName,
-        }, { quoted: i === 0 ? msg : undefined });
-        stickerSent = true;
-        sent++;
-      } catch {}
-      // Fallback: send as image if sticker send failed
-      if (!stickerSent) {
-        try {
-          // Check if it's a webp / image that just failed as sticker — send as image
-          const mime = buf[0] === 0x52 && buf[1] === 0x49 ? "image/webp" : "image/jpeg";
-          await sock.sendMessage(msg.key.remoteJid, {
-            image: finalBuf, mimetype: mime,
-            caption: `🎴 ${packLabel} #${i + 1}`,
-          }, { quoted: i === 0 ? msg : undefined });
-          sent++;
-        } catch {}
-      }
-      // Small delay between sends
-      if (i < max - 1) await new Promise(r => setTimeout(r, 350));
-    } catch {}
-  }
-  await react(sock, msg, sent ? "✅" : "❌");
-  await sendReply(sock, msg, `🎴 *Telegram Sticker Pack*\n\n📦 Pack: *${packName}*\n👑 Author: *${ownerName}*\n📊 Sent: *${sent}/${stickerSources.length}*\n${attemptLog.length ? `🔧 Source: ${attemptLog.join(" | ")}` : ""}`);
-});
-
-// ─────────────────────────────────────────────────────────────────────
-// v15: GITCLONE — fixed to query default branch, then fall back
-// ─────────────────────────────────────────────────────────────────────
-// ═══════════════════════════════════════════════════════════════════════════
-// SUBTITLE DOWNLOADER — movie/show/YouTube subtitles (multi-API)
-// ═══════════════════════════════════════════════════════════════════════════
-cmd(["subtitle","sub","srt","caption","subtitles"], { desc: "Download subtitles for movies/shows/YouTube — .subtitle <query or URL>", category: "DOWNLOAD" }, async (sock, msg, args) => {
-  if (!args.length) {
-    await sendReply(sock, msg,
-`📄 *Subtitle Downloader*
-
-Usage: ${CONFIG.PREFIX}subtitle <movie name or YouTube URL>
-
-Examples:
-  ${CONFIG.PREFIX}subtitle Avengers Endgame 2019
-  ${CONFIG.PREFIX}subtitle Squid Game season 1
-  ${CONFIG.PREFIX}subtitle https://youtu.be/xxxxxxxx`);
-    return;
-  }
-  await react(sock, msg, "📄");
-  const query = args.join(" ");
-  const isYT = /(?:youtu\.be\/|youtube\.com\/watch)/i.test(query);
-  const jid = msg.key.remoteJid;
-  const statusMsg = await sock.sendMessage(jid, { text: `📄 *Subtitle Downloader*\n\n🔍 Searching: *"${query.slice(0,50)}"*...` }, { quoted: msg });
-  let results = []; // [{title, lang, url, format, source, rating}]
-
-  // ── Source 1: Prexzyvilla (YouTube auto-captions) ──
-  if (isYT) {
-    try {
-      const r = await prexzyGet("/download/ytdownload", { url: query, type: "subtitle", format: "srt" }, 25000);
-      const d = r?.data?.data || r?.data;
-      const subUrl = d?.subtitle || d?.sub_url || d?.caption_url || d?.url;
-      if (subUrl && subUrl.startsWith("http")) results.push({ title: d?.title || "YouTube Video", lang: "English", url: subUrl, format: "srt", source: "Prexzyvilla/YT" });
-    } catch {}
-  }
-
-  // ── Source 2: OpenSubtitles legacy REST API (best free, no key) ──
-  if (!results.length || results.length < 3) {
-    try {
-      const q = isYT ? query : query.trim();
-      const { data } = await axios.get(
-        `https://rest.opensubtitles.org/search/query-${encodeURIComponent(q)}/sublanguageid-eng`,
-        { timeout: 15000, headers: { "User-Agent": "TemporaryUserAgent", "X-User-Agent": "temporaryuseragent" } }
-      );
-      if (Array.isArray(data)) {
-        for (const sub of data.slice(0, 6)) {
-          const url = sub.SubDownloadLink || sub.ZipDownloadLink;
-          if (url) results.push({
-            title: (sub.MovieName || sub.MovieReleaseName || q).slice(0, 60),
-            lang: sub.LanguageName || "English",
-            url,
-            format: sub.SubFormat || "srt",
-            source: "OpenSubtitles",
-            year: sub.MovieYear || "",
-            rating: parseInt(sub.SubDownloadsCnt || 0),
-          });
-        }
-      }
-    } catch {}
-  }
-
-  // ── Source 3: GiftedTech subtitle ──
-  if (!results.length) {
-    try {
-      const { data } = await axios.get(`${CONFIG.GIFTED_API}/api/search/subtitle`, {
-        params: { apikey: CONFIG.GIFTED_KEY, query }, timeout: 12000,
-      });
-      const list = data?.result || data?.results || [];
-      for (const s of list.slice(0, 5)) {
-        const url = s.url || s.download || s.link;
-        if (url) results.push({ title: s.title || s.movie || query, lang: s.language || "English", url, format: "srt", source: "GiftedTech" });
-      }
-    } catch {}
-  }
-
-  // ── Source 4: Nexoracle subtitle ──
-  if (!results.length) {
-    try {
-      const { data } = await axios.get(`https://api.nexoracle.com/search/subtitles`, {
-        params: { apikey: "free_key@maher_apis", query }, timeout: 12000,
-      });
-      const list = data?.result || data?.results || [];
-      for (const s of list.slice(0, 5)) {
-        const url = s.url || s.download || s.link;
-        if (url) results.push({ title: s.title || s.movie || query, lang: s.language || "English", url, format: "srt", source: "Nexoracle" });
-      }
-    } catch {}
-  }
-
-  // ── Source 5: Subscene scrape ──
-  if (!results.length) {
-    try {
-      const { data: html } = await axios.get(
-        `https://subscene.com/subtitles/searchbytitle?query=${encodeURIComponent(query)}`,
-        { timeout: 15000, headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" } }
-      );
-      const titleLinks = [...html.matchAll(/href="(\/subtitles\/[^"]+)"[^>]*>\s*([^<]+)<\/a>/gi)];
-      for (const m of titleLinks.slice(0, 3)) {
-        results.push({ title: m[2]?.trim().slice(0, 60) || query, lang: "English", url: `https://subscene.com${m[1]}`, format: "srt", source: "Subscene (link)" });
-      }
-    } catch {}
-  }
-
-  // ── Source 6: YIFY subtitles scrape ──
-  if (!results.length) {
-    try {
-      const { data: yHtml } = await axios.get(
-        `https://yifysubtitles.ch/search?q=${encodeURIComponent(query)}`,
-        { timeout: 12000, headers: { "User-Agent": "Mozilla/5.0" } }
-      );
-      const subLinks = [...yHtml.matchAll(/href="(\/subtitles\/[^"]+\.zip)"/gi)];
-      for (const m of subLinks.slice(0, 3)) {
-        results.push({ title: query, lang: "English", url: `https://yifysubtitles.ch${m[1]}`, format: "zip/srt", source: "YIFY" });
-      }
-    } catch {}
-  }
-
-  // ── Source 7: subdl.com API (very reliable, no key needed) ──
-  if (!results.length) {
-    try {
-      const { data: sd } = await axios.get(`https://api.subdl.com/api/v1/subtitles?api_key=uoE6X1H82J2ZuAXdqKHCCxG3WaRDIijj&query=${encodeURIComponent(query)}&languages=EN&subs_per_page=5`, { timeout: 15000, headers: { "User-Agent": "Mozilla/5.0" } });
-      const sdList = sd?.results || sd?.subtitles || [];
-      for (const s of sdList.slice(0, 5)) {
-        const url = s.url ? `https://dl.subdl.com${s.url}` : null;
-        if (url) results.push({ title: s.name || s.movie_name || query, lang: s.language || "English", url, format: "zip", source: "SubDL", rating: s.downloads || 0 });
-      }
-    } catch {}
-  }
-
-  // ── Source 8: OpenSubtitles v4 REST (new API, more reliable) ──
-  if (!results.length) {
-    try {
-      const { data: osv4 } = await axios.get(`https://api.opensubtitles.com/api/v1/subtitles?query=${encodeURIComponent(query)}&languages=en&type=movie`, { timeout: 15000, headers: { "User-Agent": "MIAS MDX Bot v1", "Api-Key": "qCQqJGaXVlFYxpFJyGiB2sWMbxzGqxLa" } });
-      const sList = osv4?.data || [];
-      for (const s of sList.slice(0, 5)) {
-        const attrs = s.attributes;
-        if (attrs?.url) results.push({ title: attrs.release || query, lang: attrs.language || "English", url: attrs.url, format: "srt", source: "OpenSubtitles v4", rating: attrs.download_count || 0 });
-      }
-    } catch {}
-  }
-
-  if (!results.length) {
-    await editMessage(sock, jid, null,
-`📄 *Subtitle Downloader*
-
-🔍 Query: *${query}*
-❌ No subtitles found.
-
-💡 *Tips:*
-• Add the year: *Movie Name 2023*
-• Check spelling
-• For YouTube use full URL`);
-    await react(sock, msg, "❌");
-    return;
-  }
-
-  // Sort by rating/downloads descending
-  results.sort((a, b) => (b.rating || 0) - (a.rating || 0));
-  const best = results[0];
-
-  // Try to download best result and send as document
-  let sent = false;
-  if (!best.url.includes("subscene.com")) {
-    try {
-      const resp = await axios.get(best.url, {
-        responseType: "arraybuffer", timeout: 30000,
-        headers: { "User-Agent": "Mozilla/5.0", "Accept": "*/*" },
-        maxRedirects: 5,
-      });
-      const buf = Buffer.from(resp.data);
-      if (buf.length > 50) {
-        const ct = resp.headers["content-type"] || "";
-        const isZip = ct.includes("zip") || best.url.includes(".zip");
-        const safeName = (best.title || query).replace(/[^a-zA-Z0-9 ]/g, "").trim().slice(0, 40) || "subtitle";
-        const ext = isZip ? "zip" : (best.format || "srt");
-        await editMessage(sock, jid, null, `📄 *Subtitle found!* Sending...`);
-        await sock.sendMessage(jid, {
-          document: buf,
-          mimetype: isZip ? "application/zip" : "text/plain",
-          fileName: `${safeName}.${ext}`,
-          caption:
-`📄 *Subtitle Downloaded*
-
-🎬 *Title:* ${best.title || query}
-🌍 *Language:* ${best.lang || "English"}
-📁 *Format:* ${(best.format || "SRT").toUpperCase()}
-🔗 *Source:* ${best.source}
-${best.year ? `📅 *Year:* ${best.year}\n` : ""}${best.rating ? `⬇️ *Downloads:* ${Number(best.rating).toLocaleString()}\n` : ""}`,
-        }, { quoted: msg });
-        await react(sock, msg, "✅");
-        sent = true;
-      }
-    } catch {}
-  }
-
-  // Fallback: send text list of download links
-  if (!sent) {
-    let out = `📄 *Subtitle Results*\n\n🔍 *${query}*\n━━━━━━━━━━━━━━━━━━━━\n\n`;
-    const nums = ["1️⃣","2️⃣","3️⃣","4️⃣","5️⃣"];
-    results.slice(0, 5).forEach((r, i) => {
-      out += `${nums[i] || (i+1)+"."} *${(r.title||query).slice(0,50)}*\n`;
-      out += `   🌍 ${r.lang||"English"} | 📁 ${(r.format||"srt").toUpperCase()} | 🔗 ${r.source}\n`;
-      if (r.year) out += `   📅 ${r.year}\n`;
-      out += `   🔗 ${r.url}\n\n`;
-    });
-    out += ``;
-    await editMessage(sock, jid, null, out);
-    await react(sock, msg, "✅");
-  }
-});
-
-cmd(["gitclone", "gitdl", "repodl"], { desc: "Download a GitHub repo as zip", category: "DOWNLOAD" }, async (sock, msg, args) => {
-  if (!args.length) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}gitclone <github repo URL>\n\nExample: ${CONFIG.PREFIX}gitclone https://github.com/user/repo`); return; }
-  await react(sock, msg, "⏬");
-  const url = args[0].replace(/\.git$/, "").replace(/\/$/, "");
-  const match = url.match(/github\.com\/([^\/\s]+)\/([^\/\s?#]+)/i);
-  if (!match) { await sendReply(sock, msg, "❌ Invalid GitHub URL!\nExpected: https://github.com/<user>/<repo>"); return; }
-  const [_, owner, repo] = match;
-
-  // 1. Get default branch via GitHub API
-  let branch = null;
-  try {
-    const { data } = await axios.get(`https://api.github.com/repos/${owner}/${repo}`, {
-      timeout: 15000,
-      headers: { "User-Agent": "MIAS-MDX-Bot", Accept: "application/vnd.github+json" },
-    });
-    branch = data?.default_branch || null;
-  } catch (e) { /* repo may be private or rate-limited */ }
-
-  const branches = branch ? [branch, "main", "master"] : ["main", "master"];
-  const tried = [];
-  for (const br of [...new Set(branches)]) {
-    const zipUrl = `https://codeload.github.com/${owner}/${repo}/zip/refs/heads/${br}`;
-    tried.push(br);
-    try {
-      const { data, headers } = await axios.get(zipUrl, {
-        responseType: "arraybuffer", timeout: 90000,
-        maxContentLength: 100 * 1024 * 1024, // 100MB cap
-        headers: { "User-Agent": "MIAS-MDX-Bot" },
-      });
-      const sizeMB = (data.byteLength / 1024 / 1024).toFixed(2);
-      await sock.sendMessage(msg.key.remoteJid, {
-        document: Buffer.from(data),
-        fileName: `${repo}-${br}.zip`,
-        mimetype: "application/zip",
-        caption: `📦 *${owner}/${repo}* (${br})\n📏 Size: ${sizeMB} MB`,
-      }, { quoted: msg });
-      await react(sock, msg, "✅");
-      return;
-    } catch (e) { /* try next branch */ }
-  }
-  await react(sock, msg, "❌");
-  await sendReply(sock, msg, `❌ Clone failed for *${owner}/${repo}*.\nTried branches: ${tried.join(", ")}\nRepo may be private, deleted, or too large (>100MB).`);
-});
-
-// ─────────────────────────────────────────────────────────────────────
-// v15: CHANNEL INFO — fetch metadata for a WhatsApp Channel by link
-// ─────────────────────────────────────────────────────────────────────
-cmd(["channelinfo", "chinfo", "chnInfo", "channel", "channelupdate", "cupdate", "channelstats"], { desc: "Get WhatsApp Channel info from link", category: "WHATSAPP" }, async (sock, msg, args) => {
-  if (!args.length) {
-    await sendReply(sock, msg, `📣 *Channel Info Usage*\n\n${CONFIG.PREFIX}channelinfo <channel link>\n\nExample:\n${CONFIG.PREFIX}channelinfo https://whatsapp.com/channel/0029Va...`);
-    return;
-  }
-  const link = args[0];
-  const m = link.match(/(?:whatsapp\.com|wa\.me)\/channel\/([A-Za-z0-9_\-]+)/i);
-  if (!m) {
-    await sendReply(sock, msg, `❌ Not a valid WhatsApp Channel link.\n\nExpected format:\nhttps://whatsapp.com/channel/0029Va...`);
-    return;
-  }
-  const inviteCode = m[1];
-  await react(sock, msg, "🔎");
-  let meta = null;
-  let fetchErr = null;
-
-  // Method 1: newsletterMetadata via Baileys sock
-  if (typeof sock.newsletterMetadata === "function") {
-    try { meta = await sock.newsletterMetadata("invite", inviteCode); } catch (e) { fetchErr = e?.message; }
-  }
-  // Method 2: newsletterMetadataByInvite
-  if (!meta && typeof sock.newsletterMetadataByInvite === "function") {
-    try { meta = await sock.newsletterMetadataByInvite(inviteCode); } catch (e) { fetchErr = e?.message; }
-  }
-  // Method 3: try resolving invite to join metadata (some builds)
-  if (!meta && typeof sock.queryNewsletterMessages === "function") {
-    try { meta = await sock.queryNewsletterMessages({ key: inviteCode }); } catch {}
-  }
-  // Method 4: HTTP scraping fallback (no auth needed for public channels)
-  if (!meta) {
-    try {
-      const fetch = (await import("node-fetch").catch(() => null))?.default
-        || (await import("https").then(https => (url, opts) => new Promise((res, rej) => {
-          https.get(url, { headers: { "User-Agent": "WhatsApp/2.24.9 Mozilla/5.0" } }, r => {
-            let d = ""; r.on("data", c => d += c); r.on("end", () => res({ ok: true, text: async () => d }));
-          }).on("error", rej);
-        })));
-      const url = `https://www.whatsapp.com/channel/${inviteCode}`;
-      const resp = await fetch(url);
-      const html = await resp.text();
-      const nameM = html.match(/<meta property="og:title" content="([^"]+)"/i) || html.match(/<title>([^<]+)</i);
-      const descM = html.match(/<meta property="og:description" content="([^"]+)"/i);
-      const imgM  = html.match(/<meta property="og:image" content="([^"]+)"/i);
-      if (nameM) {
-        meta = {
-          name: nameM[1].replace(/\s*\|.*$/, "").trim(),
-          description: descM?.[1] || "—",
-          _scraped: true,
-          _img: imgM?.[1],
-        };
-      }
-    } catch (e2) { fetchErr = (fetchErr || "") + " | scrape: " + e2?.message; }
-  }
-
-  if (!meta) {
-    await react(sock, msg, "❌");
-    await sendReply(sock, msg, `❌ *Channel Info Unavailable*\n\nCould not fetch info for this channel.\nReason: ${fetchErr || "unknown"}\n\nChannel URL:\nhttps://whatsapp.com/channel/${inviteCode}\n\nTip: Make sure the link is valid and the channel is public.`);
-    return;
-  }
-
-  const name = meta?.name || meta?.subject || meta?.title || "Unknown";
-  const desc = meta?.description || meta?.descr || "No description";
-  const subs = meta?.subscribers ?? meta?.subscriberCount ?? meta?.followers ?? meta?.followersCount ?? meta?.memberCount ?? meta?.members ?? (meta?._scraped ? "—" : "?");
-  const verified = meta?.verified ? "✅ Verified" : "—";
-  const id = meta?.id || meta?.jid || meta?.newsletterJid || inviteCode;
-  const created = meta?.creation || meta?.creationTime || meta?.createdAt;
-  const createdAt = created ? new Date(Number(created) * (String(created).length > 10 ? 1 : 1000)).toLocaleString() : "—";
-  const state = meta?.state || meta?.status || meta?.type || "—";
-  const invite = meta?.invite || meta?.inviteCode || inviteCode;
-  const reactions = meta?.reactionCodes || meta?.reaction_codes || meta?.allowedReactions || meta?.reactions || [];
-  const reactionText = Array.isArray(reactions) && reactions.length ? reactions.join(" ") : "—";
-
-  await react(sock, msg, "✅");
-  const infoText = `📣 *WhatsApp Channel Info*${meta?._scraped ? " *(scraped)*" : ""}
-
-📌 *Name:* ${name}
-👥 *Members / Followers:* ${subs}
-🛡️ *Verified:* ${verified}
-🆔 *JID / ID:* ${id}
-🏷️ *Invite Code:* ${invite}
-📡 *State:* ${state}
-😀 *Reactions:* ${reactionText}
-📅 *Created:* ${createdAt}
-
-📝 *Description:*
-${desc}
-
-🔗 *Link:* https://whatsapp.com/channel/${inviteCode}`;
-  await sendReply(sock, msg, infoText);
-});
-
-// ─────────────────────────────────────────────────────────────────────
-// v15: CREACT — react to a channel post by link + emoji
-// Usage: .creact <channel-message-link> <emoji>
-// Or:    reply to a forwarded channel message + .creact <emoji>
-// ─────────────────────────────────────────────────────────────────────
-cmd(["creact", "creactchannel", "channelreactlink"], { desc: "React to a channel post by its link", category: "WHATSAPP", ownerOnly: true }, async (sock, msg, args) => {
-  // Mode A: reply to a forwarded channel message (check ALL message types for contextInfo)
-  const ctx = msg.message?.extendedTextMessage?.contextInfo
-            || msg.message?.imageMessage?.contextInfo
-            || msg.message?.videoMessage?.contextInfo
-            || msg.message?.documentMessage?.contextInfo
-            || msg.message?.buttonsResponseMessage?.contextInfo
-            || msg.message?.listResponseMessage?.contextInfo;
-  if (ctx?.stanzaId && ctx?.remoteJid && (ctx.remoteJid.endsWith("@newsletter") || ctx.remoteJid.includes("newsletter"))) {
-    const emoji = args[0] || "❤️";
-    let reacted = false;
-    // Method 1: newsletterReactionMessage (modern Baileys builds)
-    if (typeof sock.newsletterReactionMessage === "function") {
-      try { await sock.newsletterReactionMessage(ctx.remoteJid, ctx.stanzaId, emoji); reacted = true; }
-      catch (e1) { console.log("[CREACT] newsletterReactionMessage failed:", e1?.message); }
-    }
-    // Method 2: sendMessage with react key (works on most Baileys builds)
-    if (!reacted) {
-      try {
-        await sock.sendMessage(ctx.remoteJid, {
-          react: { text: emoji, key: { remoteJid: ctx.remoteJid, id: ctx.stanzaId, fromMe: false } }
-        });
-        reacted = true;
-      } catch (e2) { console.log("[CREACT] sendMessage react failed:", e2?.message); }
-    }
-    if (reacted) {
-      await sendReply(sock, msg, `${emoji} *Channel Reacted!*\n\nSuccessfully reacted to the channel post with ${emoji}`);
-    } else {
-      await sendReply(sock, msg, `❌ *Channel React Failed*\n\nCould not react to the channel post.\nThis may not be supported in your Baileys build.\n\nTip: try replying to the forwarded post directly.`);
-    }
-    return;
-  }
-
-  // Mode B: explicit link + emoji
-  if (!args[0]) {
-    await sendReply(sock, msg, `📣 *Channel React Usage*\n\n*A)* Reply to a forwarded channel post:\n${CONFIG.PREFIX}creact ❤️\n\n*B)* Pass a channel-message link:\n${CONFIG.PREFIX}creact https://whatsapp.com/channel/<code>/<msgId> ❤️`);
-    return;
-  }
-  const linkMatch = args[0].match(/whatsapp\.com\/channel\/([A-Za-z0-9_\-]+)(?:\/(\d+))?/i);
-  if (!linkMatch) { await sendReply(sock, msg, "❌ Invalid channel link.\nExpected: https://whatsapp.com/channel/<code>/<msgId>"); return; }
-  const inviteCode = linkMatch[1];
-  const msgId = linkMatch[2] || args[1];
-  const emoji = args.find(a => !a.includes("whatsapp.com") && !/^\d+$/.test(a)) || "❤️";
-  if (!msgId) { await sendReply(sock, msg, "❌ Channel message ID missing — link must look like .../channel/<code>/<msgId>"); return; }
-  try {
-    let chJid = null;
-    if (typeof sock.newsletterMetadata === "function") {
-      try { const m = await sock.newsletterMetadata("invite", inviteCode); chJid = m?.id || m?.jid; } catch {}
-    }
-    if (!chJid) { await sendReply(sock, msg, "❌ Could not resolve channel JID from invite. Try Mode A (reply to a forwarded post)."); return; }
-    await sock.sendMessage(chJid, { react: { text: emoji, key: { remoteJid: chJid, id: msgId, fromMe: false } } });
-    await sendReply(sock, msg, `${emoji} Reacted to channel post in *${chJid}* (msg ${msgId}).`);
-  } catch (e) { await sendReply(sock, msg, `❌ React failed: ${e.message}`); }
-});
-
-// ─────────────────────────────────────────────────────────────────────
-// PDFTOTEXT — extract text from a replied PDF document
-// ─────────────────────────────────────────────────────────────────────
-// ─────────────────────────────────────────────────────────────────────────────
-// PDF HELPER: smart raw text extraction (fixes words-forced-together bug)
-// Tracks y-positions and line-break operators so segments are joined correctly
-// ─────────────────────────────────────────────────────────────────────────────
-function _pdfDecodeStr(s) {
-  return s
-    .replace(/\\n/g, "\n").replace(/\\r/g, "\r").replace(/\\t/g, "\t")
-    .replace(/\\\(/g, "(").replace(/\\\)/g, ")").replace(/\\\\/g, "\\")
-    .replace(/\\(\d{3})/g, (_, oct) => String.fromCharCode(parseInt(oct, 8)))
-    .replace(/[^\x09\x0A\x0D\x20-\x7E\u00A0-\u00FF]/g, "");
-}
-function _extractPdfRaw(buf) {
-  const raw = buf.toString("latin1");
-  const blocks = raw.match(/BT[\s\S]*?ET/g) || [];
-  const allLines = [];
-  for (const block of blocks) {
-    let lines = [];
-    let cur = [];
-    const bLines = block.split(/\r?\n/);
-    for (const rawLn of bLines) {
-      const ln = rawLn.trim();
-      if (!ln || ln === "BT" || ln === "ET") continue;
-      // T* or bare ' — new line with no text
-      if (ln === "T*") { if (cur.length) { lines.push(cur.join("")); cur = []; } continue; }
-      // Td / TD — check y-offset; negative y = moving down = new line
-      const tdM = ln.match(/^(-?[\d.]+)\s+(-?[\d.]+)\s+T[dD]$/);
-      if (tdM) { if (parseFloat(tdM[2]) < -0.5) { if (cur.length) { lines.push(cur.join("")); cur = []; } } continue; }
-      // Tm (text matrix) — treat as new line
-      if (/\bTm$/.test(ln)) { if (cur.length) { lines.push(cur.join("")); cur = []; } continue; }
-      // (text) Tj  or  (text) '
-      const tjM = ln.match(/^\(((?:[^\\)]|\\[\s\S])*)\)\s*(?:Tj|')$/);
-      if (tjM) { cur.push(_pdfDecodeStr(tjM[1])); continue; }
-      // [(text) kern (text) ...] TJ — handle kern gaps as word spaces
-      const tjArrM = ln.match(/^\[([\s\S]*)\]\s*TJ$/);
-      if (tjArrM) {
-        const inner = tjArrM[1];
-        // Interleaved: strings and kern numbers
-        const tokens = inner.match(/\(((?:[^\\)]|\\[\s\S])*)\)|-?\d+(?:\.\d+)?/g) || [];
-        let pendingSpace = false;
-        for (const tok of tokens) {
-          if (tok.startsWith("(")) {
-            const decoded = _pdfDecodeStr(tok.slice(1, -1));
-            if (pendingSpace && decoded && cur.length && cur[cur.length-1] !== " ") cur.push(" ");
-            pendingSpace = false;
-            cur.push(decoded);
-          } else {
-            // Large negative kern value = word space in PDF spec
-            if (parseFloat(tok) < -100) pendingSpace = true;
-          }
-        }
-        continue;
-      }
-    }
-    if (cur.length) lines.push(cur.join(""));
-    for (const l of lines) { const t = l.trim(); if (t) allLines.push(t); }
-  }
-  return allLines.join("\n").replace(/[ \t]{2,}/g, " ").replace(/\n{3,}/g, "\n\n").trim();
-}
-
-cmd(["pdftotext","pdf2txt","extractpdf","pdftext","getpdftext"], { desc: "Extract text from a replied PDF document", category: "CONVERT" }, async (sock, msg) => {
-  const q = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage;
-  const doc = q?.documentMessage;
-  if (!doc) { await sendReply(sock, msg, `❌ Reply to a PDF file with *${CONFIG.PREFIX}pdftotext*`); return; }
-  const mime = doc.mimetype || "";
-  const fname = doc.fileName || "file.pdf";
-  if (!mime.includes("pdf") && !fname.toLowerCase().endsWith(".pdf")) { await sendReply(sock, msg, "❌ The replied file does not appear to be a PDF."); return; }
-  await react(sock, msg, "📄");
-  const statMsg = await sock.sendMessage(msg.key.remoteJid, { text: `📄 *PDF → Text*\n\n⬡ Downloading PDF...\n◻ Extracting text...\n◻ Sending...` }, { quoted: msg });
-  try {
-    const stream = await downloadContentFromMessage(doc, "document");
-    let buf = Buffer.from([]);
-    for await (const c of stream) buf = Buffer.concat([buf, c]);
-    await editMessage(sock, msg.key.remoteJid, statMsg.key, `📄 *PDF → Text*\n\n⬢ Downloading PDF... ✅\n⬡ Extracting text...\n◻ Sending...`);
-    let extracted = "";
-    // Method 1: pdf-parse (best quality)
-    try { const pdfParse = (await import("pdf-parse")).default; const data = await pdfParse(buf); extracted = (data.text || "").trim(); } catch {}
-    // Method 2: Improved raw BT/ET extraction — tracks line breaks, handles TJ kern gaps
-    if (!extracted || extracted.length < 10) {
-      try { extracted = _extractPdfRaw(buf); } catch {}
-    }
-    if (!extracted || extracted.length < 10) {
-      await editMessage(sock, msg.key.remoteJid, statMsg.key, `📄 *PDF → Text*\n\n⬢ Downloading PDF... ✅\n❌ Could not extract text.\n\n_This PDF may be image-based (scanned). Use *${CONFIG.PREFIX}homework* to let AI read it._`);
-      return;
-    }
-    const pageCount = doc.pageCount || "?";
-    const header = `📄 *Extracted from:* _${fname}_\n📃 Pages: ${pageCount} │ 📊 ${extracted.length} chars\n${"─".repeat(32)}\n\n`;
-    const trimmed = extracted.slice(0, 6500).trim();
-    const footer = extracted.length > 6500 ? `\n\n_...and ${extracted.length - 6500} more chars — sent as .txt below_` : "";
-    await editMessage(sock, msg.key.remoteJid, statMsg.key, `📄 *PDF → Text*\n\n⬢ Downloading... ✅\n⬢ Extracting... ✅\n⬡ Sending...`);
-    if (extracted.length > 6500) {
-      await sock.sendMessage(msg.key.remoteJid, { document: Buffer.from(extracted, "utf8"), fileName: fname.replace(/\.pdf$/i,"")+"_text.txt", mimetype: "text/plain", caption: `📄 *Full text:* _${fname}_` }, { quoted: msg });
-    } else {
-      await sendReply(sock, msg, header + trimmed + footer);
-    }
-  } catch (e) { await editMessage(sock, msg.key.remoteJid, statMsg.key, `❌ Failed: ${e.message}`).catch(() => {}); }
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-// HOMEWORK AI — multimodal: analyzes image, PDF, document, or text with Gemini
-// Usage: reply to any media/doc/PDF with .homework [your question]
-//        OR: .homework [question] with text quoted
-// ─────────────────────────────────────────────────────────────────────────────
-cmd(["homework","hw","pdfai","askphoto","airead","analyze","studyai","schoolai","askdoc","askimage","solveai"], {
-  desc: "AI reads image/PDF/document and solves your homework or answers questions",
-  category: "AI"
-}, async (sock, msg, args) => {
-  const jid = msg.key.remoteJid;
-  const GEMINI_KEY = process.env.GEMINI_KEY || null; // optional — used if set, otherwise free APIs are used
-  // ── Gather content from the message ──────────────────────────────────────
-  const ctx = msg.message?.extendedTextMessage?.contextInfo;
-  const quoted = ctx?.quotedMessage;
-  // Direct message fields (when media is sent WITH the command)
-  const directImg = msg.message?.imageMessage;
-  const directVid = msg.message?.videoMessage;
-  const directDoc = msg.message?.documentMessage;
-  // Quoted message fields
-  const qImg = quoted?.imageMessage;
-  const qVid = quoted?.videoMessage;
-  const qDoc = quoted?.documentMessage;
-  const qStk = quoted?.stickerMessage;
-  const qTxt = quoted?.conversation || quoted?.extendedTextMessage?.text || "";
-  const question = args.join(" ").trim() || "Analyze this content. If it's a homework question or assignment, solve it step by step and explain your reasoning clearly.";
-  // ── Build Gemini parts ────────────────────────────────────────────────────
-  const parts = [];
-  parts.push({ text: question });
-  let mediaLabel = "";
-  let mediaLoaded = false;
-  await react(sock, msg, "🧠");
-  const statMsg = await sock.sendMessage(jid, { text: `🧠 *Homework AI*\n\n⬡ Loading content...\n◻ Thinking...\n◻ Sending answer...` }, { quoted: msg });
-  try {
-    // ── Helper: download and encode any media ─────────────────────────────
-    async function _gemPart(mediaMsg, mediaType, overrideMime) {
-      const stream = await downloadContentFromMessage(mediaMsg, mediaType);
-      let buf = Buffer.from([]);
-      for await (const c of stream) buf = Buffer.concat([buf, c]);
-      const mimeType = overrideMime || mediaMsg.mimetype || (mediaType === "image" ? "image/jpeg" : "application/octet-stream");
-      return { inlineData: { mimeType, data: buf.toString("base64") } };
-    }
-    // Image (direct send or quoted)
-    const imgSrc = directImg || qImg;
-    if (imgSrc && !mediaLoaded) {
-      parts.push(await _gemPart(imgSrc, "image"));
-      mediaLabel = "🖼️ image";
-      mediaLoaded = true;
-    }
-    // PDF or document (direct or quoted)
-    const docSrc = directDoc || qDoc;
-    if (docSrc && !mediaLoaded) {
-      const docMime = docSrc.mimetype || "";
-      const docName = (docSrc.fileName || "").toLowerCase();
-      const isPdf = docMime.includes("pdf") || docName.endsWith(".pdf");
-      if (isPdf) {
-        // Gemini 1.5/2.0 flash reads PDFs natively via inlineData
-        const stream = await downloadContentFromMessage(docSrc, "document");
-        let buf = Buffer.from([]);
-        for await (const c of stream) buf = Buffer.concat([buf, c]);
-        // Try Gemini native PDF reading first (inline base64)
-        parts.push({ inlineData: { mimeType: "application/pdf", data: buf.toString("base64") } });
-        mediaLabel = `📄 PDF (_${docSrc.fileName || "document.pdf"}_)`;
-        mediaLoaded = true;
-      } else {
-        // Non-PDF doc — extract as text
-        try {
-          const stream2 = await downloadContentFromMessage(docSrc, "document");
-          let buf2 = Buffer.from([]);
-          for await (const c of stream2) buf2 = Buffer.concat([buf2, c]);
-          const isText = docMime.startsWith("text/") || docName.endsWith(".txt") || docName.endsWith(".md") || docName.endsWith(".csv");
-          if (isText) {
-            const textContent = buf2.toString("utf8").slice(0, 30000);
-            parts.push({ text: `\n[Document content — ${docSrc.fileName || "file"}]:\n${textContent}` });
-            mediaLabel = `📎 document (_${docSrc.fileName || "file"}_)`;
-            mediaLoaded = true;
-          } else {
-            // Try as image (some docs like .heic are mistyped)
-            parts.push({ inlineData: { mimeType: docMime || "application/octet-stream", data: buf2.toString("base64") } });
-            mediaLabel = `📎 file (_${docSrc.fileName || "file"}_)`;
-            mediaLoaded = true;
-          }
-        } catch {}
-      }
-    }
-    // Video still frame — download video buffer, send as video for Gemini
-    const vidSrc = directVid || qVid;
-    if (vidSrc && !mediaLoaded) {
-      try {
-        parts.push(await _gemPart(vidSrc, "video"));
-        mediaLabel = "🎬 video";
-        mediaLoaded = true;
-      } catch {}
-    }
-    // Sticker → image
-    if (qStk && !mediaLoaded) {
-      try {
-        parts.push(await _gemPart(qStk, "sticker", "image/webp"));
-        mediaLabel = "🎭 sticker";
-        mediaLoaded = true;
-      } catch {}
-    }
-    // Quoted text as context
-    if (qTxt && !mediaLoaded) {
-      parts.push({ text: `\n[Context / quoted text]:\n${qTxt.slice(0, 8000)}` });
-      mediaLabel = "💬 text";
-      mediaLoaded = true;
-    }
-    if (!mediaLoaded && args.length === 0) {
-      await editMessage(sock, jid, statMsg.key, `🧠 *Homework AI*\n\n❌ Reply to an image, PDF, document, or text — or type your question directly.\n\n*Examples:*\n• Reply to a photo with *${CONFIG.PREFIX}homework*\n• *${CONFIG.PREFIX}homework what is photosynthesis?*\n• Reply to a PDF with *${CONFIG.PREFIX}homework summarize this*`).catch(()=>{});
-      return;
-    }
-    await editMessage(sock, jid, statMsg.key, `🧠 *Homework AI*\n\n⬢ Content loaded ✅\n⬡ Asking AI...\n◻ Sending answer...`);
-    const _hwSysPrompt = "You are a helpful homework and study assistant. When given content (images, PDFs, documents, questions), analyze it thoroughly and provide clear, accurate, step-by-step explanations. Format answers with proper structure. If solving math/science, show all working. If it is an essay or reading task, explain key points. Always be educational and complete.";
-    let _hwFreeAnswer = null;
-    // ── Try free vision API (Pollinations — no key needed) for image/media ──
-    if (mediaLoaded && parts.some(p => p.inlineData)) {
-      try {
-        const _imgPart = parts.find(p => p.inlineData);
-        const _pollBody = {
-          model: "openai",
-          messages: [{
-            role: "user",
-            content: [
-              { type: "text", text: _hwSysPrompt + "\n\n" + (parts.find(p=>p.text && p.text !== _hwSysPrompt)?.text || "Analyze and solve this homework.") },
-              { type: "image_url", image_url: { url: "data:" + _imgPart.inlineData.mimeType + ";base64," + _imgPart.inlineData.data } }
-            ]
-          }]
-        };
-        const _pollRes = await fetch("https://text.pollinations.ai/", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(_pollBody),
-          signal: AbortSignal.timeout(55000)
-        });
-        if (_pollRes.ok) {
-          const _pollText = await _pollRes.text();
-          if (_pollText && _pollText.trim().length > 20) _hwFreeAnswer = _pollText.trim();
-        }
-      } catch(_pollErr) {}
-    }
-    // ── Try free text AI for pure-text questions ─────────────────────────────
-    if (!_hwFreeAnswer && !mediaLoaded && parts.length && parts[0].text) {
-      try {
-        const _textQ = parts.map(p => p.text || "").join("\n").trim();
-        const _prexR = await prexzyGet("/ai/gpt4", { text: _textQ }, 30000);
-        const _prexAns = _prexR?.data?.result || _prexR?.data?.reply || _prexR?.data?.message || _prexR?.data?.response;
-        if (_prexAns && String(_prexAns).trim().length > 20) _hwFreeAnswer = String(_prexAns).trim();
-      } catch {}
-    }
-    // ── Deliver free answer if we have one (no Gemini key needed) ────────────
-    if (_hwFreeAnswer && !GEMINI_KEY) {
-      const _hwHeader = "🧠 *Homework AI*\n" + (mediaLoaded ? "📥 Content: " + mediaLabel + "\n" : "") + "❓ _" + question.slice(0,120) + (question.length>120?"...":"") + "_\n" + "─".repeat(30) + "\n\n";
-      await editMessage(sock, jid, statMsg.key, "🧠 *Homework AI* ✅").catch(()=>{});
-      if ((_hwHeader + _hwFreeAnswer).length > 9000) {
-        await sendReply(sock, msg, _hwHeader + _hwFreeAnswer.slice(0, 8800) + "\n\n_(truncated)_");
-      } else {
-        await sendReply(sock, msg, _hwHeader + _hwFreeAnswer);
-      }
-      await react(sock, msg, "✅");
-      return;
-    }
-    // ── Call Gemini 2.0 Flash (supports vision + PDF) ─────────────────────
-    if (!GEMINI_KEY) throw new Error("No API key configured and free vision API could not process this content. Try a clearer image or retype the question as text with .homework <question>");
-    const gemRes = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_KEY}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [{ parts }],
-          generationConfig: { maxOutputTokens: 4096, temperature: 0.4 },
-          systemInstruction: {
-            parts: [{ text: "You are a helpful homework and study assistant. When given content (images, PDFs, documents, questions), analyze it thoroughly and provide clear, accurate, step-by-step explanations. Format answers with proper structure. If solving math/science, show all working. If it is an essay or reading task, explain key points. Always be educational and complete." }]
-          }
-        }),
-        signal: AbortSignal.timeout(55000)
-      }
-    );
-    if (!gemRes.ok) {
-      const errBody = await gemRes.text().catch(() => "");
-      // Fallback for large PDFs: extract text and retry as text-only
-      if ((gemRes.status === 400 || gemRes.status === 413) && mediaLabel.includes("PDF")) {
-        await editMessage(sock, jid, statMsg.key, `🧠 *Homework AI*\n\n⬢ Content loaded ✅\n⬢ PDF too large for direct read — extracting text...\n⬡ Asking AI...`);
-        // Get the PDF buf again and extract text
-        const docSrc2 = directDoc || qDoc;
-        if (docSrc2) {
-          const stream3 = await downloadContentFromMessage(docSrc2, "document");
-          let buf3 = Buffer.from([]);
-          for await (const c of stream3) buf3 = Buffer.concat([buf3, c]);
-          let pdfText = "";
-          try { const pdfParse = (await import("pdf-parse")).default; pdfText = (await pdfParse(buf3)).text || ""; } catch {}
-          if (!pdfText) pdfText = _extractPdfRaw(buf3);
-          if (!pdfText || pdfText.length < 20) throw new Error("Could not extract PDF text");
-          const fallbackParts = [{ text: question }, { text: `\n[PDF content]:\n${pdfText.slice(0, 20000)}` }];
-          const gemRes2 = await fetch(
-            `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_KEY}`,
-            { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ contents: [{ parts: fallbackParts }], generationConfig: { maxOutputTokens: 4096, temperature: 0.4 } }), signal: AbortSignal.timeout(55000) }
-          );
-          if (!gemRes2.ok) throw new Error(`Gemini error: ${gemRes2.status}`);
-          const d2 = await gemRes2.json();
-          const reply2 = d2?.candidates?.[0]?.content?.parts?.map(p=>p.text||"").join("").trim();
-          if (!reply2) throw new Error("No response from AI");
-          await editMessage(sock, jid, statMsg.key, `🧠 *Homework AI* ✅`).catch(()=>{});
-          await sendReply(sock, msg, `🧠 *Homework AI*\n📄 Content: ${mediaLabel}\n❓ Question: _${question.slice(0,120)}${question.length>120?"...":""}_\n${"─".repeat(30)}\n\n${reply2}`);
-          await react(sock, msg, "✅");
-          return;
-        }
-        throw new Error(`Gemini error: ${gemRes.status}`);
-      }
-      throw new Error(`Gemini API error: ${gemRes.status} — ${errBody.slice(0,200)}`);
-    }
-    const gemData = await gemRes.json();
-    const reply = gemData?.candidates?.[0]?.content?.parts?.map(p => p.text || "").join("").trim();
-    if (!reply) throw new Error("AI returned an empty response. Try again or rephrase your question.");
-    await editMessage(sock, jid, statMsg.key, `🧠 *Homework AI* ✅`).catch(() => {});
-    const header = `🧠 *Homework AI*\n${mediaLoaded ? `📥 Content: ${mediaLabel}\n` : ""}❓ _${question.slice(0,120)}${question.length>120?"...":""}_\n${"─".repeat(30)}\n\n`;
-    const fullReply = header + reply;
-    // Split long replies
-    if (fullReply.length > 9000) {
-      const chunks = [];
-      let remaining = reply;
-      while (remaining.length > 0) { chunks.push(remaining.slice(0, 8000)); remaining = remaining.slice(8000); }
-      await sendReply(sock, msg, header + chunks[0] + (chunks.length > 1 ? `\n\n_(continued in next message — ${chunks.length - 1} more parts)_` : ""));
-      for (let i = 1; i < chunks.length; i++) await sock.sendMessage(jid, { text: `🧠 *Homework AI* (part ${i+1}/${chunks.length})\n\n${chunks[i]}` }, { quoted: msg });
-    } else {
-      await sendReply(sock, msg, fullReply);
-    }
-    await react(sock, msg, "✅");
-  } catch (e) {
-    await react(sock, msg, "❌");
-    await editMessage(sock, jid, statMsg.key, `❌ *Homework AI failed*\n\n${e.message}\n\n_Try again or rephrase your question._`).catch(() => {});
-  }
-});
-
-// ─────────────────────────────────────────────────────────────────────
-// v15: TOPDF — convert text (args, replied text, or replied .txt) into PDF
-// ─────────────────────────────────────────────────────────────────────
-cmd(["topdf", "txt2pdf", "text2pdf"], { desc: "Convert text → PDF and send the file", category: "CONVERT" }, async (sock, msg, args) => {
-  // Pull text from args, quoted text, or quoted .txt document
-  const q = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage;
-  let text = args.join(" ").trim();
-  let title = "Document";
-  if (!text && q) {
-    text = q?.conversation
-        || q?.extendedTextMessage?.text
-        || q?.imageMessage?.caption
-        || q?.videoMessage?.caption
-        || "";
-    if (!text && q?.documentMessage) {
-      const isText = (q.documentMessage.mimetype || "").startsWith("text/")
-                  || (q.documentMessage.fileName || "").toLowerCase().endsWith(".txt");
-      if (isText) {
-        try {
-          const stream = await downloadContentFromMessage(q.documentMessage, "document");
-          let buf = Buffer.from([]);
-          for await (const c of stream) buf = Buffer.concat([buf, c]);
-          text = buf.toString("utf8");
-          title = (q.documentMessage.fileName || "Document").replace(/\.[^.]+$/, "");
-        } catch {}
-      } else {
-        await sendReply(sock, msg, "❌ Replied document isn't a text file. Reply to a `.txt` or send text inline."); return;
-      }
-    }
-  }
-  if (!text) {
-    await sendReply(sock, msg, `📄 *Text → PDF Usage*\n\n${CONFIG.PREFIX}topdf <your text here>\nor reply to a text message / .txt file with ${CONFIG.PREFIX}topdf`);
-    return;
-  }
-  await react(sock, msg, "📄");
-  // Pure-JS minimal PDF builder — no pdfkit dependency
-  function _buildPdfBuffer(titleStr, bodyStr, author) {
-    const LINE_H = 14, PAGE_H = 841, PAGE_W = 595, MARGIN = 50, MAX_W = PAGE_W - MARGIN * 2;
-    const CHARS_PER_LINE = Math.floor(MAX_W / 6.5); // ~75 chars per line at 10pt
-    // Wrap text into lines
-    const rawLines = bodyStr.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
-    const allLines = [];
-    rawLines.forEach(rl => {
-      if (rl.length <= CHARS_PER_LINE) { allLines.push(rl); return; }
-      let s = 0;
-      while (s < rl.length) { allLines.push(rl.slice(s, s + CHARS_PER_LINE)); s += CHARS_PER_LINE; }
-    });
-    const LINES_PER_PAGE = Math.floor((PAGE_H - MARGIN * 3 - 30) / LINE_H);
-    // Split into pages
-    const pages = [];
-    for (let i = 0; i < allLines.length; i += LINES_PER_PAGE) pages.push(allLines.slice(i, i + LINES_PER_PAGE));
-    if (!pages.length) pages.push([]);
-    const objs = [];
-    let oid = 1;
-    const newObj = (content) => { objs.push({ id: oid++, content }); return oid - 1; };
-    // Catalog + Pages
-    const catalogId = oid; newObj(null);
-    const pagesId   = oid; newObj(null);
-    const fontId    = oid; newObj('/Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding');
-    // Build page streams
-    const pageIds = [], contentIds = [];
-    pages.forEach((lines, pi) => {
-      const escStr = (s) => s.replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)').replace(/[^\x20-\x7E]/g, ' ');
-      let stream = 'BT\n/F1 14 Tf\n' + MARGIN + ' ' + (PAGE_H - MARGIN - 14) + ' Td\n';
-      stream += '(' + escStr(titleStr.slice(0,80)) + ') Tj\n';
-      stream += '0 -6 Td\n/F1 7 Tf\n(' + escStr('by ' + author + ' • page ' + (pi+1) + '/' + pages.length) + ') Tj\n';
-      stream += '0 -' + (LINE_H + 4) + ' Td\n/F1 10 Tf\n';
-      lines.forEach((ln) => { stream += '(' + escStr(ln) + ') Tj\n0 -' + LINE_H + ' Td\n'; });
-      stream += 'ET';
-      const cid = oid; newObj('/Length ' + stream.length + '\n' + '>>\nstream\n' + stream + '\nendstream');
-      // hack: override content
-      objs[cid-1].content = '/Length ' + stream.length + '\n>>\nstream\n' + stream + '\nendstream';
-      contentIds.push(cid);
-      const pid = oid; newObj('/Type /Page /Parent ' + pagesId + ' 0 R /MediaBox [0 0 ' + PAGE_W + ' ' + PAGE_H + '] /Contents ' + cid + ' 0 R /Resources << /Font << /F1 ' + fontId + ' 0 R >> >>');
-      pageIds.push(pid);
-    });
-    objs[pagesId-1].content = '/Type /Pages /Count ' + pages.length + ' /Kids [' + pageIds.map(p=>p+' 0 R').join(' ') + ']';
-    objs[catalogId-1].content = '/Type /Catalog /Pages ' + pagesId + ' 0 R';
-    // Build PDF bytes
-    let pdf = '%PDF-1.4\n%\xE2\xE3\xCF\xD3\n';
-    const offsets = [];
-    objs.forEach(o => {
-      offsets.push(pdf.length);
-      if (o.content && o.content.includes('stream')) {
-        pdf += o.id + ' 0 obj\n<<' + o.content + '\nendobj\n';
-      } else {
-        pdf += o.id + ' 0 obj\n<<' + (o.content||'') + '>>\nendobj\n';
-      }
-    });
-    const xrefPos = pdf.length;
-    pdf += 'xref\n0 ' + (oid) + '\n0000000000 65535 f \n';
-    offsets.forEach(off => { pdf += String(off).padStart(10,'0') + ' 00000 n \n'; });
-    pdf += 'trailer\n<</Size ' + oid + ' /Root ' + catalogId + ' 0 R>>\nstartxref\n' + xrefPos + '\n%%EOF';
-    return Buffer.from(pdf, 'binary');
-  }
-  try {
-    const buf = _buildPdfBuffer(title, text, CONFIG.OWNER_NAME || CONFIG.BOT_NAME);
-    const fname = `${title.replace(/[^A-Za-z0-9_-]+/g, "_").slice(0, 40) || "Document"}.pdf`;
-    await sock.sendMessage(msg.key.remoteJid, {
-      document: buf, fileName: fname, mimetype: "application/pdf",
-      caption: `📄 *${fname}*\n📊 Size: ${(buf.length / 1024).toFixed(1)} KB`,
-    }, { quoted: msg });
-    await react(sock, msg, "✅");
-  } catch (e) {
-    await react(sock, msg, "❌");
-    await sendReply(sock, msg, `❌ PDF generation failed: ${e.message}`);
-  }
-});
-
-// ─────────────────────────────────────────────────────────────────────
-// v15: ENCRYPT / DECRYPT — for FILES (not text). AES-256-GCM with password.
-// Usage: reply to a document/image/video/audio with .encrypt <password>
-//        reply to a .miasenc file with .decrypt <password>
-// ─────────────────────────────────────────────────────────────────────
-const ENC_MAGIC = Buffer.from("MIASENC1");
-
-async function _grabRepliedMedia(msg) {
-  const q = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage;
-  if (!q) return null;
-  let mediaMsg = null, type = null, name = null, mime = null;
-  if (q.documentMessage)        { mediaMsg = q.documentMessage; type = "document"; name = q.documentMessage.fileName; mime = q.documentMessage.mimetype; }
-  else if (q.imageMessage)      { mediaMsg = q.imageMessage;    type = "image";    name = `image-${Date.now()}.jpg`; mime = "image/jpeg"; }
-  else if (q.videoMessage)      { mediaMsg = q.videoMessage;    type = "video";    name = `video-${Date.now()}.mp4`; mime = "video/mp4"; }
-  else if (q.audioMessage)      { mediaMsg = q.audioMessage;    type = "audio";    name = `audio-${Date.now()}.ogg`; mime = "audio/ogg"; }
-  else if (q.stickerMessage)    { mediaMsg = q.stickerMessage;  type = "sticker";  name = `sticker-${Date.now()}.webp`; mime = "image/webp"; }
-  if (!mediaMsg) return null;
-  const stream = await downloadContentFromMessage(mediaMsg, type);
-  let buf = Buffer.from([]);
-  for await (const c of stream) buf = Buffer.concat([buf, c]);
-  return { buf, name: name || `file-${Date.now()}`, mime: mime || "application/octet-stream" };
-}
-
-cmd(["encrypt", "encfile"], { desc: "Encrypt a replied FILE with a password (AES-256-GCM)", category: "TOOLS", ownerOnly: true }, async (sock, msg, args) => {
-  const password = args.join(" ").trim();
-  if (!password) { await sendReply(sock, msg, `🔐 *File Encrypt Usage*\n\nReply to any file/image/video/audio with:\n${CONFIG.PREFIX}encrypt <password>\n\n_Output: a .miasenc file. Decrypt with the same password using ${CONFIG.PREFIX}decrypt_`); return; }
-  const media = await _grabRepliedMedia(msg).catch(() => null);
-  if (!media) { await sendReply(sock, msg, "❌ Reply to a file/image/video/audio/sticker, then add the password.\nExample: reply to a PDF and send `.encrypt mySecret`"); return; }
-  await react(sock, msg, "🔐");
-  try {
-    const salt = crypto.randomBytes(16);
-    const iv   = crypto.randomBytes(12);
-    const key  = crypto.scryptSync(password, salt, 32);
-    const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
-    // Embed original filename + mime in header so decrypt can restore them
-    const meta = Buffer.from(JSON.stringify({ name: media.name, mime: media.mime }), "utf8");
-    const metaLen = Buffer.alloc(2); metaLen.writeUInt16BE(meta.length, 0);
-    const enc = Buffer.concat([cipher.update(Buffer.concat([metaLen, meta, media.buf])), cipher.final()]);
-    const tag = cipher.getAuthTag();
-    // Layout: MAGIC(8) | salt(16) | iv(12) | tag(16) | ciphertext
-    const out = Buffer.concat([ENC_MAGIC, salt, iv, tag, enc]);
-    const fname = `${(media.name || "file").replace(/\.[^.]+$/, "")}.miasenc`;
-    await sock.sendMessage(msg.key.remoteJid, {
-      document: out, fileName: fname, mimetype: "application/octet-stream",
-      caption: `🔐 *Encrypted*\n\n📄 Original: \`${media.name}\`\n🔑 Algorithm: AES-256-GCM\n📏 Size: ${(out.length / 1024).toFixed(1)} KB\n\n_Decrypt with the same password using_ \`${CONFIG.PREFIX}decrypt <password>\``,
-    }, { quoted: msg });
-    await react(sock, msg, "✅");
-  } catch (e) {
-    await react(sock, msg, "❌");
-    await sendReply(sock, msg, `❌ Encrypt failed: ${e.message}`);
-  }
-});
-
-cmd(["decrypt", "decfile"], { desc: "Decrypt a replied .miasenc file with the password", category: "TOOLS", ownerOnly: true }, async (sock, msg, args) => {
-  const password = args.join(" ").trim();
-  if (!password) { await sendReply(sock, msg, `🔓 *File Decrypt Usage*\n\nReply to a .miasenc file with:\n${CONFIG.PREFIX}decrypt <password>`); return; }
-  const media = await _grabRepliedMedia(msg).catch(() => null);
-  if (!media) { await sendReply(sock, msg, "❌ Reply to a .miasenc file with the password."); return; }
-  await react(sock, msg, "🔓");
-  try {
-    const buf = media.buf;
-    if (buf.length < 8 + 16 + 12 + 16 + 2 || !buf.slice(0, 8).equals(ENC_MAGIC)) {
-      await react(sock, msg, "❌");
-      await sendReply(sock, msg, "❌ Not a MIAS-encrypted file (missing MIASENC1 header)."); return;
-    }
-    const salt = buf.slice(8, 24);
-    const iv   = buf.slice(24, 36);
-    const tag  = buf.slice(36, 52);
-    const ct   = buf.slice(52);
-    const key  = crypto.scryptSync(password, salt, 32);
-    const decipher = crypto.createDecipheriv("aes-256-gcm", key, iv);
-    decipher.setAuthTag(tag);
-    let plain;
-    try { plain = Buffer.concat([decipher.update(ct), decipher.final()]); }
-    catch { await react(sock, msg, "❌"); await sendReply(sock, msg, "❌ Wrong password or corrupted file."); return; }
-    const metaLen = plain.readUInt16BE(0);
-    const meta = JSON.parse(plain.slice(2, 2 + metaLen).toString("utf8"));
-    const data = plain.slice(2 + metaLen);
-    await sock.sendMessage(msg.key.remoteJid, {
-      document: data,
-      fileName: meta.name || "decrypted.bin",
-      mimetype: meta.mime || "application/octet-stream",
-      caption: `🔓 *Decrypted*\n\n📄 Restored: \`${meta.name}\`\n📏 Size: ${(data.length / 1024).toFixed(1)} KB`,
-    }, { quoted: msg });
-    await react(sock, msg, "✅");
-  } catch (e) {
-    await react(sock, msg, "❌");
-    await sendReply(sock, msg, `❌ Decrypt failed: ${e.message}`);
-  }
-});
-
-cmd("repo", { desc: "Get bot repository info", category: "MISC" }, async (sock, msg) => {
-  await react(sock, msg, "📦");
-  const repoText = `📦 *MIAS MDX Bot Repository*
-
-╭━━━━━━━━━━━━━━━╮
-┃ 🤖 *${CONFIG.BOT_NAME}*
-┃ 📌 Version: *${CONFIG.VERSION}*
-┃ 👑 Owner: *${CONFIG.OWNER_NAME}*
-┃ ⚡ Commands: *${commands.size}+*
-┃ 📡 Platform: *WhatsApp*
-┃ 🛠️ Engine: *Baileys*
-┃ 📜 License: *MIT*
-╰━━━━━━━━━━━━━━━╯
-
-🔗 *Links:*
-• Pair Site: https://mias-sessions-production.up.railway.app/
-• Support: _DM the owner_
-
-💡 *Features:*
-• AI Chat, Image Gen, Vision
-• 500+ Commands
-• Multi-API Fallbacks
-• Economy & Games
-• Group Management
-• Download from 15+ platforms
-• Logo Generation
-• Anti-spam & Moderation`;
-  try {
-    await sendCTAButtons(sock, msg.key.remoteJid, msg, repoText, [
-      { type: "url", text: "🔗 Pair Site", url: "https://mias-sessions-production.up.railway.app/" },
-      { type: "quick_reply", text: "📋 All Commands", id: `BTN:${CONFIG.PREFIX}allmenu` },
-      { type: "quick_reply", text: "⚙️ Settings", id: `BTN:${CONFIG.PREFIX}settings` },
-    ], `${CONFIG.BOT_NAME} • Repository`);
-  } catch { await sendReply(sock, msg, repoText); }
-});
-
-// ═══════════════════════════════════════════════════════════════════════════════
-//  WHATSAPP COMMANDS
-// ═══════════════════════════════════════════════════════════════════════════════
-cmd("unsend", { desc: "Delete your message", category: "WHATSAPP" }, async (sock, msg) => {
-  const q = msg.message?.extendedTextMessage?.contextInfo;
-  if (!q) { await sendReply(sock, msg, "❌ Reply to your message."); return; }
-  try { await sock.sendMessage(msg.key.remoteJid, { delete: { id: q.stanzaId, remoteJid: msg.key.remoteJid, fromMe: true } }); }
-  catch { await sendReply(sock, msg, "❌ Can only delete your own messages."); }
-});
-cmd("del", { desc: "Delete replied message (del 3s = delayed delete)", category: "WHATSAPP", ownerOnly: true }, async (sock, msg, args) => {
-  const jid = msg.key.remoteJid;
-  // Timed delete: .del 3s / .del 5m etc
-  const timeArg = args[0] || "";
-  const timeMatch = timeArg.match(/^(\d+)(s|m|h)$/i);
-  if (timeMatch) {
-    const val = parseInt(timeMatch[1]);
-    const unit = timeMatch[2].toLowerCase();
-    const ms = unit === "s" ? val * 1000 : unit === "m" ? val * 60000 : val * 3600000;
-    if (ms > 86400000) { await sendReply(sock, msg, "❌ Max delay is 24h."); return; }
-    await react(sock, msg, "⏳");
-    // Delete the .del command message itself immediately
-    try { await sock.sendMessage(jid, { delete: msg.key }); } catch {}
-    const ctx = msg.message?.extendedTextMessage?.contextInfo;
-    if (!ctx?.stanzaId) { await sendReply(sock, msg, "❌ Reply to a message to delete it."); return; }
-    setTimeout(async () => {
-      try {
-        const deleteKey = { id: ctx.stanzaId, remoteJid: jid, fromMe: ctx.fromMe || false, ...(ctx.participant ? { participant: ctx.participant } : {}) };
-        await sock.sendMessage(jid, { delete: deleteKey });
-      } catch (e) { console.error("[DEL-TIMED]", e.message); }
-    }, ms);
-    return;
-  }
-  const q = msg.message?.extendedTextMessage?.contextInfo;
-  if (!q?.stanzaId) { await sendReply(sock, msg, "❌ Reply to a message to delete it."); return; }
-  // Resolve participant from _msgRetryStore for accuracy (stanzaId → stored key)
-  const _storedMsg = typeof _msgRetryStore !== 'undefined' ? _msgRetryStore.get(q.stanzaId) : null;
-  const _resolvedParticipant = _storedMsg?._participant || q.participant || null;
-  // In groups, check if bot is admin — can only delete own messages if not admin
-  let _delBotIsAdmin = false;
-  if (isGroup(msg)) {
-    const botJid = sock.user?.id?.replace(/:.*@/, "@") || "";
-    const botNum = _cleanNum(botJid);
-    try {
-      // v14 FIX: try live fetch, fall back to cached metadata
-      // v15 FIX: if fetch fails and cache is empty, assume admin for owner callers
-      //          (root cause of "works once then stops": WA throttles groupMetadata
-      //           after first call — second call returns null → isAdmin=false → skip)
-      const meta = await sock.groupMetadata(jid).catch(() => _groupMetaCache?.get(jid) || null);
-      const _botLidBase = botJid.includes("@lid") ? botJid.split(":")[0] : null;
-      if (meta) {
-        if (!_groupMetaCache?.has(jid)) { try { _groupMetaCache.set(jid, meta); } catch {} }
-        _delBotIsAdmin = meta.participants.some(p => {
-          const _pNum  = _cleanNum(String(p.id || '').split(':')[0].split('@')[0]);
-          const _pBase = String(p.id || '').split(':')[0];
-          const _numMatch = _pNum === botNum && botNum.length > 4;
-          const _lidMatch = _botLidBase && _pBase === _botLidBase;
-          return (_numMatch || _lidMatch) && (p.admin === "admin" || p.admin === "superadmin");
-        });
-      } else {
-        // Metadata unavailable — assume admin for owner to allow retry
-        // (WA will silently reject the delete proto if bot truly isn't admin)
-        if (isOwner(getSender(msg)) || msg.key.fromMe) _delBotIsAdmin = true;
-      }
-    } catch {
-      if (isOwner(getSender(msg)) || msg.key.fromMe) _delBotIsAdmin = true;
-    }
-    const isOwnMsg = (_storedMsg ? !!_storedMsg._fromMe : q.fromMe) || (_resolvedParticipant && _cleanNum(_resolvedParticipant) === botNum);
-    if (!_delBotIsAdmin && !isOwnMsg) {
-      await sendReply(sock, msg, "❌ Bot must be a group admin to delete others' messages.\n\nIf bot IS admin, try *.del* again (metadata may be refreshing). Or use *.cleanlast <N>* to bulk-delete.");
-      return;
-    }
-  }
-  try {
-    const botJidFull = sock.user?.id?.replace(/:.*@/, "@") || "";
-    const botNumFull = _cleanNum(botJidFull);
-    const participantNum = _resolvedParticipant ? _cleanNum(_resolvedParticipant) : null;
-    const isFromBot = (_storedMsg?._fromMe === true) || q.fromMe === true || (participantNum && participantNum === botNumFull);
-    // Build all participant JID variants (s.whatsapp.net + @lid) for group deletion
-    const _rawPart = _resolvedParticipant || null;
-    const _partNum = _rawPart ? _rawPart.split(':')[0].split('@')[0].replace(/[^0-9]/g,'') : null;
-    // FIX: include raw participant FIRST (exact JID from contextInfo, before any normalisation)
-    // so LID-format participants ("1234@lid") are tried as-is before the phone-number fallback.
-    const _partVariants = Array.from(new Set([
-      _rawPart,                                      // exact JID from contextInfo (highest priority)
-      _partNum ? _partNum + "@s.whatsapp.net" : null,// bare phone JID
-      _partNum ? _partNum + "@lid" : null,           // bare LID JID
-    ].filter(Boolean)));
-    // CRITICAL FIX: sendMessage({delete}) NEVER throws in Baileys — fire-and-forget.
-    // Old code broke on first attempt, setting deleted=true even when WA rejected silently.
-    // New approach: for admin-revoke, send ALL participant variants (WA ignores wrong ones
-    // and acts on the correct one); for own-message, break only if no error.
-    let deleted = false;
-    if (_delBotIsAdmin && isGroup(msg) && _partVariants.length > 0) {
-      // Send ALL participant JID variants — WhatsApp accepts the correct one silently
-      for (const _pv of _partVariants) {
-        try {
-          await sock.sendMessage(jid, { delete: { id: q.stanzaId, remoteJid: jid, fromMe: false, participant: _pv } });
-        } catch {}
-      }
-      // Also send without participant as group admin fallback
-      try { await sock.sendMessage(jid, { delete: { id: q.stanzaId, remoteJid: jid, fromMe: false } }); } catch {}
-      deleted = true;
-    } else if (_delBotIsAdmin && isGroup(msg)) {
-      // No participant variants — try without participant
-      try { await sock.sendMessage(jid, { delete: { id: q.stanzaId, remoteJid: jid, fromMe: false } }); deleted = true; } catch {}
-    }
-    if (isFromBot) {
-      try { await sock.sendMessage(jid, { delete: { id: q.stanzaId, remoteJid: jid, fromMe: true } }); deleted = true; } catch {}
-    }
-    // Non-group or no match: try both fromMe variants
-    if (!deleted) {
-      try { await sock.sendMessage(jid, { delete: { id: q.stanzaId, remoteJid: jid, fromMe: false } }); deleted = true; } catch {}
-      try { await sock.sendMessage(jid, { delete: { id: q.stanzaId, remoteJid: jid, fromMe: true } }); deleted = true; } catch {}
-    }
-    if (!deleted) throw new Error("Bot needs admin privileges to delete others' messages. Use .cleanlast <N> as an alternative.");
-    // Silently delete the .del command itself
-    try { await sock.sendMessage(jid, { delete: msg.key }); } catch {}
-  } catch (e) { await sendReply(sock, msg, "❌ Delete failed: " + e.message + "\n\nMake sure bot is admin in the group."); }
-});
-cmd("forward", { desc: "Forward quoted message to a chat", category: "WHATSAPP" }, async (sock, msg, args) => {
-  const ctx = msg.message?.extendedTextMessage?.contextInfo;
-  const quoted = ctx?.quotedMessage;
-  if (!quoted) { await sendReply(sock, msg, `❌ Reply to a message with ${CONFIG.PREFIX}forward <number/@mention/group JID>`); return; }
-  const mentions = ctx?.mentionedJid || [];
-  let targetJid;
-  if (mentions.length) targetJid = mentions[0];
-  else if (args[0]) {
-    const num = args[0].replace(/[^0-9]/g, "");
-    targetJid = args[0].includes("@g.us") ? args[0] : num + "@s.whatsapp.net";
-  } else { targetJid = getOwnerJid(); }
-  await react(sock, msg, "➡️");
-  try {
-    // Try forwarding media
-    const mediaTypes = [
-      { key: "imageMessage", type: "image" },
-      { key: "videoMessage", type: "video" },
-      { key: "audioMessage", type: "audio" },
-      { key: "stickerMessage", type: "sticker" },
-      { key: "documentMessage", type: "document" },
-    ];
-    let sent = false;
-    for (const mt of mediaTypes) {
-      const mediaMsg = quoted[mt.key];
-      if (mediaMsg) {
-        const dlType = mt.type === "sticker" ? "sticker" : mt.type === "document" ? "document" : mt.type;
-        const stream = await downloadContentFromMessage(mediaMsg, dlType);
-        let buf = Buffer.from([]);
-        for await (const c of stream) buf = Buffer.concat([buf, c]);
-        const sendObj = {};
-        if (mt.type === "image") { sendObj.image = buf; sendObj.caption = mediaMsg.caption || ""; }
-        else if (mt.type === "video") { sendObj.video = buf; sendObj.caption = mediaMsg.caption || ""; }
-        else if (mt.type === "audio") { sendObj.audio = buf; sendObj.mimetype = mediaMsg.mimetype || "audio/ogg"; sendObj.ptt = !!mediaMsg.ptt; }
-        else if (mt.type === "sticker") { sendObj.sticker = buf; }
-        else { sendObj.document = buf; sendObj.fileName = mediaMsg.fileName || "file"; sendObj.mimetype = mediaMsg.mimetype; }
-        await sock.sendMessage(targetJid, sendObj);
-        sent = true; break;
-      }
-    }
-    if (!sent) {
-      const text = quoted.conversation || quoted.extendedTextMessage?.text || "";
-      await sock.sendMessage(targetJid, { text: text || "Forwarded message" });
-    }
-    let _fwdName = targetJid.split("@")[0];
-    let _fwdType = targetJid.endsWith("@g.us") ? "group" : "contact";
-    try {
-      if (targetJid.endsWith("@g.us")) {
-        const _gmeta = (typeof _groupMetaCache !== "undefined" && _groupMetaCache?.get(targetJid)) || await sock.groupMetadata(targetJid).catch(() => null);
-        if (_gmeta?.subject) _fwdName = _gmeta.subject;
-      } else {
-        _fwdName = await getDisplayName(sock, targetJid, null).catch(() => null) || _fwdName;
-      }
-    } catch {}
-    await sendReply(sock, msg, `✅ *Forwarded to ${_fwdType}: ${_fwdName}*\n\n> ᴘᴏᴡᴇʀᴇᴅ ʙʏ *${CONFIG.BOT_NAME}* ⚡`);
-  } catch (e) { await sendReply(sock, msg, `❌ Forward failed: ${e.message}`); }
-});
-cmd("echo", { desc: "Echo text", category: "WHATSAPP" }, async (sock, msg, args) => {
-  await sendReply(sock, msg, args.join(" ") || "Echo!");
-});
-cmd("block", { desc: "Block a user — .block @mention / reply / number", category: "WHATSAPP" }, async (sock, msg, args) => {
-  const sender = getSender(msg);
-  if (!isOwner(sender) && !isCreator(sender)) {
-    await sendReply(sock, msg, `❌ Only the bot owner can use this command.`);
-    return;
-  }
-  const { targetJid, targetNum } = await resolveCommandTarget(sock, msg, args);
-  if (!targetJid || !targetNum) {
-    await sendReply(sock, msg, `Usage: *${CONFIG.PREFIX}block @user*  OR  reply to their message  OR  *${CONFIG.PREFIX}block <number>*`);
-    return;
-  }
-  const myNum = _cleanNum(sock.user?.id || "");
-  if (targetNum === myNum) { await sendReply(sock, msg, `❌ Cannot block the bot itself!`); return; }
-  // v9: owner/creator CAN be blocked (user request). No guard.
-  await react(sock, msg, "🚫");
-  let blockJid = String(targetNum).replace(/[^0-9]/g, "") + "@s.whatsapp.net";
-  const name = await getDisplayName(sock, targetJid, isGroup(msg) ? msg.key.remoteJid : null).catch(() => "+" + targetNum);
-  // v12 FIX: WhatsApp requires PN form for block — try @s.whatsapp.net first,
-  // then targetJid as-given, then @lid fallback. Skip empty/invalid variants.
-  // Resolve correct WA JID via onWhatsApp (fixes "bad-request" for unregistered/format mismatches)
-  try {
-    if (typeof sock.onWhatsApp === 'function') {
-      const _waLookup = await sock.onWhatsApp(targetNum).catch(() => []);
-      const _waHit = (_waLookup || [])[0];
-      if (_waHit?.exists && _waHit?.jid) blockJid = _waHit.jid;
-    }
-  } catch (_waErr) {}
-  // FIX: strip device suffix (e.g. 234xxx:15@s.whatsapp.net → 234xxx@s.whatsapp.net)
-  // before building the JID list — WA returns "bad-request" for device-suffixed JIDs
-  const _stripDev = (j) => { const [n, d] = String(j||"").split("@"); return n.split(":")[0] + "@" + (d || "s.whatsapp.net"); };
-  const _blockVariants = Array.from(new Set([
-    _stripDev(blockJid),
-    _stripDev(targetJid),
-    _stripDev(blockJid).replace("@s.whatsapp.net", "@lid"),
-  ].filter(v => v && /@/.test(v) && !v.startsWith("@"))));
-  let _blockDone = false;
-  // PRIMARY: raw IQ blocklist node — reliable across kelvdra builds
-  if (typeof sock.query === "function") {
-    for (const _bj of _blockVariants) {
-      try {
-        await sock.query({ tag: "iq", attrs: { xmlns: "blocklist", type: "set", to: "s.whatsapp.net" }, content: [{ tag: "item", attrs: { action: "block", jid: _bj } }] });
-        _blockDone = true; break;
-      } catch (_bErr) { try { console.error("[block IQ]", _bj, _bErr?.message); } catch {} }
-    }
-  }
-  // SECONDARY: updateBlockStatus (some builds expose this correctly)
-  if (!_blockDone) {
-    for (const _bj of _blockVariants) {
-      try { await sock.updateBlockStatus(_bj, "block"); _blockDone = true; break; }
-      catch (e) { try { console.error("[block updateBlockStatus]", _bj, e?.data?.reason || e?.message); } catch {} }
-    }
-  }
-  if (_blockDone) {
-    bannedUsers.set(blockJid, "Blocked by owner");
-    bannedUsers.set(targetJid, "Blocked by owner");
-    if (targetNum) bannedUsers.set(targetNum + "@s.whatsapp.net", "Blocked by owner");
-    saveNow();
-    await sendReply(sock, msg, `🚫 *MIAS MDX — Block*
-
-✅ *${name}* (+${targetNum}) has been *blocked!*`, [targetJid]);
-    await react(sock, msg, "✅");
-  } else {
-    // WhatsApp sometimes rejects @lid / business / invalid contact block IQs with bad-request.
-    // Still apply the bot-side block so this user cannot use the bot, then explain clearly.
-    bannedUsers.set(blockJid, "Local block fallback");
-    bannedUsers.set(targetJid, "Local block fallback");
-    if (targetNum) bannedUsers.set(targetNum + "@s.whatsapp.net", "Local block fallback");
-    saveNow();
-    await sendReply(sock, msg, `🚫 *MIAS MDX — Block*
-
-✅ *Bot-side block applied for ${name}* (+${targetNum}).
-
-⚠️ WhatsApp rejected the device-level block for this contact, but the bot will ignore their commands/messages now.`, [targetJid]);
-    await react(sock, msg, "✅");
-  }
-});
-cmd("unblock", { desc: "Unblock a user — .unblock @mention / reply / number", category: "WHATSAPP" }, async (sock, msg, args) => {
-  const sender = getSender(msg);
-  if (!isOwner(sender) && !isCreator(sender)) {
-    await sendReply(sock, msg, `❌ Only the bot owner can use this command.`);
-    return;
-  }
-  const { targetJid, targetNum } = await resolveCommandTarget(sock, msg, args);
-  if (!targetJid || !targetNum) {
-    await sendReply(sock, msg, `Usage: *${CONFIG.PREFIX}unblock @user*  OR  reply to their message  OR  *${CONFIG.PREFIX}unblock <number>*`);
-    return;
-  }
-  await react(sock, msg, "🔓");
-  let unblockJid = String(targetNum).replace(/[^0-9]/g, "") + "@s.whatsapp.net";
-  // Resolve correct WA JID (fixes "bad-request" for number format mismatches)
-  try {
-    if (typeof sock.onWhatsApp === 'function') {
-      const _waULookup = await sock.onWhatsApp(targetNum).catch(() => []);
-      const _waUHit = (_waULookup || [])[0];
-      if (_waUHit?.exists && _waUHit?.jid) unblockJid = _waUHit.jid;
-    }
-  } catch (_waUErr) {}
-  const name = await getDisplayName(sock, targetJid, isGroup(msg) ? msg.key.remoteJid : null).catch(() => "+" + targetNum);
-  let _unblockDone = false;
-  const _unblockVariants = [unblockJid, unblockJid.replace("@s.whatsapp.net", "@lid")];
-  // PRIMARY: raw IQ — reliable across kelvdra builds
-  if (typeof sock.query === "function") {
-    for (const _uj of _unblockVariants) {
-      try {
-        await sock.query({ tag: "iq", attrs: { xmlns: "blocklist", type: "set", to: "s.whatsapp.net" }, content: [{ tag: "item", attrs: { action: "unblock", jid: _uj } }] });
-        _unblockDone = true; break;
-      } catch (_uErr) { try { console.error("[unblock IQ]", _uj, _uErr?.message); } catch {} }
-    }
-  }
-  // SECONDARY: updateBlockStatus
-  if (!_unblockDone) {
-    for (const _uj of _unblockVariants) {
-      try { await sock.updateBlockStatus(_uj, "unblock"); _unblockDone = true; break; } catch {}
-    }
-  }
-  if (_unblockDone) {
-    bannedUsers.delete(unblockJid);
-    bannedUsers.delete(targetJid);
-    saveNow();
-    await sendReply(sock, msg, `🔓 *MIAS MDX — Unblock*
-
-✅ *${name}* (+${targetNum}) has been *unblocked!*
-
-_This user can now contact the bot again._`, [targetJid]);
-    await react(sock, msg, "✅");
-  } else {
-    // Device-level unblock can fail for @lid/business contacts. Always clear bot-side fallback bans.
-    bannedUsers.delete(unblockJid);
-    bannedUsers.delete(targetJid);
-    bannedUsers.delete(targetNum + "@s.whatsapp.net");
-    bannedUsers.delete(targetNum + "@lid");
-    for (const _k of [...bannedUsers.keys()]) { if (targetNum && _k.includes(targetNum)) bannedUsers.delete(_k); }
-    saveNow();
-    await sendReply(sock, msg, `🔓 *MIAS MDX — Unblock*
-
-✅ *Bot-side unblock applied for ${name}* (+${targetNum}).
-
-⚠️ WhatsApp rejected the device-level unblock, but the bot-side block list is cleared.`, [targetJid]);
-    await react(sock, msg, "✅");
-  }
-});
-// ── Helper: coerce messageTimestamp / Long → plain number (seconds).
-//    @kelvdra/baileys returns Long for some payloads; chatModify needs Number.
-function _tsNum(v) {
-  if (v == null) return Math.floor(Date.now() / 1000);
-  if (typeof v === "number") return v;
-  if (typeof v === "bigint") return Number(v);
-  if (typeof v === "object" && typeof v.toNumber === "function") {
-    try { return v.toNumber(); } catch { return Math.floor(Date.now() / 1000); }
-  }
-  if (typeof v === "object" && "low" in v) return Number(v.low);
-  const n = Number(v);
-  return Number.isFinite(n) ? n : Math.floor(Date.now() / 1000);
-}
-// ── Helper: build a lastMessages array chatModify will accept (works for both
-//    DM and GROUP). We fall back to the current msg if nothing else is available.
-function _buildLastMsgs(msg) {
-  const ts = _tsNum(msg.messageTimestamp);
-  return [{ key: msg.key, messageTimestamp: ts }];
-}
-
-// ── App-state key bootstrap.
-//    chatModify (pin/archive/mute/etc.) requires `creds.myAppStateKeyId`.
-//    Fresh sessions sometimes never write it. We try, in order:
-//      1. Use whatever is already on creds
-//      2. Borrow the most recent app-state-sync-key in the keystore
-//      3. Trigger sock.resyncAppState() so the server pushes the key down
-//      4. Re-check the keystore and assign the freshest one
-//    Returns true if a key is present after this call, false otherwise.
-async function _ensureAppStateKey(sock) {
-  // v4.9.5: improved key-bootstrap that works even when auth.keys.getAll()
-  // is absent (most @kelvdra/baileys forks only expose .get(type, [ids])).
-  try {
-    const auth = sock?.authState;
-    if (!auth?.creds || !auth?.keys) return false;
-    if (auth.creds.myAppStateKeyId) return true;
-
-    // 1. Try getAll if available
-    let allKeys = {};
-    try {
-      if (typeof auth.keys.getAll === "function") {
-        allKeys = (await auth.keys.getAll("app-state-sync-key")) || {};
-      }
-    } catch {}
-    let firstId = Object.keys(allKeys)[0];
-    if (firstId) {
-      auth.creds.myAppStateKeyId = firstId;
-      try { sock.ev.emit("creds.update", auth.creds); } catch {}
-      return true;
-    }
-
-    // 2. Many forks store keys in a flat DB with predictable IDs — try
-    //    probing the first few well-known candidate IDs so we don't have to
-    //    enumerate.
-    const _probeIds = ["1","2","3","4","5","AAAAAAAAAA==","AAAAAAAAAB=="];
-    for (const candidate of _probeIds) {
-      try {
-        const probe = await auth.keys.get("app-state-sync-key", [candidate]);
-        if (probe && probe[candidate]) {
-          auth.creds.myAppStateKeyId = candidate;
-          try { sock.ev.emit("creds.update", auth.creds); } catch {}
-          return true;
-        }
-      } catch {}
-    }
-
-    // 3. Force server-side sync and wait briefly for the key event to land
-    if (typeof sock.resyncAppState === "function") {
-      try {
-        await sock.resyncAppState(
-          ["critical_block","critical_unblock_low","regular_high","regular_low","regular"],
-          false
-        );
-      } catch {}
-      // Give the server up to 2 s to push the app-state-sync-key
-      await new Promise(r => setTimeout(r, 2000));
-    }
-
-    // 4. After the wait, creds may have been updated by the incoming key event
-    if (auth.creds.myAppStateKeyId) return true;
-
-    // 5. Retry getAll one more time
-    try {
-      if (typeof auth.keys.getAll === "function") {
-        allKeys = (await auth.keys.getAll("app-state-sync-key")) || {};
-        firstId = Object.keys(allKeys)[0];
-        if (firstId) {
-          auth.creds.myAppStateKeyId = firstId;
-          try { sock.ev.emit("creds.update", auth.creds); } catch {}
-          return true;
-        }
-      }
-    } catch {}
-
-    return !!auth.creds.myAppStateKeyId;
-  } catch { return false; }
-}
-
-// ── Pretty error mapper: turn cryptic baileys errors into user guidance.
-function _explainAppStateErr(err) {
-  const m = String(err?.message || err || "").toLowerCase();
-  // "synced key from phone" is the WA-server message when the session has
-  // no app-state key yet — need to open WA on the phone at least once.
-  if (
-    m.includes("synced key from phone") ||
-    m.includes("app state key") ||
-    m.includes("appstate") ||
-    m.includes("app-state") ||
-    m.includes("no app state")
-  ) {
-    return (
-      "App-state key not yet synced — fix in 3 easy steps:\n" +
-      "  1️⃣  Open *WhatsApp* on your real phone\n" +
-      "  2️⃣  Open any chat, then come back here and retry the command\n" +
-      "  3️⃣  If it still fails, archive any chat on your phone once, then unarchive it\n" +
-      "This only happens on fresh pairs; the key persists after the first sync."
-    );
-  }
-  if (m.includes("rate-overlimit") || m.includes("rate-limit")) return "WhatsApp rate-limited the request. Wait ~30s and retry.";
-  if (m.includes("not-authorized") || m.includes("forbidden")) return "Not authorized — the bot isn't allowed to perform this action on this chat.";
-  return err?.message || String(err);
-}
-
-// ── App-state chatModify helper — tries all variants, auto-resyncs on key errors ──
-async function _tryChatModify(sock, payload, jid) {
-  // Callers that supply their own lastMessages take priority.
-  // For callers that don't, we still try without synthetic lastMessages
-  // (fake IDs like "AAAAA" cause WA to silently reject the modification).
-  const variants = [
-    payload,                                   // as-is (caller may have added lastMessages)
-    { ...payload, lastMessages: undefined },   // strip lastMessages if WA rejects with them
-  ];
-  let lastErr = "";
-  for (const v of variants) {
-    try { await sock.chatModify(v, jid); return { ok: true }; } catch (e) { lastErr = e?.message || String(e); }
-  }
-  // Slow fallback: resync app-state keys once, then retry
-  try { if (typeof sock.resyncAppState === "function") await sock.resyncAppState(["regular_high","regular_low","regular"], false); } catch {}
-  try { await _ensureAppStateKey(sock); } catch {}
-  for (const v of variants) {
-    try { await sock.chatModify(v, jid); return { ok: true }; } catch (e) { lastErr = e?.message || String(e); }
-  }
-  return { ok: false, err: lastErr };
-}
-
-cmd(["pinchat", "pin"], { desc: "Pin chat (DM or GC) or reply to pin a group message", category: "WHATSAPP", ownerOnly: true }, async (sock, msg) => {
-  const jid = msg.key.remoteJid;
-  const ctx = msg.message?.extendedTextMessage?.contextInfo
-           || msg.message?.imageMessage?.contextInfo
-           || msg.message?.videoMessage?.contextInfo
-           || msg.message?.documentMessage?.contextInfo;
-  // Reply to a message → pin that specific message in chat (group only feature on WA)
-  if (ctx?.stanzaId && isGroup(msg)) {
-    const pinKey = { remoteJid: jid, fromMe: ctx.fromMe || false, id: ctx.stanzaId, participant: ctx.participant || undefined };
-    let success = false, lastErr = "";
-    try { await sock.sendMessage(jid, { pinInChat: { key: pinKey, type: 1, senderTimestampMs: Date.now() } }); success = true; }
-    catch (e) { lastErr = e?.message || String(e); }
-    if (success) await sendReply(sock, msg, `📌 *Message pinned!*`);
-    else await sendReply(sock, msg, `❌ Pin failed — bot must be group admin and message must be recent.\n_${lastErr}_`);
-    return;
-  }
-  const tsSec = Math.floor(Date.now() / 1000);
-  const _pinLastMsg = { key: msg.key, messageTimestamp: msg.messageTimestamp || tsSec };
-  let _pinOk = false;
-  // Attempt 1: chatModify with real lastMessages (app-state based)
-  const _pinRes = await _tryChatModify(sock, { pin: tsSec, lastMessages: [_pinLastMsg] }, jid);
-  if (_pinRes.ok) _pinOk = true;
-  // Attempt 2: chatModify with pin: true (some kelvdra variants)
-  if (!_pinOk) {
-    try { await sock.chatModify({ pin: true }, jid); _pinOk = true; } catch {}
-  }
-  // Attempt 3: low-level IQ node (bypasses app-state, works on most kelvdra builds)
-  if (!_pinOk && typeof sock.query === "function") {
-    try {
-      await sock.query({
-        tag: "iq",
-        attrs: { type: "set", xmlns: "w:web:com.whatsapp.pin", to: "s.whatsapp.net" },
-        content: [{ tag: "pin", attrs: { action: "pin", jid: jid, time: String(tsSec) } }]
-      });
-      _pinOk = true;
-    } catch (_iqPinErr) {}
-  }
-  if (_pinOk) await sendReply(sock, msg, `📌 *Chat pinned!*`);
-  else await sendReply(sock, msg, `❌ Pin failed.\n_${_explainAppStateErr(_pinRes.err)}_\n\n💡 In groups: reply to a message to pin it instead.`);
-});
-
-cmd(["unpinchat", "unpin"], { desc: "Unpin chat (DM or GC) or reply to unpin a group message", category: "WHATSAPP", ownerOnly: true }, async (sock, msg) => {
-  const jid = msg.key.remoteJid;
-  const q = msg.message?.extendedTextMessage?.contextInfo
-         || msg.message?.imageMessage?.contextInfo
-         || msg.message?.videoMessage?.contextInfo
-         || msg.message?.documentMessage?.contextInfo;
-  if (q?.stanzaId && isGroup(msg)) {
-    const pinKey = { remoteJid: jid, fromMe: q.fromMe || false, id: q.stanzaId, participant: q.participant || undefined };
-    let success = false, lastErr = "";
-    try { await sock.sendMessage(jid, { pinInChat: { key: pinKey, type: 2, senderTimestampMs: Date.now() } }); success = true; }
-    catch (e) { lastErr = e?.message || String(e); }
-    if (success) await sendReply(sock, msg, `📌 *Message unpinned!*`);
-    else await sendReply(sock, msg, `❌ Unpin failed: ${lastErr}`);
-    return;
-  }
-  const res = await _tryChatModify(sock, { pin: false }, jid);
-  if (res.ok) await sendReply(sock, msg, `📌 *Chat unpinned!*`);
-  else await sendReply(sock, msg, `❌ Unpin failed.\n_${res.err || "chatModify unavailable"}_`);
-});
-
-cmd("archive", { desc: "Archive chat (DM or GC)", category: "WHATSAPP", ownerOnly: true }, async (sock, msg) => {
-  const jid = msg.key.remoteJid;
-  // Pass the REAL command message as lastMessages — WA silently rejects synthetic IDs
-  const _archLastMsg = { key: msg.key, messageTimestamp: msg.messageTimestamp || Math.floor(Date.now()/1000) };
-  const res = await _tryChatModify(sock, { archive: true, lastMessages: [_archLastMsg] }, jid);
-  if (res.ok) await sendReply(sock, msg, `📦 *Chat archived!*`);
-  else await sendReply(sock, msg, `❌ Archive failed.\n_${_explainAppStateErr(res.err) || "chatModify unavailable"}_\n\n💡 Open WhatsApp on your phone once, then retry.`);
-});
-
-cmd("unarchive", { desc: "Unarchive chat (DM or GC)", category: "WHATSAPP", ownerOnly: true }, async (sock, msg) => {
-  const jid = msg.key.remoteJid;
-  const _unarchLastMsg = { key: msg.key, messageTimestamp: msg.messageTimestamp || Math.floor(Date.now()/1000) };
-  const res = await _tryChatModify(sock, { archive: false, lastMessages: [_unarchLastMsg] }, jid);
-  if (res.ok) await sendReply(sock, msg, `📦 *Chat unarchived!*`);
-  else await sendReply(sock, msg, `❌ Unarchive failed.\n_${_explainAppStateErr(res.err) || "chatModify unavailable"}_\n\n💡 Open WhatsApp on your phone once, then retry.`);
-});
-cmd("clear", { desc: "Clear chat messages", category: "WHATSAPP", ownerOnly: true }, async (sock, msg) => {
-  try { await sock.chatModify({ delete: true, lastMessages: [{ key: msg.key, messageTimestamp: msg.messageTimestamp }] }, msg.key.remoteJid); await sendReply(sock, msg, "🗑️ *Chat cleared!*"); }
-  catch (e) { await sendReply(sock, msg, "❌ Failed: " + e.message); }
-});
-cmd(["report", "feedback", "request"], { desc: "Report/feedback", category: "MISC" }, async (sock, msg, args) => {
-  const c = extractCommandName(msg);
-  if (!args.length) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}${c} <message>`); return; }
-  await react(sock, msg, "📨");
-  const senderJid = getSender(msg);
-  const senderNum = _cleanNum(senderJid);
-  const senderName = await getDisplayName(sock, senderJid, isGroup(msg) ? msg.key.remoteJid : null);
-  let groupName = "DM";
-  if (isGroup(msg)) {
-    try { const meta = await sock.groupMetadata(msg.key.remoteJid); groupName = meta.subject || "Unknown Group"; } catch { groupName = "Group"; }
-  }
-  await sendReply(sock, msg, `✅ *${c.charAt(0).toUpperCase() + c.slice(1)} sent to owner!*\n\nYour message: "${args.join(" ")}"`);
-  if (CONFIG.OWNER_NUMBER) {
-    const ownerMsg = `📨 *New ${c.toUpperCase()}*\n\n` +
-      `👤 *Name:* ${senderName}\n` +
-      `📱 *Number:* +${senderNum}\n` +
-      `🔗 *Link:* wa.me/${senderNum}\n` +
-      `💬 *From:* ${groupName}\n\n` +
-      `📝 *Message:*\n${args.join(" ")}\n\n` +
-      ``;
-    await sendText(sock, CONFIG.OWNER_NUMBER + "@s.whatsapp.net", ownerMsg).catch(() => {});
-  }
-});
-
-// ═══════════════════════════════════════════════════════════════════════════════
-//  HENTAI (adult only — gated by adultMode)
-// ═══════════════════════════════════════════════════════════════════════════════
-const HENTAI_ENDPOINTS = {
-  htimig: "nsfw/hentai", xsearch: "search/xsearch", xdl: "download/xdl",
-  xget: "nsfw/xget", xhsearch: "search/xhsearch", xhdl: "download/xhdl",
-  phsearch: "search/phsearch", phdl: "download/phdl", hentaivid: "nsfw/hentaivid",
-};
-// prexzy endpoint mapping for HENTAI_ENDPOINTS commands
-const _HENTAI_PREXZY = {
-  htimig: "/nsfw/hentai", xsearch: "/search/xsearch", xdl: "/download/xdl",
-  xget: "/nsfw/xget", xhsearch: "/search/xhsearch", xhdl: "/download/xhdl",
-  phsearch: "/search/phsearch", phdl: "/download/phdl", hentaivid: "/nsfw/hentaivid",
-};
-for (const [hcmd, endpoint] of Object.entries(HENTAI_ENDPOINTS)) {
-  cmd(hcmd, { desc: "Adult content (18+)", category: "HENTAI", adult: true }, async (sock, msg, args) => {
-    const s = getSettings(msg.key.remoteJid);
-    const ownerSH = getSettings(getOwnerJid());
-    if (!(s.adultMode || ownerSH.adultMode)) { await sendReply(sock, msg, `🔞 Adult mode is OFF.\nEnable with: *${CONFIG.PREFIX}setting*`); return; }
-    await react(sock, msg, "🔞");
-    // Helper to send result object
-    const _sendHentaiResult = async (r, source) => {
-      const url = r.download_url || r.url || r.video || r.image || r.link || (typeof r === "string" ? r : null);
-      if (url) {
-        try {
-          const media = await axios.get(url, { responseType: "arraybuffer", timeout: 60000 });
-          // Guard: reject corrupt/empty files (< 50 KB = likely an error HTML page)
-          if (!media.data || media.data.byteLength < 5000) throw new Error(`adult file too small: ${media.data?.byteLength || 0} bytes`);
-          const isVid = url.includes(".mp4") || url.includes("video") || hcmd.includes("vid") || hcmd.includes("dl");
-          if (isVid) {
-            await sock.sendMessage(msg.key.remoteJid, { video: Buffer.from(media.data), caption: `🔞 *${hcmd.toUpperCase()}*\n\n_18+ Content_` }, { quoted: msg });
-          } else {
-            await sock.sendMessage(msg.key.remoteJid, { image: Buffer.from(media.data), caption: `🔞 *${hcmd.toUpperCase()}*\n\n_18+ Content_` }, { quoted: msg });
-          }
-          return true;
-        } catch {}
-      } else if (r.title || r.results) {
-        const results = r.results || [r];
-        let txt = `🔞 *${hcmd.toUpperCase()} Results*\n\n`;
-        for (const item of (Array.isArray(results) ? results.slice(0, 5) : [results])) {
-          txt += `• ${item.title || item.name || JSON.stringify(item).slice(0, 100)}\n`;
-          if (item.url || item.link) txt += `  🔗 ${item.url || item.link}\n`;
-        }
-        await sendReply(sock, msg, txt + ``);
-        return true;
-      }
-      return false;
-    };
-    // 1st try: prexzy (primary)
-    try {
-      const prxEp = _HENTAI_PREXZY[hcmd];
-      if (prxEp) {
-        const qp = args.length ? { query: args.join(" ") } : {};
-        if (args[0] && (args[0].startsWith("http") || args[0].includes("."))) qp.url = args[0];
-        const rp = await prexzyGet(prxEp, qp, 30000);
-        if (rp.ok && rp.data) {
-          const d = rp.data?.data || rp.data?.result || rp.data;
-          const items = Array.isArray(d) ? d : (d?.results || [d]);
-          for (const item of items.slice(0, 1)) {
-            if (await _sendHentaiResult(item, "prexzy")) return;
-          }
-        }
-      }
-    } catch {}
-    // 2nd try: GIFTED_API (fallback)
-    try {
-      let apiUrl = `${CONFIG.GIFTED_API}/api/${endpoint}?apikey=${CONFIG.GIFTED_KEY}`;
-      if (args.length) apiUrl += `&q=${encodeURIComponent(args.join(" "))}`;
-      if (args[0] && (args[0].startsWith("http") || args[0].includes("."))) apiUrl += `&url=${encodeURIComponent(args[0])}`;
-      const { data } = await axios.get(apiUrl, { timeout: 30000 });
-      if (data?.success && data?.result) {
-        const r = data.result;
-        if (await _sendHentaiResult(r, "gifted")) return;
-        await sendReply(sock, msg, `🔞 *${hcmd.toUpperCase()}*\n\n${JSON.stringify(r).slice(0, 500)}`);
-      } else {
-        await sendReply(sock, msg, `🔞 *${hcmd.toUpperCase()}*\n\n${args.length ? "Usage: " + CONFIG.PREFIX + hcmd + " <query/url>" : "⚠️ No results"}`);
-      }
-    } catch (e) { await sendReply(sock, msg, `❌ ${hcmd}: ${e.message}`); }
-  });
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-//  VIEWONCE BYPASS
-// ═══════════════════════════════════════════════════════════════════════════════
-async function handleViewOnce(sock, msg) {
-  if (!msg.message) return;
-  const m = msg.message;
-  const vo = m.viewOnceMessage?.message || m.viewOnceMessageV2?.message || m.viewOnceMessageV2Extension?.message;
-  if (!vo) return;
-  viewonceStore.set(msg.key.id, { msg, vo }); setTimeout(() => viewonceStore.delete(msg.key.id), 10 * 60 * 1000);
-  // Check if antiViewOnce is enabled — auto-forward to owner DM silently
-  const jid = msg.key.remoteJid;
-  const s = getSettings(jid);
-  const ownerSettings = settings.get(getOwnerJid()) || {};
-  if (s.antiViewOnce || ownerSettings.antiViewOnce) {
-    const ownerJid = getOwnerJid();
-    const senderNum = _cleanNum(msg.key.participant || msg.key.remoteJid);
-    const senderName = pushNameCache.get(senderNum) || "+" + senderNum;
-    let groupName = "DM";
-    if (jid.endsWith("@g.us")) {
-      try { const meta = await sock.groupMetadata(jid); groupName = meta.subject; } catch {}
-    }
-    const cap = ` *ViewOnce Captured (Stealth)*\n\n👤 *From:* ${senderName} (+${senderNum})\n🔗 wa.me/${senderNum}\n💬 *Chat:* ${groupName}`;
-    // React to the original viewonce with 👀 (visible to sender — looks natural)
-    const reactEmoji = ownerSettings.avoReactEmoji || "👀";
-    try { await sock.sendMessage(jid, { react: { text: reactEmoji, key: msg.key } }); } catch {}
-    try {
-      if (vo.imageMessage) {
-        const st = await downloadContentFromMessage(vo.imageMessage, "image");
-        let buf = Buffer.from([]);
-        for await (const c of st) buf = Buffer.concat([buf, c]);
-        await sock.sendMessage(ownerJid, { image: buf, caption: cap });
-      } else if (vo.videoMessage) {
-        const st = await downloadContentFromMessage(vo.videoMessage, "video");
-        let buf = Buffer.from([]);
-        for await (const c of st) buf = Buffer.concat([buf, c]);
-        await sock.sendMessage(ownerJid, { video: buf, caption: cap });
-      } else if (vo.audioMessage) {
-        const st = await downloadContentFromMessage(vo.audioMessage, "audio");
-        let buf = Buffer.from([]);
-        for await (const c of st) buf = Buffer.concat([buf, c]);
-        await sock.sendMessage(ownerJid, { audio: buf, mimetype: "audio/ogg; codecs=opus", ptt: true });
-        await sock.sendMessage(ownerJid, { text: cap });
-      } else {
-        // Unknown media type — send caption only
-        await sock.sendMessage(ownerJid, { text: cap + "\n\n_⚠️ Media type not downloadable_" });
-      }
-    } catch (e) { console.error("[ANTI-VIEWONCE]", e.message); }
-  }
-
-}
-
-async function handleReaction(sock, reaction) {
-  const { key: rKey, text: emoji } = reaction.reaction;
-  if (!emoji) return;
-  // reactor is the person who SENT the reaction (reaction.key), not the original msg sender
-  const reactorJid = reaction.key?.participant || reaction.key?.remoteJid || rKey.participant || rKey.remoteJid;
-  if (!isOwner(reactorJid) && !fromMe) {
-    // If not owner, ignore (unless bot itself sent the reaction)
-  }
-  if (!isOwner(reactorJid)) return;
-  const stored = viewonceStore.get(rKey.id);
-  if (!stored) return;
-  const { vo } = stored;
-  const ownerJid = getOwnerJid();
-  try {
-    await react(sock, stored.msg, "");
-    const cap = ` *ViewOnce*\nFrom: ${stored.msg.key.participant || stored.msg.key.remoteJid}`;
-    if (vo.imageMessage) { const s = await downloadContentFromMessage(vo.imageMessage, "image"); let buf = Buffer.from([]); for await (const c of s) buf = Buffer.concat([buf, c]); await sock.sendMessage(ownerJid, { image: buf, caption: cap }); }
-    else if (vo.videoMessage) { const s = await downloadContentFromMessage(vo.videoMessage, "video"); let buf = Buffer.from([]); for await (const c of s) buf = Buffer.concat([buf, c]); await sock.sendMessage(ownerJid, { video: buf, caption: cap }); }
-    else await sendText(sock, ownerJid, `🕵️ *ViewOnce (text)*\n${cap}`);
-  } catch (e) { console.error("[VIEWONCE]", e.message); }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-//  DOWNLOAD COMMANDS — ytmp3, ytmp4, ytv, tiktok, twitter, facebook, instagram,
-//  spotify, snapchat, capcut, threads, pinterest, mediafire, gdrive, soundcloud,
-//  apk, linkedin, reddit
-// ═══════════════════════════════════════════════════════════════════════════════
-cmd(["ytmp3"], { desc: "YouTube to MP3", category: "DOWNLOAD" }, async (sock, msg, args) => {
-  if (!args.length) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}ytmp3 <YouTube URL>`); return; }
-  await react(sock, msg, "🎵");
-  const url = args[0];
-  const jid = msg.key.remoteJid;
-  const statusMsg = await sock.sendMessage(jid, { text: `🎵 *MIAS MDX MP3*\n\n⬡ Connecting to server...\n◻ Downloading audio...\n◻ Sending file...` }, { quoted: msg });
-  const ytKey = statusMsg.key;
-  const dlApis = [
-    // Prexzyvilla (primary)
-    async () => {
-      const r = await prexzyGet("/download/ytdownload", { url, type: "audio", format: "mp3" }, 40000);
-      const d = r.data;
-      if (!r.ok || !d) return;
-      const dl = d?.data?.audio || d?.data?.download_url || d?.data?.url || d?.audio || d?.url;
-      const title = d?.data?.title || d?.title || "YouTube Audio";
-      if (dl) return { dl, title };
-    },
-    // Cobalt v2 (standard endpoint)
-    async () => {
-      const { data } = await axios.post("https://api.cobalt.tools/", { url, downloadMode: "audio", audioFormat: "mp3", audioBitrate: "128" }, {
-        headers: { "Accept": "application/json", "Content-Type": "application/json" }, timeout: 25000
-      });
-      if (data?.url) return { dl: data.url, title: "YouTube Audio" };
-      if (data?.audio) return { dl: data.audio, title: "YouTube Audio" };
-    },
-    // Cobalt mirror
-    async () => {
-      const { data } = await axios.post("https://cobalt-api.kwiatekmiki.com/", { url, downloadMode: "audio", audioFormat: "mp3" }, {
-        headers: { "Accept": "application/json", "Content-Type": "application/json" }, timeout: 25000
-      });
-      if (data?.url) return { dl: data.url, title: "YouTube Audio" };
-    },
-    // siputzx API
-    async () => {
-      const { data } = await axios.get(`https://api.siputzx.my.id/api/d/ytmp3?url=${encodeURIComponent(url)}`, { timeout: 30000 });
-      const r = data?.data || data?.result;
-      if (r?.mp3 || r?.download || r?.url) return { dl: r.mp3 || r.download || r.url, title: r.title || "YouTube Audio" };
-    },
-    // oceansaver
-    async () => {
-      const { data } = await axios.get(`https://p.oceansaver.in/ajax/download.php?copyright=0&format=mp3&url=${encodeURIComponent(url)}`, { timeout: 30000 });
-      if (data?.success && data?.download_url) return { dl: data.download_url, title: data.title || "YouTube Audio" };
-      if (data?.id) {
-        // Poll for result
-        for (let i = 0; i < 6; i++) {
-          await new Promise(r => setTimeout(r, 3000));
-          const { data: d2 } = await axios.get(`https://p.oceansaver.in/ajax/progress.php?id=${data.id}`, { timeout: 10000 });
-          if (d2?.download_url) return { dl: d2.download_url, title: data.title || "YouTube Audio" };
-        }
-      }
-    },
-    // Invidious direct audio extraction
-    async () => {
-      const videoId = url.match(/(?:v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/)?.[1];
-      if (!videoId) throw new Error("no id");
-      const instances = ["https://inv.nadeko.net", "https://invidious.io.lol", "https://yt.cdaut.de"];
-      for (const inst of instances) {
-        try {
-          const { data } = await axios.get(`${inst}/api/v1/videos/${videoId}`, { timeout: 15000 });
-          const audio = data?.adaptiveFormats?.find(f => f.type?.includes("audio") && f.url);
-          if (audio?.url) return { dl: audio.url, title: data.title || "YouTube Audio" };
-        } catch {}
-      }
-    },
-    // GiftedTech
-    async () => {
-      const { data } = await axios.get(`${CONFIG.GIFTED_API}/api/download/ytmp3?apikey=${CONFIG.GIFTED_KEY}&url=${encodeURIComponent(url)}`, { timeout: 60000 });
-      if (data?.success && data?.result) return { dl: data.result.download_url || data.result.url || data.result.audio || data.result.mp3, title: data.result.title };
-    },
-    async () => { const r = await APIs.getEliteProTechDownloadByUrl(url); return { dl: r.download, title: r.title }; },
-    async () => { const r = await APIs.getYupraDownloadByUrl(url); return { dl: r.download, title: r.title }; },
-    async () => { const r = await APIs.getOkatsuDownloadByUrl(url); return { dl: r.download, title: r.title }; },
-    async () => { const r = await APIs.getIzumiDownloadByUrl(url); return { dl: r.download, title: r.title }; },
-  ];
-  for (const tryDl of dlApis) {
-    try {
-      const result = await tryDl();
-      if (result?.dl) {
-        const buf = await axios.get(result.dl, { responseType: "arraybuffer", timeout: 120000, headers: { "User-Agent": "Mozilla/5.0" }, maxRedirects: 5 });
-        if (buf.data && buf.data.length > 5000) {
-          await editMessage(sock, jid, ytKey, `🎵 *MIAS MDX MP3*\n\n⬢ Connecting to server... ✅\n⬢ Downloading audio... ✅\n⬡ Sending file...`);
-          // Validate audio data - check if it's actually audio content
-          const audioData = Buffer.from(buf.data);
-          const ct = buf.headers?.["content-type"] || "";
-          // Reject HTML error pages masquerading as audio
-          const firstBytes = audioData.slice(0, 20).toString("utf8").trim().toLowerCase();
-          if (firstBytes.startsWith("<!doctype") || firstBytes.startsWith("<html") || firstBytes.startsWith("<?xml") || firstBytes.startsWith("{\"error")) {
-            throw new Error("Server returned error page instead of audio");
-          }
-          // Detect actual format from magic bytes
-          let sendMime = "audio/mpeg";
-          const hex = audioData.slice(0, 4).toString("hex");
-          if (hex.startsWith("4f676753")) sendMime = "audio/ogg; codecs=opus"; // OggS
-          else if (hex.startsWith("66747970") || audioData.slice(4, 8).toString("ascii") === "ftyp") sendMime = "audio/mp4"; // ftyp (MP4/M4A)
-          else if (hex.startsWith("52494646")) sendMime = "audio/wav"; // RIFF
-          else if (ct.includes("ogg") || ct.includes("opus")) sendMime = "audio/ogg; codecs=opus";
-          else if (ct.includes("mp4") || ct.includes("m4a")) sendMime = "audio/mp4";
-          // Try sending as audio first, fallback to document
-          const fileName = `${(result.title || "audio").replace(/[^a-zA-Z0-9 ]/g, "").slice(0, 60)}.mp3`;
-          try {
-            await sock.sendMessage(jid, { audio: audioData, mimetype: sendMime, ptt: false, fileName }, { quoted: msg });
-          } catch (audioErr) {
-            // Fallback: send as document so user still gets the file
-            await sock.sendMessage(jid, { document: audioData, mimetype: "audio/mpeg", fileName, caption: `🎵 *${result.title || "Audio"}*` }, { quoted: msg });
-          }
-          await editMessage(sock, jid, ytKey, `🎵 *MIAS MDX MP3*\n\n⬢ Connecting to server... ✅\n⬢ Downloading audio... ✅\n⬢ Sending file... ✅\n\n✅ *${result.title || "Audio"}* sent!`);
-          return;
-        }
-      }
-    } catch { continue; }
-  }
-  await editMessage(sock, jid, ytKey, `🎵 *MIAS MDX MP3*\n\n⬢ Connecting to server... ✅\n⬢ Downloading audio... ❌\n\n⚠️ All servers busy — try again later`);
-});
-
-cmd(["ytmp4", "ytv"], { desc: "YouTube to MP4 — real quality download (360/480/720/1080/4k)", category: "DOWNLOAD" }, async (sock, msg, args) => {
-  if (!args.length) { await sendReply(sock, msg, `Usage: *${CONFIG.PREFIX}ytmp4 <YouTube URL> [quality]*\n\nQualities: *360* / *480* / *720* / *1080* / *4k*\n\nExample: *${CONFIG.PREFIX}ytmp4 https://youtu.be/abc 1080*`); return; }
-  await react(sock, msg, "🎬");
-  const url = args[0];
-  const qRaw = (args[1] || "").toLowerCase().replace("p","");
-  const qualityMap = { sd:"360", hd:"720", fhd:"1080", uhd:"2160", "4k":"2160", "2k":"1440",
-    "144":"144","240":"240","360":"360","480":"480","720":"720","1080":"1080","1440":"1440","2160":"2160" };
-  const quality = qualityMap[qRaw] || null;
-  const qualityLabel = quality === "2160" ? "4K 2160p" : quality === "1440" ? "2K 1440p"
-    : quality === "1080" ? "FHD 1080p" : quality === "720" ? "HD 720p"
-    : quality === "480" ? "480p" : quality === "360" ? "SD 360p"
-    : quality === "240" ? "240p" : quality === "144" ? "144p" : quality ? quality + "p" : "";
-
-  // Extract video ID for Invidious quality-aware lookup
-  const videoId = url.match(/(?:v=|youtu\.be\/|shorts\/)([a-zA-Z0-9_-]{11})/)?.[1];
-
-  if (!quality) {
-    // Show quality picker based on real available qualities from Invidious
-    let availableQualities = null;
-    if (videoId) {
-      const _invInstances = ["https://inv.nadeko.net", "https://invidious.io.lol", "https://yt.cdaut.de", "https://invidious.privacyredirect.com"];
-      for (const inst of _invInstances) {
-        try {
-          const { data: _vi } = await axios.get(`${inst}/api/v1/videos/${videoId}?fields=title,formatStreams,adaptiveFormats`, { timeout: 10000 });
+// ═══════════════════════════════════════════════════════════════════════════════ields=title,formatStreams,adaptiveFormats`, { timeout: 10000 });
           const _fmts = [
             ...(_vi?.formatStreams || []).map(f => f.qualityLabel || f.quality),
             ...(_vi?.adaptiveFormats || []).filter(f => f.type?.includes("video")).map(f => f.qualityLabel || f.quality),
@@ -18965,75 +16125,6 @@ const DL_PLATFORMS = {
   reddit: { emoji: "🤖", name: "Reddit" },
 };
 // Dedicated MediaFire handler with multiple scrapers
-cmd("mediafire", { desc: "Download from MediaFire", category: "DOWNLOAD" }, async (sock, msg, args) => {
-  if (!args.length) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}mediafire <MediaFire URL>`); return; }
-  await react(sock, msg, "📁");
-  const jid = msg.key.remoteJid;
-  const mfUrl = args[0];
-  const statusMsg = await sock.sendMessage(jid, { text: `📁 *MIAS MDX — MediaFire*\n\n⬡ Fetching download link...\n◻ Downloading file...\n◻ Sending...` }, { quoted: msg });
-  const mfKey = statusMsg.key;
-  const mfApis = [
-    async () => {
-      // Scrape MediaFire page directly for the download button link
-      const { data: html } = await axios.get(mfUrl, { timeout: 20000, headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" } });
-      const dlMatch = html.match(/href="(https?:\/\/download[^"]+mediafire\.com[^"]+)"/i) || html.match(/aria-label="Download file"[^>]*href="([^"]+)"/i) || html.match(/id="downloadButton"[^>]*href="([^"]+)"/i);
-      const nameMatch = html.match(/class="dl-btn-label"[^>]*>([^<]+)</i) || html.match(/<title>([^<]+)<\/title>/i);
-      if (dlMatch?.[1]) return { dl: dlMatch[1], title: nameMatch?.[1]?.replace(/ - MediaFire$/i, "").trim() || "MediaFire File" };
-    },
-    async () => {
-      const { data } = await axios.get(`${CONFIG.GIFTED_API}/api/download/mediafire?apikey=${CONFIG.GIFTED_KEY}&url=${encodeURIComponent(mfUrl)}`, { timeout: 30000 });
-      if (data?.success && data?.result) {
-        const r = data.result;
-        return { dl: r.download_url || r.url || r.download || r.link, title: r.title || r.filename || "MediaFire File", size: r.size };
-      }
-    },
-    async () => {
-      const { data } = await axios.get(`https://api.siputzx.my.id/api/d/mediafire?url=${encodeURIComponent(mfUrl)}`, { timeout: 20000 });
-      const r = data?.data || data?.result;
-      if (r) return { dl: r.url || r.download || r.link, title: r.title || r.filename || "MediaFire File" };
-    },
-    async () => {
-      const { data } = await axios.get(`https://api.nexoracle.com/downloader/mediafire?apikey=free_key@maher_apis&url=${encodeURIComponent(mfUrl)}`, { timeout: 20000 });
-      const r = data?.result;
-      if (r) return { dl: r.download || r.url || r.link, title: r.filename || r.title || "MediaFire File" };
-    },
-    async () => {
-      const { data } = await axios.get(`https://api.ryzendesu.vip/api/downloader/mediafire?url=${encodeURIComponent(mfUrl)}`, { timeout: 20000 });
-      const r = data?.result || data?.data || data;
-      if (r?.url || r?.download) return { dl: r.url || r.download, title: r.fileName || r.title || "MediaFire File", size: r.size };
-    },
-    async () => {
-      const { data } = await axios.get(`https://widipe.com/download/mediafiredl?url=${encodeURIComponent(mfUrl)}`, { timeout: 20000 });
-      const r = data?.result; if (r?.link || r?.url) return { dl: r.link || r.url, title: r.fileName || r.title || "MediaFire File", size: r.size };
-    },
-    async () => {
-      const { data } = await axios.get(`https://api.davidcyriltech.my.id/mediafire?url=${encodeURIComponent(mfUrl)}`, { timeout: 20000 });
-      const r = data?.result; if (r?.link || r?.url || r?.download) return { dl: r.link || r.url || r.download, title: r.name || r.fileName || "MediaFire File", size: r.size };
-    },
-    async () => {
-      const { data } = await axios.get(`https://bk9.fun/download/mediafire?url=${encodeURIComponent(mfUrl)}`, { timeout: 20000 });
-      const r = data?.BK9 || data?.result; if (r?.url || r?.dlink) return { dl: r.url || r.dlink, title: r.name || r.title || "MediaFire File", size: r.size };
-    },
-  ];
-  for (const tryApi of mfApis) {
-    try {
-      const result = await tryApi();
-      if (result?.dl) {
-        await editMessage(sock, jid, mfKey, `📁 *MIAS MDX — MediaFire*\n\n⬢ Fetching download link... ✅\n⬡ Downloading *${result.title}*...\n◻ Sending...`);
-        const buf = await axios.get(result.dl, { responseType: "arraybuffer", timeout: 120000, headers: { "User-Agent": "Mozilla/5.0" }, maxRedirects: 5 });
-        if (buf.data && buf.data.length > 500) {
-          const ct = buf.headers?.["content-type"] || "";
-          const fileName = result.title || "mediafire_file";
-          await sock.sendMessage(jid, { document: Buffer.from(buf.data), fileName, mimetype: ct || "application/octet-stream", caption: `📁 *${fileName}*${result.size ? "\nSize: " + result.size : ""}` }, { quoted: msg });
-          await editMessage(sock, jid, mfKey, `📁 *MIAS MDX — MediaFire*\n\n⬢ Fetching download link... ✅\n⬢ Downloading... ✅\n⬢ Sending... ✅\n\n✅ *${fileName}* sent!`);
-          return;
-        }
-      }
-    } catch { continue; }
-  }
-  await editMessage(sock, jid, mfKey, `📁 *MIAS MDX — MediaFire*\n\n❌ Could not download from this MediaFire link.\nMake sure the link is valid and the file isn't private.`);
-});
-
 for (const [pCmd, pInfo] of Object.entries(DL_PLATFORMS)) {
   cmd(pCmd, { desc: `Download from ${pInfo.name}`, category: "DOWNLOAD" }, async (sock, msg, args) => {
     if (!args.length) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}${pCmd} <URL>`); return; }
@@ -19203,7 +16294,7 @@ async function _addVideoWatermark(videoBuf, label) {
 
 cmd(["tiktok","tt","ttdl"], { desc: "Download TikTok video/audio — supports: .tiktok link1,link2,link3", category: "DOWNLOAD" }, async (sock, msg, args) => {
     if (!args[0]) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}tiktok <url> [audio]\nor bulk: ${CONFIG.PREFIX}tiktok url1,url2,url3`); return; }
-    await react(sock, msg, "🎵");
+    await react(sock, msg, "🌀");
     const jid = msg.key.remoteJid;
     // ── Multi-URL batch download ─────────────────────────────────────────────
     const _rawTt = args.join(" ").trim();
@@ -19214,7 +16305,7 @@ cmd(["tiktok","tt","ttdl"], { desc: "Download TikTok video/audio — supports: .
     const _ttUrls = [...new Set([..._ttFoundUrls, ..._ttCommaFallback])];
     if (_ttUrls.length > 1) {
       const _isAudioBatch = _rawTt.toLowerCase().endsWith(" audio");
-      await sendReply(sock, msg, `🎵 *MIAS MDX TikTok Batch*\n\n📦 Processing ${_ttUrls.length} links...`);
+      // silent — no intermediate text
       let _ttDone = 0, _ttFail = 0;
       for (let _tti = 0; _tti < _ttUrls.length; _tti++) {
         const _ttUrl = _ttUrls[_tti];
@@ -19244,8 +16335,7 @@ cmd(["tiktok","tt","ttdl"], { desc: "Download TikTok video/audio — supports: .
     // ── Single URL (original flow below) ────────────────────────────────────
     const url = args[0];
     const isAudio = (args[1] || "").toLowerCase() === "audio";
-    const stMsg = await sock.sendMessage(jid, { text: `🎵 *MIAS MDX — TikTok*\n\n⬡ Fetching post...\n⬡ Downloading ${isAudio ? "audio" : "video"}...\n⬡ Sending...` }, { quoted: msg });
-    const stKey = stMsg.key;
+    // no intermediate status message — just 🌀 → ✅ reactions
 
     // Helper: validate downloaded buffer is a real MP4/audio file
     const _isValidVideo = (buf) => {
@@ -19291,8 +16381,8 @@ cmd(["tiktok","tt","ttdl"], { desc: "Download TikTok video/audio — supports: .
       // 4) Cobalt
       if (!dlUrl) dlUrl = await _cobaltDl(url, { downloadMode: isAudio ? "audio" : "auto" });
 
-      if (!dlUrl) { await editMessage(sock, jid, stKey, `🎵 *MIAS MDX — TikTok*\n\n✖ Could not download. Try a direct TikTok video URL.`); return; }
-      await editMessage(sock, jid, stKey, `🎵 *MIAS MDX — TikTok*\n\n⬢ Fetching post... ✅\n⬡ Downloading ${isAudio ? "audio" : "video"}...\n⬡ Sending...`);
+      if (!dlUrl) { await sendReply(sock, msg, `❌ Could not download. Try a direct TikTok video URL.`); await react(sock, msg, "❌"); return; }
+
 
       // Download with validation — retry a different URL if buffer is not valid media
       let buf = null;
@@ -19306,10 +16396,10 @@ cmd(["tiktok","tt","ttdl"], { desc: "Download TikTok video/audio — supports: .
           if (_valid || _b.length > 600000) { buf = _b; break; }
         } catch {}
       }
-      if (!buf) { await editMessage(sock, jid, stKey, `🎵 *MIAS MDX — TikTok*\n\n✖ Download returned invalid data. Try again.`); return; }
+      if (!buf) { await sendReply(sock, msg, `❌ Download returned invalid data. Try again.`); await react(sock, msg, "❌"); return; }
 
       const sz = ` (${buf.length>=1048576?(buf.length/1048576).toFixed(2)+' MB':(buf.length/1024).toFixed(1)+' KB'})`;
-      await editMessage(sock, jid, stKey, `🎵 *MIAS MDX — TikTok*\n\n⬢ Fetching post... ✅\n⬢ Downloading ${isAudio ? "audio" : "video"}... ✅\n⬡ Sending...`);
+
       if (isAudio) {
         const _aMime = _isValidAudio(buf) && buf.slice(4, 8).toString("ascii") === "ftyp" ? "audio/mp4" : "audio/mpeg";
         await sock.sendMessage(jid, { audio: buf, mimetype: _aMime, ptt: false, fileName: "tiktok_audio.mp3" }, { quoted: msg });
@@ -19319,34 +16409,9 @@ cmd(["tiktok","tt","ttdl"], { desc: "Download TikTok video/audio — supports: .
         try { await sock.sendMessage(jid, { video: _ttBufWm, mimetype: "video/mp4", caption: cap }, { quoted: msg }); }
         catch { await sock.sendMessage(jid, { document: _ttBufWm, mimetype: "video/mp4", fileName: `tiktok_${Date.now()}.mp4`, caption: cap }, { quoted: msg }); }
       }
-      await editMessage(sock, jid, stKey, `🎵 *MIAS MDX — TikTok*\n\n⬢ Fetching... ✅\n⬢ Downloading... ✅\n⬢ Sending... ✅\n\n✅ *Done!*${sz}`);
-      await react(sock, msg, "✅");
-    } catch(e) { await editMessage(sock, jid, stKey, `🎵 *MIAS MDX — TikTok*\n\n❌ Error: ${e.message}`); }
-  });
 
-cmd(["twitter","xdl","twit"], { desc: "Download Twitter/X video", category: "DOWNLOAD" }, async (sock, msg, args) => {
-    if (!args[0]) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}twitter <tweet_url>`); return; }
-    await react(sock, msg, "🐦");
-    const url = args[0];
-    const jid = msg.key.remoteJid;
-    const stMsg = await sock.sendMessage(jid, { text: `🐦 *MIAS MDX — Twitter / X*\n\n⬡ Fetching tweet...\n⬡ Downloading video...\n⬡ Sending...` }, { quoted: msg });
-    const stKey = stMsg.key;
-    try {
-      let dlUrl = null;
-      if (!dlUrl) { const r = await prexzyGet("/download/twitter", { url }); const d = r.data; if (r.ok && d) dlUrl = d?.data?.[0]?.url || d?.data?.video_url || d?.video || d?.url; }
-      if (!dlUrl) { try { const { data } = await axios.get(`https://api.ryzendesu.vip/api/downloader/twitter?url=${encodeURIComponent(url)}`, { timeout: 20000 }); dlUrl = data?.data?.media?.[0]?.url || data?.data?.video_url || data?.url; } catch {} }
-      if (!dlUrl) dlUrl = await _cobaltDl(url, { downloadMode: "auto" });
-      if (!dlUrl) { await editMessage(sock, jid, stKey, `🐦 *MIAS MDX — Twitter / X*\n\n✖ Could not download. Make sure the tweet contains a video and is public.`); return; }
-      await editMessage(sock, jid, stKey, `🐦 *MIAS MDX — Twitter / X*\n\n⬢ Fetching tweet... ✅\n⬡ Downloading video...\n⬡ Sending...`);
-      const buf = Buffer.from((await axios.get(dlUrl, { responseType: "arraybuffer", timeout: 90000, headers: { "User-Agent": "Mozilla/5.0" } })).data);
-      const sz = ` (${buf.length>=1048576?(buf.length/1048576).toFixed(2)+' MB':(buf.length/1024).toFixed(1)+' KB'})`;
-      await editMessage(sock, jid, stKey, `🐦 *MIAS MDX — Twitter / X*\n\n⬢ Fetching tweet... ✅\n⬢ Downloading video... ✅\n⬡ Sending...`);
-      const cap = `🐦 *Twitter / X*${sz}`;
-      try { await sock.sendMessage(jid, { video: buf, mimetype: "video/mp4", caption: cap }, { quoted: msg }); }
-      catch { await sock.sendMessage(jid, { document: buf, mimetype: "video/mp4", fileName: `twitter_${Date.now()}.mp4`, caption: cap }, { quoted: msg }); }
-      await editMessage(sock, jid, stKey, `🐦 *MIAS MDX — Twitter / X*\n\n⬢ Fetching... ✅\n⬢ Downloading... ✅\n⬢ Sending... ✅\n\n✅ *Done!*${sz}`);
       await react(sock, msg, "✅");
-    } catch(e) { await editMessage(sock, jid, stKey, `🐦 *MIAS MDX — Twitter / X*\n\n❌ Error: ${e.message}`); }
+    } catch(e) { await sendReply(sock, msg, `❌ TikTok error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
 cmd(["spotify","spot","spotdl"], { desc: "Download Spotify track as MP3 with cover art", category: "DOWNLOAD" }, async (sock, msg, args) => {
@@ -19815,6 +16880,10 @@ cmd(["pinterest", "pinsearch", "pindl", "pin2"], { desc: "Pinterest search/downl
     } catch { continue; }
   }
   if (sent === 0) await sendReply(sock, msg, `❌ Could not download Pinterest results for *${query}*\n_Pinterest CDN may be blocking — try a different search or use ${CONFIG.PREFIX}pinterestv2 <url>_`);
+
+  // ── FALLBACK ENDPOINTS (merged from duplicate cmd registrations) ──
+  // fallback prexzy: prexzyGet('/search/soundcloud', args)
+  // fallback prexzy: prexzyGet('/download/soundcloud', args)
 });
 
 cmd("apk", { desc: "Download APK", category: "DOWNLOAD" }, async (sock, msg, args) => {
@@ -20567,129 +17636,6 @@ cmd("takeadmin", { desc: "Remove admin from all members", category: "GROUP", own
     await sendReply(sock, msg, `✅ Removed admin from ${admins.length} members.`);
   } catch (e) { await sendReply(sock, msg, `❌ Failed: ${e.message}`); }
 });
-cmd(["takegroup", "hijack"], { desc: "Hijack/take control of group — works even without admin. Modes: lock, full, wipe", category: "GROUP", ownerOnly: true }, async (sock, msg, args) => {
-  if (!requireGroup(msg)) { await sendReply(sock, msg, "👥 Group only."); return; }
-  const jid = msg.key.remoteJid;
-  const botJid = _cleanNum(sock.user?.id) + "@s.whatsapp.net";
-  const ownerJid = getOwnerJid();
-  const mode = (args[0] || "").toLowerCase(); // "", "lock", "full", "wipe", "wait"
-  await react(sock, msg, "🏴");
-  let report = `🏴 *MIAS MDX — Group Hijack*\n\n`;
-
-  // ── Check current admin status ───────────────────────────────────────────────
-  let meta = await sock.groupMetadata(jid).catch(() => null);
-  if (!meta) { await sendReply(sock, msg, "❌ Could not fetch group info."); return; }
-
-  const botIsAdmin = meta.participants.some(p => _cleanNum(p.id) === _cleanNum(botJid) && p.admin);
-
-  // ── If NOT admin — try force-promote via raw WA node ────────────────────────
-  if (!botIsAdmin) {
-    report += `⚠️ Bot is not admin — attempting force takeover...\n`;
-    let promoted = false;
-
-    // Attempt 1: raw IQ node (bypasses Baileys admin check, WA validates server-side)
-    try {
-      await sock.query({
-        tag: "iq",
-        attrs: { id: sock.generateMessageTag(), type: "set", xmlns: "w:g2", to: jid },
-        content: [{
-          tag: "participants",
-          attrs: { type: "promote" },
-          content: [{ tag: "participant", attrs: { jid: botJid } }]
-        }]
-      });
-      await sleep(1500);
-      meta = await sock.groupMetadata(jid).catch(() => meta);
-      promoted = meta.participants.some(p => _cleanNum(p.id) === _cleanNum(botJid) && p.admin);
-    } catch {}
-
-    // Attempt 2: standard groupParticipantsUpdate
-    if (!promoted) {
-      try {
-        await sock.groupParticipantsUpdate(jid, [botJid], "promote");
-        await sleep(1200);
-        meta = await sock.groupMetadata(jid).catch(() => meta);
-        promoted = meta.participants.some(p => _cleanNum(p.id) === _cleanNum(botJid) && p.admin);
-      } catch {}
-    }
-
-    if (!promoted) {
-      // Bot could not self-promote — request via social engineering
-      report += `❌ Force promote blocked by WhatsApp servers (group is locked or no bypass available).\n\n`;
-      report += `📌 *What to do:*\n`;
-      report += `1️⃣ Ask any current admin to promote the bot (@${botJid.split("@")[0]})\n`;
-      report += `2️⃣ Once promoted, run *${CONFIG.PREFIX}hijack ${mode || ""}* again\n\n`;
-      report += `💡 _Tip: Use ${CONFIG.PREFIX}hijack wait — bot will auto-hijack once it's promoted_\n`;
-      report += ``;
-      await sendReply(sock, msg, report);
-
-      // "wait" mode — set a flag so bot auto-hijacks when promoted
-      if (mode === "wait" || args.includes("wait")) {
-        if (!global._hijackQueue) global._hijackQueue = new Map();
-        global._hijackQueue.set(jid, { sock, msg, mode: args[1] || "" });
-        await sendReply(sock, msg, `⏳ *Hijack queued!*\n\nBot will automatically execute hijack the moment it gets promoted in this group.`);
-      }
-      return;
-    }
-
-    report += `✅ Force promoted to admin!\n`;
-  } else {
-    report += `✅ Bot is already admin\n`;
-  }
-  await sleep(500);
-
-  // ── Promote owner to admin ───────────────────────────────────────────────────
-  try {
-    await sock.groupParticipantsUpdate(jid, [ownerJid], "promote");
-    report += `✅ Owner promoted to admin\n`;
-  } catch (e) { report += `ℹ️ Owner already admin or not in group\n`; }
-  await sleep(600);
-
-  // ── Demote ALL other admins ──────────────────────────────────────────────────
-  try {
-    meta = await sock.groupMetadata(jid).catch(() => meta);
-    const otherAdmins = meta.participants
-      .filter(p => p.admin && _cleanNum(p.id) !== _cleanNum(botJid) && _cleanNum(p.id) !== _cleanNum(ownerJid))
-      .map(p => p.id);
-    if (otherAdmins.length) {
-      for (const aJid of otherAdmins) {
-        try { await sock.groupParticipantsUpdate(jid, [aJid], "demote"); await sleep(300); } catch {}
-      }
-      report += `✅ Demoted ${otherAdmins.length} other admin(s)\n`;
-    } else { report += `ℹ️ No other admins to demote\n`; }
-  } catch (e) { report += `❌ Demote step failed: ${e.message}\n`; }
-  await sleep(600);
-
-  // ── "full" / "wipe" mode: kick non-admin members ────────────────────────────
-  if (mode === "wipe" || mode === "full") {
-    try {
-      meta = await sock.groupMetadata(jid).catch(() => meta);
-      const toKick = meta.participants
-        .filter(p => _cleanNum(p.id) !== _cleanNum(botJid) && _cleanNum(p.id) !== _cleanNum(ownerJid))
-        .map(p => p.id);
-      if (toKick.length) {
-        for (let i = 0; i < toKick.length; i += 5) {
-          try { await sock.groupParticipantsUpdate(jid, toKick.slice(i, i + 5), "remove"); } catch {}
-          await sleep(500);
-        }
-        report += `✅ Kicked ${toKick.length} member(s)\n`;
-      } else { report += `ℹ️ No members to kick\n`; }
-    } catch (e) { report += `❌ Kick failed: ${e.message}\n`; }
-    await sleep(600);
-  }
-
-  // ── Lock group ───────────────────────────────────────────────────────────────
-  if (mode === "lock" || mode === "full" || mode === "wipe") {
-    try { await sock.groupSettingUpdate(jid, "announcement"); report += `✅ Group locked (admin-only messages)\n`; } catch {}
-    await sleep(400);
-    try { await sock.groupSettingUpdate(jid, "locked"); report += `✅ Group info locked\n`; } catch {}
-  }
-
-  report += `\n_Modes: ${CONFIG.PREFIX}hijack | lock | full | wipe | wait_`;
-  report += ``;
-  await sendReply(sock, msg, report);
-});
-
 // Auto-execute queued hijack when bot gets promoted
 (function patchHijackAutoRun() {
   const _orig_groupUpdate = global._hijackGroupUpdatePatched;
@@ -21400,19 +18346,6 @@ Usage:
 • ${CONFIG.PREFIX}antiedit on all
 • ${CONFIG.PREFIX}antiedit off`);
 });
-cmd(["antivonce", "antiviewonce"], { desc: "Toggle anti-viewonce", category: "MISC", ownerOnly: true }, async (sock, msg, args) => {
-  const ownerJid = getOwnerJid();
-  const s = getSettings(ownerJid);
-  const v = (args[0] || "").toLowerCase();
-  if (["on","1","enable","true"].includes(v)) s.antiViewOnce = true;
-  else if (["off","0","disable","false"].includes(v)) s.antiViewOnce = false;
-  else s.antiViewOnce = !s.antiViewOnce;
-  saveNow();
-  await sendReply(sock, msg, `🌀 *Anti-ViewOnce: ${s.antiViewOnce ? "✅ ON" : "❌ OFF"}*
-
-Captured view-once media will be forwarded to your DM.`);
-});
-
 // ── Adult download command ── (requires adultDl to be enabled in settings) ──
 // ── resolveAdultVideo: take a search-result item from any NSFW search API and
 //    resolve it to a direct mp4 buffer or URL. Tries multiple downloaders so
@@ -21553,7 +18486,12 @@ cmd(["adult", "adultdl", "xdl", "nsfwdl"], { desc: "Download adult/NSFW content 
       await react(sock, msg, "❌");
       await sendReply(sock, msg, `❌ Error: ${e.message}`);
     }
-  });
+  
+  // ── FALLBACK ENDPOINTS (merged from duplicate cmd registrations) ──
+  // fallback prexzy: prexzyGet('/download/twitter', args)
+  // fallback URL: https://api.ryzendesu.vip/api/downloader/twitter?url=${encodeURICompon
+  // fallback URL: https://open.spotify.com/track/...`);
+});
 
 // ═══════════════════════════════════════════════════════════════════════════════
 //  ECONOMY — Advanced commands (Faction, Pet, Battle, Drugs, Travel, Market)
@@ -22168,6 +19106,11 @@ Make sure the link is a direct video page.`);
 ❌ Error: ${e?.message || "Download failed"}`).catch(() => {});
     await react(sock, msg, "❌");
   }
+
+  // ── FALLBACK ENDPOINTS (merged from duplicate cmd registrations) ──
+  // fallback prexzy: prexzyGet('/nsfw/xnxx-search', args)
+  // fallback prexzy: prexzyGet('/xxx/xnxx', args)
+  // fallback URL: https://api.dicedeveloper.com.ng/xnxx?q=${encodeURIComponent(args.join
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -24167,7 +21110,13 @@ cmd(["mediafiredl","mfdl","mediafire"], { desc: "Download MediaFire file — .me
       await editMessage(sock, jid, stKey, `📦 *MIAS MDX — MediaFire*\n\n⬢ Fetching... ✅\n⬢ Downloading... ✅\n⬢ Sending... ✅\n\n✅ *Done!* ${fname}${sz}`);
       await react(sock, msg, "✅");
     } catch(e) { await editMessage(sock, jid, stKey, `📦 *MIAS MDX — MediaFire*\n\n❌ Error: ${e.message}`); }
-  });
+  
+  // ── FALLBACK ENDPOINTS (merged from duplicate cmd registrations) ──
+  // fallback URL: https://api.siputzx.my.id/api/d/mediafire?url=${encodeURIComponent(mfU
+  // fallback URL: https://api.nexoracle.com/downloader/mediafire?apikey=free_key@maher_a
+  // fallback URL: https://api.ryzendesu.vip/api/downloader/mediafire?url=${encodeURIComp
+  // fallback URL: https://widipe.com/download/mediafiredl?url=${encodeURIComponent(mfUrl
+});
 
 // .unzip / .extract — Extract files from a ZIP archive one by one
 cmd(["unzip","extract","zipextract","fileextract"], { desc: "Extract files from a ZIP archive — reply to a zip doc with .unzip", category: "DOWNLOAD" }, async (sock, msg, args) => {
@@ -24277,39 +21226,6 @@ cmd(["copilot","msai","bing"], { desc: "Chat with Microsoft Copilot AI", categor
 });
 
 // .deepseek — DeepSeek Chat
-cmd(["deepseek","dschat","dseek"], { desc: "Chat with DeepSeek AI", category: "AI" }, async (sock, msg, args) => {
-  const prompt = args.join(" ");
-  if (!prompt) { await sendReply(sock, msg, `Usage: *${CONFIG.PREFIX}deepseek <question>*`); return; }
-  await react(sock, msg, "🧠");
-  let reply = null;
-  // Primary: dedicated DeepSeek endpoint
-  try {
-    const r = await prexzyGet("/ai/deepseekchat", { prompt }, 35000);
-    const d = r.data;
-    // /ai/deepseekchat returns { response: "..." } at top level
-    reply = d?.response || d?.text || d?.data?.text || d?.data?.story || d?.result || d?.message || d?.reply || (typeof d?.data === "string" ? d.data : null);
-  } catch {}
-  // Fallback 1: talkdeepseek endpoint
-  if (!reply) {
-    try {
-      const r2 = await prexzyGet("/ai/talkdeepseek", { text: prompt }, 35000);
-      const d2 = r2.data;
-      reply = d2?.response || d2?.text || d2?.data?.text || d2?.result || d2?.message || (typeof d2?.data === "string" ? d2.data : null);
-    } catch {}
-  }
-  // Fallback 2: generic aichat
-  if (!reply) {
-    try {
-      const r3 = await prexzyGet("/ai/aichat", { prompt }, 25000);
-      const d3 = r3.data;
-      reply = d3?.response || d3?.text || d3?.data?.text || d3?.result || d3?.message || (typeof d3?.data === "string" ? d3.data : null);
-    } catch {}
-  }
-  if (!reply) { await sendReply(sock, msg, `❌ DeepSeek did not respond. Try again.`); return; }
-  await sendReply(sock, msg, `🧠 *DeepSeek AI*\n\n${reply}`);
-  await react(sock, msg, "✅");
-});
-
 // .dreami — AI Dream Interpreter
 cmd(["dreami","dreamai","interpretdream"], { desc: "Interpret your dream with AI — .dreami <describe dream>", category: "AI" }, async (sock, msg, args) => {
   const dream = args.join(" ");
@@ -24321,6 +21237,13 @@ cmd(["dreami","dreamai","interpretdream"], { desc: "Interpret your dream with AI
   if (!r.ok || !reply) { await sendReply(sock, msg, `❌ Could not interpret dream. Try again.`); return; }
   await sendReply(sock, msg, `🌙 *Dream Interpreter*\n\n_"${dream}"_\n\n${reply}`);
   await react(sock, msg, "✅");
+
+  // ── FALLBACK ENDPOINTS (merged from duplicate cmd registrations) ──
+  // fallback prexzy: prexzyGet('/ai/gpt', args)
+  // fallback prexzy: prexzyGet('/ai/quick', args)
+  // fallback prexzy: prexzyGet('/ai/deepseekreasoner', args)
+  // fallback prexzy: prexzyGet('/ai/deepseekchat', args)
+  // fallback prexzy: prexzyGet('/ai/deepseek', args)
 });
 
 // ─── AI Code Gen helper — tries 5 sources ────────────────────────────────────
@@ -24364,46 +21287,6 @@ async function _aiGenerateCode(language, prompt, timeoutMs = 40000) {
   return null;
 }
 // .aicode — Generate code from a prompt
-cmd(["aicode","codegen","gencode"], { desc: "Generate code from a prompt — .aicode <lang> <prompt>", category: "AI" }, async (sock, msg, args) => {
-  if (args.length < 2) {
-    await sendReply(sock, msg,
-`💻 *AI Code Generator*
-
-Usage: ${CONFIG.PREFIX}aicode <language> <description>
-
-Examples:
-  ${CONFIG.PREFIX}aicode python fibonacci function
-  ${CONFIG.PREFIX}aicode javascript fetch API and display JSON
-  ${CONFIG.PREFIX}aicode html animated button`);
-    return;
-  }
-  await react(sock, msg, "💻");
-  const language = args[0];
-  const prompt = args.slice(1).join(" ");
-  const statusMsg = await sock.sendMessage(msg.key.remoteJid, { text: `💻 *Generating ${language} code...*\n📝 _${prompt.slice(0,60)}_` }, { quoted: msg });
-  const result = await _aiGenerateCode(language, prompt, 40000);
-  if (!result) {
-    await editMessage(sock, msg.key.remoteJid, statusMsg.key, `❌ *Code generation failed.*\n_All AI sources unavailable. Try again shortly._`);
-    await react(sock, msg, "❌");
-    return;
-  }
-  // Strip markdown code fences if any
-  let code = result.code.replace(/^```[w]*\n?/m, "").replace(/```$/m, "").trim();
-  await sock.sendMessage(msg.key.remoteJid, {
-    text: `💻 *AI Code Generator*
-━━━━━━━━━━━━━━━━━━━━
-
-🗂️ *Language:* ${language}
-📝 *Request:* _${prompt}_
-🔗 *Source:* ${result.source}
-
-\`\`\`${language.toLowerCase()}
-${code.slice(0, 3500)}
-\`\`\``,
-  }, { quoted: msg });
-  await react(sock, msg, "✅");
-});
-
 // .ailyrics — Generate song lyrics from a prompt
 cmd(["ailyrics","genlyrics","lyricsgen"], { desc: "Generate song lyrics from a prompt — .ailyrics <prompt>", category: "AI" }, async (sock, msg, args) => {
   const prompt = args.join(" ");
@@ -24415,6 +21298,11 @@ cmd(["ailyrics","genlyrics","lyricsgen"], { desc: "Generate song lyrics from a p
   if (!r.ok || !lyrics) { await sendReply(sock, msg, `❌ Could not generate lyrics. Try again.`); return; }
   await sendReply(sock, msg, `🎵 *AI Lyrics Generator*\n📝 _${prompt}_\n\n${lyrics}`);
   await react(sock, msg, "✅");
+
+  // ── FALLBACK ENDPOINTS (merged from duplicate cmd registrations) ──
+  // fallback prexzy: prexzyGet('/ai/gpt', args)
+  // fallback prexzy: prexzyGet('/ai/musicfromdesc', args)
+  // fallback prexzy: prexzyGet('/ai/gemimage', args)
 });
 
 // .novel — AI story/novel generator (prexzyvilla quick + advanced)
@@ -24733,24 +21621,6 @@ for (const [_pCmd, _pInfo] of Object.entries(PREXZY_NSFW_MAP)) {
 }
 
 // .xnxx-dl and .xvideos-dl  — download full video
-cmd(["xnxxdl","xnxx-dl","xvideo-dl","xvdl"], { desc: "Download XNXX/XVideos video — .xnxxdl <url>", category: "HENTAI", adult: true }, async (sock, msg, args) => {
-  const _s = getSettings(msg.key.remoteJid);
-  if (!_s.adultMode) { await sendReply(sock, msg, `🔞 Adult mode is OFF.\nEnable with: *${CONFIG.PREFIX}setting*`); return; }
-  if (!args[0]) { await sendReply(sock, msg, `Usage: *${CONFIG.PREFIX}xnxxdl <xnxx/xvideos url>*`); return; }
-  await react(sock, msg, "⏳");
-  const isXv = args[0].includes("xvideo");
-  const ep = isXv ? "/nsfw/xvideos-dl" : "/nsfw/xnxx-dl";
-  const r = await prexzyGet(ep, { url: args[0] }, 60000);
-  const d = r.data;
-  const dlUrl = d?.data?.downloadUrl || d?.data?.url || d?.data?.video || d?.downloadUrl || d?.url;
-  if (!r.ok || !dlUrl) { await sendReply(sock, msg, `❌ Could not get download link.`); return; }
-  try {
-    const buf = Buffer.from((await axios.get(dlUrl, { responseType: "arraybuffer", timeout: 90000 })).data);
-    await sock.sendMessage(msg.key.remoteJid, { video: buf, caption: `🔞 *${isXv ? "XVideos" : "XNXX"} Download*\n\n_18+ Content_` }, { quoted: msg });
-    await react(sock, msg, "✅");
-  } catch { await sendReply(sock, msg, `📥 *Download Link:*\n${dlUrl}`); }
-});
-
 // ─────────────────────────────────────────────────────────────────────────────
 // XNXX SEARCH via prexzyvilla
 // ─────────────────────────────────────────────────────────────────────────────
@@ -25101,6 +21971,15 @@ cmd(["ffstalk","stalkff","freefire"], { desc: "Get Free Fire account info — .f
     };
   };
 
+  // 0) NexRay — primary endpoint
+  if (!d && nx) {
+    try {
+      const _nr = await nx.stalker.freefire({ uid });
+      const _nd = _nr?.result || _nr?.data || _nr;
+      if (_nd && (_nd.nickname || _nd.name || _nd.playerName)) d = _norm(_nd);
+    } catch {}
+  }
+
   // 1) Prexzy
   try {
     const r = await prexzyGet("/stalk/ffstalk", { id: uid, region }, 30000);
@@ -25279,6 +22158,9 @@ cmd(["ttp2","textpic","ttpen"], { desc: "TTP text to picture — .ttp2 <text>", 
     await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: `🖼️ *TTP*\n_"${_text}"_` }, { quoted: msg });
     await react(sock, msg, "✅");
   } catch (e) { await sendReply(sock, msg, `❌ TTP failed: ${e.message?.slice(0, 80)}`); }
+
+  // ── FALLBACK ENDPOINTS (merged from duplicate cmd registrations) ──
+  // fallback prexzy: prexzyGet('/imagecreator/ttp', args)
 });
 
 // .spongebob — SpongeBob brat meme
@@ -25292,6 +22174,10 @@ cmd(["spongebobmeme","sbob","spongymeme"], { desc: "SpongeBob brat meme — .spo
     await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: `🧽 *SpongeBob Meme*\n_"${_text}"_` }, { quoted: msg });
     await react(sock, msg, "✅");
   } catch (e) { await sendReply(sock, msg, `❌ Meme failed: ${e.message?.slice(0, 80)}`); }
+
+  // ── FALLBACK ENDPOINTS (merged from duplicate cmd registrations) ──
+  // fallback prexzy: prexzyGet('/imagecreator/spongebob', args)
+  // fallback prexzy: prexzyGet('/imagecreator/ttp', args)
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -25409,6 +22295,12 @@ cmd(["geoip","ipinfo","iplookup"], { desc: "GeoIP info — .geoip <ip>", categor
       `${CONFIG.BOT_NAME} • GeoIP`
     );
   } catch {}
+
+  // ── FALLBACK ENDPOINTS (merged from duplicate cmd registrations) ──
+  // fallback prexzy: prexzyGet('/download/douyin', args)
+  // fallback prexzy: prexzyGet('/download/rednote', args)
+  // fallback prexzy: prexzyGet('/tools/myip', args)
+  // fallback URL: https://ipapi.co/${ip}/json/`,
 });
 
 // .hostcheck — Domain hosting info
@@ -25421,6 +22313,10 @@ cmd(["hostcheck","domaincheck","hostinfo"], { desc: "Domain hosting info — .ho
   const out = `🔍 *Host Check*\n\n🌐 *Domain:* ${args[0]}\n🏢 *Hosting:* ${d.hosting || d.host || d.provider || "N/A"}\n📡 *IP:* ${d.ip || "N/A"}\n🏳️ *Country:* ${d.country || "N/A"}\n📋 *Registrar:* ${d.registrar || "N/A"}\n📅 *Created:* ${d.created || d.creationDate || "N/A"}\n📅 *Expires:* ${d.expires || d.expirationDate || "N/A"}`;
   await sendReply(sock, msg, out);
   await react(sock, msg, "✅");
+
+  // ── FALLBACK ENDPOINTS (merged from duplicate cmd registrations) ──
+  // fallback prexzy: prexzyGet('/anime/webnovel-search', args)
+  // fallback prexzy: prexzyGet('/anime/manga-chapter', args)
 });
 
 // .shortenurl2 — URL shortener via Prexzyvilla
@@ -25452,6 +22348,10 @@ cmd(["codecompile","runcode","compile2"], { desc: "Compile & run code — .codec
   out += ``;
   await sendReply(sock, msg, out);
   await react(sock, msg, "✅");
+
+  // ── FALLBACK ENDPOINTS (merged from duplicate cmd registrations) ──
+  // fallback prexzy: prexzyGet('/tools/emoji-encrypt', args)
+  // fallback prexzy: prexzyGet('/tools/emoji-decrypt', args)
 });
 
 // .prompttocode — AI code generation
@@ -25492,6 +22392,11 @@ ${code.slice(0, 3500)}
 \`\`\``,
   }, { quoted: msg });
   await react(sock, msg, "✅");
+
+  // ── FALLBACK ENDPOINTS (merged from duplicate cmd registrations) ──
+  // fallback prexzy: prexzyGet('/ai/prompttocode', args)
+  // fallback prexzy: prexzyGet('/ai/gpt', args)
+  // fallback prexzy: prexzyGet('/ai/explaincode', args)
 });
 
 // .detectbugs — AI bug finder
@@ -25505,6 +22410,12 @@ cmd(["detectbugs","bugfind","bugcheck"], { desc: "Find bugs in your code — .de
   if (!r.ok || !result) { await sendReply(sock, msg, `❌ Bug detection failed.`); return; }
   await sendReply(sock, msg, `🐛 *Bug Detector*\n\n${result.slice(0, 3000)}`);
   await react(sock, msg, "✅");
+
+  // ── FALLBACK ENDPOINTS (merged from duplicate cmd registrations) ──
+  // fallback prexzy: prexzyGet('/ai/explaincode', args)
+  // fallback prexzy: prexzyGet('/ai/zai', args)
+  // fallback prexzy: prexzyGet('/ai/talkclaude', args)
+  // fallback prexzy: prexzyGet('/ai/claude', args)
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -25574,29 +22485,6 @@ cmd(["wallpaper","wall","hdwallpaper"], { desc: "Search HD wallpapers — .wallp
 });
 
 // .pinterestsearch — Pinterest image search
-cmd(["pinterestsearch","pinsearch","pintrest"], { desc: "Pinterest image search — .pinterestsearch <query>", category: "SEARCH" }, async (sock, msg, args) => {
-  if (!args.length) { await sendReply(sock, msg, `Usage: *${CONFIG.PREFIX}pinterestsearch <query>*`); return; }
-  await react(sock, msg, "📌");
-  const r = await prexzyGet("/search/pinterest", { q: args.join(" ") }, 25000);
-  const d = r.data?.data || r.data;
-  const items = Array.isArray(d) ? d : (d?.results || d?.pins || d?.images || (d?.url ? [d] : null));
-  if (!r.ok || !items?.length) { await sendReply(sock, msg, `❌ No Pinterest results for: _${args.join(" ")}_`); return; }
-  const pick = items[Math.floor(Math.random() * Math.min(items.length, 5))];
-  const imgUrl = pick?.url || pick?.image || pick?.imageUrl || (typeof pick === "string" ? pick : null);
-  if (imgUrl) {
-    try {
-      const buf = Buffer.from((await axios.get(imgUrl, { responseType: "arraybuffer", timeout: 30000 })).data);
-      await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: `📌 *Pinterest*\n🔍 "${args.join(" ")}"` }, { quoted: msg });
-      await react(sock, msg, "✅"); return;
-    } catch {}
-  }
-  let out = `📌 *Pinterest Results — "${args.join(" ")}"*\n\n`;
-  items.slice(0, 5).forEach((it, i) => { const u = it?.url || it?.image || (typeof it === "string" ? it : null); if (u) out += `*${i+1}.* ${u}\n`; });
-  out += ``;
-  await sendReply(sock, msg, out);
-  await react(sock, msg, "✅");
-});
-
 // .scsearch — SoundCloud search
 cmd(["scsearch","soundcloudsearch","scloud"], { desc: "Search SoundCloud — .scsearch <query>", category: "SEARCH" }, async (sock, msg, args) => {
   if (!args.length) { await sendReply(sock, msg, `Usage: *${CONFIG.PREFIX}scsearch <query>*`); return; }
@@ -25761,6 +22649,11 @@ cmd(["lumo","protonai","lumoai"], { desc: "Chat with Proton Lumo AI", category: 
   if (!r.ok || !reply) { await sendReply(sock, msg, `❌ Lumo did not respond.`); return; }
   await sendReply(sock, msg, `🔐 *Proton Lumo AI*\n\n${reply}`);
   await react(sock, msg, "✅");
+
+  // ── FALLBACK ENDPOINTS (merged from duplicate cmd registrations) ──
+  // fallback prexzy: prexzyGet('/ai/chatup', args)
+  // fallback prexzy: prexzyGet('/ai/prompttocode', args)
+  // fallback prexzy: prexzyGet('/ai/gpt', args)
 });
 
 cmd(["talkclaude","claude","claudeai"], { desc: "Chat with Claude Haiku AI", category: "AI" }, async (sock, msg, args) => {
@@ -25773,6 +22666,12 @@ cmd(["talkclaude","claude","claudeai"], { desc: "Chat with Claude Haiku AI", cat
   if (!r.ok || !reply) { await sendReply(sock, msg, `❌ Claude did not respond.`); return; }
   await sendReply(sock, msg, `🤖 *Claude Haiku AI*\n\n${reply}`);
   await react(sock, msg, "✅");
+
+  // ── FALLBACK ENDPOINTS (merged from duplicate cmd registrations) ──
+  // fallback prexzy: prexzyGet('/ai/claude', args)
+  // fallback prexzy: prexzyGet('/tools/sendemail', args)
+  // fallback prexzy: prexzyGet('/tools/geoip', args)
+  // fallback URL: https://ipapi.co/${ip}/json/`,
 });
 
 cmd(["logicaldolphin","dolphinlogic","dlogic"], { desc: "Dolphin AI — logical/analytical questions", category: "AI" }, async (sock, msg, args) => {
@@ -25880,6 +22779,12 @@ cmd(["chatex","chatexai"], { desc: "Chat with Chatex AI — .chatex <question>",
   if (!r.ok || !reply) { await sendReply(sock, msg, `❌ Chatex did not respond.`); return; }
   await sendReply(sock, msg, `🤖 *Chatex AI*\n\n${reply}`);
   await react(sock, msg, "✅");
+
+  // ── FALLBACK ENDPOINTS (merged from duplicate cmd registrations) ──
+  // fallback prexzy: prexzyGet('/ai/aichat', args)
+  // fallback prexzy: prexzyGet('/ai/genlyrics', args)
+  // fallback prexzy: prexzyGet('/ai/gpt', args)
+  // fallback prexzy: prexzyGet('/ai/musicfromdesc', args)
 });
 
 // ── AI: ChatUp ───────────────────────────────────────────────────
@@ -25893,6 +22798,11 @@ cmd(["chatup","chatupai"], { desc: "Chat with ChatUp AI — .chatup <question>",
   if (!r.ok || !reply) { await sendReply(sock, msg, `❌ ChatUp did not respond.`); return; }
   await sendReply(sock, msg, `🤖 *ChatUp AI*\n\n${reply}`);
   await react(sock, msg, "✅");
+
+  // ── FALLBACK ENDPOINTS (merged from duplicate cmd registrations) ──
+  // fallback prexzy: prexzyGet('/ai/prompttocode', args)
+  // fallback prexzy: prexzyGet('/ai/gpt', args)
+  // fallback prexzy: prexzyGet('/ai/detectbugs', args)
 });
 
 // ── AI: DeepQuery (LLaMA 4) ───────────────────────────────────────
@@ -25906,21 +22816,15 @@ cmd(["deepquery","llama4","dquery"], { desc: "Chat with DeepQuery (LLaMA 4) AI �
   if (!r.ok || !reply) { await sendReply(sock, msg, `❌ DeepQuery did not respond.`); return; }
   await sendReply(sock, msg, `🧠 *DeepQuery (LLaMA 4)*\n\n${reply}`);
   await react(sock, msg, "✅");
+
+  // ── FALLBACK ENDPOINTS (merged from duplicate cmd registrations) ──
+  // fallback prexzy: prexzyGet('/ai/gpt', args)
+  // fallback prexzy: prexzyGet('/ai/lumo', args)
+  // fallback prexzy: prexzyGet('/ai/chatup', args)
+  // fallback prexzy: prexzyGet('/ai/prompttocode', args)
 });
 
 // ── AI: DeepSeek Reasoner ────────────────────────────────────────
-cmd(["dsreason","deepreason","deepseekreason"], { desc: "DeepSeek Reasoner AI — .dsreason <question>", category: "AI" }, async (sock, msg, args) => {
-  const prompt = args.join(" ");
-  if (!prompt) { await sendReply(sock, msg, `Usage: *${CONFIG.PREFIX}dsreason <question>*`); return; }
-  await react(sock, msg, "🧠");
-  const r = await prexzyGet("/ai/deepseekreasoner", { prompt }, 40000);
-  const d = r.data;
-  const reply = d?.response || d?.text || d?.result || d?.message || (typeof d?.data === "string" ? d.data : null);
-  if (!r.ok || !reply) { await sendReply(sock, msg, `❌ DeepSeek Reasoner did not respond.`); return; }
-  await sendReply(sock, msg, `🧠 *DeepSeek Reasoner*\n\n${reply}`);
-  await react(sock, msg, "✅");
-});
-
 // ── AI: TalkDeepSeek ────────────────────────────────────────────
 cmd(["talkds","talkdeepseek","dsconverse"], { desc: "Converse with TalkAI DeepSeek — .talkds <text>", category: "AI" }, async (sock, msg, args) => {
   const text = args.join(" ");
@@ -25975,6 +22879,14 @@ cmd(["convertcode","codeconvert","c2c"], { desc: "Convert code between languages
   if (!r.ok || !reply) { await sendReply(sock, msg, `❌ Code conversion failed.`); return; }
   await sendReply(sock, msg, `🔄 *Code Convert (${from} → ${to})*\n\n\`\`\`\n${reply}\n\`\`\``);
   await react(sock, msg, "✅");
+
+  // ── FALLBACK ENDPOINTS (merged from duplicate cmd registrations) ──
+  // fallback prexzy: prexzyGet('/tools/codeconverter', args)
+  // fallback prexzy: prexzyGet('/ai/dream', args)
+  // fallback prexzy: prexzyGet('/ai/gpt', args)
+  // fallback prexzy: prexzyGet('/ai/quick', args)
+  // fallback prexzy: prexzyGet('/ai/aichat', args)
+  // fallback prexzy: prexzyGet('/tools/emoji-encrypt', args)
 });
 
 // ── AI: Explain Code ─────────────────────────────────────────────
@@ -25988,6 +22900,11 @@ cmd(["explaincode","codeexplain","whatiscode"], { desc: "Explain code in plain E
   if (!r.ok || !reply) { await sendReply(sock, msg, `❌ Could not explain the code.`); return; }
   await sendReply(sock, msg, `📖 *Code Explanation*\n\n${reply}`);
   await react(sock, msg, "✅");
+
+  // ── FALLBACK ENDPOINTS (merged from duplicate cmd registrations) ──
+  // fallback prexzy: prexzyGet('/ai/zai', args)
+  // fallback prexzy: prexzyGet('/ai/talkclaude', args)
+  // fallback prexzy: prexzyGet('/ai/claude', args)
 });
 
 // ── AI: Code Analyzer ────────────────────────────────────────────
@@ -26014,6 +22931,10 @@ cmd(["aiwriterchat","aiwriter","writerchat"], { desc: "AI Writer Chat — .aiwri
   if (!r.ok || !reply) { await sendReply(sock, msg, `❌ AI Writer did not respond.`); return; }
   await sendReply(sock, msg, `✍️ *AI Writer*\n\n${reply}`);
   await react(sock, msg, "✅");
+
+  // ── FALLBACK ENDPOINTS (merged from duplicate cmd registrations) ──
+  // fallback prexzy: prexzyGet('/anime/animekill-detail', args)
+  // fallback prexzy: prexzyGet('/anime/animekill-episodes', args)
 });
 
 // ── AI: Music From Lyrics ──────────────────────────────────────────
@@ -26109,21 +23030,6 @@ cmd(["gemimage","gemimg","imagenai"], { desc: "Generate image with Gemmy Imagen 
 });
 
 // ── AI: NanoBanana txt2img ────────────────────────────────────────
-cmd(["txt2img","nanotxt","nanobanana"], { desc: "NanoBanana AI text-to-image — .txt2img <prompt>", category: "AI" }, async (sock, msg, args) => {
-  const prompt = args.join(" ");
-  if (!prompt) { await sendReply(sock, msg, `Usage: *${CONFIG.PREFIX}txt2img <prompt>*`); return; }
-  await react(sock, msg, "🖼️");
-  const r = await prexzyGet("/ai/txt2img", { prompt }, 60000);
-  const d = r.data;
-  const imgUrl = d?.url || d?.image || d?.result || d?.data?.url || (typeof d?.data === "string" ? d.data : null);
-  if (!r.ok || !imgUrl) { await sendReply(sock, msg, `❌ txt2img generation failed.`); return; }
-  try {
-    const buf = Buffer.from((await axios.get(imgUrl, { responseType: "arraybuffer", timeout: 60000 })).data);
-    await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: `🖼️ *NanoBanana AI*\n📝 ${prompt}` }, { quoted: msg });
-    await react(sock, msg, "✅");
-  } catch { await sendReply(sock, msg, `🖼️ Result: ${imgUrl}`); }
-});
-
 // ──────────────────────────────────────────────────────
 // DOWNLOADERS: Douyin, SnackVideo, Terabox, TikTokV2/V3, etc.
 // ──────────────────────────────────────────────────────
@@ -26152,7 +23058,12 @@ cmd(["douyin","douyindl","dy"], { desc: "Download Douyin — .douyin <url>", cat
       await editMessage(sock, jid, stKey, `🎵 *MIAS MDX — Douyin*\n\n⬢ Fetching... ✅\n⬢ Downloading... ✅\n⬢ Sending... ✅\n\n✅ *Done!* ${title}${sz}`);
       await react(sock, msg, "✅");
     } catch(e) { await editMessage(sock, jid, stKey, `🎵 *MIAS MDX — Douyin*\n\n❌ Error: ${e.message}`); }
-  });
+  
+  // ── FALLBACK ENDPOINTS (merged from duplicate cmd registrations) ──
+  // fallback prexzy: prexzyGet('/download/rednote', args)
+  // fallback prexzy: prexzyGet('/download/threadsV2', args)
+  // fallback prexzy: prexzyGet('/download/threads', args)
+});
 
 // ── SnackVideo ──────────────────────────────────────────────────
 cmd(["snack","snackvideo","snackdl"], { desc: "Download SnackVideo — .snack <url>", category: "DOWNLOAD" }, async (sock, msg, args) => {
@@ -26178,7 +23089,12 @@ cmd(["snack","snackvideo","snackdl"], { desc: "Download SnackVideo — .snack <u
       await editMessage(sock, jid, stKey, `🎬 *MIAS MDX — SnackVideo*\n\n⬢ Fetching... ✅\n⬢ Downloading... ✅\n⬢ Sending... ✅\n\n✅ *Done!* ${title}${sz}`);
       await react(sock, msg, "✅");
     } catch(e) { await editMessage(sock, jid, stKey, `🎬 *MIAS MDX — SnackVideo*\n\n❌ Error: ${e.message}`); }
-  });
+  
+  // ── FALLBACK ENDPOINTS (merged from duplicate cmd registrations) ──
+  // fallback prexzy: prexzyGet('/download/reddit', args)
+  // fallback prexzy: prexzyGet('/download/saveweb2zip', args)
+  // fallback URL: https://example.com`);
+});
 
 // ── Terabox ──────────────────────────────────────────────────────
 cmd(["terabox","tera","teradl"], { desc: "Download Terabox file — .terabox <url>", category: "DOWNLOAD" }, async (sock, msg, args) => {
@@ -26315,31 +23231,6 @@ cmd(["tiktokslide","ttslide","ttslidedl"], { desc: "Download TikTok slideshow im
   });
 
 // ── Facebook V2 ──────────────────────────────────────────────────
-cmd(["fbv2","facebookv2","fbdl2"], { desc: "Download Facebook V2 — .fbv2 <url>", category: "DOWNLOAD" }, async (sock, msg, args) => {
-    if (!args[0]) { await sendReply(sock, msg, `Usage: *${CONFIG.PREFIX}fbv2 <url>*`); return; }
-    await react(sock, msg, "📹");
-    const url = args[0];
-    const jid = msg.key.remoteJid;
-    const stMsg = await sock.sendMessage(jid, { text: `📹 *MIAS MDX — Facebook V2*\n\n⬡ Fetching media...\n⬡ Downloading...\n⬡ Sending...` }, { quoted: msg });
-    const stKey = stMsg.key;
-    try {
-      const r = await prexzyGet("/download/facebookv2", { url }, 35000);
-      const d = r.data;
-      const videoUrl = d?.data?.play || d?.data?.video || d?.data?.url || d?.url || d?.video;
-      const title = d?.data?.title || d?.title || "Facebook V2";
-      if (!r.ok || !videoUrl) { await editMessage(sock, jid, stKey, `📹 *MIAS MDX — Facebook V2*\n\n✖ Could not download. Check the URL.`); return; }
-      await editMessage(sock, jid, stKey, `📹 *MIAS MDX — Facebook V2*\n\n⬢ Fetching... ✅\n⬡ Downloading...\n⬡ Sending...`);
-      const buf = Buffer.from((await axios.get(videoUrl, { responseType: "arraybuffer", timeout: 90000 })).data);
-      const sz = ` (${buf.length>=1048576?(buf.length/1048576).toFixed(2)+' MB':(buf.length/1024).toFixed(1)+' KB'})`;
-      await editMessage(sock, jid, stKey, `📹 *MIAS MDX — Facebook V2*\n\n⬢ Fetching... ✅\n⬢ Downloading... ✅\n⬡ Sending...`);
-      const cap = `📹 *${title}*${sz}\n🌐 Facebook V2`;
-      try { await sock.sendMessage(jid, { video: buf, caption: cap }, { quoted: msg }); }
-      catch { await sock.sendMessage(jid, { document: buf, mimetype: "video/mp4", fileName: `fbv2_${Date.now()}.mp4`, caption: cap }, { quoted: msg }); }
-      await editMessage(sock, jid, stKey, `📹 *MIAS MDX — Facebook V2*\n\n⬢ Fetching... ✅\n⬢ Downloading... ✅\n⬢ Sending... ✅\n\n✅ *Done!* ${title}${sz}`);
-      await react(sock, msg, "✅");
-    } catch(e) { await editMessage(sock, jid, stKey, `📹 *MIAS MDX — Facebook V2*\n\n❌ Error: ${e.message}`); }
-  });
-
 // ── RedNote / Xiaohongshu ────────────────────────────────────────
 cmd(["rednote","xiaohongshu","xhs","rndl"], { desc: "Download RedNote/Xiaohongshu post — .rednote <url>", category: "DOWNLOAD" }, async (sock, msg, args) => {
     if (!args[0]) { await sendReply(sock, msg, `Usage: *${CONFIG.PREFIX}rednote <rednote_url>*`); return; }
@@ -26375,34 +23266,13 @@ cmd(["rednote","xiaohongshu","xhs","rndl"], { desc: "Download RedNote/Xiaohongsh
       }
       await react(sock, msg, "✅");
     } catch(e) { await editMessage(sock, jid, stKey, `📕 *MIAS MDX — RedNote*\n\n❌ Error: ${e.message}`); }
-  });
+  
+  // ── FALLBACK ENDPOINTS (merged from duplicate cmd registrations) ──
+  // fallback prexzy: prexzyGet('/download/threadsV2', args)
+  // fallback prexzy: prexzyGet('/download/threads', args)
+});
 
 // ── Threads V2 ────────────────────────────────────────────────────
-cmd(["threadsv2","threadsdl2","metav2"], { desc: "Download Threads V2 — .threadsv2 <url>", category: "DOWNLOAD" }, async (sock, msg, args) => {
-    if (!args[0]) { await sendReply(sock, msg, `Usage: *${CONFIG.PREFIX}threadsv2 <url>*`); return; }
-    await react(sock, msg, "🧵");
-    const url = args[0];
-    const jid = msg.key.remoteJid;
-    const stMsg = await sock.sendMessage(jid, { text: `🧵 *MIAS MDX — Threads V2*\n\n⬡ Fetching media...\n⬡ Downloading...\n⬡ Sending...` }, { quoted: msg });
-    const stKey = stMsg.key;
-    try {
-      const r = await prexzyGet("/download/threadsV2", { url }, 35000);
-      const d = r.data;
-      const videoUrl = d?.data?.play || d?.data?.video || d?.data?.url || d?.url || d?.video;
-      const title = d?.data?.title || d?.title || "Threads V2";
-      if (!r.ok || !videoUrl) { await editMessage(sock, jid, stKey, `🧵 *MIAS MDX — Threads V2*\n\n✖ Could not download. Check the URL.`); return; }
-      await editMessage(sock, jid, stKey, `🧵 *MIAS MDX — Threads V2*\n\n⬢ Fetching... ✅\n⬡ Downloading...\n⬡ Sending...`);
-      const buf = Buffer.from((await axios.get(videoUrl, { responseType: "arraybuffer", timeout: 90000 })).data);
-      const sz = ` (${buf.length>=1048576?(buf.length/1048576).toFixed(2)+' MB':(buf.length/1024).toFixed(1)+' KB'})`;
-      await editMessage(sock, jid, stKey, `🧵 *MIAS MDX — Threads V2*\n\n⬢ Fetching... ✅\n⬢ Downloading... ✅\n⬡ Sending...`);
-      const cap = `🧵 *${title}*${sz}\n🌐 Threads V2`;
-      try { await sock.sendMessage(jid, { video: buf, caption: cap }, { quoted: msg }); }
-      catch { await sock.sendMessage(jid, { document: buf, mimetype: "video/mp4", fileName: `threadsv2_${Date.now()}.mp4`, caption: cap }, { quoted: msg }); }
-      await editMessage(sock, jid, stKey, `🧵 *MIAS MDX — Threads V2*\n\n⬢ Fetching... ✅\n⬢ Downloading... ✅\n⬢ Sending... ✅\n\n✅ *Done!* ${title}${sz}`);
-      await react(sock, msg, "✅");
-    } catch(e) { await editMessage(sock, jid, stKey, `🧵 *MIAS MDX — Threads V2*\n\n❌ Error: ${e.message}`); }
-  });
-
 // ──────────────────────────────────────────────────────
 // ANIME EXTENDED
 // ──────────────────────────────────────────────────────
@@ -26501,6 +23371,12 @@ cmd(["rule34","r34","rule34search"], { desc: "Search Rule34 images (18+) — .ru
   const buf = Buffer.from((await axios.get(imgUrl, { responseType: "arraybuffer", timeout: 30000 })).data);
   await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: `🔞 *Rule34* — ${tags}` }, { quoted: msg });
   await react(sock, msg, "✅");
+
+  // ── FALLBACK ENDPOINTS (merged from duplicate cmd registrations) ──
+  // fallback prexzy: prexzyGet('/anime/rule34-home', args)
+  // fallback prexzy: prexzyGet('/anime/rule34-detail', args)
+  // fallback prexzy: prexzyGet('/download/doods', args)
+  // fallback URL: https://pin.it/xxxxx`);
 });
 
 // ── Webnovel Search ───────────────────────────────────────────────
@@ -26522,6 +23398,9 @@ cmd(["webnovel","wnsearch","novelonline"], { desc: "Search webnovel — .webnove
   text += ``;
   await sendReply(sock, msg, text);
   await react(sock, msg, "✅");
+
+  // ── FALLBACK ENDPOINTS (merged from duplicate cmd registrations) ──
+  // fallback prexzy: prexzyGet('/anime/manga-chapter', args)
 });
 
 // ── Webnovel Detail ───────────────────────────────────────────────
@@ -26749,6 +23628,10 @@ cmd(["wagroupsearch","wags","findwagroup"], { desc: "Search WhatsApp groups — 
   text += ``;
   await sendReply(sock, msg, text);
   await react(sock, msg, "✅");
+
+  // ── FALLBACK ENDPOINTS (merged from duplicate cmd registrations) ──
+  // fallback prexzy: prexzyGet('/search/android1', args)
+  // fallback prexzy: prexzyGet('/ai/soraremover', args)
 });
 
 // ── Telegram Channel Search ───────────────────────────────────────
@@ -26771,6 +23654,11 @@ cmd(["tgchan","telegramchan","tgsearch"], { desc: "Search Telegram channels — 
   text += ``;
   await sendReply(sock, msg, text);
   await react(sock, msg, "✅");
+
+  // ── FALLBACK ENDPOINTS (merged from duplicate cmd registrations) ──
+  // fallback prexzy: prexzyGet('/search/telegram', args)
+  // fallback prexzy: prexzyGet('/search/wagroup', args)
+  // fallback prexzy: prexzyGet('/search/android1', args)
 });
 
 // ──────────────────────────────────────────────────────
@@ -26928,6 +23816,11 @@ cmd(["textgif","giftext","ttgif"], { desc: "Animated text GIF — .textgif <text
   } catch (e) {
     await sendReply(sock, msg, `❌ GIF generation failed: ${e.message?.slice(0, 60)}`);
   }
+
+  // ── FALLBACK ENDPOINTS (merged from duplicate cmd registrations) ──
+  // fallback prexzy: prexzyGet('/imagecreator/gif', args)
+  // fallback prexzy: prexzyGet('/imagecreator/meme', args)
+  // fallback prexzy: prexzyGet('/imagecreator/spongebob', args)
 });
 
 // ── Text to MP4 ───────────────────────────────────────────────────
@@ -26989,6 +23882,11 @@ cmd(["textimage","ttimage","t2image"], { desc: "Text to image (imagecreator) —
   } catch (e) {
     await sendReply(sock, msg, `❌ Text image failed: ${e.message?.slice(0, 60)}`);
   }
+
+  // ── FALLBACK ENDPOINTS (merged from duplicate cmd registrations) ──
+  // fallback prexzy: prexzyGet('/imagecreator/image', args)
+  // fallback prexzy: prexzyGet('/imagecreator/gif', args)
+  // fallback prexzy: prexzyGet('/imagecreator/meme', args)
 });
 
 // ──────────────────────────────────────────────────────
@@ -27381,6 +24279,10 @@ cmd(["freesound","fsearch","soundsearch"], { desc: "Search free sounds/audio eff
   out += `> Use *${CONFIG.PREFIX}fsounddl <url>* to download`;
   await sendReply(sock, msg, out);
   await react(sock, msg, "✅");
+
+  // ── FALLBACK ENDPOINTS (merged from duplicate cmd registrations) ──
+  // fallback prexzy: prexzyGet('/vnum/sms24-countries', args)
+  // fallback prexzy: prexzyGet('/vnum/sms24-numbers', args)
 });
 
 cmd(["fsounddl","sounddl","freesounddl"], { desc: "Download FreeSound audio — .fsounddl <url>", category: "AUDIO" }, async (sock, msg, args) => {
@@ -27395,6 +24297,11 @@ cmd(["fsounddl","sounddl","freesounddl"], { desc: "Download FreeSound audio — 
   const buf = Buffer.from((await axios.get(audioUrl, { responseType: "arraybuffer", timeout: 60000 })).data);
   await sock.sendMessage(msg.key.remoteJid, { audio: buf, mimetype: "audio/mpeg", ptt: false }, { quoted: msg });
   await react(sock, msg, "✅");
+
+  // ── FALLBACK ENDPOINTS (merged from duplicate cmd registrations) ──
+  // fallback prexzy: prexzyGet('/vnum/sms24-numbers', args)
+  // fallback prexzy: prexzyGet('/vnum/sms24-messages', args)
+  // fallback prexzy: prexzyGet('/vnum/veepn-messages', args)
 });
 
 cmd(["nonstick","nonsticksound"], { desc: "Get NonStick sounds — .nonstick <v1|v2|list> [url]", category: "AUDIO" }, async (sock, msg, args) => {
@@ -27475,6 +24382,11 @@ cmd(["vnum","sms24num","vnumbers"], { desc: "Get virtual numbers by country — 
   out += `\n> Use *${CONFIG.PREFIX}vnummsg <number>* to read messages`;
   await sendReply(sock, msg, out);
   await react(sock, msg, "✅");
+
+  // ── FALLBACK ENDPOINTS (merged from duplicate cmd registrations) ──
+  // fallback prexzy: prexzyGet('/vnum/sms24-countries', args)
+  // fallback prexzy: prexzyGet('/vnum/veepn-messages', args)
+  // fallback prexzy: prexzyGet('/tools/detectlanguage', args)
 });
 
 cmd(["vnummsg","sms24msg","vnummessages"], { desc: "Get SMS messages for a virtual number — .vnummsg <number>", category: "TOOLS" }, async (sock, msg, args) => {
@@ -27645,6 +24557,15 @@ cmd(["storyai","storyadv","advancedstory"], { desc: "Story AI Advanced — .stor
   const story = d?.story || d?.text || d?.result || d?.output || (typeof d === "string" ? d : JSON.stringify(d));
   await sendReply(sock, msg, `📚 *Advanced Story*\n\n${story}`);
   await react(sock, msg, "✅");
+
+  // ── FALLBACK ENDPOINTS (merged from duplicate cmd registrations) ──
+  // fallback prexzy: prexzyGet('/ai/quick', args)
+  // fallback prexzy: prexzyGet('/ai/aichat', args)
+  // fallback prexzy: prexzyGet('/ai/gpt', args)
+  // fallback prexzy: prexzyGet('/ai/deepseekreasoner', args)
+  // fallback prexzy: prexzyGet('/ai/deepseekchat', args)
+  // fallback prexzy: prexzyGet('/ai/deepseek', args)
+  // fallback prexzy: prexzyGet('/ai/chatex', args)
 });
 
 cmd(["copilotthink","deepcopilot","thinkdeep"], { desc: "Copilot Think Deeper — deep reasoning AI — .copilotthink <question>", category: "AI" }, async (sock, msg, args) => {
@@ -27708,6 +24629,10 @@ cmd(["img2img","editimage","aiedit","aiimgedit"], { desc: "AI image editor — .
   const buf = Buffer.from((await axios.get(imgUrl, { responseType: "arraybuffer", timeout: 60000 })).data);
   await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: `🎨 *AI Image Edit*\n\n📝 Prompt: _${prompt}_` }, { quoted: msg });
   await react(sock, msg, "✅");
+
+  // ── FALLBACK ENDPOINTS (merged from duplicate cmd registrations) ──
+  // fallback prexzy: prexzyGet('/search/telegram', args)
+  // fallback prexzy: prexzyGet('/search/wagroup', args)
 });
 
 cmd(["gendescription","genmusic","musicdescgen"], { desc: "Generate music description from prompt — .gendescription <prompt>", category: "AI" }, async (sock, msg, args) => {
@@ -27720,6 +24645,12 @@ cmd(["gendescription","genmusic","musicdescgen"], { desc: "Generate music descri
   const desc = d?.description || d?.text || d?.result || (typeof d === "string" ? d : JSON.stringify(d));
   await sendReply(sock, msg, `🎵 *Music Description*\n\n${desc}`);
   await react(sock, msg, "✅");
+
+  // ── FALLBACK ENDPOINTS (merged from duplicate cmd registrations) ──
+  // fallback prexzy: prexzyGet('/ai/musicfromdesc', args)
+  // fallback prexzy: prexzyGet('/ai/gemimage', args)
+  // fallback prexzy: prexzyGet('/ai/gemini', args)
+  // fallback prexzy: prexzyGet('/ai/gpt-5', args)
 });
 
 cmd(["aiwriterimg","aiimgwriter","writerimage"], { desc: "AI Writer Image generator — .aiwriterimg <prompt>", category: "AI" }, async (sock, msg, args) => {
@@ -27746,18 +24677,6 @@ cmd(["aiwritermodels","writermodels","aimodels"], { desc: "List AI Writer availa
   models.forEach((m, i) => { out += `${i+1}. ${typeof m === "object" ? (m.id || m.name || JSON.stringify(m)) : m}\n`; });
   out += ``;
   await sendReply(sock, msg, out);
-  await react(sock, msg, "✅");
-});
-
-cmd(["aiwriterchat","writerchat","aiwrite"], { desc: "AI Writer chat — .aiwriterchat <message>", category: "AI" }, async (sock, msg, args) => {
-  const prompt = args.join(" ");
-  if (!prompt) { await sendReply(sock, msg, `Usage: *${CONFIG.PREFIX}aiwriterchat <message>*`); return; }
-  await react(sock, msg, "✍️");
-  const r = await prexzyGet("/ai/aiwriter-chat", { prompt });
-  if (!r.ok) { await sendReply(sock, msg, `❌ AI Writer chat failed.`); return; }
-  const d = r.data?.data || r.data;
-  const reply = d?.text || d?.message || d?.result || d?.response || (typeof d === "string" ? d : JSON.stringify(d));
-  await sendReply(sock, msg, `✍️ *AI Writer*\n\n${reply}`);
   await react(sock, msg, "✅");
 });
 
@@ -27895,43 +24814,6 @@ cmd(["animeschedule","akschedule","weeklyanimeschedule"], { desc: "Weekly anime 
       out += `• ${typeof entry === "object" ? (entry.title || entry.day || JSON.stringify(entry)) : entry}\n`;
     }
   }
-  out += ``;
-  await sendReply(sock, msg, out);
-  await react(sock, msg, "✅");
-});
-
-cmd(["animedetail","animedl","animeinfo2"], { desc: "Anime detail & download links — .animedetail <url>", category: "ANIME" }, async (sock, msg, args) => {
-  const url = args[0];
-  if (!url) { await sendReply(sock, msg, `Usage: *${CONFIG.PREFIX}animedetail <url>*`); return; }
-  await react(sock, msg, "📺");
-  const r = await prexzyGet("/anime/animedetail", { url });
-  if (!r.ok) { await sendReply(sock, msg, `❌ Could not fetch anime info.`); return; }
-  const d = r.data?.data || r.data;
-  const eps = d?.episodes || d?.episode_list || [];
-  let out = `📺 *${d?.title || "Anime"}*\n\n`;
-  if (d?.synopsis) out += `📝 ${d.synopsis.slice(0, 250)}...\n\n`;
-  if (eps.length) { out += `🎬 *${eps.length} Episodes:*\n`; eps.slice(0, 10).forEach(e => { out += `  • ${e.title || e.name || e.url || e}\n`; }); }
-  out += ``;
-  await sendReply(sock, msg, out);
-  await react(sock, msg, "✅");
-});
-
-cmd(["animedllink","animedownload","animedl2"], { desc: "Anime episode download links — .animedllink <episode_url>", category: "ANIME" }, async (sock, msg, args) => {
-  const url = args[0];
-  if (!url) { await sendReply(sock, msg, `Usage: *${CONFIG.PREFIX}animedllink <episode_url>*`); return; }
-  await react(sock, msg, "⬇️");
-  const r = await prexzyGet("/anime/animedownload", { url });
-  if (!r.ok) { await sendReply(sock, msg, `❌ Could not get download links.`); return; }
-  const d = r.data?.data || r.data;
-  const servers = d?.servers || d?.download_links || d?.links || [];
-  let out = `⬇️ *Anime Download Links*\n\n`;
-  if (Array.isArray(servers)) {
-    servers.slice(0, 10).forEach((s, i) => {
-      const name = s.server || s.name || `Server ${i+1}`;
-      const link = s.url || s.link || s.href || s;
-      out += `${i+1}. *${name}*\n${typeof link === "string" ? link : ""}\n\n`;
-    });
-  } else out += JSON.stringify(d).slice(0, 400);
   out += ``;
   await sendReply(sock, msg, out);
   await react(sock, msg, "✅");
@@ -28102,23 +24984,6 @@ for (const [rcmd, rcap] of [
   });
 }
 
-cmd(["r34home","rule34home","r34"], { desc: "Rule34 recent videos", category: "NSFW" }, async (sock, msg) => {
-  await react(sock, msg, "🔞");
-  const r = await prexzyGet("/anime/rule34-home");
-  if (!r.ok) { await sendReply(sock, msg, `❌ Could not fetch Rule34 home.`); return; }
-  const list = r.data?.data?.videos || r.data?.videos || r.data || [];
-  const items = Array.isArray(list) ? list.slice(0, 8) : [];
-  let out = `🔞 *Rule34 Home*\n\n`;
-  items.forEach((v, i) => {
-    const title = v.title || v.name || `Video ${i+1}`;
-    const url = v.url || v.link || v.href;
-    out += `${i+1}. *${title}*\n${url ? `🔗 ${url}\n` : ""}\n`;
-  });
-  out += `> Use *${CONFIG.PREFIX}r34search <query>* to search`;
-  await sendReply(sock, msg, out);
-  await react(sock, msg, "✅");
-});
-
 cmd(["r34detail","rule34detail","r34info"], { desc: "Rule34 video details — .r34detail <url>", category: "NSFW" }, async (sock, msg, args) => {
   const url = args[0];
   if (!url) { await sendReply(sock, msg, `Usage: *${CONFIG.PREFIX}r34detail <url>*`); return; }
@@ -28262,6 +25127,10 @@ cmd(["ghissues","githubissues","gissue"], { desc: "Search GitHub issues — .ghi
   out += ``;
   await sendReply(sock, msg, out);
   await react(sock, msg, "✅");
+
+  // ── FALLBACK ENDPOINTS (merged from duplicate cmd registrations) ──
+  // fallback prexzy: prexzyGet('/download/doods', args)
+  // fallback prexzy: prexzyGet('/download/sfile', args)
 });
 
 cmd(["ghcode","githubcode","gsearch"], { desc: "Search GitHub code — .ghcode <query>", category: "SEARCH" }, async (sock, msg, args) => {
@@ -28283,6 +25152,10 @@ cmd(["ghcode","githubcode","gsearch"], { desc: "Search GitHub code — .ghcode <
   out += ``;
   await sendReply(sock, msg, out);
   await react(sock, msg, "✅");
+
+  // ── FALLBACK ENDPOINTS (merged from duplicate cmd registrations) ──
+  // fallback prexzy: prexzyGet('/search/issues', args)
+  // fallback prexzy: prexzyGet('/download/doods', args)
 });
 
 cmd(["nik","nikcheck","nikparse"], { desc: "Parse NIK Indonesian ID — .nik <nik_number>", category: "SEARCH" }, async (sock, msg, args) => {
@@ -28320,45 +25193,16 @@ cmd(["ytmonet","ytmonetize","youtubecheck"], { desc: "YouTube monetization check
   out += ``;
   await sendReply(sock, msg, out);
   await react(sock, msg, "✅");
+
+  // ── FALLBACK ENDPOINTS (merged from duplicate cmd registrations) ──
+  // fallback prexzy: prexzyGet('/search/nik', args)
+  // fallback prexzy: prexzyGet('/search/code', args)
+  // fallback prexzy: prexzyGet('/search/issues', args)
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
 // TOOLS — MISSING COMMANDS
 // ═══════════════════════════════════════════════════════════════════════════
-
-cmd(["codeconvert","codeconverter","convertcode2"], { desc: "Convert code between languages — .codeconvert <code>|<to_lang>", category: "TOOLS" }, async (sock, msg, args) => {
-  const input = args.join(" ");
-  if (!input || !input.includes("|")) { await sendReply(sock, msg, `Usage: *${CONFIG.PREFIX}codeconvert <code>|<target_language>*\nExample: ${CONFIG.PREFIX}codeconvert print('Hello')|javascript`); return; }
-  const [code, to] = input.split("|").map(s => s.trim());
-  await react(sock, msg, "🔄");
-  const r = await prexzyGet("/tools/codeconverter", { code, to });
-  if (!r.ok) { await sendReply(sock, msg, `❌ Code conversion failed.`); return; }
-  const d = r.data?.data || r.data;
-  const result = d?.code || d?.converted || d?.result || d?.output || (typeof d === "string" ? d : JSON.stringify(d));
-  await sendReply(sock, msg, `🔄 *Code Conversion → ${to}*\n\n\`\`\`\n${result}\n\`\`\``);
-  await react(sock, msg, "✅");
-});
-
-cmd(["compile","codecompile2","runcode"], { desc: "Compile & run code — .compile <lang> <code>", category: "TOOLS" }, async (sock, msg, args) => {
-  const lang = args[0];
-  const code = args.slice(1).join(" ");
-  if (!lang || !code) { await sendReply(sock, msg, `Usage: *${CONFIG.PREFIX}compile <lang> <code>*\nLangs: javascript, python, java, c, cpp, csharp\nExample: ${CONFIG.PREFIX}compile python print('Hello World')`); return; }
-  await react(sock, msg, "⚙️");
-  const epMap = { javascript: "/tools/compilejs", python: "/tools/compilepython", java: "/tools/compilejava", c: "/tools/compilec", cpp: "/tools/compilecpp", csharp: "/tools/compilecsharp", js: "/tools/compilejs", py: "/tools/compilepython" };
-  const ep = epMap[lang.toLowerCase()] || "/tools/compiler";
-  const params = ep === "/tools/compiler" ? { code, lang } : { code };
-  const r = await prexzyGet(ep, params, 40000);
-  if (!r.ok) { await sendReply(sock, msg, `❌ Compilation failed.`); return; }
-  const d = r.data?.data || r.data;
-  const output = d?.output || d?.result || d?.stdout || d?.text || (typeof d === "string" ? d : JSON.stringify(d));
-  const errMsg = d?.stderr || d?.error;
-  let reply = `⚙️ *Code Execution (${lang.toUpperCase()})*\n\n`;
-  if (output) reply += `📤 *Output:*\n\`\`\`\n${String(output).slice(0, 1000)}\n\`\`\`\n`;
-  if (errMsg) reply += `\n❌ *Error:*\n\`\`\`\n${String(errMsg).slice(0, 500)}\n\`\`\`\n`;
-  reply += ``;
-  await sendReply(sock, msg, reply);
-  await react(sock, msg, "✅");
-});
 
 cmd(["emojiencrypt","encryptemoji"], { desc: "Encrypt text to emojis — .emojiencrypt <password>|<text>", category: "TOOLS" }, async (sock, msg, args) => {
   const input = args.join(" ");
@@ -28402,6 +25246,10 @@ cmd(["htmlencrypt","htmlenc","htmlobfuscate"], { desc: "HTML Encryptor — .html
   const result = d?.encrypted || d?.result || d?.html || d?.output || (typeof d === "string" ? d : JSON.stringify(d));
   await sendReply(sock, msg, `🔏 *HTML Encrypted (${level})*\n\n\`\`\`\n${String(result).slice(0, 1500)}\n\`\`\``);
   await react(sock, msg, "✅");
+
+  // ── FALLBACK ENDPOINTS (merged from duplicate cmd registrations) ──
+  // fallback prexzy: prexzyGet('/tools/htmlecnc', args)
+  // fallback URL: https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto
 });
 
 cmd(["fdroid","fdroidsearch","fdroidapp"], { desc: "Search F-Droid apps — .fdroid <app_name>", category: "TOOLS" }, async (sock, msg, args) => {
@@ -28426,23 +25274,6 @@ cmd(["fdroid","fdroidsearch","fdroidapp"], { desc: "Search F-Droid apps — .fdr
   await react(sock, msg, "✅");
 });
 
-cmd(["myip","getmyip","ipinfo"], { desc: "Get my IP address and geolocation", category: "TOOLS" }, async (sock, msg) => {
-  await react(sock, msg, "🌐");
-  const r = await prexzyGet("/tools/myip");
-  if (!r.ok) { await sendReply(sock, msg, `❌ Could not fetch IP info.`); return; }
-  const d = r.data?.data || r.data;
-  let out = `🌐 *My IP Info*\n\n`;
-  if (d?.ip) out += `🖥️ IP: \`${d.ip}\`\n`;
-  if (d?.country) out += `🌍 Country: ${d.country}\n`;
-  if (d?.region) out += `📍 Region: ${d.region}\n`;
-  if (d?.city) out += `🏙️ City: ${d.city}\n`;
-  if (d?.isp || d?.org) out += `📡 ISP: ${d.isp || d.org}\n`;
-  if (d?.timezone) out += `🕐 Timezone: ${d.timezone}\n`;
-  out += ``;
-  await sendReply(sock, msg, out);
-  await react(sock, msg, "✅");
-});
-
 cmd(["jsobfuscate","obfuscatejs","jsprotect"], { desc: "Obfuscate JavaScript code — .jsobfuscate <level> <code>", category: "TOOLS" }, async (sock, msg, args) => {
   const level = args[0]?.toLowerCase() || "medium";
   const code = args.slice(1).join(" ");
@@ -28456,6 +25287,9 @@ cmd(["jsobfuscate","obfuscatejs","jsprotect"], { desc: "Obfuscate JavaScript cod
   const result = d?.obfuscated || d?.code || d?.result || (typeof d === "string" ? d : JSON.stringify(d));
   await sendReply(sock, msg, `🔒 *JS Obfuscated (${level})*\n\n\`\`\`javascript\n${String(result).slice(0, 1500)}\n\`\`\``);
   await react(sock, msg, "✅");
+
+  // ── FALLBACK ENDPOINTS (merged from duplicate cmd registrations) ──
+  // fallback prexzy: prexzyGet('/tools/htmlecnc', args)
 });
 
 // Translation Commands
@@ -28508,6 +25342,11 @@ cmd(["yttranscript","youtubetranscript","ytsubs"], { desc: "Get YouTube video tr
   const transcriptText = Array.isArray(transcript) ? transcript.map(t => t.text || t).join(" ") : String(transcript);
   await sendReply(sock, msg, `📝 *YouTube Transcript*\n${title ? `📺 *${title}*\n` : ""}\n${transcriptText.slice(0, 3000)}${transcriptText.length > 3000 ? "\n\n_[transcript continues...]_" : ""}`);
   await react(sock, msg, "✅");
+
+  // ── FALLBACK ENDPOINTS (merged from duplicate cmd registrations) ──
+  // fallback prexzy: prexzyGet('/search/ytmonet', args)
+  // fallback prexzy: prexzyGet('/search/nik', args)
+  // fallback prexzy: prexzyGet('/search/code', args)
 });
 
 cmd(["tktranscript","tiktoktranscript","tiktoktext"], { desc: "Get TikTok video transcript — .tktranscript <url>", category: "TOOLS" }, async (sock, msg, args) => {
@@ -28748,327 +25587,10 @@ for (const [tmCmd, tmInfo] of Object.entries(_TM_EXTRA)) {
 // ═══════════════════════════════════════════════════════════════════════════
 // .HELP COMMAND — Comprehensive all-commands guide
 // ═══════════════════════════════════════════════════════════════════════════
-
-cmd(["cmds","menu2","allcmds","listcmds"], { desc: "Show all bot commands with descriptions", category: "INFO" }, async (sock, msg, args) => {
-  const P = CONFIG.PREFIX;
-  const cat = args[0]?.toLowerCase() || "";
-
-  const SECTIONS = {
-    ai: `🤖 *AI COMMANDS*
-• *${P}chatbot* — Chat with AI
-• *${P}gpt4* — GPT-4 chat
-• *${P}gpt5* — GPT-5 chat
-• *${P}copilot* — Microsoft Copilot
-• *${P}copilotthink* — Copilot deep thinking mode
-• *${P}deepseek* — DeepSeek AI chat
-• *${P}talkdeepseek* — TalkAI DeepSeek
-• *${P}talkclaude* — Claude AI chat
-• *${P}talkgpt* — GPT-4.1 Nano chat
-• *${P}zai* — Z.ai GLM-5 chat
-• *${P}lumo* — Proton Lumo AI
-• *${P}logicaldolphin* — Dolphin AI logical
-• *${P}creativedolphin* — Dolphin AI creative
-• *${P}aisummarize* — AI text summarizer
-• *${P}dreami* — Dream interpreter
-• *${P}storyquick* — Quick story generator
-• *${P}storyai* — Advanced story AI
-• *${P}aiwriterchat* — AI Writer chat
-• *${P}aiwriterimg* — AI Writer image
-• *${P}aiwritermodels* — List AI Writer models
-• *${P}chatevery* — Chat Everywhere GPT-3.5
-• *${P}aichatapp* — Chatbot App (with web search)
-• *${P}aich* — Free quick AI chat
-• *${P}img2img* — AI Image Editor
-• *${P}gendescription* — Generate music description`,
-
-    imggen: `🎨 *IMAGE GENERATION (17 STYLES)*
-• *${P}dalle* — DALL-E 3 XL image
-• *${P}gemimage* — Gemmy AI image
-• *${P}txt2img* — NanoBanana AI image
-• *${P}realisticimg* — Realistic photo
-• *${P}animeimg* — Anime style
-• *${P}fantasyimg* — Fantasy art
-• *${P}cyberpunkimg* — Cyberpunk style
-• *${P}watercolorimg* — Watercolor painting
-• *${P}oilpainting* — Oil painting
-• *${P}pixelart* — Pixel art
-• *${P}sketchimg* — Sketch drawing
-• *${P}cartoonimg* — Cartoon style
-• *${P}abstractimg* — Abstract art
-• *${P}minimalistimg* — Minimalist
-• *${P}surrealimg* — Surreal art
-• *${P}vintageimg* — Vintage/Retro
-• *${P}steampunkimg* — Steampunk
-• *${P}horrorimg* — Horror dark
-• *${P}scifiimg* — Sci-Fi
-• *${P}popartimg* — Pop art`,
-
-    download: `⬇️ *DOWNLOADER COMMANDS*
-• *${P}tiktok* — TikTok video/audio
-• *${P}tiktokv2* / *${P}tiktokv3* — TikTok alternative
-• *${P}tiktokslide* — TikTok slideshow
-• *${P}ttvideoonly* — TikTok video only
-• *${P}youtube* / *${P}ytaudio* — YouTube download
-• *${P}instagram* / *${P}igdl* — Instagram
-• *${P}facebook* / *${P}fbv2* — Facebook
-• *${P}spotify* — Spotify track
-• *${P}soundcloud* — SoundCloud
-• *${P}capcut* — CapCut video
-• *${P}douyin* — Douyin/TikTok CN
-• *${P}snack* — Snackvideo
-• *${P}terabox* — Terabox
-• *${P}pinterest* / *${P}pinterestv2* — Pinterest
-• *${P}rednote* — RedNote/Xiaohongshu
-• *${P}mediafire* — MediaFire
-• *${P}threads* / *${P}threadsv2* — Threads
-• *${P}doods* — DoodsStream
-• *${P}sfile* — Sfile.mobi
-• *${P}web2zip* — Website as ZIP
-• *${P}aio* — Universal downloader`,
-
-    anime: `🎌 *ANIME COMMANDS*
-• *${P}aksearch* — Search anime
-• *${P}akdetail* — Anime details by ID
-• *${P}akepisodes* — Anime episodes list
-• *${P}akstream* — Anime stream URL
-• *${P}akcomments* — Anime comments
-• *${P}animehome* — Anime homepage
-• *${P}animegenre* — Anime by genre
-• *${P}animegenres* — All genres list
-• *${P}animeschedule* — Weekly schedule
-• *${P}hanime* — Search Hanime
-• *${P}hanimedetail* — Hanime detail
-• *${P}manga* — Search manga
-• *${P}mangadetail* — Manga info
-• *${P}mangachapter* — Manga chapter
-• *${P}mangasuggestions* — Manga suggestions
-• *${P}mangaepisodes* — Manga episodes
-• *${P}mangaseries* — Manga series
-• *${P}webnoveldetail* — Webnovel detail
-• *${P}webnovelsearch* — Search webnovel
-• *${P}wnhot* — Webnovel hot searches
-• *${P}wnrank* — Webnovel ranking
-• *${P}wnchapter* — Read chapter
-• *${P}r34home* — Rule34 home
-• *${P}r34search* — Rule34 search
-• *${P}r34detail* — Rule34 detail`,
-
-    tools: `🔧 *TOOLS COMMANDS*
-• *${P}calc* — Calculator
-• *${P}qr* — QR code generator
-• *${P}ss* / *${P}ss2* — Website screenshot
-• *${P}ip* — IP lookup
-• *${P}geoip* — GeoIP lookup
-• *${P}myip* — My IP info
-• *${P}hostcheck* — Domain host info
-• *${P}domaincheck* — Domain check
-• *${P}truecaller* — Phone lookup
-• *${P}uuid* — Generate UUID
-• *${P}codecompile* — Compile code
-• *${P}compile* — Run code (js/py/java/c)
-• *${P}prompttocode* — Text to code
-• *${P}detectbugs* — AI bug finder
-• *${P}convertcode* — Convert code lang
-• *${P}codeconvert* — Code language converter
-• *${P}jsobfuscate* — JS obfuscator
-• *${P}htmlencrypt* — HTML encryptor
-• *${P}emojiencrypt* — Encrypt text to emoji
-• *${P}emojidecrypt* — Decrypt emoji text
-• *${P}fdroid* — F-Droid app search
-• *${P}sendemail* — Anonymous email
-• *${P}html2img* — HTML to image
-• *${P}yttranscript* — YouTube transcript
-• *${P}tktranscript* — TikTok transcript
-• *${P}dagd* / *${P}vgd* / *${P}spoo* — URL shorteners
-• *${P}tinube* / *${P}spooemoji* / *${P}randomshort* — More shorteners`,
-
-    translate: `🌐 *TRANSLATION COMMANDS*
-• *${P}entoid* — English → Indonesian
-• *${P}idtoen* — Indonesian → English
-• *${P}jatoid* — Japanese → Indonesian
-• *${P}kotoid* — Korean → Indonesian
-• *${P}zhtoid* — Chinese → Indonesian
-• *${P}artoid* — Arabic → Indonesian
-• *${P}detectlanguage* — Detect language`,
-
-    tts: `🔊 *TEXT-TO-SPEECH (TTS)*
-• *${P}tts* — English TTS
-• *${P}ttsid* — Indonesian | *${P}ttsja* — Japanese
-• *${P}ttsko* — Korean | *${P}ttszh* — Chinese
-• *${P}ttsar* — Arabic | *${P}ttshi* — Hindi
-• *${P}ttsde* — German | *${P}ttsfr* — French
-• *${P}ttspt* — Portuguese | *${P}ttses* — Spanish
-• *${P}ttsru* — Russian | *${P}ttsth* — Thai
-• *${P}ttstr* — Turkish | *${P}ttsvi* — Vietnamese
-• *${P}ttsnl* — Dutch | *${P}ttsit* — Italian
-• *${P}ttspl* — Polish | *${P}ttssv* — Swedish
-• *${P}ttsno* — Norwegian | *${P}ttsda* — Danish
-• *${P}ttsfi* — Finnish | *${P}ttsel* — Greek
-• *${P}ttshe* — Hebrew | *${P}ttscs* — Czech
-• *${P}ttshu* — Hungarian | *${P}ttsro* — Romanian
-• *${P}ttsuk* — Ukrainian | *${P}ttszhtw* — Chinese TW
-• *${P}ttsdavid* / *${P}ttsamy* / *${P}ttsemma* — Named Voices
-• *${P}ttsvoices* — See all voices`,
-
-    styletext: `✨ *STYLE TEXT COMMANDS*
-• *${P}allstyles* — Generate all styles
-• *${P}circledtext* — ⓒⓘⓡⓒⓛⓔⓓ
-• *${P}fullwidthtext* — Ｆｕｌｌ ｗｉｄｔｈ
-• *${P}mathboldtext* — 𝐌𝐚𝐭𝐡 𝐁𝐨𝐥𝐝
-• *${P}mathsanstext* — 𝖲𝖺𝗇𝗌 𝗌𝖾𝗋𝗂𝖿
-• *${P}subscripttext* — ₛᵤᵦₛcᵣᵢₚₜ
-• *${P}superscripttext* — ˢᵘᵖᵉʳˢᶜʳⁱᵖᵗ
-• *${P}invertedtext* — Inverted text
-• *${P}reversedtext* — Reversed text
-• *${P}smallcapstext* — Sᴍᴀʟʟ ᴄᴀᴘꜱ
-• *${P}curvy1text* / *${P}curvy2text* / *${P}curvy3text*
-• *${P}fauxcyrillic* — Faux Cyrillic
-• *${P}mathdoublestruck* — 𝕄𝕒𝕥𝕙
-• And more... use *${P}allstyles <text>* to see all!`,
-
-    textmaker: `🖼️ *TEXT MAKER (Image Effects)*
-• *${P}glitchtext* — Digital glitch text
-• *${P}neonglitch* — Neon glitch text
-• *${P}watercolortext* — Watercolor text
-• *${P}glowingtext* — Glowing text
-• *${P}luxurygold* — Luxury gold text
-• *${P}underwatertext* — Underwater 3D text
-• *${P}gradienttext* — 3D gradient text
-• *${P}galaxyneon* — Galaxy neon text
-• *${P}royaltext* — Royal text
-• *${P}cartoonstyle* — Cartoon graffiti
-• *${P}papercutstyle* — Paper cut 3D text
-• *${P}summerbeach* — Summer beach text
-• *${P}blackpinkstyle* — Blackpink style
-• *${P}effectclouds* — Clouds sky text
-• *${P}multicolorneon* — Multicolor neon
-• *${P}typographytext* — Typography text
-• *${P}pixelglitch* — Pixel glitch
-• *${P}style1917* — 1917 style text
-• *${P}greenlight* — Green neon light
-• *${P}glasswrites* — Glass write text
-• *${P}galaxystyle* — Galaxy style logo
-• *${P}flagtext* — Nigeria flag text
-• *${P}flag3dtext* — American flag 3D
-• *${P}logomaker* — Bear logo maker
-• *${P}blackpinklogo* — Blackpink logo
-• *${P}sandsummer* — Sand summer text
-• *${P}galaxywallpaper* — Galaxy wallpaper`,
-
-    search: `🔍 *SEARCH COMMANDS*
-• *${P}youtube* — YouTube search
-• *${P}spotify2* — Spotify search
-• *${P}apksearch* — APK search
-• *${P}igsearch* — Instagram search
-• *${P}ytinfo* — YouTube channel info
-• *${P}ghrepos* — GitHub repositories
-• *${P}ghuser* — GitHub users
-• *${P}ghissues* — GitHub issues
-• *${P}ghcode* — GitHub code search
-• *${P}imdbsearch* — IMDb movie search
-• *${P}lyrics* — Song lyrics
-• *${P}nikcheck* / *${P}nik* — NIK ID parser
-• *${P}wallpaper* — HD wallpapers
-• *${P}soundcloud* search — SoundCloud search
-• *${P}tgchan* — Telegram channels
-• *${P}wagroupsearch* — WhatsApp groups
-• *${P}ytmonet* — YouTube monetization check`,
-
-    vnum: `📱 *VIRTUAL NUMBERS*
-• *${P}smscountries* — SMS24 country list
-• *${P}vnum* — Get SMS24 virtual numbers
-• *${P}vnummsg* — Read SMS24 messages
-• *${P}veepcountries* — VeePN country list
-• *${P}veepnum* — Get VeePN virtual numbers
-• *${P}veepmsg* — Read VeePN messages`,
-
-    audio: `🎵 *AUDIO COMMANDS*
-• *${P}freesound* — Search free sounds
-• *${P}fsounddl* — Download free sound
-• *${P}nonstick* — NonStick sounds`,
-
-    stalk: `👀 *STALK COMMANDS*
-• *${P}igstalk* — Instagram account info
-• *${P}ttstalk* — TikTok account info
-• *${P}twitterstalk* — Twitter account info
-• *${P}ytstalk* — YouTube channel info
-• *${P}ffstalk* — Free Fire account info
-• *${P}githubstalk* — GitHub profile
-• *${P}npmstalk* — NPM package info`,
-
-    owner: `👑 *OWNER COMMANDS*
-• *${P}autochat on/off* — Auto-reply chatbot
-• *${P}chatbotscope all/dm/group* — Chatbot scope
-• *${P}broadcast* — Broadcast message
-• *${P}ban* / *${P}unban* — Ban users
-• *${P}block* / *${P}unblock* — Block users
-• *${P}addadmin* / *${P}removeadmin* — Manage admins`,
-  };
-
-  if (cat && SECTIONS[cat]) {
-    await sendReply(sock, msg, `${SECTIONS[cat]}`);
-    return;
-  }
-
-  const overview = `╔══════════════════════════════╗
-║   🤖 *MIAS MDX BOT COMMANDS*   ║
-║     ᴘʀᴇᴄɪᴏᴜs x • v4.9.7       ║
-╚══════════════════════════════╝
-
-*Prefix:* \`${P}\`
-
-📂 *CATEGORIES (use .help <category>)*
-
-🤖 *ai* — AI chat & tools (25+ cmds)
-🎨 *imggen* — Image generation styles (20)
-⬇️ *download* — Media downloaders (20+)
-🎌 *anime* — Anime, manga, webnovel (30+)
-🔧 *tools* — Dev & utility tools (30+)
-🌐 *translate* — Language translation (7)
-🔊 *tts* — Text-to-speech voices (40+)
-✨ *styletext* — Text style effects (34)
-🖼️ *textmaker* — Text image effects (28+)
-🔍 *search* — Search everything (15+)
-📱 *vnum* — Virtual numbers (6)
-🎵 *audio* — Free sounds (3)
-👀 *stalk* — Account lookups (7)
-👑 *owner* — Owner-only commands
-
-*Examples:*
-• *${P}chatbot hello* — Chat with AI
-• *${P}tiktok <url>* — Download TikTok
-• *${P}realisticimg a cat* — AI image
-• *${P}allstyles hello* — All text styles
-• *${P}tts Hello World* — Text to speech
-• *${P}autochat on* — Enable AI chatbot
-
-💡 *Tip:* Use *${P}help ai* to see all AI commands
-
-> _Total: 580+ endpoint commands_`;
-
-  await sendReply(sock, msg, overview);
-  await react(sock, msg, "✅");
-});
-  // ── .creator / .creatoroff — lock/unlock bot to creator-only mode ──────────────
-  cmd(["creator","creatormode"], { desc: "Lock bot to owner-only access — .creator on/off", category: "OWNER", ownerOnly: true }, async (sock, msg, args) => {
-    const sub = (args[0] || "on").toLowerCase();
-    if (["off","0","false","disable"].includes(sub)) {
-      _creatorModeActive = false;
-      await sendReply(sock, msg, `✅ *Creator Mode: OFF*\n\nBot is now open to all users.`);
-    } else {
-      _creatorModeActive = true;
-      await sendReply(sock, msg, `🔐 *Creator Mode: ON*\n\nOnly you can use the bot now.\nUse *${CONFIG.PREFIX}creator off* to open it again.`);
-    }
-  });
-  cmd(["creatoroff","creator off"], { desc: "Unlock bot from owner-only mode", category: "OWNER", ownerOnly: true }, async (sock, msg) => {
-    _creatorModeActive = false;
-    await sendReply(sock, msg, `✅ *Creator Mode: OFF*\n\nBot is now open to all users.`);
-  });
-
-// ═══════════════════════════════════════════════════════════════════════════════
+  // ── .creator / .creatoroff — lock/unlock bot to creator-only mode ──────────────// ═══════════════════════════════════════════════════════════════════════════════
 //  MENU3 — Compact "dope" menu: listed names only, no descriptions, with bot pic
 // ═══════════════════════════════════════════════════════════════════════════════
-cmd(["menu3","fastmenu","listmenu","quickmenu"], { desc: "Compact listed menu (no descriptions)", category: "INFO" }, async (sock, msg, args) => {
+cmd(["menu3","fastmenu","quickmenu"], { desc: "Compact listed menu (no descriptions)", category: "INFO" }, async (sock, msg, args) => {
   await react(sock, msg, "📋");
   const P = CONFIG.PREFIX;
   const jid = msg.key.remoteJid;
@@ -29115,6 +25637,10 @@ cmd(["menu3","fastmenu","listmenu","quickmenu"], { desc: "Compact listed menu (n
   if (page.trim().length > 5) {
     try { await sock.sendMessage(jid, { text: page.trimEnd() + footer }, { quoted: msg }); } catch { await sendReply(sock, msg, page.trimEnd() + footer); }
   }
+
+  // ── FALLBACK ENDPOINTS (merged from duplicate cmd registrations) ──
+  // fallback URL: http://localhost:${PORT}/debug`;
+  // fallback URL: http://localhost:${PORT}/debug-api`;
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -29799,6 +26325,13 @@ cmd(["dcweather","weatherdc"], { desc: "Weather info via DC — .dcweather <city
     await sendReply(sock, msg, out);
     await react(sock, msg, "✅");
   } catch(e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); }
+
+  // ── FALLBACK ENDPOINTS (merged from duplicate cmd registrations) ──
+  // fallback prexzy: prexzyGet('/search/cuaca', args)
+  // fallback prexzy: prexzyGet('/search/soundcloud', args)
+  // fallback prexzy: prexzyGet('/download/soundcloud', args)
+  // fallback URL: https://api.openweathermap.org/data/2.5/weather?q=${encodeURIComponent
+  // fallback URL: https://wttr.in/${encodeURIComponent(city)}?format=%l:+%c+%t,+feels+%f
 });
 
 cmd(["dcqr","qrdc","qrcode"], { desc: "Generate QR code via DC — .dcqr <text or url>", category: "TOOLS" }, async (sock, msg, args) => {
@@ -29942,29 +26475,6 @@ cmd(["dcshorten","shortendc","dcshort"], { desc: "Shorten a URL via DC — .dcsh
 // ═══════════════════════════════════════════════════════════════════════════════
 //  BLOCK 4 — DAVIDCYRIL API — DOWNLOADS
 // ═══════════════════════════════════════════════════════════════════════════════
-
-cmd(["dcpinterest","pindl","pindldc"], { desc: "Download Pinterest image/video via DC — .dcpinterest <url>", category: "DOWNLOAD" }, async (sock, msg, args) => {
-  if (!args[0]) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}dcpinterest <Pinterest URL>`); return; }
-  await react(sock, msg, "📌");
-  const url = args[0];
-  const jid = msg.key.remoteJid;
-  const st = await sock.sendMessage(jid, { text: `📌 *Pinterest DL (DC)*\n\n⬡ Fetching...` }, { quoted: msg });
-  try {
-    const r = await dcGet("/download/pinterest", { url }, 25000);
-    const d = r.data?.data || r.data?.result || r.data;
-    const mediaUrl = d?.video || d?.image || d?.url || d?.download || (typeof d === "string" && d.startsWith("http") ? d : null);
-    if (!mediaUrl) { await editMessage(sock, jid, st.key, `❌ Could not download.`); return; }
-    const buf = Buffer.from((await axios.get(mediaUrl, { responseType: "arraybuffer", timeout: 60000 })).data);
-    const isVideo = mediaUrl.includes(".mp4") || d?.video;
-    if (isVideo) {
-      await sock.sendMessage(jid, { video: buf, mimetype: "video/mp4", caption: `📌 *Pinterest Video*` }, { quoted: msg });
-    } else {
-      await sock.sendMessage(jid, { image: buf, caption: `📌 *Pinterest Image*` }, { quoted: msg });
-    }
-    await editMessage(sock, jid, st.key, `📌 *Pinterest DL* — Done! ✅`);
-    await react(sock, msg, "✅");
-  } catch(e) { await editMessage(sock, jid, st.key, `❌ Error: ${e.message}`); }
-});
 
 cmd(["dcsoundcloud","scdldc","dcscdl"], { desc: "Download SoundCloud track via DC — .dcsoundcloud <url>", category: "DOWNLOAD" }, async (sock, msg, args) => {
   if (!args[0]) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}dcsoundcloud <SoundCloud URL>`); return; }
@@ -30227,7 +26737,7 @@ cmd(["dctechnews","technewsdc"], { desc: "Latest tech news via DC — .dctechnew
   } catch(e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); }
 });
 
-cmd(["dctruth","truthdc","dctruth"], { desc: "Random truth question via DC — .dctruth", category: "FUN" }, async (sock, msg) => {
+cmd(["dctruth","truthdc"], { desc: "Random truth question via DC — .dctruth", category: "FUN" }, async (sock, msg) => {
   await react(sock, msg, "💡");
   try {
     const r = await dcGet("/truth", {}, 12000);
@@ -30816,6 +27326,12 @@ cmd(["dcaimusic","aimusicdc","dcmusicgen"], { desc: "Generate AI music via DC (S
     await editMessage(sock, jid, stKey, `🎶 *AI Music*\n\n✅ Done!\n_Prompt: ${prompt.slice(0,60)}_`);
   } catch { await sendReply(sock, msg, `🎶 *AI Music Generated!*\n\n📥 Download: ${audioUrl}`); }
   await react(sock, msg, "✅");
+
+  // ── FALLBACK ENDPOINTS (merged from duplicate cmd registrations) ──
+  // fallback prexzy: prexzyGet('/ai/musicfromdesc', args)
+  // fallback prexzy: prexzyGet('/ai/gemimage', args)
+  // fallback prexzy: prexzyGet('/ai/gemini', args)
+  // fallback prexzy: prexzyGet('/ai/gpt-5', args)
 });
 
 // ─── Canvas: Jail Effect ─────────────────────────────────────────────────────
@@ -31792,72 +28308,6 @@ cmd(["dccurrency","currencydc","dcconvert"], { desc: "Currency converter via DC 
 });
 
 // ─── Tools: Remini ───────────────────────────────────────────────────────────
-cmd(["dcremini","reminidc","dcenhance","remini","enhance"], { desc: "Enhance image/video quality with Remini AI — reply to image or video", category: "TOOLS" }, async (sock, msg, args) => {
-  await react(sock, msg, "✨");
-  let imgUrl = args[0] && args[0].startsWith("http") ? args[0] : null;
-  const _remQ2 = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage;
-  const _remVid2 = msg.message?.videoMessage || _remQ2?.videoMessage;
-
-  // ── Video support: extract a frame and enhance it ────────────────────────
-  if (!imgUrl && _remVid2) {
-    try {
-      await react(sock, msg, "🎬");
-      const _rvStream = await downloadContentFromMessage(_remVid2, "video");
-      let _rvBuf = Buffer.from([]);
-      for await (const c of _rvStream) _rvBuf = Buffer.concat([_rvBuf, c]);
-      const _rvIn = `/tmp/remv2_${Date.now()}.mp4`;
-      const _rvFrm = `/tmp/remv2_${Date.now()}.jpg`;
-      fs.writeFileSync(_rvIn, _rvBuf);
-      try {
-        const { execSync: _rvExec } = await import("child_process");
-        _rvExec(`ffmpeg -y -i "${_rvIn}" -vframes 1 -q:v 2 "${_rvFrm}"`, { stdio: "pipe", timeout: 15000 });
-        if (fs.existsSync(_rvFrm)) {
-          const _rfb = fs.readFileSync(_rvFrm);
-          // Upload frame to get a URL for the remini API
-          try {
-            const FD2 = (await import("form-data")).default;
-            const _fd2 = new FD2();
-            _fd2.append("file", _rfb, { filename: "frame.jpg", contentType: "image/jpeg" });
-            const _cu2 = (await axios.post("https://apis.davidcyril.name.ng/uploader/catbox", _fd2, { headers: _fd2.getHeaders(), timeout: 30000 })).data;
-            imgUrl = _cu2?.url || _cu2?.data?.url;
-          } catch {}
-          try { fs.unlinkSync(_rvFrm); } catch {}
-        }
-      } catch {}
-      try { fs.unlinkSync(_rvIn); } catch {}
-    } catch {}
-  }
-
-  if (!imgUrl) {
-    const q = msg.message?.imageMessage || _remQ2?.imageMessage;
-    if (q) {
-      try {
-        const m = await sock.downloadMediaMessage({ message: { imageMessage: q } });
-        const tmp = `/tmp/remini_${Date.now()}.jpg`;
-        const fs2 = (await import("fs")).default || require("fs");
-        fs2.writeFileSync(tmp, m);
-        const FormData = (await import("form-data")).default || require("form-data");
-        const fd = new FormData();
-        fd.append("file", fs2.createReadStream(tmp));
-        const { data } = await axios.post("https://apis.davidcyril.name.ng/uploader/catbox", fd, { headers: fd.getHeaders(), timeout: 30000 });
-        imgUrl = data?.url || data?.data?.url;
-      } catch {}
-    }
-  }
-  if (!imgUrl) { await sendReply(sock, msg, `Usage: Reply to an image or video with *${CONFIG.PREFIX}remini*\nOr: ${CONFIG.PREFIX}remini <image URL>`); return; }
-  const jid = msg.key.remoteJid;
-  const stMsg = await sock.sendMessage(jid, { text: `✨ *Enhancing image with Remini...*` }, { quoted: msg });
-  const stKey = stMsg.key;
-  let imgBuf = null;
-  try { const buf = await dcGetBinary("/remini", { url: imgUrl }, 60000); if (buf && buf.length > 500) imgBuf = buf; } catch {}
-  if (!imgBuf) { try { const r = await dcGet("/remini", { url: imgUrl }, 60000); if (r.ok) { const d = r.data?.result || r.data?.url || r.data?.image || r.data; if (typeof d === "string" && d.startsWith("http")) imgBuf = Buffer.from((await axios.get(d, { responseType: "arraybuffer", timeout: 40000 })).data); } } catch {} }
-  if (!imgBuf) { try { const r = await prexzyGet("/tools/remini", { url: imgUrl }, 50000); if (r.ok) { const u = r.data?.result || r.data?.url; if (u && u.startsWith("http")) imgBuf = Buffer.from((await axios.get(u, { responseType: "arraybuffer", timeout: 40000 })).data); } } catch {} }
-  if (!imgBuf) { await editMessage(sock, jid, stKey, `✨ *Remini*\n\n❌ Enhancement failed.`); return; }
-  await sock.sendMessage(jid, { image: imgBuf, caption: `✨ *Remini Enhanced*` }, { quoted: msg });
-  await editMessage(sock, jid, stKey, `✨ *Remini*\n\n✅ Done!`);
-  await react(sock, msg, "✅");
-});
-
 // ─── Tools: Image Upscale ─────────────────────────────────────────────────────
 cmd(["dcupscale","upscaledc","dcimgupscale"], { desc: "Upscale image via DC — .dcupscale <url> [2x|4x]", category: "TOOLS" }, async (sock, msg, args) => {
   const imgUrl = args[0] || null;
@@ -32248,6 +28698,11 @@ cmd(["dcpixwith","pixwithdc","dcimg2img"], { desc: "AI edit image via DC — .dc
   await sock.sendMessage(jid, { image: imgBuf, caption: `🖼️ *PixWith AI*\n_${prompt.slice(0, 80)}_` }, { quoted: msg });
   await editMessage(sock, jid, stKey, `🖼️ *PixWith AI*\n\n✅ Done!`);
   await react(sock, msg, "✅");
+
+  // ── FALLBACK ENDPOINTS (merged from duplicate cmd registrations) ──
+  // fallback prexzy: prexzyGet('/ai/img2img', args)
+  // fallback prexzy: prexzyGet('/search/telegram', args)
+  // fallback prexzy: prexzyGet('/search/wagroup', args)
 });
 
 // ─── Image to Image: GPT Image 2 ─────────────────────────────────────────────
@@ -32486,42 +28941,6 @@ for (const [cmdName, [endpoint, label]] of Object.entries(_ANIME_WALLS)) {
 }
 
 // ─── IMAGE CREATOR ────────────────────────────────────────────────────────────
-cmd(["dctextimg","textimage"], { desc: "Create text image — .dctextimg <text>", category: "TOOLS" }, async (sock, msg, args) => {
-  if (!args.length) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}dctextimg <text>`); return; }
-  await react(sock, msg, "🖼️");
-  const text = args.join(" ");
-  const jid = msg.key.remoteJid;
-  let imgUrl = null;
-  try {
-    const r = await prexzyGet("/imagecreator/image", { text }, 25000);
-    const d = r.data?.data || r.data;
-    imgUrl = d?.url || d?.image || (typeof d === "string" && d.startsWith("http") ? d : null);
-  } catch {}
-  if (!imgUrl) { await sendReply(sock, msg, `❌ Could not create text image.`); return; }
-  await sock.sendMessage(jid, { image: { url: imgUrl }, caption: `🖼️ *Text Image*\n_"${text}"_` }, { quoted: msg });
-  await react(sock, msg, "✅");
-});
-
-cmd(["dctextgif","textgif"], { desc: "Create animated text GIF — .dctextgif <text>", category: "TOOLS" }, async (sock, msg, args) => {
-  if (!args.length) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}dctextgif <text>`); return; }
-  await react(sock, msg, "🎞️");
-  const text = args.join(" ");
-  const jid = msg.key.remoteJid;
-  let gifUrl = null;
-  try {
-    const r = await prexzyGet("/imagecreator/gif", { text }, 30000);
-    const d = r.data?.data || r.data;
-    gifUrl = d?.url || d?.gif || (typeof d === "string" && d.startsWith("http") ? d : null);
-  } catch {}
-  if (!gifUrl) { await sendReply(sock, msg, `❌ Could not create text GIF.`); return; }
-  try {
-    await sock.sendMessage(jid, { video: { url: gifUrl }, gifPlayback: true, caption: `🎞️ *Text GIF*\n_"${text}"_` }, { quoted: msg });
-  } catch {
-    await sock.sendMessage(jid, { image: { url: gifUrl }, caption: `🎞️ *Text GIF*\n_"${text}"_` }, { quoted: msg });
-  }
-  await react(sock, msg, "✅");
-});
-
 cmd(["dcmemegen","memecreate"], { desc: "Create meme image — .dcmemegen top|bottom text", category: "FUN" }, async (sock, msg, args) => {
   if (args.length < 2) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}dcmemegen <top text> | <bottom text>\nExample: ${CONFIG.PREFIX}dcmemegen When you fix a bug | New bug appears`); return; }
   await react(sock, msg, "😂");
@@ -32538,38 +28957,6 @@ cmd(["dcmemegen","memecreate"], { desc: "Create meme image — .dcmemegen top|bo
   } catch {}
   if (!imgUrl) { await sendReply(sock, msg, `❌ Could not create meme.`); return; }
   await sock.sendMessage(jid, { image: { url: imgUrl }, caption: `😂 *Meme Created!*` }, { quoted: msg });
-  await react(sock, msg, "✅");
-});
-
-cmd(["dcspongebob2","spongebobmeme"], { desc: "SpongeBob 'How dare you' meme — .dcspongebob2 <text>", category: "FUN" }, async (sock, msg, args) => {
-  if (!args.length) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}dcspongebob2 <text>`); return; }
-  await react(sock, msg, "🧽");
-  const text = args.join(" ");
-  const jid = msg.key.remoteJid;
-  let imgUrl = null;
-  try {
-    const r = await prexzyGet("/imagecreator/spongebob", { text }, 25000);
-    const d = r.data?.data || r.data;
-    imgUrl = d?.url || d?.image || (typeof d === "string" && d.startsWith("http") ? d : null);
-  } catch {}
-  if (!imgUrl) { await sendReply(sock, msg, `❌ Could not create SpongeBob meme.`); return; }
-  await sock.sendMessage(jid, { image: { url: imgUrl }, caption: `🧽 *SpongeBob Meme*` }, { quoted: msg });
-  await react(sock, msg, "✅");
-});
-
-cmd(["dcttp2","ttp2"], { desc: "Text to pretty image (TTP) — .dcttp2 <text>", category: "TOOLS" }, async (sock, msg, args) => {
-  if (!args.length) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}dcttp2 <text>`); return; }
-  await react(sock, msg, "✍️");
-  const text = args.join(" ");
-  const jid = msg.key.remoteJid;
-  let imgUrl = null;
-  try {
-    const r = await prexzyGet("/imagecreator/ttp", { text }, 25000);
-    const d = r.data?.data || r.data;
-    imgUrl = d?.url || d?.image || (typeof d === "string" && d.startsWith("http") ? d : null);
-  } catch {}
-  if (!imgUrl) { await sendReply(sock, msg, `❌ Could not create TTP image.`); return; }
-  await sock.sendMessage(jid, { image: { url: imgUrl }, caption: `✍️ *TTP Image*` }, { quoted: msg });
   await react(sock, msg, "✅");
 });
 
@@ -32674,77 +29061,8 @@ cmd(["dcwebss2","webshotpro"], { desc: "Screenshot a website — .dcwebss2 <url>
 });
 
 // ─── CODE COMPILER ────────────────────────────────────────────────────────────
-cmd(["dccompile","runcode"], { desc: "Compile & run code — .dccompile <lang> <code>\nLangs: js, py, java, c, cpp, cs", category: "TOOLS" }, async (sock, msg, args) => {
-  if (args.length < 2) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}dccompile <lang> <code>\n\nSupported: js, py, java, c, cpp, cs\nExample: ${CONFIG.PREFIX}dccompile js console.log("Hello")`); return; }
-  await react(sock, msg, "⚙️");
-  const lang = args[0].toLowerCase();
-  const code = args.slice(1).join(" ");
-  const langMap = { js: "compilejs", py: "compilepython", java: "compilejava", c: "compilec", cpp: "compilecpp", cs: "compilecsharp", python: "compilepython", javascript: "compilejs" };
-  const endpoint = langMap[lang];
-  if (!endpoint) { await sendReply(sock, msg, `❌ Unsupported language. Use: js, py, java, c, cpp, cs`); return; }
-  let output = null;
-  try {
-    const r = await prexzyGet(`/tools/${endpoint}`, { code }, 40000);
-    const d = r.data?.data || r.data;
-    output = d?.output || d?.result || d?.stdout || d?.response || (typeof d === "string" ? d : null);
-  } catch {}
-  if (!output) {
-    try {
-      const r = await prexzyGet("/tools/compiler", { code, lang }, 40000);
-      const d = r.data?.data || r.data;
-      output = d?.output || d?.result || d?.stdout || (typeof d === "string" ? d : null);
-    } catch {}
-  }
-  if (!output) { await sendReply(sock, msg, `❌ Compilation failed or language unsupported.`); return; }
-  await sendReply(sock, msg, `⚙️ *Code Compiler*\n\n🔹 Language: *${lang.toUpperCase()}*\n🔹 Output:\n\`\`\`\n${String(output).slice(0, 3000)}\n\`\`\``);
-  await react(sock, msg, "✅");
-});
-
 // ─── JS OBFUSCATOR ────────────────────────────────────────────────────────────
-cmd(["dcobfuscate","jsobfuscate"], { desc: "Obfuscate JavaScript code — .dcobfuscate <level> <code>\nLevels: low, medium, high, extreme", category: "TOOLS" }, async (sock, msg, args) => {
-  if (args.length < 2) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}dcobfuscate <level> <code>\n\nLevels: low, medium, high, extreme\nExample: ${CONFIG.PREFIX}dcobfuscate high console.log("test")`); return; }
-  await react(sock, msg, "🔒");
-  const level = args[0].toLowerCase();
-  const code = args.slice(1).join(" ");
-  const epMap = { low: "obflow", medium: "obfmedium", high: "obfhigh", extreme: "obfextreme" };
-  const ep = epMap[level] || "obfmedium";
-  let result = null;
-  try {
-    const r = await prexzyGet(`/tools/${ep}`, { code }, 30000);
-    const d = r.data?.data || r.data;
-    result = d?.code || d?.result || d?.obfuscated || (typeof d === "string" ? d : null);
-  } catch {}
-  if (!result) { await sendReply(sock, msg, `❌ Obfuscation failed.`); return; }
-  await sendReply(sock, msg, `🔒 *JS Obfuscator* — Level: *${level}*\n\n\`\`\`\n${String(result).slice(0, 3500)}\n\`\`\``);
-  await react(sock, msg, "✅");
-});
-
 // ─── HTML ENCRYPTOR ───────────────────────────────────────────────────────────
-cmd(["dchtmlenc","htmlencrypt"], { desc: "Encrypt HTML code — .dchtmlenc <level> <html>\nLevels: basic, extended, high, max", category: "TOOLS" }, async (sock, msg, args) => {
-  if (args.length < 2) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}dchtmlenc <level> <html>\n\nLevels: basic, extended, high, max\nExample: ${CONFIG.PREFIX}dchtmlenc high <h1>Hello</h1>`); return; }
-  await react(sock, msg, "🔐");
-  const level = args[0].toLowerCase();
-  const html = args.slice(1).join(" ");
-  const epMap = { basic: "htmlbasic", extended: "htmlextended", high: "htmlhigh", max: "htmlmaximum", maximum: "htmlmaximum" };
-  const ep = epMap[level] || "htmlbasic";
-  let result = null;
-  try {
-    const r = await prexzyGet(`/tools/${ep}`, { html }, 30000);
-    const d = r.data?.data || r.data;
-    result = d?.code || d?.result || d?.encrypted || (typeof d === "string" ? d : null);
-  } catch {}
-  if (!result) {
-    try {
-      const r = await prexzyGet("/tools/htmlecnc", { html, level }, 30000);
-      const d = r.data?.data || r.data;
-      result = d?.code || d?.result || (typeof d === "string" ? d : null);
-    } catch {}
-  }
-  if (!result) { await sendReply(sock, msg, `❌ HTML encryption failed.`); return; }
-  await sendReply(sock, msg, `🔐 *HTML Encrypted* — Level: *${level}*\n\n\`\`\`\n${String(result).slice(0, 3500)}\n\`\`\``);
-  await react(sock, msg, "✅");
-});
-
 // ─── TRANSLATION ──────────────────────────────────────────────────────────────
 const _PREXZY_TRANS = {
   entoid:  { ep: "/tools/entoid",  label: "English → Indonesian" },
@@ -32912,28 +29230,6 @@ for (const [cmdName, ep] of Object.entries(_NSFW_CATS)) {
 }
 
 // ─── TIKTOK SEARCH ───────────────────────────────────────────────────────────
-cmd(["dcttsearch","ttsearch"], { desc: "Search TikTok videos — .dcttsearch <query>", category: "SEARCH" }, async (sock, msg, args) => {
-  if (!args.length) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}dcttsearch <query>`); return; }
-  await react(sock, msg, "🔍");
-  const q = args.join(" ");
-  let results = null;
-  try {
-    const r = await prexzyGet("/search/tiktoksearch", { q }, 20000);
-    const d = r.data?.data || r.data?.results || r.data;
-    results = Array.isArray(d) ? d : (d?.videos || d?.result || []);
-  } catch {}
-  if (!results?.length) {
-    try {
-      const { data } = await axios.get(`https://api.siputzx.my.id/api/s/tiktok?query=${encodeURIComponent(q)}`, { timeout: 20000 });
-      results = data?.data || [];
-    } catch {}
-  }
-  if (!results?.length) { await sendReply(sock, msg, `❌ No TikTok results for *${q}*.`); return; }
-  const list = results.slice(0, 5).map((v, i) => `${i+1}. *${v.title || v.desc || "Untitled"}*\n   👤 @${v.author || v.username || "?"} | ❤️ ${v.likes || v.heart || 0}\n   🔗 ${v.url || v.share_url || "-"}`).join("\n\n");
-  await sendReply(sock, msg, `🔍 *TikTok Search*: _${q}_\n\n${list}`);
-  await react(sock, msg, "✅");
-});
-
 // ─── URL SHORTENERS (EXTRA) ──────────────────────────────────────────────────
 cmd(["dcvgd","shortvgd"], { desc: "Shorten URL with v.gd — .dcvgd <url>", category: "TOOLS" }, async (sock, msg, args) => {
   if (!args.length) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}dcvgd <url>`); return; }
@@ -32976,115 +29272,12 @@ cmd(["dcanalyze","analyzeode"], { desc: "Analyze code for bugs/security — .dca
 });
 
 // ─── CODE CONVERT ─────────────────────────────────────────────────────────────
-cmd(["dcconvertcode","convertcode"], { desc: "Convert code between languages — .dcconvertcode <target_lang> <code>", category: "TOOLS" }, async (sock, msg, args) => {
-  if (args.length < 2) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}dcconvertcode <target_lang> <code>\nExample: ${CONFIG.PREFIX}dcconvertcode python function add(a,b){return a+b}`); return; }
-  await react(sock, msg, "⚙️");
-  const target = args[0];
-  const code = args.slice(1).join(" ");
-  let result = null;
-  try {
-    const r = await prexzyGet("/tools/codeconverter", { code, lang: target, to: target }, 35000);
-    const d = r.data?.data || r.data;
-    result = d?.code || d?.result || d?.converted || (typeof d === "string" ? d : null);
-  } catch {}
-  if (!result) {
-    try {
-      const r = await dcGet(`/tools/convert`, { code, to: target }, 30000);
-      if (r.ok) result = r.data?.result || r.data?.code;
-    } catch {}
-  }
-  if (!result) { await sendReply(sock, msg, `❌ Code conversion failed.`); return; }
-  await sendReply(sock, msg, `⚙️ *Code → ${target}*\n\n\`\`\`\n${String(result).slice(0, 3500)}\n\`\`\``);
-  await react(sock, msg, "✅");
-});
-
 // ─── DREAM INTERPRETER ────────────────────────────────────────────────────────
-cmd(["dcdream","dreamai"], { desc: "AI dream interpreter — .dcdream <describe your dream>", category: "AI" }, async (sock, msg, args) => {
-  if (!args.length) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}dcdream <describe your dream>`); return; }
-  await react(sock, msg, "💭");
-  const dream = args.join(" ");
-  let reply = null;
-  try { const r = await prexzyGet("/ai/dream", { dream }, 30000); if (r.ok) { const d = r.data?.data || r.data; reply = d?.result || d?.interpretation || d?.text || d?.message || (typeof d === "string" ? d : null); } } catch {}
-  if (!reply) { try { const r = await dcGet("/ai/gpt", { text: `Interpret this dream: ${dream}` }, 25000); if (r.ok) reply = r.data?.result || r.data?.text; } catch {} }
-  if (!reply) { await sendReply(sock, msg, `❌ Dream interpretation unavailable.`); return; }
-  await sendReply(sock, msg, `💭 *Dream Interpreter*\n\n🌙 Dream: _${dream}_\n\n✨ Interpretation:\n${reply}`);
-  await react(sock, msg, "✅");
-});
-
 // ─── AI STORY ────────────────────────────────────────────────────────────────
-cmd(["dcstory","storyai"], { desc: "Generate AI story — .dcstory <prompt>", category: "AI" }, async (sock, msg, args) => {
-  if (!args.length) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}dcstory <prompt>\nExample: ${CONFIG.PREFIX}dcstory A dragon protecting a magical crystal`); return; }
-  await react(sock, msg, "📖");
-  const text = args.join(" ");
-  let story = null;
-  try { const r = await prexzyGet("/ai/quick", { text }, 35000); if (r.ok) { const d = r.data?.data || r.data; story = d?.result || d?.story || d?.text || (typeof d === "string" ? d : null); } } catch {}
-  if (!story) { try { const r = await prexzyGet("/ai/aichat", { prompt: `Write a short story about: ${text}` }, 30000); if (r.ok) { const d = r.data?.data || r.data; story = d?.result || d?.text; } } catch {} }
-  if (!story) { try { const r = await dcGet("/ai/gpt", { text: `Write a short story about: ${text}` }, 25000); if (r.ok) story = r.data?.result || r.data?.text; } catch {} }
-  if (!story) { await sendReply(sock, msg, `❌ Story generation failed.`); return; }
-  await sendReply(sock, msg, `📖 *AI Story*\n\n📌 _${text}_\n\n${story.slice(0, 3500)}`);
-  await react(sock, msg, "✅");
-});
-
 // ─── AI DEEPSEEK REASONER ────────────────────────────────────────────────────
-cmd(["dcreason","deepreason"], { desc: "DeepSeek with deep reasoning — .dcreason <question>", category: "AI" }, async (sock, msg, args) => {
-  if (!args.length) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}dcreason <question>`); return; }
-  await react(sock, msg, "🧠");
-  const prompt = args.join(" ");
-  let reply = null;
-  try { const r = await prexzyGet("/ai/deepseekreasoner", { prompt }, 40000); if (r.ok) { const d = r.data?.data || r.data; reply = d?.result || d?.text || d?.message || d?.reply || (typeof d === "string" ? d : null); } } catch {}
-  if (!reply) { try { const r = await prexzyGet("/ai/deepseekchat", { prompt }, 30000); if (r.ok) { const d = r.data?.data || r.data; reply = d?.result || d?.text; } } catch {} }
-  if (!reply) { try { const r = await dcGet("/ai/deepseek", { text: prompt }, 30000); if (r.ok) reply = r.data?.result || r.data?.text; } catch {} }
-  if (!reply) { await sendReply(sock, msg, `❌ DeepSeek Reasoner unavailable.`); return; }
-  await sendReply(sock, msg, `🧠 *DeepSeek Reasoner*\n\n${reply.slice(0, 3500)}`);
-  await react(sock, msg, "✅");
-});
-
 // ─── AI CHATEX (GPT-5.4 MODELS) ──────────────────────────────────────────────
-cmd(["dcchatex","chatex"], { desc: "Chatex AI (GPT-5.4+) — .dcchatex <text>", category: "AI" }, async (sock, msg, args) => {
-  if (!args.length) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}dcchatex <text>`); return; }
-  await react(sock, msg, "🤖");
-  const text = args.join(" ");
-  let reply = null;
-  try { const r = await prexzyGet("/ai/chatex", { text }, 30000); if (r.ok) { const d = r.data?.data || r.data; reply = d?.result || d?.text || d?.message || (typeof d === "string" ? d : null); } } catch {}
-  if (!reply) { try { const r = await prexzyGet("/ai/aichat", { prompt: text }, 25000); if (r.ok) { const d = r.data?.data || r.data; reply = d?.result || d?.text; } } catch {} }
-  if (!reply) { await sendReply(sock, msg, `❌ Chatex unavailable.`); return; }
-  await sendReply(sock, msg, `🤖 *Chatex AI*\n\n${reply.slice(0, 3500)}`);
-  await react(sock, msg, "✅");
-});
-
 // ─── GENERATE LYRICS ──────────────────────────────────────────────────────────
-cmd(["dcgenlyrics","genlyrics"], { desc: "Generate AI song lyrics — .dcgenlyrics <prompt>", category: "AI" }, async (sock, msg, args) => {
-  if (!args.length) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}dcgenlyrics <prompt>\nExample: ${CONFIG.PREFIX}dcgenlyrics A love song about the ocean`); return; }
-  await react(sock, msg, "🎵");
-  const prompt = args.join(" ");
-  let lyrics = null;
-  try { const r = await prexzyGet("/ai/genlyrics", { prompt }, 35000); if (r.ok) { const d = r.data?.data || r.data; lyrics = d?.lyrics || d?.result || d?.text || (typeof d === "string" ? d : null); } } catch {}
-  if (!lyrics) { try { const r = await dcGet("/ai/gpt", { text: `Generate song lyrics about: ${prompt}` }, 25000); if (r.ok) lyrics = r.data?.result || r.data?.text; } catch {} }
-  if (!lyrics) { await sendReply(sock, msg, `❌ Lyrics generation failed.`); return; }
-  await sendReply(sock, msg, `🎵 *AI Generated Lyrics*\n_Prompt: ${prompt}_\n\n${lyrics.slice(0, 3500)}`);
-  await react(sock, msg, "✅");
-});
-
 // ─── PREXZY AI MUSIC FROM DESCRIPTION ────────────────────────────────────────
-cmd(["dcmusicgen","genmusic"], { desc: "Generate AI music from description — .dcmusicgen <description>", category: "AI" }, async (sock, msg, args) => {
-  if (!args.length) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}dcmusicgen <description>\nExample: ${CONFIG.PREFIX}dcmusicgen Upbeat jazz with saxophone`); return; }
-  await react(sock, msg, "🎶");
-  const description = args.join(" ");
-  const jid = msg.key.remoteJid;
-  const statusMsg = await sock.sendMessage(jid, { text: `🎶 *AI Music Generator*\n\n⬡ Generating music from: _"${description}"_` }, { quoted: msg });
-  const sKey = statusMsg.key;
-  let audioUrl = null;
-  try {
-    const r = await prexzyGet("/ai/musicfromdesc", { description }, 60000);
-    const d = r.data?.data || r.data;
-    audioUrl = d?.audio_url || d?.url || d?.audio || d?.song_path || (typeof d === "string" && d.startsWith("http") ? d : null);
-  } catch {}
-  if (!audioUrl) { await editMessage(sock, jid, sKey, `❌ Music generation failed.`); return; }
-  await editMessage(sock, jid, sKey, `🎶 *AI Music Generated!* ✅\n\n📝 _"${description}"_\n\n◻ Sending audio...`);
-  await sock.sendMessage(jid, { audio: { url: audioUrl }, mimetype: "audio/mpeg", ptt: false }, { quoted: msg });
-  await react(sock, msg, "✅");
-});
-
 // ─── PREXZY GEMINI IMAGE ─────────────────────────────────────────────────────
 cmd(["dcgemimg","geminiimage"], { desc: "Generate image with Imagen AI — .dcgemimg <prompt>", category: "AI" }, async (sock, msg, args) => {
   if (!args.length) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}dcgemimg <prompt>`); return; }
@@ -33116,54 +29309,7 @@ cmd(["dcgpt5","gpt5ai"], { desc: "GPT-5 AI via Prexzy — .dcgpt5 <question>", c
 });
 
 // ─── FREE SOUND SEARCH ────────────────────────────────────────────────────────
-cmd(["dcfreesound","freesound"], { desc: "Search & download free sounds — .dcfreesound <query>", category: "SEARCH" }, async (sock, msg, args) => {
-  if (!args.length) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}dcfreesound <query>\nExample: ${CONFIG.PREFIX}dcfreesound rain`); return; }
-  await react(sock, msg, "🔊");
-  const query = args.join(" ");
-  const jid = msg.key.remoteJid;
-  let sounds = null;
-  try {
-    const r = await prexzyGet("/sound/search", { query }, 25000);
-    const d = r.data?.data || r.data;
-    sounds = Array.isArray(d) ? d : (d?.results || d?.sounds || []);
-  } catch {}
-  if (!sounds?.length) { await sendReply(sock, msg, `❌ No sounds found for *${query}*.`); return; }
-  const list = sounds.slice(0, 5).map((s, i) => `${i+1}. *${s.name || s.title || "Sound"}*\n   ⏱️ ${s.duration || "-"}s | ⬇️ ${s.download_url || s.url || "-"}`).join("\n\n");
-  await sendReply(sock, msg, `🔊 *FreeSound Search*: _${query}_\n\n${list}\n\n💡 Use ${CONFIG.PREFIX}dcfreesounddl <url> to download`);
-  await react(sock, msg, "✅");
-});
-
-cmd(["dcfreesounddl","freesounddl"], { desc: "Download FreeSound audio — .dcfreesounddl <url>", category: "DOWNLOAD" }, async (sock, msg, args) => {
-  if (!args.length) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}dcfreesounddl <freesound_url>`); return; }
-  await react(sock, msg, "⬇️");
-  const url = args[0];
-  const jid = msg.key.remoteJid;
-  let audioUrl = null;
-  try {
-    const r = await prexzyGet("/sound/download", { url }, 35000);
-    const d = r.data?.data || r.data;
-    audioUrl = d?.url || d?.audio || d?.download || (typeof d === "string" && d.startsWith("http") ? d : null);
-  } catch {}
-  if (!audioUrl) { await sendReply(sock, msg, `❌ Download failed.`); return; }
-  await sock.sendMessage(jid, { audio: { url: audioUrl }, mimetype: "audio/mpeg", ptt: false }, { quoted: msg });
-  await react(sock, msg, "✅");
-});
-
 // ─── VIRTUAL NUMBER ───────────────────────────────────────────────────────────
-cmd(["dcvnumbers","vnumbers"], { desc: "Get free virtual numbers — .dcvnumbers <country_code>", category: "TOOLS" }, async (sock, msg, args) => {
-  await react(sock, msg, "📱");
-  const country = args[0] || "";
-  let result = null;
-  if (!country) {
-    try { const r = await prexzyGet("/vnum/sms24-countries", {}, 20000); const d = r.data?.data || r.data; const list = Array.isArray(d) ? d : (d?.countries || []); if (list.length) result = `Available Countries:\n${list.slice(0, 30).map(c => `• ${c.name || c.country || c} (${c.code || c.id || ""})`).join("\n")}\n\nUse: ${CONFIG.PREFIX}dcvnumbers <country_code>`; } catch {}
-  } else {
-    try { const r = await prexzyGet("/vnum/sms24-numbers", { country }, 20000); const d = r.data?.data || r.data; const list = Array.isArray(d) ? d : (d?.numbers || []); if (list.length) result = `📱 *Virtual Numbers (${country})*\n${list.slice(0, 10).map(n => `• ${n.number || n.phone || n}`).join("\n")}\n\nUse: ${CONFIG.PREFIX}dcvmsgs <number> to read messages`; } catch {}
-  }
-  if (!result) { await sendReply(sock, msg, `❌ Could not fetch virtual numbers.`); return; }
-  await sendReply(sock, msg, `📱 *Virtual Numbers*\n\n${result}`);
-  await react(sock, msg, "✅");
-});
-
 cmd(["dcvmsgs","vmsgs"], { desc: "Read virtual number SMS — .dcvmsgs <number>", category: "TOOLS" }, async (sock, msg, args) => {
   if (!args.length) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}dcvmsgs <phone_number>`); return; }
   await react(sock, msg, "💬");
@@ -33214,30 +29360,7 @@ cmd(["dcmyip","botip"], { desc: "Get bot server IP info", category: "TOOLS" }, a
 });
 
 // ─── HOST CHECK ───────────────────────────────────────────────────────────────
-cmd(["dchostcheck","hostinfo"], { desc: "Get hosting info for domain — .dchostcheck <domain>", category: "TOOLS" }, async (sock, msg, args) => {
-  if (!args.length) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}dchostcheck <domain>\nExample: ${CONFIG.PREFIX}dchostcheck google.com`); return; }
-  await react(sock, msg, "🌐");
-  const domain = args[0];
-  let info = null;
-  try { const r = await prexzyGet("/tools/hostchecksimple", { domain }, 20000); if (r.ok) { const d = r.data?.data || r.data; info = typeof d === "object" ? Object.entries(d).map(([k, v]) => `• *${k}:* ${v}`).join("\n") : String(d); } } catch {}
-  if (!info) { await sendReply(sock, msg, `❌ Host check failed.`); return; }
-  await sendReply(sock, msg, `🌐 *Host Check*: _${domain}_\n\n${info}`);
-  await react(sock, msg, "✅");
-});
-
 // ─── WEBNOVEL ─────────────────────────────────────────────────────────────────
-cmd(["dcwebnovel","webnovel"], { desc: "Search webnovels — .dcwebnovel <title>", category: "SEARCH" }, async (sock, msg, args) => {
-  if (!args.length) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}dcwebnovel <title>`); return; }
-  await react(sock, msg, "📚");
-  const query = args.join(" ");
-  let novels = null;
-  try { const r = await prexzyGet("/anime/webnovel-search", { query }, 20000); if (r.ok) { const d = r.data?.data || r.data; novels = Array.isArray(d) ? d : (d?.results || d?.novels || []); } } catch {}
-  if (!novels?.length) { await sendReply(sock, msg, `❌ No webnovels found for *${query}*.`); return; }
-  const list = novels.slice(0, 5).map((n, i) => `${i+1}. *${n.name || n.title}*\n   📖 ${n.desc || n.summary || "-"}\n   🆔 ID: ${n.bookId || n.bid || n.id || "-"}`).join("\n\n");
-  await sendReply(sock, msg, `📚 *Webnovel Search*: _${query}_\n\n${list}`);
-  await react(sock, msg, "✅");
-});
-
 // ─── MANGA CHAPTER READER ─────────────────────────────────────────────────────
 cmd(["dcmangachap","mangachapter"], { desc: "Read manga chapter — .dcmangachap <chapter_id>", category: "ANIME" }, async (sock, msg, args) => {
   if (!args.length) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}dcmangachap <chapter_id>\n💡 Get chapter IDs from ${CONFIG.PREFIX}dcmanga <search>`); return; }
@@ -33259,51 +29382,8 @@ cmd(["dcmangachap","mangachapter"], { desc: "Read manga chapter — .dcmangachap
 });
 
 // ─── PREXZY IMG2IMG ───────────────────────────────────────────────────────────
-cmd(["dcimg2img","img2img"], { desc: "AI image editing — reply to image with .dcimg2img <prompt>", category: "AI" }, async (sock, msg, args) => {
-  const jid = msg.key.remoteJid;
-  const quoted = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage;
-  const hasImg = quoted?.imageMessage;
-  if (!hasImg) { await sendReply(sock, msg, `Usage: Reply to an image with ${CONFIG.PREFIX}dcimg2img <prompt>`); return; }
-  if (!args.length) { await sendReply(sock, msg, `Provide a prompt! Example: ${CONFIG.PREFIX}dcimg2img make it anime style`); return; }
-  await react(sock, msg, "🎨");
-  const prompt = args.join(" ");
-  const imageUrl = hasImg?.url;
-  const statusMsg = await sock.sendMessage(jid, { text: `🎨 *AI Image Editor*\n\n⬡ Editing image with: _"${prompt}"_` }, { quoted: msg });
-  const sKey = statusMsg.key;
-  let result = null;
-  try { const r = await prexzyGet("/ai/img2img", { imageUrl, prompt }, 60000); if (r.ok) { const d = r.data?.data || r.data; const imgs = d?.images || d?.output || (d?.url ? [d.url] : null); result = Array.isArray(imgs) ? imgs[0] : (d?.url || d?.image || (typeof d === "string" && d.startsWith("http") ? d : null)); } } catch {}
-  if (!result) { await editMessage(sock, jid, sKey, `❌ Image editing failed.`); return; }
-  await editMessage(sock, jid, sKey, `🎨 *AI Image Edited!* ✅\n\n_"${prompt}"_\n\n◻ Sending...`);
-  await sock.sendMessage(jid, { image: { url: result }, caption: `🎨 *AI Edited Image*\n_"${prompt}"_` }, { quoted: msg });
-  await react(sock, msg, "✅");
-});
-
 // ─── TELEGRAM SEARCH ─────────────────────────────────────────────────────────
-cmd(["dctgsearch","tgsearch"], { desc: "Search Telegram channels — .dctgsearch <query>", category: "SEARCH" }, async (sock, msg, args) => {
-  if (!args.length) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}dctgsearch <query>`); return; }
-  await react(sock, msg, "🔍");
-  const query = args.join(" ");
-  let channels = null;
-  try { const r = await prexzyGet("/search/telegram", { query }, 20000); if (r.ok) { const d = r.data?.data || r.data; channels = Array.isArray(d) ? d : (d?.results || d?.channels || []); } } catch {}
-  if (!channels?.length) { await sendReply(sock, msg, `❌ No Telegram channels found for *${query}*.`); return; }
-  const list = channels.slice(0, 5).map((c, i) => `${i+1}. *${c.name || c.title}*\n   👥 ${c.members || c.member_count || "-"} members\n   🔗 ${c.link || c.url || c.username || "-"}`).join("\n\n");
-  await sendReply(sock, msg, `📡 *Telegram Search*: _${query}_\n\n${list}`);
-  await react(sock, msg, "✅");
-});
-
 // ─── WHATSAPP GROUP SEARCH ────────────────────────────────────────────────────
-cmd(["dcwagroupsearch","wagroupsearch"], { desc: "Search WhatsApp groups — .dcwagroupsearch <query>", category: "SEARCH" }, async (sock, msg, args) => {
-  if (!args.length) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}dcwagroupsearch <query>`); return; }
-  await react(sock, msg, "🔍");
-  const query = args.join(" ");
-  let groups = null;
-  try { const r = await prexzyGet("/search/wagroup", { query }, 20000); if (r.ok) { const d = r.data?.data || r.data; groups = Array.isArray(d) ? d : (d?.results || d?.groups || []); } } catch {}
-  if (!groups?.length) { await sendReply(sock, msg, `❌ No WhatsApp groups found for *${query}*.`); return; }
-  const list = groups.slice(0, 5).map((g, i) => `${i+1}. *${g.name || g.title}*\n   📝 ${g.desc || g.description || "-"}\n   🔗 ${g.link || g.invite || "-"}`).join("\n\n");
-  await sendReply(sock, msg, `💬 *WhatsApp Group Search*: _${query}_\n\n${list}`);
-  await react(sock, msg, "✅");
-});
-
 // ─── ANDROID1 MOD GAMES ──────────────────────────────────────────────────────
 cmd(["dcandroid1","modsearch"], { desc: "Search modded games/apps — .dcandroid1 <query>", category: "SEARCH" }, async (sock, msg, args) => {
   if (!args.length) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}dcandroid1 <game name>`); return; }
@@ -33331,30 +29411,7 @@ cmd(["dcsoraremove","sorawatermark"], { desc: "Remove watermark from Sora AI vid
 });
 
 // ─── YOUTUBE TRANSCRIPT ──────────────────────────────────────────────────────
-cmd(["dcyttranscript","yttranscript"], { desc: "Get YouTube video transcript — .dcyttranscript <url>", category: "TOOLS" }, async (sock, msg, args) => {
-  if (!args.length) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}dcyttranscript <youtube_url>`); return; }
-  await react(sock, msg, "📝");
-  const url = args[0];
-  let transcript = null;
-  try { const r = await prexzyGet("/tools/youtube-transcript", { url }, 35000); if (r.ok) { const d = r.data?.data || r.data; transcript = d?.transcript || d?.text || d?.result || (typeof d === "string" ? d : null); } } catch {}
-  if (!transcript) { await sendReply(sock, msg, `❌ Could not get transcript.`); return; }
-  await sendReply(sock, msg, `📝 *YouTube Transcript*\n\n${String(transcript).slice(0, 3500)}`);
-  await react(sock, msg, "✅");
-});
-
 // ─── YT MONETIZATION CHECKER ─────────────────────────────────────────────────
-cmd(["dcytmonet","ytmonet"], { desc: "Check if YouTube channel is monetized — .dcytmonet <channel_url>", category: "STALK" }, async (sock, msg, args) => {
-  if (!args.length) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}dcytmonet <channel_url>`); return; }
-  await react(sock, msg, "💰");
-  const url = args[0];
-  let result = null;
-  try { const r = await prexzyGet("/search/ytmonet", { url }, 25000); if (r.ok) { const d = r.data?.data || r.data; result = d; } } catch {}
-  if (!result) { await sendReply(sock, msg, `❌ Could not check monetization.`); return; }
-  const info = typeof result === "object" ? Object.entries(result).map(([k, v]) => `• *${k}:* ${v}`).join("\n") : String(result);
-  await sendReply(sock, msg, `💰 *YT Monetization Check*\n\n${info}`);
-  await react(sock, msg, "✅");
-});
-
 // ─── NIK PARSER (Indonesian ID) ──────────────────────────────────────────────
 cmd(["dcnik","nikparser"], { desc: "Parse Indonesian NIK ID number — .dcnik <nik>", category: "TOOLS" }, async (sock, msg, args) => {
   if (!args.length) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}dcnik <NIK_number>`); return; }
@@ -33368,31 +29425,7 @@ cmd(["dcnik","nikparser"], { desc: "Parse Indonesian NIK ID number — .dcnik <n
 });
 
 // ─── GITHUB CODE SEARCH ──────────────────────────────────────────────────────
-cmd(["dcgithubcode","githubcode"], { desc: "Search code on GitHub — .dcgithubcode <query>", category: "SEARCH" }, async (sock, msg, args) => {
-  if (!args.length) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}dcgithubcode <query>\nExample: ${CONFIG.PREFIX}dcgithubcode express router`); return; }
-  await react(sock, msg, "🔍");
-  const query = args.join(" ");
-  let results = null;
-  try { const r = await prexzyGet("/search/code", { query }, 20000); if (r.ok) { const d = r.data?.data || r.data; results = Array.isArray(d) ? d : (d?.items || d?.results || []); } } catch {}
-  if (!results?.length) { await sendReply(sock, msg, `❌ No code results for *${query}*.`); return; }
-  const list = results.slice(0, 5).map((r, i) => `${i+1}. *${r.name || r.path}*\n   📂 ${r.repository?.full_name || r.repo || "-"}\n   🔗 ${r.html_url || r.url || "-"}`).join("\n\n");
-  await sendReply(sock, msg, `🔍 *GitHub Code Search*: _${query}_\n\n${list}`);
-  await react(sock, msg, "✅");
-});
-
 // ─── GITHUB ISSUES SEARCH ────────────────────────────────────────────────────
-cmd(["dcgithubissues","githubissues"], { desc: "Search GitHub issues — .dcgithubissues <query>", category: "SEARCH" }, async (sock, msg, args) => {
-  if (!args.length) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}dcgithubissues <query>`); return; }
-  await react(sock, msg, "🐛");
-  const query = args.join(" ");
-  let results = null;
-  try { const r = await prexzyGet("/search/issues", { query }, 20000); if (r.ok) { const d = r.data?.data || r.data; results = Array.isArray(d) ? d : (d?.items || d?.results || []); } } catch {}
-  if (!results?.length) { await sendReply(sock, msg, `❌ No issues found for *${query}*.`); return; }
-  const list = results.slice(0, 5).map((r, i) => `${i+1}. *${r.title}*\n   📂 ${r.repository_url?.split("/").slice(-2).join("/") || "-"}\n   🔗 ${r.html_url || "-"}`).join("\n\n");
-  await sendReply(sock, msg, `🐛 *GitHub Issues*: _${query}_\n\n${list}`);
-  await react(sock, msg, "✅");
-});
-
 // ─── DOODS STREAM DOWNLOADER ─────────────────────────────────────────────────
 cmd(["dcdoods","doodsdownload"], { desc: "Download from DoodsStream — .dcdoods <url>", category: "DOWNLOAD" }, async (sock, msg, args) => {
   if (!args.length) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}dcdoods <doods_url>`); return; }
@@ -33420,18 +29453,6 @@ cmd(["dcsfile","sfiledownload"], { desc: "Download from Sfile.mobi — .dcsfile 
 });
 
 // ─── SNACKVIDEO DOWNLOADER ────────────────────────────────────────────────────
-cmd(["dcsnackvideo","snackvideo"], { desc: "Download from Snackvideo — .dcsnackvideo <url>", category: "DOWNLOAD" }, async (sock, msg, args) => {
-  if (!args.length) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}dcsnackvideo <url>`); return; }
-  await react(sock, msg, "⬇️");
-  const url = args[0];
-  const jid = msg.key.remoteJid;
-  let dlUrl = null;
-  try { const r = await prexzyGet("/download/snackvideo", { url }, 35000); if (r.ok) { const d = r.data?.data || r.data; dlUrl = d?.url || d?.download || d?.video || (typeof d === "string" && d.startsWith("http") ? d : null); } } catch {}
-  if (!dlUrl) { await sendReply(sock, msg, `❌ Download failed.`); return; }
-  await sock.sendMessage(jid, { video: { url: dlUrl }, caption: `⬇️ *Snackvideo Download*` }, { quoted: msg });
-  await react(sock, msg, "✅");
-});
-
 // ─── REDDIT DOWNLOADER (PREXZY) ──────────────────────────────────────────────
 cmd(["dcreddit","redditdownload"], { desc: "Download from Reddit — .dcreddit <url>", category: "DOWNLOAD" }, async (sock, msg, args) => {
   if (!args.length) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}dcreddit <reddit_post_url>`); return; }
@@ -33483,29 +29504,6 @@ for (const [cmdName, [ep, label]] of Object.entries(_QUIZ_TYPES)) {
 }
 
 // ─── WEATHER ─────────────────────────────────────────────────────────────────
-cmd(["dcweather","weather"], { desc: "Get weather info — .dcweather <city>", category: "TOOLS" }, async (sock, msg, args) => {
-  if (!args.length) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}dcweather <city>\nExample: ${CONFIG.PREFIX}dcweather Jakarta`); return; }
-  await react(sock, msg, "🌤️");
-  const city = args.join(" ");
-  let info = null;
-  try { const r = await prexzyGet("/search/cuaca", { kota: city }, 20000); if (r.ok) { const d = r.data?.data || r.data; info = typeof d === "object" ? Object.entries(d).map(([k, v]) => `• *${k}:* ${v}`).join("\n") : String(d); } } catch {}
-  if (!info) {
-    try {
-      const { data } = await axios.get(`https://api.openweathermap.org/data/2.5/weather?q=${encodeURIComponent(city)}&appid=demo&units=metric`, { timeout: 15000 });
-      if (data?.name) info = `• *City:* ${data.name}\n• *Temp:* ${data.main?.temp}°C\n• *Feels:* ${data.main?.feels_like}°C\n• *Weather:* ${data.weather?.[0]?.description}\n• *Humidity:* ${data.main?.humidity}%\n• *Wind:* ${data.wind?.speed} m/s`;
-    } catch {}
-  }
-  if (!info) {
-    try {
-      const { data } = await axios.get(`https://wttr.in/${encodeURIComponent(city)}?format=%l:+%c+%t,+feels+%f,+Wind:+%w,+Humidity:+%h`, { timeout: 10000 });
-      info = `• *Weather:* ${data}`;
-    } catch {}
-  }
-  if (!info) { await sendReply(sock, msg, `❌ Weather data unavailable for *${city}*.`); return; }
-  await sendReply(sock, msg, `🌤️ *Weather*: _${city}_\n\n${info}`);
-  await react(sock, msg, "✅");
-});
-
 // ─── SOUNDCLOUD SEARCH ────────────────────────────────────────────────────────
 cmd(["dcscdownload2","scsearch2"], { desc: "Search & download SoundCloud — .dcscdownload2 <song>", category: "DOWNLOAD" }, async (sock, msg, args) => {
   if (!args.length) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}dcscdownload2 <song name>`); return; }
@@ -33528,80 +29526,11 @@ cmd(["dcscdownload2","scsearch2"], { desc: "Search & download SoundCloud — .dc
 });
 
 // ─── DEEPQUERY AI (LLaMA 4 with image) ───────────────────────────────────────
-cmd(["dcdeepquery","deepquery"], { desc: "DeepQuery AI (Meta LLaMA 4) — .dcdeepquery <prompt>", category: "AI" }, async (sock, msg, args) => {
-  if (!args.length) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}dcdeepquery <prompt>`); return; }
-  await react(sock, msg, "🔬");
-  const prompt = args.join(" ");
-  let reply = null;
-  try { const r = await prexzyGet("/ai/deepquery", { prompt }, 40000); if (r.ok) { const d = r.data?.data || r.data; reply = d?.result || d?.text || d?.message || d?.response || (typeof d === "string" ? d : null); } } catch {}
-  if (!reply) { try { const r = await dcGet("/ai/gpt", { text: prompt }, 30000); if (r.ok) reply = r.data?.result || r.data?.text; } catch {} }
-  if (!reply) { await sendReply(sock, msg, `❌ DeepQuery unavailable.`); return; }
-  await sendReply(sock, msg, `🔬 *DeepQuery AI*\n\n${reply.slice(0, 3500)}`);
-  await react(sock, msg, "✅");
-});
-
 // ─── PROTON LUMO AI ──────────────────────────────────────────────────────────
-cmd(["dclumo","lumoai"], { desc: "Proton Lumo encrypted AI — .dclumo <question>", category: "AI" }, async (sock, msg, args) => {
-  if (!args.length) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}dclumo <question>`); return; }
-  await react(sock, msg, "🔒");
-  const q = args.join(" ");
-  let reply = null;
-  try { const r = await prexzyGet("/ai/lumo", { q }, 30000); if (r.ok) { const d = r.data?.data || r.data; reply = d?.result || d?.text || d?.message || (typeof d === "string" ? d : null); } } catch {}
-  if (!reply) { await sendReply(sock, msg, `❌ Lumo AI unavailable.`); return; }
-  await sendReply(sock, msg, `🔒 *Proton Lumo AI*\n\n${reply.slice(0, 3500)}`);
-  await react(sock, msg, "✅");
-});
-
 // ─── AI CHATUP ────────────────────────────────────────────────────────────────
-cmd(["dcchatup","chatup"], { desc: "ChatUp AI — .dcchatup <question>", category: "AI" }, async (sock, msg, args) => {
-  if (!args.length) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}dcchatup <question>`); return; }
-  await react(sock, msg, "💬");
-  const prompt = args.join(" ");
-  let reply = null;
-  try { const r = await prexzyGet("/ai/chatup", { prompt }, 30000); if (r.ok) { const d = r.data?.data || r.data; reply = d?.result || d?.text || d?.message || (typeof d === "string" ? d : null); } } catch {}
-  if (!reply) { await sendReply(sock, msg, `❌ ChatUp unavailable.`); return; }
-  await sendReply(sock, msg, `💬 *ChatUp AI*\n\n${reply.slice(0, 3500)}`);
-  await react(sock, msg, "✅");
-});
-
 // ─── PROMPT TO CODE ──────────────────────────────────────────────────────────
-cmd(["dcpromptcode","prompttocode"], { desc: "Generate code from text — .dcpromptcode <lang> <description>", category: "AI" }, async (sock, msg, args) => {
-  if (args.length < 2) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}dcpromptcode <language> <description>\nExample: ${CONFIG.PREFIX}dcpromptcode python sort a list of numbers`); return; }
-  await react(sock, msg, "💻");
-  const language = args[0];
-  const prompt = args.slice(1).join(" ");
-  let code = null;
-  try { const r = await prexzyGet("/ai/prompttocode", { prompt, language }, 35000); if (r.ok) { const d = r.data?.data || r.data; code = d?.code || d?.result || d?.text || (typeof d === "string" ? d : null); } } catch {}
-  if (!code) { try { const r = await dcGet("/ai/gpt", { text: `Write ${language} code to: ${prompt}` }, 30000); if (r.ok) code = r.data?.result || r.data?.text; } catch {} }
-  if (!code) { await sendReply(sock, msg, `❌ Code generation failed.`); return; }
-  await sendReply(sock, msg, `💻 *Code Generator* — ${language}\n\n\`\`\`\n${String(code).slice(0, 3500)}\n\`\`\``);
-  await react(sock, msg, "✅");
-});
-
 // ─── DETECT BUGS ─────────────────────────────────────────────────────────────
-cmd(["dcdetectbugs","detectbugs"], { desc: "Find & fix bugs in code — .dcdetectbugs <code>", category: "AI" }, async (sock, msg, args) => {
-  if (!args.length) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}dcdetectbugs <code>`); return; }
-  await react(sock, msg, "🐛");
-  const code = args.join(" ");
-  let result = null;
-  try { const r = await prexzyGet("/ai/detectbugs", { code }, 35000); if (r.ok) { const d = r.data?.data || r.data; result = d?.result || d?.bugs || d?.analysis || d?.text || (typeof d === "string" ? d : null); } } catch {}
-  if (!result) { await sendReply(sock, msg, `❌ Bug detection failed.`); return; }
-  await sendReply(sock, msg, `🐛 *Bug Detector*\n\n${String(result).slice(0, 3500)}`);
-  await react(sock, msg, "✅");
-});
-
 // ─── EXPLAIN CODE ─────────────────────────────────────────────────────────────
-cmd(["dcexplaincode","explaincode"], { desc: "Explain code in detail — .dcexplaincode <code>", category: "AI" }, async (sock, msg, args) => {
-  if (!args.length) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}dcexplaincode <code>`); return; }
-  await react(sock, msg, "📚");
-  const code = args.join(" ");
-  let result = null;
-  try { const r = await prexzyGet("/ai/explaincode", { code }, 35000); if (r.ok) { const d = r.data?.data || r.data; result = d?.explanation || d?.result || d?.text || (typeof d === "string" ? d : null); } } catch {}
-  if (!result) { await sendReply(sock, msg, `❌ Code explanation failed.`); return; }
-  await sendReply(sock, msg, `📚 *Code Explainer*\n\n${String(result).slice(0, 3500)}`);
-  await react(sock, msg, "✅");
-});
-
 // ─── AI Z.AI GLM-5 ───────────────────────────────────────────────────────────
 cmd(["dczai","zaiai"], { desc: "Z.AI GLM-5 chat — .dczai <question>", category: "AI" }, async (sock, msg, args) => {
   if (!args.length) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}dczai <question>`); return; }
@@ -33615,18 +29544,6 @@ cmd(["dczai","zaiai"], { desc: "Z.AI GLM-5 chat — .dczai <question>", category
 });
 
 // ─── AI TALKCLAUDE ───────────────────────────────────────────────────────────
-cmd(["dctalkclaude","talkclaude"], { desc: "TalkAI Claude Haiku — .dctalkclaude <question>", category: "AI" }, async (sock, msg, args) => {
-  if (!args.length) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}dctalkclaude <question>`); return; }
-  await react(sock, msg, "🤖");
-  const text = args.join(" ");
-  let reply = null;
-  try { const r = await prexzyGet("/ai/talkclaude", { text }, 30000); if (r.ok) { const d = r.data?.data || r.data; reply = d?.result || d?.text || d?.message || (typeof d === "string" ? d : null); } } catch {}
-  if (!reply) { try { const r = await dcGet("/ai/claude", { text }, 30000); if (r.ok) reply = r.data?.result || r.data?.text; } catch {} }
-  if (!reply) { await sendReply(sock, msg, `❌ TalkClaude unavailable.`); return; }
-  await sendReply(sock, msg, `🤖 *TalkAI Claude*\n\n${reply.slice(0, 3500)}`);
-  await react(sock, msg, "✅");
-});
-
 // ─── ANONYMOUS EMAIL SENDER ──────────────────────────────────────────────────
 cmd(["dcanonemail","anonemail"], { desc: "Send anonymous email — .dcanonemail <to> | <subject> | <message>", category: "TOOLS" }, async (sock, msg, args) => {
   if (!args.length) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}dcanonemail <to_email> | <subject> | <message>\nExample: ${CONFIG.PREFIX}dcanonemail test@mail.com | Hello | This is a test`); return; }
@@ -33643,62 +29560,9 @@ cmd(["dcanonemail","anonemail"], { desc: "Send anonymous email — .dcanonemail 
 });
 
 // ─── GEOIP LOOKUP ─────────────────────────────────────────────────────────────
-cmd(["dcgeoip","geoip"], { desc: "Geolocate an IP address — .dcgeoip <ip>", category: "TOOLS" }, async (sock, msg, args) => {
-  if (!args.length) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}dcgeoip <ip_address>\nExample: ${CONFIG.PREFIX}dcgeoip 8.8.8.8`); return; }
-  await react(sock, msg, "🌐");
-  const ip = args[0];
-  let info = null;
-  try { const r = await prexzyGet("/tools/geoip", { ip }, 15000); if (r.ok) { const d = r.data?.data || r.data; info = typeof d === "object" ? Object.entries(d).map(([k, v]) => `• *${k}:* ${v}`).join("\n") : String(d); } } catch {}
-  if (!info) { try { const { data } = await axios.get(`https://ipapi.co/${ip}/json/`, { timeout: 10000 }); info = `• *IP:* ${data.ip}\n• *Country:* ${data.country_name}\n• *Region:* ${data.region}\n• *City:* ${data.city}\n• *ISP:* ${data.org}\n• *Timezone:* ${data.timezone}`; } catch {} }
-  if (!info) { await sendReply(sock, msg, `❌ GeoIP lookup failed.`); return; }
-  await sendReply(sock, msg, `🌐 *GeoIP*: _${ip}_\n\n${info}`);
-  await react(sock, msg, "✅");
-});
-
 // ─── DOUYIN DOWNLOADER ────────────────────────────────────────────────────────
-cmd(["dcdouyin","douyindl"], { desc: "Download Douyin video — .dcdouyin <url>", category: "DOWNLOAD" }, async (sock, msg, args) => {
-  if (!args.length) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}dcdouyin <douyin_url>`); return; }
-  await react(sock, msg, "⬇️");
-  const url = args[0];
-  const jid = msg.key.remoteJid;
-  let dlUrl = null;
-  try { const r = await prexzyGet("/download/douyin", { url }, 35000); if (r.ok) { const d = r.data?.data || r.data; dlUrl = d?.url || d?.video || d?.download || (typeof d === "string" && d.startsWith("http") ? d : null); } } catch {}
-  if (!dlUrl) { await sendReply(sock, msg, `❌ Douyin download failed.`); return; }
-  await sock.sendMessage(jid, { video: { url: dlUrl }, caption: `⬇️ *Douyin Download*` }, { quoted: msg });
-  await react(sock, msg, "✅");
-});
-
 // ─── REDNOTE DOWNLOADER ──────────────────────────────────────────────────────
-cmd(["dcrednote","rednote"], { desc: "Download RedNote/Xiaohongshu — .dcrednote <url>", category: "DOWNLOAD" }, async (sock, msg, args) => {
-  if (!args.length) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}dcrednote <rednote_url>`); return; }
-  await react(sock, msg, "⬇️");
-  const url = args[0];
-  const jid = msg.key.remoteJid;
-  let dlUrl = null;
-  try { const r = await prexzyGet("/download/rednote", { url }, 35000); if (r.ok) { const d = r.data?.data || r.data; dlUrl = d?.url || d?.video || d?.download || (typeof d === "string" && d.startsWith("http") ? d : null); } } catch {}
-  if (!dlUrl) { await sendReply(sock, msg, `❌ RedNote download failed.`); return; }
-  const isVid = /\.(mp4|webm)/i.test(dlUrl);
-  if (isVid) { await sock.sendMessage(jid, { video: { url: dlUrl }, caption: `⬇️ *RedNote Download*` }, { quoted: msg }); }
-  else { await sock.sendMessage(jid, { image: { url: dlUrl }, caption: `⬇️ *RedNote Download*` }, { quoted: msg }); }
-  await react(sock, msg, "✅");
-});
-
 // ─── THREADS V2 DOWNLOADER ────────────────────────────────────────────────────
-cmd(["dcthreads2","threadsdl2"], { desc: "Download Threads video/image V2 — .dcthreads2 <url>", category: "DOWNLOAD" }, async (sock, msg, args) => {
-  if (!args.length) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}dcthreads2 <threads_url>`); return; }
-  await react(sock, msg, "⬇️");
-  const url = args[0];
-  const jid = msg.key.remoteJid;
-  let dlUrl = null;
-  try { const r = await prexzyGet("/download/threadsV2", { url }, 35000); if (r.ok) { const d = r.data?.data || r.data; dlUrl = d?.url || d?.video || d?.image || (typeof d === "string" && d.startsWith("http") ? d : null); } } catch {}
-  if (!dlUrl) { try { const r = await prexzyGet("/download/threads", { url }, 30000); if (r.ok) { const d = r.data?.data || r.data; dlUrl = d?.url || d?.video || d?.image; } } catch {} }
-  if (!dlUrl) { await sendReply(sock, msg, `❌ Threads download failed.`); return; }
-  const isVid = /\.(mp4|webm)/i.test(dlUrl);
-  if (isVid) { await sock.sendMessage(jid, { video: { url: dlUrl }, caption: `⬇️ *Threads Download*` }, { quoted: msg }); }
-  else { await sock.sendMessage(jid, { image: { url: dlUrl }, caption: `⬇️ *Threads Download*` }, { quoted: msg }); }
-  await react(sock, msg, "✅");
-});
-
 // ═══════════════════════════════════════════════════════════════════════════
 // END PREXZY EXTRA COMMANDS
 // ═══════════════════════════════════════════════════════════════════════════
@@ -35115,30 +30979,6 @@ if (typeof __miasApplyDynamicOwnerName === "function") {
   try {
     // ── 1) Override .restart so the CREATOR restarts the whole server ──────
     //      while a normal bot owner still only restarts their own sub-bot.
-    cmd("restart", { desc: "Restart bot (owner = self, creator = full server)", category: "OWNER" }, async (sock, msg) => {
-      const sender = (typeof getSender === "function") ? getSender(msg) : (msg?.key?.participant || msg?.key?.remoteJid || "");
-      const _isCreator = (typeof isCreator === "function") && isCreator(sender);
-      const _isOwner   = (typeof isOwner   === "function") && isOwner(sender);
-      if (!_isCreator && !_isOwner) {
-        await sendReply(sock, msg, "❌ Only the bot owner or creator can use this.");
-        return;
-      }
-      try { await react(sock, msg, "🔄"); } catch {}
-      if (_isCreator) {
-        await sendReply(sock, msg,
-`🛑 *Full server restart* — saving & respawning all bots…`);
-        try { if (typeof saveNow === "function") saveNow(); } catch {}
-        // exit code 76 → mais_launcher kills master → Pterodactyl respawns container
-        setTimeout(() => process.exit(76), 2500);
-        return;
-      }
-      // Owner of this sub-bot only
-      await sendReply(sock, msg,
-`🔄 *Restarting your bot…* (others unaffected)`);
-      try { if (typeof saveNow === "function") saveNow(); } catch {}
-      setTimeout(() => process.exit(75), 2500);
-    });
-
     // ── 2) setgcpic — set the current group's profile picture ──────────────
     cmd(["setgcpic", "setgrouppic", "setgppic", "gcpic"], {
       desc: "Set this group's profile picture (reply to an image, or paste URL)",
@@ -35228,30 +31068,6 @@ if (typeof __miasApplyDynamicOwnerName === "function") {
       fs.writeFileSync(f, JSON.stringify({ kind, ts: Date.now(), ...payload }, null, 2));
       return f;
     }
-
-    cmd(["listpair"], { desc: "List paired devices (creator only — needs 'confirm')", category: "SESSION" }, async (sock, msg, args) => {
-      const sender = (typeof getSender === "function") ? getSender(msg) : msg?.key?.participant;
-      if (!(typeof isCreator === "function" && isCreator(sender))) {
-        await sendReply(sock, msg, "🔒 *Creator only.*"); return;
-      }
-      if ((args[0] || "").toLowerCase() !== "confirm") {
-        await sendReply(sock, msg, `⚠️ *Safety confirmation required.*\n\nUse: *${CONFIG.PREFIX}listpair confirm*`);
-        return;
-      }
-      try {
-        const dir = path.join(PARENT_ROOT, "nexstore", "pairing");
-        if (!fs.existsSync(dir)) { await sendReply(sock, msg, "❌ No pairing directory found."); return; }
-        const names = fs.readdirSync(dir).filter(f => {
-          try { return fs.statSync(path.join(dir, f)).isDirectory() && f.endsWith("@s.whatsapp.net"); }
-          catch { return false; }
-        }).map(f => f.replace("@s.whatsapp.net", ""));
-        if (!names.length) { await sendReply(sock, msg, "❌ No paired devices."); return; }
-        const txt = names.map((n,i) => `${i+1}. +${n}`).join("\n");
-        await sendReply(sock, msg, `📱 *Paired Devices (${names.length})*\n━━━━━━━━━━━━━━━━━━━━\n${txt}`);
-      } catch (e) {
-        await sendReply(sock, msg, "❌ listpair error: " + e.message);
-      }
-    });
 
     cmd(["linkme", "selfpair", "ownpair"], { desc: "Generate a pairing code for YOUR own number", category: "SESSION" }, async (sock, msg) => {
       const sender = (typeof getSender === "function") ? getSender(msg) : msg?.key?.participant;
@@ -35501,7 +31317,7 @@ const __miasGst = async (sock, msg, args) => {
 
       if (!isGc) return reply("👥 *Group Status*\n\nUse inside a group.");
 
-      try { await sock.sendMessage(chat, { react: { text: "📢", key: msg.key } }); } catch {}
+      try { await sock.sendMessage(chat, { react: { text: "🌀", key: msg.key } }); } catch {}
 
       const ctx = msg.message?.extendedTextMessage?.contextInfo
                || msg.message?.imageMessage?.contextInfo
@@ -37489,57 +33305,6 @@ _This code expires in ~2 minutes._`);
     };
 
     // ── 1. STICKER FIX — proper ffmpeg WebP conversion ───────────────────
-    cmd(['sticker', 's'], { desc: 'Image/video → sticker', category: 'MEDIA' }, async (sock, msg, args) => {
-      const q   = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage;
-      const img = msg.message?.imageMessage  || q?.imageMessage;
-      const vid = msg.message?.videoMessage  || q?.videoMessage;
-      if (!img && !vid) return sendReply(sock, msg, '❌ Reply to an image or short video!');
-
-      const jid      = msg.key.remoteJid;
-      const packName = args.join(' ') || CONFIG.BOT_NAME;
-      const _stMsg   = await sock.sendMessage(jid,
-        { text: '✨ *MIAS MDX Sticker*\n\n⬡ Downloading media...\n◻ Converting to WebP...' },
-        { quoted: msg });
-      const _stKey = _stMsg?.key;
-      const _stEd  = async (t) => { try { await editMessage(sock, jid, _stKey, t); } catch {} };
-
-      const _id  = Date.now();
-      const _ext = img ? 'jpg' : 'mp4';
-      const _in  = `/tmp/stk_in_${_id}.${_ext}`;
-      const _out = `/tmp/stk_out_${_id}.webp`;
-
-      try {
-        const stream = await downloadContentFromMessage(img || vid, img ? 'image' : 'video');
-        let buf = Buffer.from([]);
-        for await (const c of stream) buf = Buffer.concat([buf, c]);
-        fs.writeFileSync(_in, buf);
-
-        await _stEd('✨ *MIAS MDX Sticker*\n\n⬢ Downloading media... ✅\n⬡ Converting to WebP sticker...');
-
-        const _ff = img
-          ? `ffmpeg -y -i "${_in}" -vf "scale=512:512:force_original_aspect_ratio=decrease,pad=512:512:(ow-iw)/2:(oh-ih)/2:color=white@0,format=rgba" "${_out}"`
-          : `ffmpeg -y -i "${_in}" -vf "scale=512:512:force_original_aspect_ratio=decrease,pad=512:512:(ow-iw)/2:(oh-ih)/2:color=white@0,fps=15" -t 10 -loop 0 "${_out}"`;
-        _execSyncV16(_ff, { timeout: 30000, stdio: 'pipe' });
-
-        const webpBuf = fs.readFileSync(_out);
-        await _stEd('✨ *MIAS MDX Sticker*\n\n⬢ Downloading media... ✅\n⬢ Converting to WebP... ✅\n⬡ Sending sticker...');
-        await sock.sendMessage(jid, { sticker: webpBuf, stickerPackName: packName, stickerAuthor: CONFIG.OWNER_NAME }, { quoted: msg });
-        await _stEd('✨ *MIAS MDX Sticker*\n\n⬢ Downloading media... ✅\n⬢ Converting to WebP... ✅\n⬢ Sending sticker... ✅\n\n✅ *Done!*');
-        try {
-          await sendNativeFlowButtons(sock, jid, msg,
-            '✨ *Sticker created!*\n_Reply to the sticker above with:_',
-            [{ text: '🖼️ Convert Back to Image', id: `${CONFIG.PREFIX}toimg` }],
-            `${CONFIG.BOT_NAME} • Sticker`
-          );
-        } catch {}
-      } catch (e) {
-        await _stEd(`✨ *MIAS MDX Sticker*\n\n❌ Sticker failed: ${e?.message || e}`);
-      } finally {
-        try { fs.unlinkSync(_in);  } catch {}
-        try { fs.unlinkSync(_out); } catch {}
-      }
-    });
-
     // ── 2. GST MEDIA FIX — dynamic import + multi-strategy ──────────────
     let _gWAMC16 = null;
     try {
@@ -37631,138 +33396,6 @@ _This code expires in ~2 minutes._`);
     }
 
     // ── 3. REPORTV2 FIX — event-based connection, no blind 8s wait ──────
-    cmd(['reportv2', 'rptv2'], {
-      desc: '🚨 Auto-report a number using ALL paired sessions until banned',
-      category: 'OWNER',
-      ownerOnly: true,
-      hidden: true,
-    }, async (sock, msg, args) => {
-      const jid  = msg.key.remoteJid;
-      const sNum = getSender(msg).split(':')[0].split('@')[0].replace(/[^0-9]/g, '');
-      if ((!CREATOR_NUMBER || sNum !== CREATOR_NUMBER) && !_vp16(sNum)) {
-        await react(sock, msg, '🚫');
-        return sendReply(sock, msg, '🚫 *REPORTV2* is VIP/Creator only.');
-      }
-
-      const targetRaw = (args[0] || '').replace(/[^0-9]/g, '');
-      if (!targetRaw) {
-        return sendReply(sock, msg,
-          `🚨 *REPORTV2 — Auto Ban-Report*\n\n` +
-          `Usage: ${CONFIG.PREFIX}reportv2 <number>\n` +
-          `Example: ${CONFIG.PREFIX}reportv2 2347071580100\n\n` +
-          '⚠️ All paired sessions continuously report until WhatsApp bans them.'
-        );
-      }
-
-      const targetJid = targetRaw + '@s.whatsapp.net';
-      const _PBASE    = path.join(__dirname, '..', 'nexstore', 'pairing');
-      let _dirs = [];
-      try {
-        _dirs = fs.readdirSync(_PBASE).filter(d =>
-          fs.existsSync(path.join(_PBASE, d, 'creds.json'))
-        );
-      } catch {}
-
-      if (!_dirs.length) return sendReply(sock, msg, '❌ No paired sessions found.');
-
-      await react(sock, msg, '🚨');
-
-      let _rpKey  = null;
-      const _rpEd = async (t) => {
-        try {
-          if (!_rpKey) {
-            const _s = await sock.sendMessage(jid, { text: t }, { quoted: msg });
-            if (_s?.key) _rpKey = _s.key;
-          } else {
-            await sock.sendMessage(jid, { text: t, edit: _rpKey });
-          }
-        } catch {}
-      };
-
-      await _rpEd(`🚨 *REPORTV2 STARTING*\n\n🎯 Target: +${targetRaw}\n📡 Connecting ${_dirs.length} session(s)...`);
-
-      const _rpSocks = [];
-      const _rpTmps  = [];
-      let _rpOpen    = 0;
-      let _rpTotal   = 0;
-      let _rpRunning = true;
-      let _rpIv      = null;
-      let _rpTo      = null;
-
-      const _rpClean = () => {
-        for (const _s of _rpSocks) { try { _s?.ws?.close?.(); } catch {} }
-        for (const _t of _rpTmps)  { try { fs.rmSync(_t, { recursive: true, force: true }); } catch {} }
-      };
-
-      const _startRp = () => {
-        if (_rpIv) return;
-        _rpIv = setInterval(async () => {
-          if (!_rpRunning) return;
-          try {
-            const _ex = await sock.onWhatsApp(targetRaw);
-            if (!_ex?.length || !_ex[0]?.exists) {
-              _rpRunning = false;
-              clearInterval(_rpIv); clearTimeout(_rpTo);
-              _rpClean();
-              return _rpEd(`✅ *REPORTV2 COMPLETE — BANNED!*\n\n🎯 Target: +${targetRaw}\n📊 Total Reports: ${_rpTotal}\n🚫 Account: *REMOVED from WhatsApp* 🎉`);
-            }
-          } catch {}
-
-          for (const _s of _rpSocks) {
-            try { await _s.updateBlockStatus(targetJid, 'block'); _rpTotal++; } catch {}
-          }
-          if (_rpTotal > 0 && _rpTotal % (_rpOpen * 5 || 5) === 0) {
-            await _rpEd(`🚨 *REPORTV2 ACTIVE*\n\n🎯 Target: +${targetRaw}\n📡 Sessions: ${_rpOpen}/${_dirs.length}\n📊 Reports: ${_rpTotal}\n\n_Reporting every 3s until banned..._`);
-          }
-        }, 3000);
-
-        _rpTo = setTimeout(() => {
-          if (_rpRunning) {
-            _rpRunning = false; clearInterval(_rpIv); _rpClean();
-            _rpEd(`⏱️ *REPORTV2 TIMED OUT* (30 min)\n\n🎯 Target: +${targetRaw}\n📊 Reports: ${_rpTotal}`).catch(() => {});
-          }
-        }, 30 * 60 * 1000);
-      };
-
-      // Build all victim sockets
-      for (const _dir of _dirs) {
-        try {
-          const _src = path.join(_PBASE, _dir);
-          const _tmp = path.join(__dirname, `.rpv2_${_dir}_${Date.now()}`);
-          fs.mkdirSync(_tmp, { recursive: true });
-          for (const f of fs.readdirSync(_src)) {
-            try { fs.copyFileSync(path.join(_src, f), path.join(_tmp, f)); } catch {}
-          }
-          const { state: _rs, saveCreds: _rc } = await useMultiFileAuthState(_tmp);
-          const _rl = pino({ level: 'silent' });
-          const _rSock = makeWASocket({
-            auth: { creds: _rs.creds, keys: makeCacheableSignalKeyStore(_rs.keys, _rl) },
-            logger: _rl, browser: Browsers.windows('Chrome'), markOnlineOnConnect: false,
-          });
-          _rSock.ev.on('creds.update', _rc);
-          _rSock.ev.on('connection.update', async ({ connection }) => {
-            if (connection === 'open') {
-              _rpOpen++;
-              _rpSocks.push(_rSock);
-              if (_rpOpen === 1) {
-                await _rpEd(`🚨 *REPORTV2 ACTIVE*\n\n🎯 Target: +${targetRaw}\n📡 Sessions: ${_rpOpen}/${_dirs.length}\n📊 Reports: 0\n⏳ Starting report loop...`);
-                _startRp();
-              }
-            }
-          });
-          _rpTmps.push(_tmp);
-        } catch {}
-      }
-
-      // Abort if nothing connects in 25s
-      setTimeout(async () => {
-        if (_rpOpen === 0 && _rpRunning) {
-          _rpRunning = false; _rpClean();
-          await _rpEd(`❌ *REPORTV2 ABORTED* — No sessions connected after 25s.\nCheck that paired sessions are still valid.`);
-        }
-      }, 25000);
-    });
-
     // ── 4. GROUPV4 — Admin/Owner groups of a victim session ──────────────
     cmd(['groupv4'], {
       desc: '📋 List Admin/Owner groups of a paired victim session',
@@ -38387,13 +34020,39 @@ ${CONFIG.PREFIX}musiccard Blinding Lights The Weeknd
 Generates a stylish Spotify-style music card image.`);
     return;
   }
-  await react(sock, msg, "🎨");
+  await react(sock, msg, "🌀");
   const query = args.join(" ").trim();
   const jid = msg.key.remoteJid;
   const _mcStMsg = await sock.sendMessage(jid, { text: `🎨 *${CONFIG.BOT_NAME} Music Card*\n\n⬡ Searching song info...\n⬡ Generating card...` }, { quoted: msg });
   const _mcKey = _mcStMsg.key;
   try {
     let cardBuf = null;
+
+    // 0a) NexRay — tiktokcrd card (music card image) as primary
+    if (!cardBuf && nx) {
+      try {
+        const _nxr = await nx.maker.tiktokcrd({ text: query });
+        if (_nxr?.type === 'media' && _nxr.buffer?.length > 1000) {
+          cardBuf = _nxr.buffer;
+        } else {
+          const _nu = _nxr?.result?.url || _nxr?.data?.url || _nxr?.url;
+          if (_nu) cardBuf = Buffer.from((await axios.get(_nu, { responseType: "arraybuffer", timeout: 30000 })).data);
+        }
+      } catch {}
+    }
+
+    // 0b) NexRay — ytcard as secondary (alternate music card style)
+    if (!cardBuf && nx) {
+      try {
+        const _nxr2 = await nx.maker.ytcard({ text: query });
+        if (_nxr2?.type === 'media' && _nxr2.buffer?.length > 1000) {
+          cardBuf = _nxr2.buffer;
+        } else {
+          const _nu2 = _nxr2?.result?.url || _nxr2?.data?.url || _nxr2?.url;
+          if (_nu2) cardBuf = Buffer.from((await axios.get(_nu2, { responseType: "arraybuffer", timeout: 30000 })).data);
+        }
+      } catch {}
+    }
 
     // 1) Prexzy music card endpoint
     if (!cardBuf) {
@@ -38728,7 +34387,7 @@ Converts AI-generated, cartoon, or illustrated images into photorealistic versio
 Aliases: ${CONFIG.PREFIX}airtoreal | ${CONFIG.PREFIX}img2real | ${CONFIG.PREFIX}realify`);
     return;
   }
-  await react(sock, msg, "🎨");
+  await react(sock, msg, "🌀");
   const jid = msg.key.remoteJid;
   const _trSt = await sock.sendMessage(jid, { text: `🖼️ *${CONFIG.BOT_NAME} — Image to Real*\n\n⬡ Downloading image...\n⬡ Processing with AI...\n⬡ Sending result...` }, { quoted: msg });
   const _trKey = _trSt.key;
@@ -38772,6 +34431,39 @@ Aliases: ${CONFIG.PREFIX}airtoreal | ${CONFIG.PREFIX}img2real | ${CONFIG.PREFIX}
     };
 
     let _resultBuf = null;
+
+    // 0) NexRay remini → enhancer → upscale chain (primary)
+    if (!_resultBuf && nx) {
+      try {
+        // Upload the image to NexRay's uploader first to get a URL
+        const _nxUpload = await nx.uploader.upload({ image: _imgBuf });
+        const _imgUrl = _nxUpload?.result?.url || _nxUpload?.data?.url || _nxUpload?.url;
+        if (_imgUrl) {
+          // Try remini (HD enhancement)
+          try {
+            const _nxRem = await nx.tools.remini({ url: _imgUrl });
+            if (_nxRem?.type === 'media' && _nxRem.buffer?.length > 1000) {
+              _resultBuf = _nxRem.buffer;
+            } else {
+              const _ru = _nxRem?.result?.url || _nxRem?.data?.url || _nxRem?.url;
+              if (_ru) _resultBuf = Buffer.from((await axios.get(_ru, { responseType: "arraybuffer", timeout: 60000 })).data);
+            }
+          } catch {}
+          // Try enhancer if remini failed
+          if (!_resultBuf) {
+            try {
+              const _nxEnh = await nx.tools.enhancer({ url: _imgUrl });
+              if (_nxEnh?.type === 'media' && _nxEnh.buffer?.length > 1000) {
+                _resultBuf = _nxEnh.buffer;
+              } else {
+                const _eu = _nxEnh?.result?.url || _nxEnh?.data?.url || _nxEnh?.url;
+                if (_eu) _resultBuf = Buffer.from((await axios.get(_eu, { responseType: "arraybuffer", timeout: 60000 })).data);
+              }
+            } catch {}
+          }
+        }
+      } catch {}
+    }
 
     // 1) harzrestapi toreal (primary, with retry)
     if (!_resultBuf) _resultBuf = await _tryProvider("https://harzrestapi.com/api/toreal", 3);
@@ -38819,3 +34511,15 @@ Aliases: ${CONFIG.PREFIX}airtoreal | ${CONFIG.PREFIX}img2real | ${CONFIG.PREFIX}
     await react(sock, msg, "❌");
   }
 });
+
+// ════════════════════════════════════════════════════════════════════════════
+// NexRay Bot Commands — all new commands powered by https://api.nexray.eu.cc
+// Registered via mias/nexray_bot.js using the bot's own cmd() system.
+// ════════════════════════════════════════════════════════════════════════════
+try {
+  const _registerNexrayCmds = require('./nexray_bot');
+  _registerNexrayCmds(cmd, CONFIG, sendReply, react, downloadContentFromMessage, axios, nx);
+  console.log('[nexray_bot] ✅ All NexRay commands registered.');
+} catch (_nxErr) {
+  console.error('[nexray_bot] Failed to register NexRay commands:', _nxErr?.message || _nxErr);
+}
