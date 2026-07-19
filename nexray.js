@@ -517,6 +517,8 @@ const information = {
   checkRekening:  o => { _req(['rekening','bank'], o); return _get('/information/check-rekening', { rekening: o.rekening, bank: o.bank }); },
   /** Info cuaca | kota* */
   cuaca:          o => { _req(['kota'],     o); return _get('/information/cuaca',          { kota: o.kota }); },
+  /** Alias: Weather (English) — uses cuaca endpoint | kota* */
+  weather:        o => { const city = o.city || o.kota; if (!city) throw new Error('Missing required params: city or kota'); return _get('/information/cuaca', { kota: city }); },
   /** Kode pos by kota | kota* */
   kodepos:        o => { _req(['kota'],     o); return _get('/information/kodepos',        { kota: o.kota }); },
   /** Info gempa terbaru */
@@ -681,6 +683,8 @@ const search = {
   jkt48:          o => { _req(['query'], o); return _get('/search/jkt48',           { query: o.query }); },
   /** Search Lirik lagu | query* */
   lirik:          o => { _req(['query'], o); return _get('/search/lirik',           { query: o.query }); },
+  /** Alias: Search lyrics by query | query* */
+  lyrics:         o => { _req(['query'], o); return _get('/search/lirik',           { query: o.query }); },
   /** Search npm package | query* */
   npm:            o => { _req(['query'], o); return _get('/search/npm',             { query: o.query }); },
   /** Search Pinterest | query* */
