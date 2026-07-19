@@ -6803,16 +6803,16 @@ function buildMenu(jid, senderName) {
   t += `│  ◈ 𝗥𝗔𝗠      ➜  ${ramUsed} MB\n`;
   t += `│  ◈ 𝗧𝗶𝗺𝗲     ➜  ${timeStr}\n`;
   t += `└─────────────────────────\n\n`;
-  t += `╔══「 *𝗖𝗔𝗧𝗘𝗚𝗢𝗥𝗜𝗘𝗦* 」══╗\n`;
+  t += `━━━━━「 🗂️ *CATEGORIES* 」━━━━━\n\n`;
   for (const cat of MENU_CATEGORIES) {
     if (cat.adult && (!s.adultMode || s.safeMode)) continue;
     const count = [...new Set(cat.cmds)].length;
-    t += `║  ${cat.emoji} *${cat.name}*  ‹${count}›  » ${CONFIG.PREFIX}menu ${cat.name.toLowerCase()}\n`;
+    t += `  ╰➤ ${cat.emoji} *${cat.name}*  ‹${count} cmds›\n`;
   }
-  t += `╚══════════════════════╝\n\n`;
-  t += `❒ _${CONFIG.PREFIX}menu <category>_ — open a category\n`;
-  t += `❒ _${CONFIG.PREFIX}allmenu_ — all commands in one shot\n`;
-  t += `❒ _${CONFIG.PREFIX}settings_ — configure the bot\n\n`;
+  t += `\n━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+  t += `  ╰➤ _${CONFIG.PREFIX}menu <category>_ — open a category\n`;
+  t += `  ╰➤ _${CONFIG.PREFIX}allmenu_ — all commands in one shot\n`;
+  t += `  ╰➤ _${CONFIG.PREFIX}settings_ — configure the bot\n\n`;
   t += ``;
   return t;
 }
@@ -6836,10 +6836,10 @@ cmd(["menu", "help", "commands", ".menu", "start"], { desc: "Show full menu", ca
     if (!cat) { await sendReply(sock, msg, `❓ Category *${args[0].toUpperCase()}* not found.\nUse ${CONFIG.PREFIX}menu to see all categories.`); return; }
     if (cat.adult && !getSettings(jid).adultMode) { await sendReply(sock, msg, `🔞 Enable adult mode first with ${CONFIG.PREFIX}setting → option 23.1`); return; }
     const uniq = [...new Set(cat.cmds)];
-    let text = `${cat.emoji} ━━「 *${cat.name}* 」━━ ${uniq.length} cmds\n\n`;
+    let text = `${cat.emoji} ━━━ *${cat.name}* ━━━ ${uniq.length} cmds\n\n`;
     for (const c of uniq) {
       const info = commands.get(c);
-      text += `  ✦ ${CONFIG.PREFIX}${c}${info?.desc ? "\n    _" + info.desc + "_" : ""}\n`;
+      text += `  ╰➤ *${CONFIG.PREFIX}${c}*${info?.desc ? "  — _" + info.desc + "_" : ""}\n`;
     }
     text += `\n━━━━━━━━━━━━━━━━━━━`;
     await sendReply(sock, msg, text);
@@ -6917,14 +6917,14 @@ cmd(["allmenu", "allcmds", "fullmenu", "listall"], { desc: "Show ALL commands at
   for (const cat of MENU_CATEGORIES) {
     if (cat.adult && (!s.adultMode || s.safeMode)) continue;
     const uniq = [...new Set(cat.cmds)];
-    text += `\n╔═ ${cat.emoji} *${cat.name}* — ${uniq.length} commands ═╗\n`;
+    text += `\n━━ ${cat.emoji} *${cat.name}* (${uniq.length} cmds) ━━\n`;
     for (const c of uniq) {
       const star = STAR_CMDS.has(c) ? " ✦" : "  ";
       const cmdDesc = commands.get(c)?.desc || "";
       const descPart = cmdDesc ? ` — _${cmdDesc.replace(/^[^—–-]*[—–-]\s*/,"").slice(0,40)}_` : "";
-      text += `║${star} ${CONFIG.PREFIX}${c}${descPart}\n`;
+      text += `  ╰➤ *${CONFIG.PREFIX}${c}*${descPart}\n`;
     }
-    text += `╚${"═".repeat(32)}\n`;
+    text += `\n`;
   }
   text += `╔═══════════════════════╗\n`;
   text += `║  _${CONFIG.PREFIX}help <cmd>_ for details  ║\n`;
