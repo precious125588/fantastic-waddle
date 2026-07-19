@@ -17,6 +17,10 @@
  *   e.g.  NIX_OWNER_JID=2349012345678
  */
 
+// ── Imports (all at top — ES module requirement) ─────────────────────────────
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { parseNixMessage } from './intent.js';
 import { getOwnerName, setOwnerName } from './owner.js';
 import { buildMainMenu, buildCategoryHelp } from './menu.js';
@@ -29,6 +33,11 @@ import {
   denialText,
   errorText,
 } from './personality.js';
+
+// ── Resolve bot pic path ─────────────────────────────────────────────────────
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+// Resolves to: mias/assets/botpic1.jpg
+const BOT_PIC_PATH = path.resolve(__dirname, '..', 'assets', 'botpic1.jpg');
 
 // ── Lazy-load modules (keeps startup fast) ───────────────────────────────────
 let _account, _groups, _whatsapp, _ai, _media, _system, _info, _productivity, _contact, _autoFeat;
@@ -43,6 +52,31 @@ async function getInfo()         { return _info         ??= await import('./modu
 async function getProductivity() { return _productivity ??= await import('./modules/productivity.js'); }
 async function getContact()      { return _contact      ??= await import('./modules/contact.js'); }
 async function getAutoFeat()     { return _autoFeat     ??= await import('./modules/autofeatures.js'); }
+
+// ── Menu with bot pic ────────────────────────────────────────────────────────
+/**
+ * Sends the menu as image + caption (bot pic shown alongside commands).
+ * Falls back gracefully to plain text if the image is missing or fails.
+ */
+async function sendMenuWithPic(sock, msg, menuText) {
+  const jid = msg.key.remoteJid;
+  try {
+    if (fs.existsSync(BOT_PIC_PATH)) {
+      const imageBuffer = fs.readFileSync(BOT_PIC_PATH);
+      await sock.sendMessage(jid, {
+        image: imageBuffer,
+        caption: menuText,
+        mimetype: 'image/jpeg',
+      }, { quoted: msg });
+    } else {
+      // No pic file — plain text menu
+      await sock.sendMessage(jid, { text: menuText }, { quoted: msg });
+    }
+  } catch {
+    // If image send fails for any reason — fallback to text
+    try { await sock.sendMessage(jid, { text: menuText }, { quoted: msg }); } catch {}
+  }
+}
 
 // ── Owner JID detection ──────────────────────────────────────────────────────
 /**
@@ -210,13 +244,17 @@ async function route(sock, msg, { intent, args, raw }, isOwner) {
     // ── META ─────────────────────────────────────────────────────────────────
     case 'menu':
       await reactNix(sock, msg, '🧠');
-      await sendNix(sock, msg, buildMainMenu());
+      await sendMenuWithPic(sock, msg, buildMainMenu());
       break;
 
     case 'help': {
       const cat = args[0]?.toLowerCase();
       const catHelp = buildCategoryHelp(cat);
-      await sendNix(sock, msg, catHelp ? catHelp + nixFooter() : buildMainMenu());
+      if (catHelp) {
+        await sendNix(sock, msg, catHelp + nixFooter());
+      } else {
+        await sendMenuWithPic(sock, msg, buildMainMenu());
+      }
       break;
     }
 
