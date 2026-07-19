@@ -7916,7 +7916,12 @@ cmd(["play", "music", "song"], { desc: "Play/download song (audio)", category: "
   // ── FALLBACK ENDPOINTS (merged from duplicate cmd registrations) ──
   // fallback URL: https://www.google.com/
   // fallback URL: https://api.toxicapis.com/download/xnxx?url=${encodeURIComponent(pageU
-}  desc: "Download song as video (mp4)", category: "DOWNLOAD" }, async (sock, msg, args) => {
+  } catch (e) {
+    console.error("[PLAY]", e?.message || e);
+  }
+});
+
+cmd(["playvid", "playvideo", "vidplay"], { desc: "Download song as video (mp4)", category: "DOWNLOAD" }, async (sock, msg, args) => {
   if (!args.length) { await sendReply(sock, msg, `❌ Usage: ${CONFIG.PREFIX}playvid <song name or YouTube URL>`); return; }
   await react(sock, msg, "🎬");
   const query = args.join(" ").trim();
@@ -15809,7 +15814,26 @@ cmd("settheme", { desc: "Set bot theme", category: "CONFIG", ownerOnly: true }, 
 
 // ═══════════════════════════════════════════════════════════════════════════════
 //  SESSION COMMANDS
-// ═══════════════════════════════════════════════════════════════════════════════ields=title,formatStreams,adaptiveFormats`, { timeout: 10000 });
+// ═══════════════════════════════════════════════════════════════════════════════
+
+cmd(["ytmp4", "ytvideo", "yt4", "ytv"], { desc: "Download YouTube video (MP4) with quality picker", category: "DOWNLOAD" }, async (sock, msg, args) => {
+  const input = args.join(" ").trim();
+  if (!input) { await sendReply(sock, msg, `❌ Usage: ${CONFIG.PREFIX}ytmp4 <url> [quality]\n\nExamples:\n• ${CONFIG.PREFIX}ytmp4 https://youtu.be/xxx\n• ${CONFIG.PREFIX}ytmp4 https://youtu.be/xxx 720`); return; }
+  const _parts = input.split(" ");
+  let url = _parts[0], quality = null, qualityLabel = null;
+  if (_parts.length > 1) {
+    const _q = _parts[_parts.length - 1];
+    if (/^\d+$/.test(_q)) { quality = _q; qualityLabel = _q + "p"; url = _parts.slice(0, -1).join(" "); }
+  }
+  const videoId = url.match(/(?:v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/)?.[1];
+
+  if (!quality && !qualityLabel) {
+    let availableQualities = null;
+    if (videoId) {
+      const _invInstances = ["https://inv.nadeko.net","https://invidious.io.lol","https://yt.cdaut.de","https://invidious.privacyredirect.com"];
+      for (const _inst of _invInstances) {
+        try {
+          const _vi = (await axios.get(`${_inst}/api/v1/videos/${videoId}?fields=title,formatStreams,adaptiveFormats`, { timeout: 10000 })).data;
           const _fmts = [
             ...(_vi?.formatStreams || []).map(f => f.qualityLabel || f.quality),
             ...(_vi?.adaptiveFormats || []).filter(f => f.type?.includes("video")).map(f => f.qualityLabel || f.quality),
