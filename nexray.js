@@ -305,6 +305,8 @@ const canvas = {
   wanted:     o => { _req(['url'], o); return _get('/canvas/wanted',     { url: o.url }); },
   /** Canvas wasted overlay | url* */
   wasted:     o => { _req(['url'], o); return _get('/canvas/wasted',     { url: o.url }); },
+  /** Generate music card | judul*, nama*, image_url* */
+  musiccard:  o => { _req(['judul','nama','image_url'], o); return _get('/canvas/musiccard', { judul: o.judul, nama: o.nama, image_url: o.image_url }); },
   /** Canvas pixelate | url* */
   pixelate:   o => { _req(['url'], o); return _get('/canvas/pixelate',   { url: o.url }); },
   /** Canvas glass effect | url* */
