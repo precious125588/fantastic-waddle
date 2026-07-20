@@ -7493,6 +7493,64 @@ cmd(["alive", "runtime", "uptime"], { desc: "Bot alive status and uptime info", 
   await sendReply(sock, msg, `ⓘ _The bot has been active for ${up}_`);
 });
 
+// .forward / .fwd — forward a quoted message to the same chat
+cmd(["forward", "fwd"], { desc: "Forward a quoted message to the same chat — reply to a message first", category: "MISC" }, async (sock, msg, args) => {
+  const jid = msg.key.remoteJid;
+  const ctx =
+    msg.message?.extendedTextMessage?.contextInfo ||
+    msg.message?.imageMessage?.contextInfo        ||
+    msg.message?.videoMessage?.contextInfo        ||
+    msg.message?.audioMessage?.contextInfo        ||
+    msg.message?.documentMessage?.contextInfo     ||
+    msg.message?.stickerMessage?.contextInfo      || null;
+  const quoted    = ctx?.quotedMessage || null;
+  const stanzaId  = ctx?.stanzaId || null;
+  if (!quoted || !stanzaId) {
+    return sendReply(sock, msg, "↩️ Reply to a message first, then use this command to forward it.");
+  }
+  try {
+    await react(sock, msg, "↩️");
+    await sock.relayMessage(jid, quoted, { messageId: stanzaId + "_fwd_" + Date.now() });
+    await react(sock, msg, "✅");
+  } catch (_relayErr) {
+    // Fallback — re-download and re-send each supported media type
+    try {
+      const mediaTypes = [
+        ["imageMessage",    "image"],
+        ["videoMessage",    "video"],
+        ["audioMessage",    "audio"],
+        ["stickerMessage",  "sticker"],
+        ["documentMessage", "document"],
+      ];
+      let sent = false;
+      for (const [key, type] of mediaTypes) {
+        if (!quoted[key]) continue;
+        const stream = await downloadContentFromMessage(quoted[key], type);
+        let buf = Buffer.from([]);
+        for await (const chunk of stream) buf = Buffer.concat([buf, chunk]);
+        let payload;
+        if (key === "imageMessage")    payload = { image:    buf, caption:  quoted[key].caption || "" };
+        else if (key === "videoMessage") payload = { video:  buf, caption:  quoted[key].caption || "" };
+        else if (key === "audioMessage") payload = { audio:  buf, mimetype: quoted[key].mimetype || "audio/ogg; codecs=opus", ptt: quoted[key].ptt || false };
+        else if (key === "stickerMessage") payload = { sticker: buf };
+        else payload = { document: buf, mimetype: quoted[key].mimetype || "application/octet-stream", fileName: quoted[key].fileName || "file" };
+        await sock.sendMessage(jid, payload, { quoted: msg });
+        sent = true;
+        break;
+      }
+      if (!sent) {
+        const text = quoted.conversation || quoted.extendedTextMessage?.text;
+        if (text) await sock.sendMessage(jid, { text }, { quoted: msg });
+        else return sendReply(sock, msg, "❌ Cannot forward: unsupported message type.");
+      }
+      await react(sock, msg, "✅");
+    } catch (e2) {
+      await sendReply(sock, msg, `❌ Forward failed: ${e2.message}`);
+      await react(sock, msg, "❌");
+    }
+  }
+});
+
 cmd("owner", { desc: "Show owner info + contact card", category: "MISC" }, async (sock, msg) => {
   await react(sock, msg, "👑");
   const ownerJid = getOwnerJid();

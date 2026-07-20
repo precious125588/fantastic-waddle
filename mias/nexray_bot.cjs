@@ -1272,15 +1272,67 @@ module.exports = function registerNexrayCmds(cmd, CONFIG, sendReply, react, down
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  cmd(['musiccard', 'music-card'], { desc: 'Generate music card', category: 'Nexray-Canvas' }, async (sock, msg, args) => {
-    if (args.length < 3) return _noArgs(sock, msg, 'musiccard <title> <artist> <image-url>');
-    const [judul, nama, image_url] = [args[0], args[1], args[2]];
+  cmd(['musiccard', 'music-card'], { desc: 'Generate music card — .musiccard <song> <artist> [image-url]', category: 'Nexray-Canvas' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'musiccard <song name> <artist>');
     await react(sock, msg, '🎵');
-    try {
-      const r = await nx.canvas.musiccard({ judul, nama, image_url }); const m = await _media(r, axios);
-      if (m) { await _sendImg(sock, msg, m.buf, `🎵 *Music Card*\n${judul} — ${nama}`); await react(sock, msg, '✅'); }
-      else throw new Error('No image returned');
-    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+    // Separate optional image URL from text args
+    const _imgArg  = args.find(a => /^https?:\/\/.+\.(jpg|jpeg|png|webp|gif)/i.test(a));
+    const _txtArgs = args.filter(a => !/^https?:\/\//.test(a));
+    const query    = _txtArgs.join(' ').trim() || args.join(' ').trim();
+    const judul    = _txtArgs[0] || query;
+    const nama     = _txtArgs.slice(1).join(' ') || query;
+    let cardBuf = null;
+    // 1) tiktokcrd (primary — nexray maker)
+    if (!cardBuf && nx) {
+      try {
+        const r1 = await nx.maker.tiktokcrd({ text: query });
+        if (r1?.type === 'media' && r1.buffer?.length > 500) cardBuf = r1.buffer;
+        else {
+          const u = r1?.result?.url || r1?.data?.url || (typeof r1?.result === 'string' && r1.result.startsWith('http') ? r1.result : null);
+          if (u) cardBuf = Buffer.from((await axios.get(u, { responseType: 'arraybuffer', timeout: 30000 })).data);
+        }
+      } catch {}
+    }
+    // 2) ytcard (secondary — nexray maker)
+    if (!cardBuf && nx) {
+      try {
+        const r2 = await nx.maker.ytcard({ text: query });
+        if (r2?.type === 'media' && r2.buffer?.length > 500) cardBuf = r2.buffer;
+        else {
+          const u = r2?.result?.url || r2?.data?.url || (typeof r2?.result === 'string' && r2.result.startsWith('http') ? r2.result : null);
+          if (u) cardBuf = Buffer.from((await axios.get(u, { responseType: 'arraybuffer', timeout: 30000 })).data);
+        }
+      } catch {}
+    }
+    // 3) canvas/musiccard (nexray canvas — requires judul, nama, image_url)
+    if (!cardBuf && nx && _imgArg) {
+      try {
+        const r3 = await nx.canvas.musiccard({ judul, nama, image_url: _imgArg });
+        if (r3?.type === 'media' && r3.buffer?.length > 500) cardBuf = r3.buffer;
+        else {
+          const u = r3?.result?.url || r3?.data?.url || (typeof r3?.result === 'string' && r3.result.startsWith('http') ? r3.result : null) || r3?.url;
+          if (u) cardBuf = Buffer.from((await axios.get(u, { responseType: 'arraybuffer', timeout: 30000 })).data);
+        }
+      } catch {}
+    }
+    // 4) canvas/musiccard with placeholder image when no image_url provided
+    if (!cardBuf && nx) {
+      try {
+        const _placeholder = 'https://i.scdn.co/image/ab67616d0000b273c5649add07ed3720be9d5526';
+        const r4 = await nx.canvas.musiccard({ judul, nama, image_url: _imgArg || _placeholder });
+        if (r4?.type === 'media' && r4.buffer?.length > 500) cardBuf = r4.buffer;
+        else {
+          const u = r4?.result?.url || r4?.data?.url || (typeof r4?.result === 'string' && r4.result.startsWith('http') ? r4.result : null) || r4?.url;
+          if (u) cardBuf = Buffer.from((await axios.get(u, { responseType: 'arraybuffer', timeout: 30000 })).data);
+        }
+      } catch {}
+    }
+    if (!cardBuf || cardBuf.length < 500) {
+      await sendReply(sock, msg, '❌ Could not generate music card. Try: .musiccard <song> <artist> <image-url>');
+      return react(sock, msg, '❌');
+    }
+    await _sendImg(sock, msg, cardBuf, `🎵 *Music Card*\n${query}`);
+    await react(sock, msg, '✅');
   });
 
   cmd(['canvas-pixelate', 'pixelate'], { desc: 'Pixelate image canvas', category: 'Nexray-Canvas' }, async (sock, msg, args) => {
@@ -2347,44 +2399,103 @@ module.exports = function registerNexrayCmds(cmd, CONFIG, sendReply, react, down
   // 👁️  STALKER  — 15 endpoints
   // ═══════════════════════════════════════════════════════════════════════════
 
-  cmd(['stalk-ff', 'ffstalk', 'freefireid', 'freefire'], { desc: 'Stalk Free Fire player by UID', category: 'Nexray-Stalker' }, async (sock, msg, args) => {
-    if (!args.length) return _noArgs(sock, msg, 'stalk-ff <uid>');
+  cmd(['stalk-ff', 'ffstalk', 'freefireid', 'freefire'], { desc: 'Stalk Free Fire player by UID — .stalk-ff <uid> [region]', category: 'Nexray-Stalker' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'stalk-ff <uid> [region]  e.g. stalk-ff 123456789 IND');
     await react(sock, msg, '🎮');
+    const uid    = String(args[0]).replace(/[^0-9]/g, '');
+    const region = (args[1] || 'IND').toUpperCase();
+    const _s = (v, def = 'N/A') => (v !== null && v !== undefined && v !== '' && v !== 'null') ? String(v) : def;
+    const _n = (v, def = 'N/A') => (v !== null && v !== undefined && v !== '') ? Number(v).toLocaleString() : def;
     try {
-      const r = await nx.stalker.freefire({ uid: args[0] });
-      if (!r || r.status === false) throw new Error(r?.error || 'No data returned');
-      const d = r?.result || r?.data || r;
-      const lines = [];
-      lines.push(`🎮 *Free Fire Player Info*`);
-      lines.push(`━━━━━━━━━━━━━━━━━━`);
-      if (d.name)           lines.push(`👤 *Name:* ${d.name}`);
-      if (d.uid)            lines.push(`🆔 *UID:* ${d.uid}`);
-      if (d.level)          lines.push(`⭐ *Level:* ${d.level}`);
-      if (d.exp)            lines.push(`✨ *EXP:* ${d.exp}`);
-      if (d.region)         lines.push(`🌍 *Region:* ${d.region}`);
-      if (d.likes)          lines.push(`❤️ *Likes:* ${d.likes}`);
-      if (d.br_rank)        lines.push(`🏆 *BR Rank:* ${d.br_rank}`);
-      if (d.cs_points)      lines.push(`🎯 *CS Points:* ${d.cs_points}`);
-      if (d.signature)      lines.push(`📝 *Bio:* ${d.signature}`);
-      if (d.title)          lines.push(`🎖️ *Title:* ${d.title}`);
-      if (d.honor_score)    lines.push(`🏅 *Honor Score:* ${d.honor_score}`);
-      if (d.prime_level)    lines.push(`💎 *Prime Level:* ${d.prime_level}`);
-      if (d.fire_pass)      lines.push(`🔥 *Fire Pass:* ${d.fire_pass}`);
-      if (d.celebrity_status) lines.push(`🌟 *Celebrity:* ${d.celebrity_status}`);
-      if (d.bp_badges)      lines.push(`🎗️ *BP Badges:* ${d.bp_badges}`);
-      if (d.pet_name)       lines.push(`🐾 *Pet:* ${d.pet_name} (Lv.${d.pet_level||'?'}, EXP:${d.pet_exp||'?'})`);
-      if (d.guild_name)     lines.push(`\n🛡️ *Guild:* ${d.guild_name} (Lv.${d.guild_level||'?'})`);
-      if (d.guild_leader_name) lines.push(`👑 *Guild Leader:* ${d.guild_leader_name} (Lv.${d.guild_leader_level||'?'})`);
-      if (d.guild_members)  lines.push(`👥 *Guild Members:* ${d.guild_members}`);
-      if (d.equipped_gun_id) lines.push(`\n🔫 *Equipped Gun ID:* ${d.equipped_gun_id}`);
-      if (d.last_login)     lines.push(`\n🕐 *Last Login:* ${new Date(d.last_login).toUTCString()}`);
-      if (d.created_at)     lines.push(`📅 *Joined:* ${new Date(d.created_at).toUTCString()}`);
-      await sendReply(sock, msg, lines.join('\n'));
+      const r = await nx.stalker.freefire({ uid });
+      if (!r || r.status === false) throw new Error(r?.message || r?.error || 'No data returned');
+      // Support both flat and nested API shapes
+      const top  = r?.result || r?.data || r;
+      const _ai  = top?.basicInfo        || top?.AccountInfo        || {};
+      const _api = top?.AccountProfileInfo || top?.profileInfo      || {};
+      const _si  = top?.socialInfo       || top?.SocialInfo         || {};
+      const _gi  = top?.clanBasicInfo    || top?.GuildInfo          || top?.guildInfo || {};
+      const _pi  = top?.petInfo          || top?.PetInfo            || {};
+      const _ci  = top?.creditScoreInfo  || top?.CreditScoreInfo    || {};
+      const _raw = (typeof top?.raw_data === 'string' ? (() => { try { return JSON.parse(top.raw_data); } catch { return {}; } })() : top?.raw_data) || {};
+      // Core fields — prefer nested then flat
+      const ffName    = _s(_ai.nickname || _ai.name || top.name || top.nickname);
+      const ffUid     = _s(_ai.accountId || _ai.uid || top.uid || uid);
+      const ffLevel   = _s(_ai.level || top.level);
+      const ffExp     = _n(_ai.exp || top.exp || top.experience);
+      const ffRegion  = _s(_ai.region || top.region || region);
+      const ffLikes   = _n(_si.liked || _si.likeCount || top.likes);
+      const ffSig     = _s(_si.signature || _si.bio || top.signature || top.bio);
+      const ffTitle   = _s(_ai.title || top.title);
+      const ffSeason  = _s(_ai.seasonId || _api.seasonId || top.season_id || top.seasonId);
+      const ffVersion = _s(top.releaseVersion || top.release_version || _raw.ReleaseVersion);
+      const ffGender  = _s(_si.gender || top.gender || '').replace(/Gender_/i,'').toLowerCase();
+      const ffMode    = _s(_si.modePrefer || top.mode_prefer || '').replace(/ModePrefer_/i,'');
+      const ffBadges  = _s(_ai.badgeCnt || _ai.AccountBadgeCnt || top.badge_count || top.badgeCount);
+      const ffCredit  = _s(_ci.creditScore || top.credit_score);
+      const ffPrime   = _s(top.primeStatus || top.prime || _ai.primeStatus);
+      // Rank
+      const brPts   = _n(_api.BrRankPoint   || _ai.rankingPoints    || top.br_rank_point);
+      const brPeak  = _s(_api.BrMaxRank      || top.br_max_rank      || top.brMaxRank);
+      const csPts   = _n(_api.CsRankPoint   || _ai.csRankingPoints  || top.cs_rank_point);
+      const csPeak  = _s(_api.CsMaxRank      || top.cs_max_rank      || top.csMaxRank);
+      // Guild / Clan
+      const gName   = _s(_gi.clanName || _gi.GuildName || top.guild_name || top.clanName || top.clan);
+      const gLevel  = _s(_gi.clanLevel || _gi.GuildLevel || top.guild_level);
+      const gMem    = _gi.memberNum || _gi.GuildMember || top.guild_member || top.guild_members;
+      const gCap    = _gi.clanCapacity || _gi.GuildCapacity || top.guild_capacity;
+      const gMemStr = gMem ? `${gMem}${gCap ? '/'+gCap : ''}` : 'N/A';
+      const gLeader = _s(top.guild_leader_name || _raw.GuildLeaderName);
+      const gLeaderLv = _s(top.guild_leader_level || _raw.GuildLeaderLevel);
+      // Pet
+      const petName = _s(_pi.name || _pi.PetName || top.pet_name);
+      const petLv   = _s(_pi.level || _pi.PetLevel || top.pet_level);
+      const petExp  = _n(_pi.exp || _pi.PetExp || top.pet_exp);
+      const petSkill= _s(_pi.skillName || top.pet_skill);
+      // Last login
+      const lastLogin = (top.lastLoginAt || top.last_login)
+        ? new Date((top.lastLoginAt || top.last_login) * (String(top.lastLoginAt || top.last_login).length < 13 ? 1000 : 1)).toLocaleDateString('en-GB', { day:'2-digit', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit' })
+        : 'N/A';
+
+      const out =
+`🔫 *FREE FIRE ACCOUNT INFO*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+👤 *Name:* ${ffName}
+🆔 *UID:* ${ffUid}
+🌍 *Region:* ${ffRegion}
+🎯 *Level:* ${ffLevel}
+⭐ *EXP:* ${ffExp}
+❤️ *Likes:* ${ffLikes}
+${ffTitle !== 'N/A' ? '🎖️ *Title:* ' + ffTitle + '\n' : ''}${ffSeason !== 'N/A' ? '🏅 *Season:* ' + ffSeason + '\n' : ''}${ffVersion !== 'N/A' ? '📦 *Version:* ' + ffVersion + '\n' : ''}${ffPrime !== 'N/A' ? '💎 *Prime:* ' + ffPrime + '\n' : ''}${ffBadges !== 'N/A' ? '🏆 *Badges:* ' + ffBadges + '\n' : ''}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🎮 *RANKED STATS*
+🏆 *BR Points:* ${brPts}  |  Peak: ${brPeak}
+⚔️ *CS Points:* ${csPts}  |  Peak: ${csPeak}
+${ffGender ? '⚥ *Gender:* ' + ffGender + '\n' : ''}${ffMode && ffMode !== 'N/A' ? '🕹️ *Mode Pref:* ' + ffMode + '\n' : ''}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🛡️ *GUILD / CLAN*
+🏰 *Name:* ${gName}
+📊 *Level:* ${gLevel}  |  👥 *Members:* ${gMemStr}
+${gLeader !== 'N/A' ? '👑 *Leader:* ' + gLeader + (gLeaderLv !== 'N/A' ? ' (Lv.' + gLeaderLv + ')' : '') + '\n' : ''}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🐾 *PET*
+🐕 *Name:* ${petName}  |  📈 *Level:* ${petLv}  |  ✨ *EXP:* ${petExp}
+${petSkill !== 'N/A' ? '🎯 *Pet Skill:* ' + petSkill + '\n' : ''}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📋 *OTHER INFO*
+💳 *Credit Score:* ${ffCredit}
+🕐 *Last Login:* ${lastLogin}
+${ffSig !== 'N/A' ? '💬 *Bio:* ' + ffSig : ''}`.trim();
+
+      await sendReply(sock, msg, out);
       await react(sock, msg, '✅');
-    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+    } catch (e) {
+      await sendReply(sock, msg, `❌ Free Fire lookup failed: ${e.message}\nTip: ${CONFIG.PREFIX}stalk-ff <uid> [IND|BR|VN|TH|ID|SG|MY|PH]`);
+      await react(sock, msg, '❌');
+    }
   });
 
-  cmd(['stalk-genshin', 'genshinstalk'], { desc: 'Stalk Genshin Impact player by UID', category: 'Nexray-Stalker' }, async (sock, msg, args) => {
+    cmd(['stalk-genshin', 'genshinstalk'], { desc: 'Stalk Genshin Impact player by UID', category: 'Nexray-Stalker' }, async (sock, msg, args) => {
     if (!args.length) return _noArgs(sock, msg, 'stalk-genshin <uid>');
     await react(sock, msg, '⚔️');
     try {
@@ -3156,55 +3267,5 @@ module.exports = function registerNexrayCmds(cmd, CONFIG, sendReply, react, down
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  // ── FORWARD ─────────────────────────────────────────────────────────────────
-  cmd(['forward', 'fwd'], { desc: 'Forward a quoted message to the same chat', category: 'WhatsApp' }, async (sock, msg, args) => {
-    _handle(sock, msg);
-    const jid = msg.key.remoteJid;
-    const ctx = msg.message?.extendedTextMessage?.contextInfo
-             || msg.message?.imageMessage?.contextInfo
-             || msg.message?.videoMessage?.contextInfo
-             || msg.message?.audioMessage?.contextInfo;
-    const quoted = ctx?.quotedMessage;
-    const quotedKey = ctx?.stanzaId ? { id: ctx.stanzaId, remoteJid: ctx.participant || jid, fromMe: false } : null;
-    if (!quoted || !quotedKey) return sendReply(sock, msg, '↩️ Reply to a message first, then use this command to forward it.');
-    try {
-      await react(sock, msg, '↩️');
-      await sock.relayMessage(jid, quoted, { messageId: quotedKey.id + '_fwd_' + Date.now() });
-      await react(sock, msg, '✅');
-    } catch (e) {
-      // Fallback: try sendMessage with extracted content
-      try {
-        const types = [
-          ['imageMessage',    m => ({ image:    { url: '' }, ...m, jpegThumbnail: undefined })],
-          ['videoMessage',    m => ({ video:    { url: '' }, ...m })],
-          ['audioMessage',    m => ({ audio:    { url: '' }, ...m })],
-          ['stickerMessage',  m => ({ sticker:  { url: '' }, ...m })],
-          ['documentMessage', m => ({ document: { url: '' }, ...m })],
-        ];
-        let sent = false;
-        for (const [key] of types) {
-          if (quoted[key]) {
-            const stream = await downloadContentFromMessage(quoted[key], key.replace('Message',''));
-            let buf = Buffer.from([]);
-            for await (const chunk of stream) buf = Buffer.concat([buf, chunk]);
-            const payload = key === 'imageMessage'    ? { image: buf, caption: quoted[key].caption || '' }
-                          : key === 'videoMessage'    ? { video: buf, caption: quoted[key].caption || '' }
-                          : key === 'audioMessage'    ? { audio: buf, mimetype: quoted[key].mimetype || 'audio/ogg; codecs=opus', ptt: quoted[key].ptt || false }
-                          : key === 'stickerMessage'  ? { sticker: buf }
-                          : { document: buf, mimetype: quoted[key].mimetype || 'application/octet-stream', fileName: quoted[key].fileName || 'file' };
-            await sock.sendMessage(jid, payload, { quoted: msg });
-            sent = true; break;
-          }
-        }
-        if (!sent) {
-          const text = quoted.conversation || quoted.extendedTextMessage?.text;
-          if (text) await sock.sendMessage(jid, { text }, { quoted: msg });
-          else return sendReply(sock, msg, '❌ Could not forward: unsupported message type.');
-        }
-        await react(sock, msg, '✅');
-      } catch (e2) { await sendReply(sock, msg, `❌ Forward failed: ${e2.message}`); }
-    }
-  });
 
-  console.log('[nexray_bot] ✅ All NexRay commands registered successfully! (369 endpoints across 19 categories)');
-};
+  
