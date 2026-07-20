@@ -20,6 +20,8 @@
 
 function _txt(r) {
   if (!r) return null;
+  // When result is an object with a text field (e.g. Gemini returns {text:"...",session_id:"..."})
+  if (r?.result && typeof r.result === 'object' && typeof r.result.text === 'string') return r.result.text;
   return r?.result ?? r?.data?.result ?? r?.data?.message ?? r?.answer ?? r?.text ?? r?.message ?? r?.output ?? null;
 }
 
@@ -95,7 +97,7 @@ async function _textAICore(sock, msg, query, nx_fn, label, emoji, _srFn) {
     const r  = await nx_fn({ text: query });
     const t  = _jsonFmt(r);
     if (!t) throw new Error('Empty response');
-    await msg._sendReply(`${emoji} *${label}*\n\n${t}`);
+    await _rep(`${emoji} *${label}*\n\n${t}`);
   } catch (e) {
     await _rep(`❌ *${label} Error:* ${e.message}`);
     throw e;
@@ -2345,13 +2347,39 @@ module.exports = function registerNexrayCmds(cmd, CONFIG, sendReply, react, down
   // 👁️  STALKER  — 15 endpoints
   // ═══════════════════════════════════════════════════════════════════════════
 
-  cmd(['stalk-ff', 'ffstalk', 'freefireid'], { desc: 'Stalk Free Fire player by UID', category: 'Nexray-Stalker' }, async (sock, msg, args) => {
+  cmd(['stalk-ff', 'ffstalk', 'freefireid', 'freefire'], { desc: 'Stalk Free Fire player by UID', category: 'Nexray-Stalker' }, async (sock, msg, args) => {
     if (!args.length) return _noArgs(sock, msg, 'stalk-ff <uid>');
     await react(sock, msg, '🎮');
     try {
       const r = await nx.stalker.freefire({ uid: args[0] });
-      const t = _jsonFmt(r); if (!t) throw new Error('No data');
-      await sendReply(sock, msg, `🎮 *Free Fire: ${args[0]}*\n\n${t}`);
+      if (!r || r.status === false) throw new Error(r?.error || 'No data returned');
+      const d = r?.result || r?.data || r;
+      const lines = [];
+      lines.push(`🎮 *Free Fire Player Info*`);
+      lines.push(`━━━━━━━━━━━━━━━━━━`);
+      if (d.name)           lines.push(`👤 *Name:* ${d.name}`);
+      if (d.uid)            lines.push(`🆔 *UID:* ${d.uid}`);
+      if (d.level)          lines.push(`⭐ *Level:* ${d.level}`);
+      if (d.exp)            lines.push(`✨ *EXP:* ${d.exp}`);
+      if (d.region)         lines.push(`🌍 *Region:* ${d.region}`);
+      if (d.likes)          lines.push(`❤️ *Likes:* ${d.likes}`);
+      if (d.br_rank)        lines.push(`🏆 *BR Rank:* ${d.br_rank}`);
+      if (d.cs_points)      lines.push(`🎯 *CS Points:* ${d.cs_points}`);
+      if (d.signature)      lines.push(`📝 *Bio:* ${d.signature}`);
+      if (d.title)          lines.push(`🎖️ *Title:* ${d.title}`);
+      if (d.honor_score)    lines.push(`🏅 *Honor Score:* ${d.honor_score}`);
+      if (d.prime_level)    lines.push(`💎 *Prime Level:* ${d.prime_level}`);
+      if (d.fire_pass)      lines.push(`🔥 *Fire Pass:* ${d.fire_pass}`);
+      if (d.celebrity_status) lines.push(`🌟 *Celebrity:* ${d.celebrity_status}`);
+      if (d.bp_badges)      lines.push(`🎗️ *BP Badges:* ${d.bp_badges}`);
+      if (d.pet_name)       lines.push(`🐾 *Pet:* ${d.pet_name} (Lv.${d.pet_level||'?'}, EXP:${d.pet_exp||'?'})`);
+      if (d.guild_name)     lines.push(`\n🛡️ *Guild:* ${d.guild_name} (Lv.${d.guild_level||'?'})`);
+      if (d.guild_leader_name) lines.push(`👑 *Guild Leader:* ${d.guild_leader_name} (Lv.${d.guild_leader_level||'?'})`);
+      if (d.guild_members)  lines.push(`👥 *Guild Members:* ${d.guild_members}`);
+      if (d.equipped_gun_id) lines.push(`\n🔫 *Equipped Gun ID:* ${d.equipped_gun_id}`);
+      if (d.last_login)     lines.push(`\n🕐 *Last Login:* ${new Date(d.last_login).toUTCString()}`);
+      if (d.created_at)     lines.push(`📅 *Joined:* ${new Date(d.created_at).toUTCString()}`);
+      await sendReply(sock, msg, lines.join('\n'));
       await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
@@ -3126,6 +3154,56 @@ module.exports = function registerNexrayCmds(cmd, CONFIG, sendReply, react, down
       await sendReply(sock, msg, `☁️ *Nexray CDN Upload*\n\n${t}`);
       await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  // ── FORWARD ─────────────────────────────────────────────────────────────────
+  cmd(['forward', 'fwd'], { desc: 'Forward a quoted message to the same chat', category: 'WhatsApp' }, async (sock, msg, args) => {
+    _handle(sock, msg);
+    const jid = msg.key.remoteJid;
+    const ctx = msg.message?.extendedTextMessage?.contextInfo
+             || msg.message?.imageMessage?.contextInfo
+             || msg.message?.videoMessage?.contextInfo
+             || msg.message?.audioMessage?.contextInfo;
+    const quoted = ctx?.quotedMessage;
+    const quotedKey = ctx?.stanzaId ? { id: ctx.stanzaId, remoteJid: ctx.participant || jid, fromMe: false } : null;
+    if (!quoted || !quotedKey) return sendReply(sock, msg, '↩️ Reply to a message first, then use this command to forward it.');
+    try {
+      await react(sock, msg, '↩️');
+      await sock.relayMessage(jid, quoted, { messageId: quotedKey.id + '_fwd_' + Date.now() });
+      await react(sock, msg, '✅');
+    } catch (e) {
+      // Fallback: try sendMessage with extracted content
+      try {
+        const types = [
+          ['imageMessage',    m => ({ image:    { url: '' }, ...m, jpegThumbnail: undefined })],
+          ['videoMessage',    m => ({ video:    { url: '' }, ...m })],
+          ['audioMessage',    m => ({ audio:    { url: '' }, ...m })],
+          ['stickerMessage',  m => ({ sticker:  { url: '' }, ...m })],
+          ['documentMessage', m => ({ document: { url: '' }, ...m })],
+        ];
+        let sent = false;
+        for (const [key] of types) {
+          if (quoted[key]) {
+            const stream = await downloadContentFromMessage(quoted[key], key.replace('Message',''));
+            let buf = Buffer.from([]);
+            for await (const chunk of stream) buf = Buffer.concat([buf, chunk]);
+            const payload = key === 'imageMessage'    ? { image: buf, caption: quoted[key].caption || '' }
+                          : key === 'videoMessage'    ? { video: buf, caption: quoted[key].caption || '' }
+                          : key === 'audioMessage'    ? { audio: buf, mimetype: quoted[key].mimetype || 'audio/ogg; codecs=opus', ptt: quoted[key].ptt || false }
+                          : key === 'stickerMessage'  ? { sticker: buf }
+                          : { document: buf, mimetype: quoted[key].mimetype || 'application/octet-stream', fileName: quoted[key].fileName || 'file' };
+            await sock.sendMessage(jid, payload, { quoted: msg });
+            sent = true; break;
+          }
+        }
+        if (!sent) {
+          const text = quoted.conversation || quoted.extendedTextMessage?.text;
+          if (text) await sock.sendMessage(jid, { text }, { quoted: msg });
+          else return sendReply(sock, msg, '❌ Could not forward: unsupported message type.');
+        }
+        await react(sock, msg, '✅');
+      } catch (e2) { await sendReply(sock, msg, `❌ Forward failed: ${e2.message}`); }
+    }
   });
 
   console.log('[nexray_bot] ✅ All NexRay commands registered successfully! (369 endpoints across 19 categories)');

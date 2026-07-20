@@ -382,7 +382,7 @@ const CONFIG = {
   OWNER_JID: (process.env.OWNER_JID || process.env.OWNER_LID || "").trim(),
   BOT_NAME:     process.env.BOT_NAME || "MIAS MDX",
   PREFIX:       process.env.PREFIX       || ".",
-  PREFIXES:     (process.env.PREFIXES || process.env.PREFIX || ".").split(",").map(p=>p.trim()).filter(Boolean),
+  PREFIXES:     (process.env.PREFIXES || process.env.PREFIX || ".").split("|").map(p=>p.trim()).filter(Boolean),
   VERSION:      "4.9.9",
   GIFTED_KEY:   process.env.GIFTED_KEY || "gifted",
   MOVIE_API:    "https://movieapi.giftedtech.co.ke/api/v2",
@@ -7484,31 +7484,13 @@ cmd("ping", { desc: "Bot ping / latency check", category: "MISC" }, async (sock,
   const t0 = Date.now();
   await react(sock, msg, "🏓");
   const ms = Date.now() - t0;
-  const up = fmtUptime(process.uptime(), true);
-  await sendReply(sock, msg, `🏓 *Pong!*
-
-⚡ *Latency:* ${ms}ms
-⏱️ *Uptime:* ${up}
-🤖 *Bot:* ${CONFIG.BOT_NAME}
-🔑 *Prefix:* ${CONFIG.PREFIX}
-⌨️ *Commands:* ${commands.size}+`);
+  await sendReply(sock, msg, `ⓘ ${ms}ms`);
 });
 
 cmd(["alive", "runtime", "uptime"], { desc: "Bot alive status and uptime info", category: "MISC" }, async (sock, msg) => {
   await react(sock, msg, "🌿");
   const up = fmtUptime(process.uptime(), true);
-  const mem = process.memoryUsage();
-  const memMB = Math.round(mem.heapUsed / 1024 / 1024);
-  await sendReply(sock, msg, `🌿 *${CONFIG.BOT_NAME} is Alive!*
-━━━━━━━━━━━━━━━━━━━━━━━━
-⏱️ *Uptime:* ${up}
-💾 *Memory:* ${memMB} MB
-🟢 *Node.js:* ${process.version}
-⌨️ *Commands:* ${commands.size}+
-🔑 *Prefix:* ${CONFIG.PREFIX}
-📦 *Version:* v${CONFIG.VERSION || '1.0'}
-━━━━━━━━━━━━━━━━━━━━━━━━
-_Everything is running perfectly!_`);
+  await sendReply(sock, msg, `ⓘ _The bot has been active for ${up}_`);
 });
 
 cmd("owner", { desc: "Show owner info + contact card", category: "MISC" }, async (sock, msg) => {
@@ -33502,7 +33484,9 @@ _This code expires in ~2 minutes._`);
           try {
             const _p3 = img
               ? { image: _buf, caption: _cap, contextInfo: { isGroupStatus: true } }
-              : { video: _buf, caption: _cap, contextInfo: { isGroupStatus: true } };
+              : vid
+              ? { video: _buf, caption: _cap, contextInfo: { isGroupStatus: true } }
+              : { audio: _buf, mimetype: _med.mimetype || 'audio/ogg; codecs=opus', ptt: false, contextInfo: { isGroupStatus: true } };
             await sock.sendMessage(gid, _p3);
             return react(sock, msg, '✅');
           } catch (e3) {
