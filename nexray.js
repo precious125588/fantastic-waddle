@@ -629,10 +629,10 @@ const random = {
   anime:      o => _get('/random/anime',      { type: o?.type }),
   /** Random Blue Archive image */
   ba:         () => _get('/random/ba'),
-  /** Random cat image */
-  cat:        () => _get('/random/cat'),
-  /** Random dog image */
-  dog:        () => _get('/random/dog'),
+  /** Random cat image — uses /random/ba?type=cat (confirmed working) */
+  cat:        () => _get('/random/ba', { type: 'cat' }),
+  /** Random dog image — uses /random/ba?type=dog (confirmed working) */
+  dog:        () => _get('/random/ba', { type: 'dog' }),
   /** Random fact */
   fact:       () => _get('/random/fact'),
   /** Random fox image */
@@ -641,8 +641,8 @@ const random = {
   meme:       () => _get('/random/meme'),
   /** Random quote */
   quote:      () => _get('/random/quote'),
-  /** Random waifu image */
-  waifu:      () => _get('/random/waifu'),
+  /** Random waifu image — uses /random/anime?type=waifu (confirmed working) */
+  waifu:      () => _get('/random/anime', { type: 'waifu' }),
   /** Random word */
   word:       () => _get('/random/word'),
 };
@@ -652,73 +652,73 @@ const random = {
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 const search = {
   /** Search 8 font styles | query*, page? */
-  font8:          o => { _req(['query'], o); return _get('/search/8font',           { query: o.query, page: o.page }); },
+  font8:          o => { _req(['query'], o); return _get('/search/8font',           { q: o.query, page: o.page }); },
   /** Search Apple Music | query* */
-  applemusic:     o => { _req(['query'], o); return _get('/search/applemusic',      { query: o.query }); },
+  applemusic:     o => { _req(['query'], o); return _get('/search/applemusic', { q: o.query }); },
   /** Search APK from APKPure | query* */
-  apkpure:        o => { _req(['query'], o); return _get('/search/apkpure',         { query: o.query }); },
+  apkpure:        o => { _req(['query'], o); return _get('/search/apkpure', { q: o.query }); },
   /** Search dari Canva | query* */
-  canva:          o => { _req(['query'], o); return _get('/search/canva',           { query: o.query }); },
+  canva:          o => { _req(['query'], o); return _get('/search/canva', { q: o.query }); },
   /** Search Capcut template | query* */
-  capcut:         o => { _req(['query'], o); return _get('/search/capcut',          { query: o.query }); },
+  capcut:         o => { _req(['query'], o); return _get('/search/capcut', { q: o.query }); },
   /** Search Deezer music | query* */
-  deezer:         o => { _req(['query'], o); return _get('/search/deezer',          { query: o.query }); },
+  deezer:         o => { _req(['query'], o); return _get('/search/deezer', { q: o.query }); },
   /** Search font | query* */
-  font:           o => { _req(['query'], o); return _get('/search/font',            { query: o.query }); },
+  font:           o => { _req(['query'], o); return _get('/search/font', { q: o.query }); },
   /** Search GitHub repo | query* */
-  github:         o => { _req(['query'], o); return _get('/search/github',          { query: o.query }); },
+  github:         o => { _req(['query'], o); return _get('/search/github', { q: o.query }); },
   /** Search Google | query* */
-  google:         o => { _req(['query'], o); return _get('/search/google',          { query: o.query }); },
+  google:         o => { _req(['query'], o); return _get('/search/google', { q: o.query }); },
   /** Search Google Images | query* */
-  googleImages:   o => { _req(['query'], o); return _get('/search/googleimage',     { query: o.query }); },
+  googleImages:   o => { _req(['query'], o); return _get('/search/googleimage', { q: o.query }); },
   /** Search Google Scholar | query* */
-  googleScholar:  o => { _req(['query'], o); return _get('/search/googlescholar',   { query: o.query }); },
+  googleScholar:  o => { _req(['query'], o); return _get('/search/googlescholar', { q: o.query }); },
   /** Search Google News | query* */
-  googlenews:     o => { _req(['query'], o); return _get('/search/googlenews',      { query: o.query }); },
+  googlenews:     o => { _req(['query'], o); return _get('/search/googlenews', { q: o.query }); },
   /** Search Instagram | query* */
-  instagram:      o => { _req(['query'], o); return _get('/search/instagram',       { query: o.query }); },
+  instagram:      o => { _req(['query'], o); return _get('/search/instagram', { q: o.query }); },
   /** Search Islam QA | query* */
-  islamqa:        o => { _req(['query'], o); return _get('/search/islamqa',         { query: o.query }); },
+  islamqa:        o => { _req(['query'], o); return _get('/search/islamqa', { q: o.query }); },
   /** Search JKT48 info | query* */
-  jkt48:          o => { _req(['query'], o); return _get('/search/jkt48',           { query: o.query }); },
+  jkt48:          o => { _req(['query'], o); return _get('/search/jkt48', { q: o.query }); },
   /** Search Lirik lagu | query* */
-  lirik:          o => { _req(['query'], o); return _get('/search/lirik',           { query: o.query }); },
+  lirik:          o => { _req(['query'], o); return _get('/search/lirik', { q: o.query }); },
   /** Alias: Search lyrics by query | query* */
-  lyrics:         o => { _req(['query'], o); return _get('/search/lirik',           { query: o.query }); },
+  lyrics:         o => { _req(['query'], o); return _get('/search/lirik', { q: o.query }); },
   /** Search npm package | query* */
-  npm:            o => { _req(['query'], o); return _get('/search/npm',             { query: o.query }); },
+  npm:            o => { _req(['query'], o); return _get('/search/npm', { q: o.query }); },
   /** Search Pinterest | query* */
-  pinterest:      o => { _req(['query'], o); return _get('/search/pinterest',       { query: o.query }); },
+  pinterest:      o => { _req(['query'], o); return _get('/search/pinterest', { q: o.query }); },
   /** Search Play Store | query* */
-  playstore:      o => { _req(['query'], o); return _get('/search/playstore',       { query: o.query }); },
+  playstore:      o => { _req(['query'], o); return _get('/search/playstore', { q: o.query }); },
   /** Search Reddit | query* */
-  reddit:         o => { _req(['query'], o); return _get('/search/reddit',          { query: o.query }); },
+  reddit:         o => { _req(['query'], o); return _get('/search/reddit', { q: o.query }); },
   /** Search Shopee | query* */
-  shopee:         o => { _req(['query'], o); return _get('/search/shopee',          { query: o.query }); },
+  shopee:         o => { _req(['query'], o); return _get('/search/shopee', { q: o.query }); },
   /** Search Soundcloud | query* */
-  soundcloud:     o => { _req(['query'], o); return _get('/search/soundcloud',      { query: o.query }); },
+  soundcloud:     o => { _req(['query'], o); return _get('/search/soundcloud', { q: o.query }); },
   /** Search Spotify | query* */
-  spotify:        o => { _req(['query'], o); return _get('/search/spotify',         { query: o.query }); },
+  spotify:        o => { _req(['query'], o); return _get('/search/spotify', { q: o.query }); },
   /** Search Sticker WA | query* */
-  stickerwa:      o => { _req(['query'], o); return _get('/search/stickerwa',       { query: o.query }); },
+  stickerwa:      o => { _req(['query'], o); return _get('/search/stickerwa', { q: o.query }); },
   /** Search TikTok | query* */
-  tiktok:         o => { _req(['query'], o); return _get('/search/tiktok',          { query: o.query }); },
+  tiktok:         o => { _req(['query'], o); return _get('/search/tiktok', { q: o.query }); },
   /** Search Twitter | query* */
-  twitter:        o => { _req(['query'], o); return _get('/search/twitter',         { query: o.query }); },
+  twitter:        o => { _req(['query'], o); return _get('/search/twitter', { q: o.query }); },
   /** Search Wikipedia | query*, lang? */
-  wikipedia:      o => { _req(['query'], o); return _get('/search/wikipedia',       { query: o.query, lang: o.lang }); },
+  wikipedia:      o => { _req(['query'], o); return _get('/search/wikipedia',       { q: o.query, lang: o.lang }); },
   /** Search Wiktionary | query*, lang? */
-  wiktionary:     o => { _req(['query'], o); return _get('/search/wiktionary',      { query: o.query, lang: o.lang }); },
+  wiktionary:     o => { _req(['query'], o); return _get('/search/wiktionary',      { q: o.query, lang: o.lang }); },
   /** Search YouTube | query* */
-  youtube:        o => { _req(['query'], o); return _get('/search/youtube',         { query: o.query }); },
-  /** Search YouTube Music | query* */
-  youtubeMusic:   o => { _req(['query'], o); return _get('/search/ytmusic',         { query: o.query }); },
+  youtube:        o => { _req(['query'], o); return _get('/search/youtube', { q: o.query }); },
+  /** Search YouTube Music | query* — routed to /search/youtube (ytmusic endpoint not live) */
+  youtubeMusic:   o => { _req(['query'], o); return _get('/search/youtube',         { q: o.query }); },
   /** Search Bukalapak | query* */
-  bukalapak:      o => { _req(['query'], o); return _get('/search/bukalapak',       { query: o.query }); },
+  bukalapak:      o => { _req(['query'], o); return _get('/search/bukalapak', { q: o.query }); },
   /** Search Tokopedia | query* */
-  tokopedia:      o => { _req(['query'], o); return _get('/search/tokopedia',       { query: o.query }); },
+  tokopedia:      o => { _req(['query'], o); return _get('/search/tokopedia', { q: o.query }); },
   /** Search Wallpaper | query* */
-  wallpaper:      o => { _req(['query'], o); return _get('/search/wallpaper',       { query: o.query }); },
+  wallpaper:      o => { _req(['query'], o); return _get('/search/wallpaper', { q: o.query }); },
 };
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
