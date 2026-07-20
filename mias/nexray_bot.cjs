@@ -83,19 +83,21 @@ async function _sendDoc(sock, msg, buf, filename, mimetype) {
 // Generic handler for text AI cmds
 function _textAI(nx_fn, name, emoji) {
   return async (sock, msg, args, P) => {
-    if (!args.length) return;
-    await _textAICore(sock, msg, args.join(' '), nx_fn, name, emoji);
+    _handle(sock, msg);
+    if (!args.length) return _noArgs(sock, msg, name.toLowerCase().replace(/ /g, '') + ' <text>');
+    await _textAICore(sock, msg, args.join(' '), nx_fn, name, emoji, sendReply);
   };
 }
 
-async function _textAICore(sock, msg, query, nx_fn, label, emoji) {
+async function _textAICore(sock, msg, query, nx_fn, label, emoji, _srFn) {
+  const _rep = typeof _srFn === 'function' ? (t) => _srFn(sock, msg, t) : (t) => msg._sendReply ? msg._sendReply(t) : Promise.resolve();
   try {
     const r  = await nx_fn({ text: query });
     const t  = _jsonFmt(r);
     if (!t) throw new Error('Empty response');
     await msg._sendReply(`${emoji} *${label}*\n\n${t}`);
   } catch (e) {
-    await msg._sendReply(`❌ *${label} Error:* ${e.message}`);
+    await _rep(`❌ *${label} Error:* ${e.message}`);
     throw e;
   }
 }

@@ -382,6 +382,7 @@ const CONFIG = {
   OWNER_JID: (process.env.OWNER_JID || process.env.OWNER_LID || "").trim(),
   BOT_NAME:     process.env.BOT_NAME || "MIAS MDX",
   PREFIX:       process.env.PREFIX       || ".",
+  PREFIXES:     (process.env.PREFIXES || process.env.PREFIX || ".").split(",").map(p=>p.trim()).filter(Boolean),
   VERSION:      "4.9.9",
   GIFTED_KEY:   process.env.GIFTED_KEY || "gifted",
   MOVIE_API:    "https://movieapi.giftedtech.co.ke/api/v2",
@@ -2233,7 +2234,7 @@ Save my contact:` }).catch(() => {});
           try {
             const _kSender = getSender(msg);
             const _kIsOwner = msg.key.fromMe || isOwner(_kSender) || isSudo(_kSender);
-            const _kIsCmd = body && body.startsWith(CONFIG.PREFIX || ".");
+            const _kIsCmd = body && (CONFIG.PREFIXES||[CONFIG.PREFIX||'.']).some(p=>body.startsWith(p));
             if (!_kIsCmd) {
               // v14 FIX: also check matchedText — WhatsApp link-preview puts the URL there
               let _kBody = body;
@@ -2626,7 +2627,7 @@ ${_atBotAdmin ? "✅ Message deleted." : "⚠️ Make me admin to auto-delete."}
             const _arIsEdit = _arMsgType === "editedMessage" || _arMsgType === "protocolMessage";
             if (!_arIsEdit) {
               const _arS = getSettings(getOwnerJid());
-              const _isCmd = !!(body && body.startsWith(CONFIG.PREFIX));
+              const _isCmd = !!(body && (CONFIG.PREFIXES||[CONFIG.PREFIX]).some(p=>body.startsWith(p)));
               const _isFromOwner =
                 !!msg.key?.fromMe ||
                 (typeof isOwner === "function" && isOwner(getSender(msg)));
@@ -2642,7 +2643,7 @@ ${_atBotAdmin ? "✅ Message deleted." : "⚠️ Make me admin to auto-delete."}
             }
           } catch (e) { /* never crash the dispatcher because of a react */ }
 
-          if (body && !body.startsWith(CONFIG.PREFIX)) { try { if (await handleGameAnswer(sock, msg, body)) return; } catch (e) { console.error("[game-answer]", e?.message); } }
+          if (body && !(CONFIG.PREFIXES||[CONFIG.PREFIX]).some(p=>body.startsWith(p))) { try { if (await handleGameAnswer(sock, msg, body)) return; } catch (e) { console.error("[game-answer]", e?.message); } }
 
           // ── v4.9.5 AUTO-CHATBOT ──────────────────────────────────────────
           // Per-chat autoReply toggle (set via .autochat on/off).
@@ -2652,7 +2653,7 @@ ${_atBotAdmin ? "✅ Message deleted." : "⚠️ Make me admin to auto-delete."}
             const _cbMsgType = Object.keys(msg.message || {})[0];
             const _cbIsEdit  = _cbMsgType === "editedMessage" || _cbMsgType === "protocolMessage";
             if (
-              body && !body.startsWith(CONFIG.PREFIX) && !_cbIsEdit && !msg.key.fromMe
+              body && !(CONFIG.PREFIXES||[CONFIG.PREFIX]).some(p=>body.startsWith(p)) && !_cbIsEdit && !msg.key.fromMe
             ) {
               const _cbChatS  = getSettings(msg.key.remoteJid);
               const _cbOwnerS = getSettings(getOwnerJid());
@@ -2774,7 +2775,8 @@ ${_atBotAdmin ? "✅ Message deleted." : "⚠️ Make me admin to auto-delete."}
             }
           }
 
-          if (!body || !body.startsWith(CONFIG.PREFIX)) return;
+          const _matchedPrefix = (body && (CONFIG.PREFIXES||[CONFIG.PREFIX]).find(p=>body.startsWith(p))) || null;
+          if (!body || !_matchedPrefix) return;
 
           const sender = getSender(msg);
           const fromOwner = msg.key.fromMe || isOwner(sender) || (typeof isSudo === "function" && isSudo(sender));
@@ -2813,7 +2815,7 @@ ${_atBotAdmin ? "✅ Message deleted." : "⚠️ Make me admin to auto-delete."}
             if (!isCommandAllowedInContext(msg, fromOwner, false)) return;
           } catch {}
 
-          const raw = body.slice(CONFIG.PREFIX.length).trim();
+          const raw = body.slice((_matchedPrefix||CONFIG.PREFIX).length).trim();
           if (!raw) return;
           const parts = raw.split(/\s+/);
           const name = (parts.shift() || "").toLowerCase();
