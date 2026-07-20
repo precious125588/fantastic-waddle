@@ -34191,14 +34191,18 @@ Or: *${CONFIG.PREFIX}gst Hello everyone!* (text-only status)`);
 
 // ── musiccard — generate a music card using nexray canvas.musiccard only ─────
 cmd(["musiccard","mcard","spotifycard"], {
-  desc: "Generate a music card image — .musiccard <song name>",
+  desc: "Generate a music card — .musiccard <song name> [image URL] or reply to an image",
   category: "MAKER",
 }, async (sock, msg, args) => {
   if (!args.length) {
     await sendReply(sock, msg,
 `🎨 *Music Card Usage*
 ━━━━━━━━━━━━━━━━━━━━
-${CONFIG.PREFIX}musiccard <song name or artist>
+${CONFIG.PREFIX}musiccard <song name>
+
+• Reply to an image → that image becomes the cover
+• Include an image URL in the command → used as cover
+• No image? → bot\'s own profile photo is used
 
 Example:
 ${CONFIG.PREFIX}musiccard Blinding Lights The Weeknd`);
@@ -34206,11 +34210,59 @@ ${CONFIG.PREFIX}musiccard Blinding Lights The Weeknd`);
   }
   if (!nx) { await react(sock, msg, "❌"); return sendReply(sock, msg, "❌ NexRay module not loaded."); }
   await react(sock, msg, "🌀");
-  const query = args.join(' ').trim();
   const jid = msg.key.remoteJid;
+
   try {
-    // Step 1: Search iTunes for song metadata (title, artist, artwork)
-    let judul = query, nama = "Unknown Artist", image_url = null;
+    // ── Step 1: Determine cover image ──────────────────────────────────────
+    // Priority: replied image > image URL in args > bot profile picture
+
+    const _ctx  = msg.message?.extendedTextMessage?.contextInfo;
+    const _qMsg = _ctx?.quotedMessage;
+
+    // Split args into URL tokens and non-URL tokens
+    const _urlRe = /^https?:\/\/.+/i;
+    const urlArgs   = args.filter(a => _urlRe.test(a));
+    const queryArgs = args.filter(a => !_urlRe.test(a));
+    const query     = queryArgs.join(' ').trim() || args.join(' ').trim();
+
+    let image_url = null;
+
+    // 1a. Replied image (or directly sent image)
+    const _imgMsg = _qMsg?.imageMessage || msg.message?.imageMessage;
+    if (_imgMsg) {
+      try {
+        const stream = await downloadContentFromMessage(_imgMsg, "image");
+        let buf = Buffer.from([]);
+        for await (const c of stream) buf = Buffer.concat([buf, c]);
+        if (buf.length > 500) {
+          image_url = "data:image/jpeg;base64," + buf.toString("base64");
+        }
+      } catch {}
+    }
+
+    // 1b. Image URL provided in args
+    if (!image_url && urlArgs.length) {
+      image_url = urlArgs[0];
+    }
+
+    // 1c. Fallback: bot own profile picture
+    if (!image_url) {
+      try {
+        image_url = await sock.profilePictureUrl(sock.user.id, "image");
+      } catch {
+        try {
+          image_url = await sock.profilePictureUrl(sock.user.id, "preview");
+        } catch {}
+      }
+    }
+
+    if (!image_url) {
+      await react(sock, msg, "❌");
+      return sendReply(sock, msg, "❌ Could not get a cover image. Reply to an image or add an image URL.");
+    }
+
+    // ── Step 2: Search iTunes for title + artist (metadata only, not artwork) ─
+    let judul = query, nama = "Unknown Artist";
     try {
       const _itR = await axios.get(
         `https://itunes.apple.com/search?term=${encodeURIComponent(query)}&media=music&limit=1`,
@@ -34220,19 +34272,13 @@ ${CONFIG.PREFIX}musiccard Blinding Lights The Weeknd`);
       if (_trk) {
         judul = _trk.trackName || query;
         nama  = _trk.artistName || "Unknown Artist";
-        image_url = (_trk.artworkUrl100 || '').replace('100x100bb.jpg','600x600bb.jpg').replace('100x100bb.png','600x600bb.png') || null;
       }
     } catch {}
 
-    if (!image_url) {
-      await react(sock, msg, "❌");
-      return sendReply(sock, msg, `❌ Could not find song "*${query}*" on iTunes. Try a different song name.`);
-    }
-
-    // Step 2: Generate music card via nexray canvas.musiccard
+    // ── Step 3: Generate music card ────────────────────────────────────────
     const _res = await nx.canvas.musiccard({ judul, nama, image_url });
     let cardBuf = null;
-    if (_res?.type === 'media' && _res.buffer?.length > 500) {
+    if (_res?.type === "media" && _res.buffer?.length > 500) {
       cardBuf = _res.buffer;
     } else {
       const _url = _res?.result?.url || _res?.data?.url || _res?.url;
@@ -34244,7 +34290,7 @@ ${CONFIG.PREFIX}musiccard Blinding Lights The Weeknd`);
       return sendReply(sock, msg, "❌ Music card generation failed. Try again later.");
     }
 
-    await sock.sendMessage(jid, { image: cardBuf, caption: `🎵 *${judul}*\n👤 ${nama}` }, { quoted: msg });
+    await sock.sendMessage(jid, { image: cardBuf }, { quoted: msg });
     await react(sock, msg, "✅");
   } catch (e) {
     await react(sock, msg, "❌");
