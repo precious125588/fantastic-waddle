@@ -185,7 +185,14 @@ tr:hover td{background:color-mix(in srgb,var(--accent) 3%,transparent);}
 .empty-icon{font-size:2.4rem;margin-bottom:8px;opacity:.45;}
 .empty-text{font-size:.82rem;}
 
-@media(max-width:768px){.sidebar{display:none;}.main{padding:14px;}.stats-grid{grid-template-columns:1fr 1fr;}.sys-grid{grid-template-columns:1fr;}.topbar{top:10px;right:10px;}}
+@media(max-width:768px){.sidebar{display:none;}.main{padding:14px 14px 80px;}.stats-grid{grid-template-columns:1fr 1fr;}.sys-grid{grid-template-columns:1fr;}.topbar{top:10px;right:10px;}}
+.mob-nav{display:none;}
+@media(max-width:768px){
+  .mob-nav{display:flex;position:fixed;bottom:0;left:0;right:0;z-index:500;background:var(--card);border-top:1px solid var(--border);padding:6px 0 env(safe-area-inset-bottom,6px);}
+  .mob-nav button{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;padding:6px 4px;border:none;background:none;color:var(--muted);font-size:.6rem;cursor:pointer;transition:color .2s;}
+  .mob-nav button.active{color:var(--accent);}
+  .mob-nav button .mn-icon{font-size:1.2rem;line-height:1;}
+}
 </style>
 </head>
 <body>
@@ -842,5 +849,17 @@ function onLoggedIn(){
   setInterval(loadStats,15000);
 }
 </script>
+
+  <nav class="mob-nav" id="mobNav">
+    <button type="button" class="active" data-tab="dashboard" onclick="showTab('dashboard');_mobActive(this)"><span class="mn-icon">📊</span>Dashboard</button>
+    <button type="button" data-tab="users" onclick="showTab('users');_mobActive(this)"><span class="mn-icon">👥</span>Bots</button>
+    <button type="button" data-tab="logs" onclick="showTab('logs');_mobActive(this)"><span class="mn-icon">📋</span>Logs</button>
+    <button type="button" data-tab="settings" onclick="showTab('settings');_mobActive(this)"><span class="mn-icon">🔧</span>Settings</button>
+    <button type="button" data-tab="system" onclick="showTab('system');_mobActive(this)"><span class="mn-icon">⚙️</span>System</button>
+  </nav>
+  <script>function _mobActive(el){document.querySelectorAll('.mob-nav button').forEach(b=>b.classList.remove('active'));el.classList.add('active');}
+  // Sync mob-nav active state when sidebar tab changes
+  const _origShowTab=showTab;window.showTab=function(id){_origShowTab(id);document.querySelectorAll('.mob-nav button').forEach(b=>b.classList.toggle('active',b.dataset.tab===id));};
+  </script>
 </body>
 </html>

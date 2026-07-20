@@ -34673,3 +34673,246 @@ try {
 } catch (_nxErr) {
   console.error('[nexray_bot] Failed to register NexRay commands:', _nxErr?.message || _nxErr);
 }
+
+// ════════════════════════════════════════════════════════════════════════════
+// LATE-PATCH v17 — GST MEDIA FIX (🌀→✅, all media types, no admin gate)
+//                  MUSICCARD OVERRIDE (nexray canvas direct, 🌀→✅, no text)
+// ════════════════════════════════════════════════════════════════════════════
+(function _miasLatePatchV17() {
+  try {
+    // ── 1. GST — full rewrite ─────────────────────────────────────────────
+    const __gstV17 = async (sock, msg, args) => {
+      const reply = (t) => sendReply(sock, msg, t);
+      const chat  = msg.key.remoteJid;
+      if (!String(chat || '').endsWith('@g.us')) return reply('👥 Group only.');
+      const text = (args || []).join(' ').trim();
+
+      // 🌀 processing react
+      try { await sock.sendMessage(chat, { react: { text: '🌀', key: msg.key } }); } catch {}
+
+      // Resolve quoted message across ALL wrapper types
+      const _ctx = [
+        msg.message?.extendedTextMessage?.contextInfo,
+        msg.message?.imageMessage?.contextInfo,
+        msg.message?.videoMessage?.contextInfo,
+        msg.message?.audioMessage?.contextInfo,
+        msg.message?.stickerMessage?.contextInfo,
+        msg.message?.documentMessage?.contextInfo,
+      ].find(c => c?.quotedMessage);
+
+      const qz = _ctx?.quotedMessage || null;
+      const qInner = !qz ? null
+        : qz.imageMessage    ? { kind: 'image',    raw: qz.imageMessage }
+        : qz.videoMessage    ? { kind: 'video',    raw: qz.videoMessage }
+        : qz.audioMessage    ? { kind: 'audio',    raw: qz.audioMessage }
+        : qz.stickerMessage  ? { kind: 'sticker',  raw: qz.stickerMessage }
+        : qz.documentMessage ? { kind: 'document', raw: qz.documentMessage }
+        : null;
+
+      if (!qInner && !text) {
+        try { await sock.sendMessage(chat, { react: { text: '❌', key: msg.key } }); } catch {}
+        return reply('📢 *Group Status*\n\nReply to media or provide text.\nExample: *' + CONFIG.PREFIX + 'gst Hello group!*');
+      }
+
+      const _gid = () => 'MIAS' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+
+      // ── TEXT-ONLY ────────────────────────────────────────────────────────
+      if (!qInner) {
+        try {
+          await sock.relayMessage(chat, {
+            groupStatusMessageV2: {
+              message: {
+                extendedTextMessage: {
+                  text,
+                  backgroundArgb: 0xFF000000,
+                  textArgb:       0xFFFFFFFF,
+                  font: 1,
+                  contextInfo: { mentionedJid: [], isGroupStatus: true },
+                }
+              }
+            }
+          }, { messageId: _gid() });
+          try { await sock.sendMessage(chat, { react: { text: '✅', key: msg.key } }); } catch {}
+        } catch (e) {
+          try { await sock.sendMessage(chat, { react: { text: '❌', key: msg.key } }); } catch {}
+          await reply('❌ Text status failed: ' + (e?.message || e));
+        }
+        return;
+      }
+
+      // ── MEDIA — download → re-upload → relay ────────────────────────────
+      let buf = null;
+      try {
+        const stream = await downloadContentFromMessage(
+          qInner.raw,
+          qInner.kind === 'sticker' ? 'sticker' : qInner.kind
+        );
+        buf = Buffer.from([]);
+        for await (const chunk of stream) buf = Buffer.concat([buf, chunk]);
+      } catch (e) {
+        try { await sock.sendMessage(chat, { react: { text: '❌', key: msg.key } }); } catch {}
+        return reply('❌ Could not download media: ' + (e?.message || e));
+      }
+      if (!buf || buf.length < 10) {
+        try { await sock.sendMessage(chat, { react: { text: '❌', key: msg.key } }); } catch {}
+        return reply('❌ Media download returned empty data — it may have expired.');
+      }
+
+      const mime = qInner.raw.mimetype || '';
+      const cap  = text || qInner.raw.caption || '';
+      const payload =
+        qInner.kind === 'image'   ? { image:    buf, caption: cap } :
+        qInner.kind === 'video'   ? { video:    buf, caption: cap, mimetype: mime || 'video/mp4', gifPlayback: false } :
+        qInner.kind === 'audio'   ? { audio:    buf, mimetype: /ogg|opus/.test(mime) ? 'audio/ogg; codecs=opus' : 'audio/mpeg', ptt: !!qInner.raw.ptt } :
+        qInner.kind === 'sticker' ? { sticker:  buf } :
+        { document: buf, fileName: qInner.raw.fileName || 'file', mimetype: mime || 'application/octet-stream', caption: cap };
+
+      let posted = false;
+
+      // Strategy 1 — generateWAMessageContent + relayMessage to group jid
+      if (!posted) {
+        try {
+          const uploadFn = typeof sock.waUploadToServer === 'function'
+            ? sock.waUploadToServer.bind(sock) : sock.waUploadToServer;
+          if (uploadFn) {
+            const inner = await generateWAMessageContent(payload, { upload: uploadFn });
+            await sock.relayMessage(chat, { groupStatusMessageV2: { message: inner } }, { messageId: _gid() });
+            posted = true;
+          }
+        } catch {}
+      }
+
+      // Strategy 2 — dynamic import generateWAMessageContent
+      if (!posted) {
+        try {
+          const _bm = await import('@kelvdra/baileys');
+          const _gwmc = _bm.generateWAMessageContent || _bm.default?.generateWAMessageContent;
+          const uploadFn = typeof sock.waUploadToServer === 'function'
+            ? sock.waUploadToServer.bind(sock) : sock.waUploadToServer;
+          if (_gwmc && uploadFn) {
+            const inner = await _gwmc(payload, { upload: uploadFn });
+            await sock.relayMessage(chat, { groupStatusMessageV2: { message: inner } }, { messageId: _gid() });
+            posted = true;
+          }
+        } catch {}
+      }
+
+      // Strategy 3 — additionalAttributes STATUS
+      if (!posted) {
+        try {
+          await sock.sendMessage(chat, payload, { additionalAttributes: { category: 'STATUS', edit: '2' } });
+          posted = true;
+        } catch {}
+      }
+
+      // Strategy 4 — isGroupStatus contextInfo
+      if (!posted) {
+        try {
+          await sock.sendMessage(chat, { ...payload, contextInfo: { isGroupStatus: true } });
+          posted = true;
+        } catch {}
+      }
+
+      try { await sock.sendMessage(chat, { react: { text: posted ? '✅' : '❌', key: msg.key } }); } catch {}
+      if (!posted) await reply('❌ Could not post media to group status. Check logs.');
+    };
+
+    for (const _n of ['gst', 'gstatus', 'gcstatus', 'groupstatus']) {
+      const _e = commands.get(_n) || { desc: 'Post group status', category: 'GROUP' };
+      _e.handler = __gstV17;
+      commands.set(_n, _e);
+    }
+
+    // ── 2. MUSICCARD override — nexray canvas direct, 🌀→✅, no text ─────
+    const __musiccardV17 = async (sock, msg, args) => {
+      const jid = msg.key.remoteJid;
+      if (!args.length) {
+        return sendReply(sock, msg, '📌 *Usage:* ' + CONFIG.PREFIX + 'musiccard <song> <artist> [image-url]');
+      }
+      await sock.sendMessage(jid, { react: { text: '🌀', key: msg.key } });
+      try {
+        const _imgArg  = args.find(a => /^https?:\/\//i.test(a)) || null;
+        const _txtArgs = args.filter(a => !/^https?:\/\//i.test(a));
+        const judul = _txtArgs[0] || args[0] || 'Unknown';
+        const nama  = _txtArgs.slice(1).join(' ') || _txtArgs[0] || 'Unknown';
+
+        // Resolve image_url
+        let image_url = _imgArg;
+
+        // Try replied image → upload to nexray CDN
+        if (!image_url && nx) {
+          try {
+            const _imgMsg =
+              msg.message?.imageMessage ??
+              msg.message?.extendedTextMessage?.contextInfo?.quotedMessage?.imageMessage ?? null;
+            if (_imgMsg) {
+              const stream = await downloadContentFromMessage(_imgMsg, 'image');
+              let ibuf = Buffer.from([]);
+              for await (const c of stream) ibuf = Buffer.concat([ibuf, c]);
+              if (ibuf.length > 500) {
+                const _up = await nx.uploader.upload({ file: ibuf });
+                const _u  = _up?.result?.url || _up?.data?.url || _up?.url;
+                if (_u && /^https?:\/\//i.test(_u)) image_url = _u;
+              }
+            }
+          } catch {}
+        }
+
+        // Try URL from quoted message text
+        if (!image_url) {
+          try {
+            const _qt =
+              msg.message?.extendedTextMessage?.contextInfo?.quotedMessage?.conversation ||
+              msg.message?.extendedTextMessage?.contextInfo?.quotedMessage?.extendedTextMessage?.text || '';
+            const _m = _qt.match(/https?:\/\/\S+/i);
+            if (_m) image_url = _m[0];
+          } catch {}
+        }
+
+        // Placeholder
+        if (!image_url) image_url = 'https://i.scdn.co/image/ab67616d0000b273c5649add07ed3720be9d5526';
+
+        // nexray canvas/musiccard — direct, no fallbacks
+        const r = await nx.canvas.musiccard({ judul, nama, image_url });
+
+        let cardBuf = null;
+        if (r?.type === 'media' && Buffer.isBuffer(r.buffer) && r.buffer.length > 500) {
+          cardBuf = r.buffer;
+        } else {
+          const _u = r?.result?.url ?? r?.data?.url
+            ?? (typeof r?.result === 'string' && r.result.startsWith('http') ? r.result : null)
+            ?? r?.url ?? null;
+          if (_u) {
+            try {
+              const axios = require('axios');
+              const rb = await axios.get(_u, { responseType: 'arraybuffer', timeout: 30000 });
+              const b  = Buffer.from(rb.data);
+              if (b.length > 500) cardBuf = b;
+            } catch {}
+          }
+        }
+
+        if (!cardBuf || cardBuf.length < 500) {
+          return sock.sendMessage(jid, { react: { text: '❌', key: msg.key } });
+        }
+
+        // Send image — no caption text
+        await sock.sendMessage(jid, { image: cardBuf }, { quoted: msg });
+        await sock.sendMessage(jid, { react: { text: '✅', key: msg.key } });
+      } catch { await sock.sendMessage(jid, { react: { text: '❌', key: msg.key } }); }
+    };
+
+    for (const _mc of ['musiccard', 'music-card']) {
+      const _e = commands.get(_mc) || { desc: 'Generate music card', category: 'Nexray-Canvas' };
+      _e.handler = __musiccardV17;
+      commands.set(_mc, _e);
+    }
+
+    console.log('[LATE-PATCH-v17] gst-media-fix + musiccard-nexray-direct installed ✓');
+  } catch (e) {
+    try { console.error('[LATE-PATCH-v17] init failed:', e?.message || e); } catch {}
+  }
+})();
+// ════════════════════════════════════════════════════════════════════════════
+// END LATE-PATCH v17
+// ════════════════════════════════════════════════════════════════════════════

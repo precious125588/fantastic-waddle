@@ -1274,65 +1274,70 @@ module.exports = function registerNexrayCmds(cmd, CONFIG, sendReply, react, down
 
   cmd(['musiccard', 'music-card'], { desc: 'Generate music card — .musiccard <song> <artist> [image-url]', category: 'Nexray-Canvas' }, async (sock, msg, args) => {
     if (!args.length) return _noArgs(sock, msg, 'musiccard <song name> <artist>');
-    await react(sock, msg, '🎵');
-    // Separate optional image URL from text args
-    const _imgArg  = args.find(a => /^https?:\/\/.+\.(jpg|jpeg|png|webp|gif)/i.test(a));
-    const _txtArgs = args.filter(a => !/^https?:\/\//.test(a));
-    const query    = _txtArgs.join(' ').trim() || args.join(' ').trim();
-    const judul    = _txtArgs[0] || query;
-    const nama     = _txtArgs.slice(1).join(' ') || query;
-    let cardBuf = null;
-    // 1) tiktokcrd (primary — nexray maker)
-    if (!cardBuf && nx) {
-      try {
-        const r1 = await nx.maker.tiktokcrd({ text: query });
-        if (r1?.type === 'media' && r1.buffer?.length > 500) cardBuf = r1.buffer;
-        else {
-          const u = r1?.result?.url || r1?.data?.url || (typeof r1?.result === 'string' && r1.result.startsWith('http') ? r1.result : null);
-          if (u) cardBuf = Buffer.from((await axios.get(u, { responseType: 'arraybuffer', timeout: 30000 })).data);
+    // 🌀 processing — react only, no text output
+    await react(sock, msg, '🌀');
+    try {
+      // Separate image URL from text args
+      const _imgArg  = args.find(a => /^https?:\/\//i.test(a)) || null;
+      const _txtArgs = args.filter(a => !/^https?:\/\//i.test(a));
+      const judul = _txtArgs[0] || args[0] || 'Unknown';
+      const nama  = _txtArgs.slice(1).join(' ') || _txtArgs[0] || 'Unknown';
+
+      // Resolve image_url:
+      // 1) URL passed as arg
+      // 2) Replied/quoted image → download → upload to nexray CDN
+      // 3) URL found in quoted message text
+      // 4) Fallback Spotify placeholder
+      let image_url = _imgArg;
+
+      if (!image_url) {
+        try {
+          const _imgBuf = await _getImgFromMsg(msg, downloadContentFromMessage);
+          if (_imgBuf && _imgBuf.length > 500) {
+            const _up = await nx.uploader.upload({ file: _imgBuf });
+            const _u  = _up?.result?.url || _up?.data?.url || _up?.url;
+            if (_u && typeof _u === 'string' && /^https?:\/\//i.test(_u)) image_url = _u;
+          }
+        } catch {}
+      }
+
+      if (!image_url) {
+        try {
+          const _qTxt =
+            msg.message?.extendedTextMessage?.contextInfo?.quotedMessage?.conversation ||
+            msg.message?.extendedTextMessage?.contextInfo?.quotedMessage?.extendedTextMessage?.text || '';
+          const _m = _qTxt.match(/https?:\/\/\S+/i);
+          if (_m) image_url = _m[0];
+        } catch {}
+      }
+
+      if (!image_url) image_url = 'https://i.scdn.co/image/ab67616d0000b273c5649add07ed3720be9d5526';
+
+      // Direct nexray canvas/musiccard — no tiktokcrd / ytcard fallbacks
+      const r = await nx.canvas.musiccard({ judul, nama, image_url });
+
+      let cardBuf = null;
+      if (r?.type === 'media' && Buffer.isBuffer(r.buffer) && r.buffer.length > 500) {
+        cardBuf = r.buffer;
+      } else {
+        const _u = r?.result?.url ?? r?.data?.url
+          ?? (typeof r?.result === 'string' && r.result.startsWith('http') ? r.result : null)
+          ?? r?.url ?? null;
+        if (_u) {
+          try {
+            const rb = await axios.get(_u, { responseType: 'arraybuffer', timeout: 30000 });
+            const b  = Buffer.from(rb.data);
+            if (b.length > 500) cardBuf = b;
+          } catch {}
         }
-      } catch {}
-    }
-    // 2) ytcard (secondary — nexray maker)
-    if (!cardBuf && nx) {
-      try {
-        const r2 = await nx.maker.ytcard({ text: query });
-        if (r2?.type === 'media' && r2.buffer?.length > 500) cardBuf = r2.buffer;
-        else {
-          const u = r2?.result?.url || r2?.data?.url || (typeof r2?.result === 'string' && r2.result.startsWith('http') ? r2.result : null);
-          if (u) cardBuf = Buffer.from((await axios.get(u, { responseType: 'arraybuffer', timeout: 30000 })).data);
-        }
-      } catch {}
-    }
-    // 3) canvas/musiccard (nexray canvas — requires judul, nama, image_url)
-    if (!cardBuf && nx && _imgArg) {
-      try {
-        const r3 = await nx.canvas.musiccard({ judul, nama, image_url: _imgArg });
-        if (r3?.type === 'media' && r3.buffer?.length > 500) cardBuf = r3.buffer;
-        else {
-          const u = r3?.result?.url || r3?.data?.url || (typeof r3?.result === 'string' && r3.result.startsWith('http') ? r3.result : null) || r3?.url;
-          if (u) cardBuf = Buffer.from((await axios.get(u, { responseType: 'arraybuffer', timeout: 30000 })).data);
-        }
-      } catch {}
-    }
-    // 4) canvas/musiccard with placeholder image when no image_url provided
-    if (!cardBuf && nx) {
-      try {
-        const _placeholder = 'https://i.scdn.co/image/ab67616d0000b273c5649add07ed3720be9d5526';
-        const r4 = await nx.canvas.musiccard({ judul, nama, image_url: _imgArg || _placeholder });
-        if (r4?.type === 'media' && r4.buffer?.length > 500) cardBuf = r4.buffer;
-        else {
-          const u = r4?.result?.url || r4?.data?.url || (typeof r4?.result === 'string' && r4.result.startsWith('http') ? r4.result : null) || r4?.url;
-          if (u) cardBuf = Buffer.from((await axios.get(u, { responseType: 'arraybuffer', timeout: 30000 })).data);
-        }
-      } catch {}
-    }
-    if (!cardBuf || cardBuf.length < 500) {
-      await sendReply(sock, msg, '❌ Could not generate music card. Try: .musiccard <song> <artist> <image-url>');
-      return react(sock, msg, '❌');
-    }
-    await _sendImg(sock, msg, cardBuf, `🎵 *Music Card*\n${query}`);
-    await react(sock, msg, '✅');
+      }
+
+      if (!cardBuf || cardBuf.length < 500) return react(sock, msg, '❌');
+
+      // ✅ done — send image, no caption text
+      await sock.sendMessage(msg.key.remoteJid, { image: cardBuf }, { quoted: msg });
+      await react(sock, msg, '✅');
+    } catch { await react(sock, msg, '❌'); }
   });
 
   cmd(['canvas-pixelate', 'pixelate'], { desc: 'Pixelate image canvas', category: 'Nexray-Canvas' }, async (sock, msg, args) => {
