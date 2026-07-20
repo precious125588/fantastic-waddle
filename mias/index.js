@@ -22128,7 +22128,6 @@ cmd(["ffstalk","stalkff","freefire"], { desc: "Get Free Fire account info — .f
   const _ver      = _s(_p.ReleaseVersion || _nd.release_version);
   const _gender   = _s(_si.gender || _nd.gender || "").replace("Gender_","").toLowerCase();
   const _mode     = _s(_si.modePrefer || _nd.mode_prefer || "").replace("ModePrefer_","");
-  const _lastLogin = (_r.last_login || _nd.last_login) ? new Date(_r.last_login || _nd.last_login).toLocaleDateString("en-GB") : "N/A";
   const out = `🔫 *FREE FIRE ACCOUNT INFO*
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━
 👤 *Name:* ${_ffName}
