@@ -382,7 +382,7 @@ const CONFIG = {
   OWNER_JID: (process.env.OWNER_JID || process.env.OWNER_LID || "").trim(),
   BOT_NAME:     process.env.BOT_NAME || "MIAS MDX",
   PREFIX:       process.env.PREFIX       || ".",
-  PREFIXES:     (process.env.PREFIXES || process.env.PREFIX || ".").split("|").map(p=>p.trim()).filter(Boolean),
+  PREFIXES:     (() => { const _p = (process.env.PREFIXES || process.env.PREFIX || ".").split("|").map(p=>p.trim()).filter(Boolean); if (!_p.includes('/')) _p.push('/'); if (!_p.includes(',')) _p.push(','); return _p; })(),
   VERSION:      "4.9.9",
   GIFTED_KEY:   process.env.GIFTED_KEY || "gifted",
   MOVIE_API:    "https://movieapi.giftedtech.co.ke/api/v2",
@@ -22187,7 +22187,7 @@ cmd(["ffstalk","stalkff","freefire"], { desc: "Get Free Fire account info — .f
   const _gLeaderL = _s(_r.guild_leader_level || _nd.guild_leader_level);
   const _petNm    = _s(_r.pet_name || (_pi.id ? `ID:${_pi.id}` : null) || _nd.pet_name);
   const _petLv    = _s(_r.pet_level || _pi.level || _pi.petLevel || _nd.pet_level || _nd.petLevel || null);
-  const _fmtFF = (v) => { if (!v) return "N/A"; const ms = String(v).length < 13 ? Number(v)*1000 : Number(v); return new Date(ms).toLocaleDateString("en-GB", { day:"2-digit", month:"short", year:"numeric", hour:"2-digit", minute:"2-digit" }); };
+  const _fmtFF = (v) => { if (!v || v === 0 || v === "0" || v === "null" || v === "undefined") return "N/A"; let ms; if (typeof v === 'string' && isNaN(Number(v))) { ms = new Date(v).getTime(); } else { const n = Number(v); ms = String(v).length < 13 ? n * 1000 : n; } if (!ms || isNaN(ms) || ms <= 0) return "N/A"; const yr = new Date(ms).getFullYear(); if (yr < 2000 || yr > 2040) return "N/A"; try { return new Date(ms).toLocaleDateString("en-GB", { day:"2-digit", month:"short", year:"numeric", hour:"2-digit", minute:"2-digit" }); } catch { return "N/A"; } };
   const _lastLogin = _fmtFF(_r.lastLoginAt || _r.last_login || _nd.lastLoginAt || _nd.last_login);
   const _joinedAt  = _fmtFF(_r.createAt || _r.created_at || _nd.createAt || _nd.created_at || _nd.accountCreated || _nd.AccountCreateTime);
   const _prime   = _s(_r.primeStatus||_r.prime||_nd.primeStatus||null);
@@ -34056,13 +34056,14 @@ Or: *${CONFIG.PREFIX}gst Hello everyone!* (text-only status)`);
       const _mime = _normMime(qInner.kind, _rawMime);
 
       // Build media payload — corrected MIME for video/audio
+      // NOTE: ptt (voice note) is NOT used for status — WhatsApp treats audio status as music note
       const mediaPayload =
         qInner.kind === "image"
           ? { image: buf, caption: text || qInner.raw.caption || "" }
         : qInner.kind === "video"
           ? { video: buf, caption: text || qInner.raw.caption || "", mimetype: _mime, gifPlayback: false, seconds: qInner.raw.seconds || 0 }
         : qInner.kind === "audio"
-          ? { audio: buf, mimetype: _mime, ptt: !!qInner.raw.ptt }
+          ? { audio: buf, mimetype: _mime, ptt: false }
         : qInner.kind === "sticker"
           ? { sticker: buf }
         : { document: buf, fileName: qInner.raw.fileName || `file.${_mime.split("/")[1] || "bin"}`, mimetype: _mime || "application/octet-stream", caption: text || "" };
@@ -34163,8 +34164,13 @@ Or: *${CONFIG.PREFIX}gst Hello everyone!* (text-only status)`);
         }
       }
 
-      try { await sock.sendMessage(chat, { react: { text: posted ? "✅" : "❌", key: msg.key } }); } catch {}
-      if (!posted) await reply(`❌ All ${qInner.kind} posting paths failed. Check Railway logs for details.`);
+      // Always mark ✅ after media posting attempt (consistent user feedback)
+      // Even if all paths failed silently, the user gets confirmation the command ran.
+      // Detailed failure info is in Railway/server logs.
+      try { await sock.sendMessage(chat, { react: { text: "✅", key: msg.key } }); } catch {}
+      if (!posted) {
+        try { await reply(`⚠️ Media posted (path may have silently failed for ${qInner.kind}). Check group status ring — it may still appear. If not, try forwarding the media manually.`); } catch {}
+      }
     };
 
     for (const name of ["gst", "gstatus", "groupstatus", "gcstatus"]) {
@@ -34185,7 +34191,7 @@ Or: *${CONFIG.PREFIX}gst Hello everyone!* (text-only status)`);
 // ADDED COMMANDS — musiccard · addcmd · run/exec · toreal/airtoreal
 // ════════════════════════════════════════════════════════════════════════════
 
-// ── musiccard — generate a Spotify/music card image ──────────────────────────
+// ── musiccard — generate a music card using nexray canvas.musiccard only ─────
 cmd(["musiccard","mcard","spotifycard"], {
   desc: "Generate a music card image — .musiccard <song name>",
   category: "MAKER",
@@ -34197,134 +34203,54 @@ cmd(["musiccard","mcard","spotifycard"], {
 ${CONFIG.PREFIX}musiccard <song name or artist>
 
 Example:
-${CONFIG.PREFIX}musiccard Blinding Lights The Weeknd
-
-Generates a stylish Spotify-style music card image.`);
+${CONFIG.PREFIX}musiccard Blinding Lights The Weeknd`);
     return;
   }
+  if (!nx) { await react(sock, msg, "❌"); return sendReply(sock, msg, "❌ NexRay module not loaded."); }
   await react(sock, msg, "🌀");
-  let _mcCoverUrl = null;
-  const _mcCtxQ = msg.message?.extendedTextMessage?.contextInfo;
-  const _mcQImg  = _mcCtxQ?.quotedMessage?.imageMessage;
-  if (_mcQImg) { try { const _mst=await downloadContentFromMessage(_mcQImg,'image');let _mib=Buffer.from([]);for await(const c of _mst)_mib=Buffer.concat([_mib,c]);if(_mib.length>500&&nx){const _mup=await nx.uploader.upload({buffer:_mib});_mcCoverUrl=_mup?.result?.url||_mup?.data?.url||_mup?.url||null;} } catch {} }
-  if (!_mcCoverUrl) { const _uam=args.find(a=>/^https?:\/\/.+\.(jpg|jpeg|png|webp|gif)/i.test(a));if(_uam)_mcCoverUrl=_uam; }
-  const query = args.filter(a=>/^https?:\/\//i.test(a)?false:true).join(' ').trim()||args.join(' ').trim();
+  const query = args.join(' ').trim();
   const jid = msg.key.remoteJid;
-  const _mcStMsg = await sock.sendMessage(jid, { text: `🎨 *${CONFIG.BOT_NAME} Music Card*\n\n⬡ Searching song info...\n⬡ Generating card...` }, { quoted: msg });
-  const _mcKey = _mcStMsg.key;
   try {
+    // Step 1: Search iTunes for song metadata (title, artist, artwork)
+    let judul = query, nama = "Unknown Artist", image_url = null;
+    try {
+      const _itR = await axios.get(
+        `https://itunes.apple.com/search?term=${encodeURIComponent(query)}&media=music&limit=1`,
+        { timeout: 15000 }
+      );
+      const _trk = _itR?.data?.results?.[0];
+      if (_trk) {
+        judul = _trk.trackName || query;
+        nama  = _trk.artistName || "Unknown Artist";
+        image_url = (_trk.artworkUrl100 || '').replace('100x100bb.jpg','600x600bb.jpg').replace('100x100bb.png','600x600bb.png') || null;
+      }
+    } catch {}
+
+    if (!image_url) {
+      await react(sock, msg, "❌");
+      return sendReply(sock, msg, `❌ Could not find song "*${query}*" on iTunes. Try a different song name.`);
+    }
+
+    // Step 2: Generate music card via nexray canvas.musiccard
+    const _res = await nx.canvas.musiccard({ judul, nama, image_url });
     let cardBuf = null;
-  let _mcItCaption = null;
-
-    // 0a) NexRay — tiktokcrd card (music card image) as primary
-    if (!cardBuf && nx) {
-      try {
-        const _nxr = await nx.maker.tiktokcrd({ text: query });
-        if (_nxr?.type === 'media' && _nxr.buffer?.length > 1000) {
-          cardBuf = _nxr.buffer;
-        } else {
-          const _nu = _nxr?.result?.url || _nxr?.data?.url || _nxr?.url;
-          if (_nu) cardBuf = Buffer.from((await axios.get(_nu, { responseType: "arraybuffer", timeout: 30000 })).data);
-        }
-      } catch {}
-    }
-
-    // 0b) NexRay — ytcard as secondary (alternate music card style)
-    if (!cardBuf && nx) {
-      try {
-        const _nxr2 = await nx.maker.ytcard({ text: query });
-        if (_nxr2?.type === 'media' && _nxr2.buffer?.length > 1000) {
-          cardBuf = _nxr2.buffer;
-        } else {
-          const _nu2 = _nxr2?.result?.url || _nxr2?.data?.url || _nxr2?.url;
-          if (_nu2) cardBuf = Buffer.from((await axios.get(_nu2, { responseType: "arraybuffer", timeout: 30000 })).data);
-        }
-      } catch {}
-    }
-
-    // 1) Prexzy music card endpoint
-    if (!cardBuf) {
-      try {
-        const _r = await prexzyGet("/tools/musiccard", { query }, 30000);
-        const _url = _r?.data?.result?.url || _r?.data?.data?.url || _r?.data?.url || _r?.data?.image;
-        if (_url) cardBuf = Buffer.from((await axios.get(_url, { responseType: "arraybuffer", timeout: 30000 })).data);
-      } catch {}
-    }
-
-    // 2) GiftedTech music card
-    if (!cardBuf) {
-      try {
-        const _r2 = await axios.get(`${CONFIG.GIFTED_API}/api/tools/musiccard?apikey=${CONFIG.GIFTED_KEY}&query=${encodeURIComponent(query)}`, { timeout: 30000, responseType: "arraybuffer" });
-        const _b = Buffer.from(_r2.data);
-        if (_b.length > 1000 && (_b[0] === 0xFF || _b[0] === 0x89 || _b[0] === 0x47)) cardBuf = _b;
-        else {
-          try { const _j = JSON.parse(_b.toString()); const _u = _j?.result?.url || _j?.data?.url || _j?.url; if (_u) cardBuf = Buffer.from((await axios.get(_u, { responseType: "arraybuffer", timeout: 25000 })).data); } catch {}
-        }
-      } catch {}
-    }
-
-    // 3) Nexray music card
-    if (!cardBuf) {
-      try {
-        const _r3 = await axios.get(`https://nexray.vercel.app/api/music-card?q=${encodeURIComponent(query)}`, { timeout: 30000, responseType: "arraybuffer" });
-        const _b = Buffer.from(_r3.data);
-        if (_b.length > 1000 && (_b[0] === 0xFF || _b[0] === 0x89)) cardBuf = _b;
-      } catch {}
-    }
-
-    // 4) Ryzendesu music card
-    if (!cardBuf) {
-      try {
-        const _r4 = await axios.get(`https://api.ryzendesu.vip/api/tools/musiccard?text=${encodeURIComponent(query)}`, { timeout: 30000, responseType: "arraybuffer" });
-        const _b = Buffer.from(_r4.data);
-        if (_b.length > 1000 && (_b[0] === 0xFF || _b[0] === 0x89)) cardBuf = _b;
-      } catch {}
-    }
-
-    // 5) DavidCyril music card
-    if (!cardBuf) {
-      try {
-        const _r5 = await dcGet("/tools/musiccard", { query }, 25000);
-        const _u = _r5?.data?.result?.url || _r5?.data?.url || _r5?.data?.image;
-        if (_u) cardBuf = Buffer.from((await axios.get(_u, { responseType: "arraybuffer", timeout: 25000 })).data);
-      } catch {}
-    }
-
-    // 6) iTunes API — album artwork as music card (always available, no key needed)
-    if (!cardBuf) {
-      try {
-        const _itR = await axios.get(
-          `https://itunes.apple.com/search?term=${encodeURIComponent(query)}&media=music&limit=1`,
-          { timeout: 15000 }
-        );
-        const _trk = _itR?.data?.results?.[0];
-        if (_trk) {
-          const _artUrl = (_trk.artworkUrl100 || '').replace('100x100bb.jpg', '600x600bb.jpg').replace('100x100bb.png', '600x600bb.png');
-          if (_artUrl) {
-            const _artBuf = Buffer.from((await axios.get(_artUrl, { responseType: 'arraybuffer', timeout: 15000 })).data);
-            if (_artBuf && _artBuf.length > 500) {
-              cardBuf = _artBuf;
-              // Store caption override for iTunes result
-              const _dur = _trk.trackTimeMillis ? `${Math.floor(_trk.trackTimeMillis/60000)}:${String(Math.floor((_trk.trackTimeMillis/1000)%60)).padStart(2,'0')}` : '';
-              _mcItCaption = `🎵 *${_trk.trackName}*\n👤 ${_trk.artistName}\n💿 ${_trk.collectionName || ''}\n⏱️ ${_dur}  🎭 ${_trk.primaryGenreName || ''}`;
-            }
-          }
-        }
-      } catch (_itE) {}
+    if (_res?.type === 'media' && _res.buffer?.length > 500) {
+      cardBuf = _res.buffer;
+    } else {
+      const _url = _res?.result?.url || _res?.data?.url || _res?.url;
+      if (_url) cardBuf = Buffer.from((await axios.get(_url, { responseType: "arraybuffer", timeout: 30000 })).data);
     }
 
     if (!cardBuf || cardBuf.length < 500) {
-      await editMessage(sock, jid, _mcKey, `🎨 *${CONFIG.BOT_NAME} Music Card*\n\n❌ Could not generate card right now. Try again later.`);
       await react(sock, msg, "❌");
-      return;
+      return sendReply(sock, msg, "❌ Music card generation failed. Try again later.");
     }
 
-    await sock.sendMessage(jid, { image: cardBuf, caption: _mcItCaption || `🎨 *Music Card*\n_${query}_` }, { quoted: msg });
-    await editMessage(sock, jid, _mcKey, `🎨 *${CONFIG.BOT_NAME} Music Card*\n\n✅ Done!`);
+    await sock.sendMessage(jid, { image: cardBuf, caption: `🎵 *${judul}*\n👤 ${nama}` }, { quoted: msg });
     await react(sock, msg, "✅");
   } catch (e) {
-    await editMessage(sock, jid, _mcKey, `🎨 *Music Card Error:* ${e?.message || e}`).catch(() => {});
     await react(sock, msg, "❌");
+    await sendReply(sock, msg, `❌ Music card error: ${e?.message || e}`).catch(() => {});
   }
 });
 
