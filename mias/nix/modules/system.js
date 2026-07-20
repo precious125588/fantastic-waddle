@@ -50,7 +50,7 @@ export async function ping(sock, msg) {
   try { sentMsg = await sock.sendMessage(msg.key.remoteJid, { text: '🏓 _Pinging..._' }, { quoted: msg }); } catch {}
   const latency = Date.now() - start;
   const rating = latency < 100 ? '🟢 Excellent' : latency < 300 ? '🟡 Good' : latency < 600 ? '🟠 Fair' : '🔴 Poor';
-  const reply = `🏓 *Nix Ping Test*\n\n${greet(owner)} response received!\n\n⚡ Latency: *${latency}ms*\n📶 Quality: *${rating}*\n🕐 Time: ${new Date().toLocaleTimeString()}${nixFooter()}`;
+  const reply = `🏓 *Pong!* — *${latency}ms*  (${rating})`;
   try {
     if (sentMsg?.key) {
       await sock.sendMessage(msg.key.remoteJid, { text: reply, edit: sentMsg.key });
