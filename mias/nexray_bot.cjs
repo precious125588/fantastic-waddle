@@ -1,1880 +1,3130 @@
 'use strict';
 /**
- * nexray_bot.js — All new NexRay-powered commands for MIAS MDX bot.
- * Uses the bot's own cmd() system (not addcmd).
- * Called from the bottom of mias/index.js via require('./nexray_bot').
+ * nexray_bot.cjs — Complete NexRay-powered commands for MIAS MDX bot
+ * API Source : https://api.nexray.eu.cc  (369 endpoints)
+ * Prefixes   : /  and  ,  (set process.env.PREFIX=/ or PREFIX=, in .env)
  *
- * module.exports = function(cmd, CONFIG, sendReply, react, downloadContentFromMessage, axios, nx)
+ * Categories:
+ *   AI(69)  Anime(19)  Berita(10)  Canvas(10)  Downloader(42)
+ *   Editor(2)  Ephoto(27)  Fun(2)  Games(8)  Information(10)
+ *   Maker(22)  Payment(3)  Primbon(10)  Random(10)  Search(34)
+ *   Stalker(15)  Textpro(22)  Tools(57)  Uploader(1)
+ *
+ * Usage: loaded from mias/index.js as:
+ *   require('./nexray_bot.cjs')(cmd, CONFIG, sendReply, react, downloadContentFromMessage, axios, nx)
  */
 
-// ── helpers shared across all handlers ────────────────────────────────────────
-const _isImgBuf = (b) => b && b.length > 500 && (b[0] === 0xFF || b[0] === 0x89 || b[0] === 0x47 || b[0] === 0x42 || b[0] === 0x52);
-const _isAudBuf = (b) => b && b.length > 500 && (b.slice(0,3).toString('utf8') === 'ID3' || (b[0]===0xFF && (b[1]&0xE0)===0xE0) || b.slice(0,4).toString('ascii')==='OggS');
-const _isVidBuf = (b) => b && b.length > 1000 && (b.slice(4,8).toString('ascii')==='ftyp' || b.slice(0,12).toString('ascii').includes('moov') || b.slice(0,12).toString('ascii').includes('mdat'));
+// ═══════════════════════════════════════════════════════════════════════════════
+// RESPONSE HELPERS
+// ═══════════════════════════════════════════════════════════════════════════════
 
-// Resolve NexRay response to buffer (for image/media endpoints)
-async function _nxMedia(res, axiosInst) {
-  if (!res) return null;
-  if (res.type === 'media' && Buffer.isBuffer(res.buffer) && res.buffer.length > 500) return res.buffer;
-  const url = res?.result?.url || res?.data?.url || res?.url || res?.image;
-  if (url) {
+function _txt(r) {
+  if (!r) return null;
+  return r?.result ?? r?.data?.result ?? r?.data?.message ?? r?.answer ?? r?.text ?? r?.message ?? r?.output ?? null;
+}
+
+function _jsonFmt(r) {
+  if (!r) return null;
+  if (typeof r === 'string') return r;
+  const t = _txt(r);
+  if (t && typeof t === 'string') return t;
+  // Format object as readable key-value text
+  const skip = ['status', 'code', 'creator', 'dev'];
+  return Object.entries(r)
+    .filter(([k, v]) => !skip.includes(k) && v !== null && v !== undefined && v !== '')
+    .map(([k, v]) => `*${k}:* ${typeof v === 'object' ? JSON.stringify(v) : v}`)
+    .join('\n');
+}
+
+async function _media(r, ax) {
+  if (!r) return null;
+  if (r.type === 'media' && Buffer.isBuffer(r.buffer) && r.buffer.length > 500) return { buf: r.buffer, ct: r.contentType || 'image/jpeg' };
+  const url =
+    r?.result?.url   ?? r?.result?.image ?? r?.result?.media ??
+    r?.data?.url     ?? r?.data?.image   ??
+    r?.url           ?? r?.image         ?? r?.media          ?? null;
+  if (url && typeof url === 'string' && url.startsWith('http')) {
     try {
-      const r = await axiosInst.get(url, { responseType: 'arraybuffer', timeout: 60000 });
-      return Buffer.from(r.data);
+      const resp = await ax.get(url, { responseType: 'arraybuffer', timeout: 60000 });
+      const ct   = (resp.headers['content-type'] || 'image/jpeg').split(';')[0].trim();
+      return { buf: Buffer.from(resp.data), ct };
     } catch {}
   }
   return null;
 }
 
-// Resolve NexRay response to text
-function _nxText(res) {
-  if (!res) return null;
-  return res?.result || res?.data?.result || res?.data?.message || res?.answer || res?.text || res?.message || null;
+async function _getImgFromMsg(msg, dlFn) {
+  const imgMsg =
+    msg.message?.imageMessage ??
+    msg.message?.extendedTextMessage?.contextInfo?.quotedMessage?.imageMessage ?? null;
+  if (!imgMsg) return null;
+  const stream = await dlFn(imgMsg, 'image');
+  let buf = Buffer.from([]);
+  for await (const chunk of stream) buf = Buffer.concat([buf, chunk]);
+  return buf.length > 100 ? buf : null;
 }
 
-
-// ── shared iTunes music-card helper ─────────────────────────────────────────
-async function _itunesCard(query, axiosInst) {
-  const r = await axiosInst.get(
-    `https://itunes.apple.com/search?term=${encodeURIComponent(query)}&media=music&limit=1`,
-    { timeout: 15000 }
-  );
-  const t = r?.data?.results?.[0];
-  if (!t) return null;
-  const artUrl = (t.artworkUrl100||'').replace('100x100bb.jpg','600x600bb.jpg').replace('100x100bb.png','600x600bb.png');
-  let buf = null;
-  if (artUrl) buf = Buffer.from((await axiosInst.get(artUrl, { responseType:'arraybuffer', timeout:15000 })).data);
-  const dur = t.trackTimeMillis ? `${Math.floor(t.trackTimeMillis/60000)}:${String(Math.floor((t.trackTimeMillis/1000)%60)).padStart(2,'0')}` : '';
-  const caption = `🎵 *${t.trackName}*\n👤 ${t.artistName}\n💿 ${t.collectionName||''}\n⏱️ ${dur}  🎭 ${t.primaryGenreName||''}`.trim();
-  return { buf, caption, track: t };
+async function _sendImg(sock, msg, buf, caption) {
+  await sock.sendMessage(msg.key.remoteJid, { image: buf, caption }, { quoted: msg });
 }
+
+async function _sendAudio(sock, msg, buf, ptt = false) {
+  await sock.sendMessage(msg.key.remoteJid, { audio: buf, mimetype: 'audio/mpeg', ptt }, { quoted: msg });
+}
+
+async function _sendVideo(sock, msg, buf, caption) {
+  await sock.sendMessage(msg.key.remoteJid, { video: buf, caption }, { quoted: msg });
+}
+
+async function _sendDoc(sock, msg, buf, filename, mimetype) {
+  await sock.sendMessage(msg.key.remoteJid, { document: buf, mimetype, fileName: filename }, { quoted: msg });
+}
+
+// Generic handler for text AI cmds
+function _textAI(nx_fn, name, emoji) {
+  return async (sock, msg, args, P) => {
+    if (!args.length) return;
+    await _textAICore(sock, msg, args.join(' '), nx_fn, name, emoji);
+  };
+}
+
+async function _textAICore(sock, msg, query, nx_fn, label, emoji) {
+  try {
+    const r  = await nx_fn({ text: query });
+    const t  = _jsonFmt(r);
+    if (!t) throw new Error('Empty response');
+    await msg._sendReply(`${emoji} *${label}*\n\n${t}`);
+  } catch (e) {
+    await msg._sendReply(`❌ *${label} Error:* ${e.message}`);
+    throw e;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// MAIN EXPORT
+// ═══════════════════════════════════════════════════════════════════════════════
 
 module.exports = function registerNexrayCmds(cmd, CONFIG, sendReply, react, downloadContentFromMessage, axios, nx) {
   if (!nx) {
-    console.error('[nexray_bot] nx is null — NexRay wrapper not loaded, skipping registration.');
+    console.error('[nexray_bot] ❌ nx is null — NexRay wrapper not loaded. Commands skipped.');
     return;
   }
-  const P = CONFIG.PREFIX || '.';
 
-  // ──────────────────────────────────────────────────────────────────────────
-  // AI COMMANDS
-  // ──────────────────────────────────────────────────────────────────────────
+  const P = CONFIG.PREFIX || '/';
 
-  cmd(['alisia', 'ai-alisia'], { desc: 'Chat with Alisia AI — .alisia <text>', category: 'AI' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}alisia <your question>`);
+  // Convenience wrapper so handlers get clean sendReply bound to sock+msg
+  function _handle(sock, msg) {
+    msg._sendReply = (text) => sendReply(sock, msg, text);
+  }
+
+  function _noArgs(sock, msg, usage) {
+    return sendReply(sock, msg, `📌 *Usage:* ${P}${usage}\n_Also works with ,${usage.split(' ')[0]}_`);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ██████╗  AI  — 69 endpoints
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  cmd(['alisia'], { desc: 'Chat with Alisia AI', category: 'Nexray-AI' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'alisia <text>');
     await react(sock, msg, '🤖');
     try {
       const r = await nx.ai.alisia({ text: args.join(' ') });
-      const t = _nxText(r); if (!t) throw new Error('No response');
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
       await sendReply(sock, msg, `🤖 *Alisia AI*\n\n${t}`);
       await react(sock, msg, '✅');
-    } catch (e) { await sendReply(sock, msg, `❌ Alisia error: ${e.message}`); await react(sock, msg, '❌'); }
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  cmd(['andisearch', 'andi'], { desc: 'Andi AI web search — .andisearch <query>', category: 'AI' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}andisearch <query>`);
-    await react(sock, msg, '🤖');
+  cmd(['andisearch', 'andi'], { desc: 'Andi AI web search', category: 'Nexray-AI' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'andisearch <query>');
+    await react(sock, msg, '🔍');
     try {
       const r = await nx.ai.andisearch({ text: args.join(' ') });
-      const t = _nxText(r); if (!t) throw new Error('No response');
-      await sendReply(sock, msg, `🔍 *Andi Search*\n\n${t}`);
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
+      await sendReply(sock, msg, `🔍 *AndiSearch AI*\n\n${t}`);
       await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  cmd(['bypass', 'humanize'], { desc: 'Bypass/humanize AI-generated text — .bypass <text>', category: 'AI' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}bypass <text to humanize>`);
-    await react(sock, msg, '🤖');
+  cmd(['bypass-ai', 'aibypass'], { desc: 'Bypass AI detection / humanize text', category: 'Nexray-AI' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'bypass-ai <text>');
+    await react(sock, msg, '🛡️');
     try {
       const r = await nx.ai.bypass({ text: args.join(' ') });
-      const t = _nxText(r); if (!t) throw new Error('No response');
-      await sendReply(sock, msg, `✅ *Humanized Text*\n\n${t}`);
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
+      await sendReply(sock, msg, `🛡️ *AI Bypass / Humanizer*\n\n${t}`);
       await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  cmd(['nxclaude', 'claudeai'], { desc: 'Chat with Claude AI — .nxclaude <text>', category: 'AI' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}nxclaude <your question>`);
+  cmd(['chatgpt', 'gpt'], { desc: 'Chat with ChatGPT', category: 'Nexray-AI' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'chatgpt <question>');
     await react(sock, msg, '🤖');
     try {
-      const r = await nx.ai.claude({ text: args.join(' ') });
-      const t = _nxText(r); if (!t) throw new Error('No response');
-      await sendReply(sock, msg, `🤖 *Claude AI*\n\n${t}`);
+      const r = await nx.ai.chatgpt({ text: args.join(' ') });
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
+      await sendReply(sock, msg, `🤖 *ChatGPT*\n\n${t}`);
       await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  cmd(['copilot', 'nxcopilot'], { desc: 'Chat with Microsoft Copilot — .copilot <text>', category: 'AI' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}copilot <your question>`);
+  cmd(['claude'], { desc: 'Chat with Claude AI', category: 'Nexray-AI' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'claude <text>');
+    await react(sock, msg, '🧠');
+    try {
+      const r = await nx.ai.claude({ text: args.join(' ') });
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
+      await sendReply(sock, msg, `🧠 *Claude AI*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['copilot'], { desc: 'Chat with Microsoft Copilot', category: 'Nexray-AI' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'copilot <text>');
     await react(sock, msg, '🤖');
     try {
       const r = await nx.ai.copilot({ text: args.join(' ') });
-      const t = _nxText(r); if (!t) throw new Error('No response');
-      await sendReply(sock, msg, `🤖 *Copilot*\n\n${t}`);
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
+      await sendReply(sock, msg, `🤖 *Copilot AI*\n\n${t}`);
       await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  cmd(['deepimg', 'aiimage2'], { desc: 'Generate image with DeepAI — .deepimg <prompt>', category: 'AI' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}deepimg <prompt>`);
-    await react(sock, msg, '🌀');
+  cmd(['deepimg'], { desc: 'Generate image with DeepImg AI', category: 'Nexray-AI' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'deepimg <prompt>');
+    await react(sock, msg, '🎨');
     try {
-      const r = await nx.ai.deepimg({ text: args.join(' ') });
-      const buf = await _nxMedia(r, axios); if (!buf) throw new Error('No image');
-      await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: `🖼️ *DeepAI*\n${args.join(' ')}` }, { quoted: msg });
-      await react(sock, msg, '✅');
+      const r   = await nx.ai.deepimg({ prompt: args.join(' ') });
+      const m   = await _media(r, axios);
+      if (m) { await _sendImg(sock, msg, m.buf, `🎨 *DeepImg AI*\nPrompt: ${args.join(' ')}`); await react(sock, msg, '✅'); }
+      else { const t = _jsonFmt(r); await sendReply(sock, msg, `🎨 *DeepImg:* ${t || 'No image generated'}`); }
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  cmd(['deepsearch', 'nxdeepsearch'], { desc: 'DeepSearch AI — .deepsearch <query>', category: 'AI' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}deepsearch <query>`);
-    await react(sock, msg, '🤖');
+  cmd(['deepsearch'], { desc: 'Deep search with AI', category: 'Nexray-AI' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'deepsearch <query>');
+    await react(sock, msg, '🔎');
     try {
       const r = await nx.ai.deepsearch({ text: args.join(' ') });
-      const t = _nxText(r); if (!t) throw new Error('No response');
-      await sendReply(sock, msg, `🔍 *DeepSearch*\n\n${t}`);
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
+      await sendReply(sock, msg, `🔎 *DeepSearch AI*\n\n${t}`);
       await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  cmd(['dolphinai', 'dolphin'], { desc: 'Dolphin AI chat — .dolphinai <text>', category: 'AI' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}dolphinai <your question>`);
+  cmd(['deepseek'], { desc: 'Chat with DeepSeek AI', category: 'Nexray-AI' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'deepseek <text>');
     await react(sock, msg, '🤖');
     try {
+      const r = await nx.ai.deepseek({ text: args.join(' ') });
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
+      await sendReply(sock, msg, `🤖 *DeepSeek AI*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['dgaf'], { desc: 'Chat with Dgaf AI', category: 'Nexray-AI' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'dgaf <text>');
+    await react(sock, msg, '🤖');
+    try {
+      const r = await nx.ai.dgaf({ text: args.join(' ') });
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
+      await sendReply(sock, msg, `🤖 *Dgaf AI*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['dolphin'], { desc: 'Chat with Dolphin AI', category: 'Nexray-AI' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'dolphin <text>');
+    await react(sock, msg, '🐬');
+    try {
       const r = await nx.ai.dolphin({ text: args.join(' ') });
-      const t = _nxText(r); if (!t) throw new Error('No response');
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
       await sendReply(sock, msg, `🐬 *Dolphin AI*\n\n${t}`);
       await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  cmd(['dreamanalyze', 'analisdream'], { desc: 'Analyze your dream — .dreamanalyze <dream description>', category: 'AI' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}dreamanalyze <your dream>`);
+  cmd(['dracintts', 'dracin-tts'], { desc: 'Dracin Text-to-Speech', category: 'Nexray-AI' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'dracintts <text>');
+    await react(sock, msg, '🎙️');
+    try {
+      const r = await nx.ai.dracinTts({ text: args.join(' ') });
+      const m = await _media(r, axios);
+      if (m) { await _sendAudio(sock, msg, m.buf); await react(sock, msg, '✅'); }
+      else throw new Error('No audio returned');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['dreamanalyze', 'dream'], { desc: 'Analyze dream with AI', category: 'Nexray-AI' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'dreamanalyze <describe your dream>');
     await react(sock, msg, '🌙');
     try {
       const r = await nx.ai.dreamanalyze({ text: args.join(' ') });
-      const t = _nxText(r); if (!t) throw new Error('No response');
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
       await sendReply(sock, msg, `🌙 *Dream Analysis*\n\n${t}`);
       await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  cmd(['duckai', 'duckduck'], { desc: 'DuckDuckGo AI chat — .duckai <text>', category: 'AI' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}duckai <your question>`);
+  cmd(['duck', 'duckai'], { desc: 'Chat with Duck AI', category: 'Nexray-AI' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'duck <text>');
     await react(sock, msg, '🦆');
     try {
       const r = await nx.ai.duck({ text: args.join(' ') });
-      const t = _nxText(r); if (!t) throw new Error('No response');
-      await sendReply(sock, msg, `🦆 *DuckDuckGo AI*\n\n${t}`);
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
+      await sendReply(sock, msg, `🦆 *Duck AI*\n\n${t}`);
       await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  cmd(['epsilon', 'epsilonai'], { desc: 'Epsilon AI chat — .epsilon <text>', category: 'AI' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}epsilon <your question>`);
-    await react(sock, msg, '🤖');
+  cmd(['epsilon'], { desc: 'Academic search with Epsilon AI', category: 'Nexray-AI' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'epsilon <query>');
+    await react(sock, msg, '📚');
     try {
       const r = await nx.ai.epsilon({ text: args.join(' ') });
-      const t = _nxText(r); if (!t) throw new Error('No response');
-      await sendReply(sock, msg, `🤖 *Epsilon AI*\n\n${t}`);
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
+      await sendReply(sock, msg, `📚 *Epsilon AI*\n\n${t}`);
       await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  cmd(['feloai', 'felo'], { desc: 'Felo AI search — .feloai <query>', category: 'AI' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}feloai <query>`);
+  cmd(['felo'], { desc: 'Chat with Felo AI', category: 'Nexray-AI' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'felo <text>');
     await react(sock, msg, '🤖');
     try {
       const r = await nx.ai.felo({ text: args.join(' ') });
-      const t = _nxText(r); if (!t) throw new Error('No response');
-      await sendReply(sock, msg, `🔍 *Felo AI*\n\n${t}`);
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
+      await sendReply(sock, msg, `🤖 *Felo AI*\n\n${t}`);
       await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  cmd(['geminitts', 'gtts2'], { desc: 'Gemini text-to-speech — .geminitts <text>', category: 'AI' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}geminitts <text to speak>`);
-    await react(sock, msg, '🌀');
+  cmd(['flux', 'fluxai'], { desc: 'Generate image with Flux AI v1', category: 'Nexray-AI' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'flux <prompt>');
+    await react(sock, msg, '🎨');
+    try {
+      const r = await nx.ai.fluxV1({ prompt: args.join(' ') });
+      const m = await _media(r, axios);
+      if (m) { await _sendImg(sock, msg, m.buf, `🎨 *Flux AI*\nPrompt: ${args.join(' ')}`); await react(sock, msg, '✅'); }
+      else { const t = _jsonFmt(r); await sendReply(sock, msg, `🎨 *Flux:* ${t || 'No image generated'}`); }
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['geminitts', 'gemini-tts'], { desc: 'Gemini Text-to-Speech', category: 'Nexray-AI' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'geminitts <text>');
+    await react(sock, msg, '🎙️');
     try {
       const r = await nx.ai.geminiTts({ text: args.join(' ') });
-      const buf = await _nxMedia(r, axios);
-      if (buf && _isAudBuf(buf)) {
-        await sock.sendMessage(msg.key.remoteJid, { audio: buf, mimetype: 'audio/mpeg', ptt: false }, { quoted: msg });
-      } else { throw new Error('No audio'); }
+      const m = await _media(r, axios);
+      if (m) { await _sendAudio(sock, msg, m.buf); await react(sock, msg, '✅'); }
+      else throw new Error('No audio returned');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['gemini'], { desc: 'Chat with Google Gemini', category: 'Nexray-AI' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'gemini <text>');
+    await react(sock, msg, '💎');
+    try {
+      const r = await nx.ai.gemini({ text: args.join(' ') });
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
+      await sendReply(sock, msg, `💎 *Google Gemini*\n\n${t}`);
       await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  cmd(['gitagpt', 'gita'], { desc: 'Bhagavad Gita AI answers — .gitagpt <question>', category: 'AI' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}gitagpt <your question>`);
-    await react(sock, msg, '🕉️');
+  cmd(['gitagpt', 'gita'], { desc: 'Bhagavad Gita AI Q&A', category: 'Nexray-AI' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'gitagpt <question>');
+    await react(sock, msg, '📖');
     try {
       const r = await nx.ai.gitagpt({ text: args.join(' ') });
-      const t = _nxText(r); if (!t) throw new Error('No response');
-      await sendReply(sock, msg, `🕉️ *Bhagavad Gita AI*\n\n${t}`);
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
+      await sendReply(sock, msg, `📖 *GitaGPT*\n\n${t}`);
       await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  cmd(['glmai', 'glm'], { desc: 'GLM AI chat — .glmai <text>', category: 'AI' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}glmai <your question>`);
+  cmd(['glm'], { desc: 'Chat with GLM AI', category: 'Nexray-AI' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'glm <text>');
     await react(sock, msg, '🤖');
     try {
       const r = await nx.ai.glm({ text: args.join(' ') });
-      const t = _nxText(r); if (!t) throw new Error('No response');
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
       await sendReply(sock, msg, `🤖 *GLM AI*\n\n${t}`);
       await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  cmd(['gpt35', 'nxgpt3'], { desc: 'GPT-3.5 chat — .gpt35 <text>', category: 'AI' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}gpt35 <your question>`);
+  cmd(['gpt35', 'gpt3'], { desc: 'Chat with GPT-3.5 Turbo', category: 'Nexray-AI' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'gpt35 <text>');
     await react(sock, msg, '🤖');
     try {
       const r = await nx.ai.gpt35({ text: args.join(' ') });
-      const t = _nxText(r); if (!t) throw new Error('No response');
-      await sendReply(sock, msg, `🤖 *GPT-3.5*\n\n${t}`);
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
+      await sendReply(sock, msg, `🤖 *GPT-3.5 Turbo*\n\n${t}`);
       await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  cmd(['ideogram', 'ideoimg'], { desc: 'Generate image with Ideogram AI — .ideogram <prompt>', category: 'AI' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}ideogram <image prompt>`);
-    await react(sock, msg, '🌀');
+  cmd(['gptimage', 'editimg'], { desc: 'Edit image with GPT Vision (reply to an image)', category: 'Nexray-AI' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'gptimage <prompt> (reply to an image)');
+    await react(sock, msg, '🎨');
     try {
-      const r = await nx.ai.ideogram({ text: args.join(' ') });
-      const buf = await _nxMedia(r, axios); if (!buf) throw new Error('No image');
-      await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: `🖼️ *Ideogram AI*\n${args.join(' ')}` }, { quoted: msg });
-      await react(sock, msg, '✅');
+      const imgBuf = await _getImgFromMsg(msg, downloadContentFromMessage);
+      if (!imgBuf) return sendReply(sock, msg, '⚠️ Please reply to an image with your prompt!');
+      const r = await nx.ai.gptimage({ image: imgBuf, param: args.join(' ') });
+      const m = await _media(r, axios);
+      if (m) { await _sendImg(sock, msg, m.buf, `🎨 *GPT Image Edit*`); await react(sock, msg, '✅'); }
+      else throw new Error('No image returned');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  cmd(['img2prompt', 'image2prompt'], { desc: 'Generate prompt from image — reply to image with .img2prompt', category: 'AI' }, async (sock, msg, args) => {
-    const _ctx = msg.message?.extendedTextMessage?.contextInfo;
-    const _imgM = msg.message?.imageMessage || _ctx?.quotedMessage?.imageMessage;
-    if (!_imgM) return sendReply(sock, msg, `Reply to an image with ${P}img2prompt`);
-    await react(sock, msg, '🌀');
+  cmd(['grammarcheck', 'grammar'], { desc: 'Check and fix grammar', category: 'Nexray-AI' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'grammarcheck <text>');
+    await react(sock, msg, '✏️');
     try {
-      const _upload = await nx.uploader.upload({ buffer: await (async () => { const s = await downloadContentFromMessage(_imgM, 'image'); let b = Buffer.from([]); for await (const c of s) b = Buffer.concat([b,c]); return b; })() });
-      const _url = _upload?.result?.url || _upload?.data?.url || _upload?.url;
-      if (!_url) throw new Error('Upload failed');
-      const r = await nx.ai.image2prompt({ url: _url });
-      const t = _nxText(r); if (!t) throw new Error('No response');
-      await sendReply(sock, msg, `✍️ *Image Prompt*\n\n${t}`);
+      const r = await nx.ai.grammarcheck({ text: args.join(' ') });
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
+      await sendReply(sock, msg, `✏️ *Grammar Check*\n\n${t}`);
       await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  cmd(['islamcity', 'islamicity'], { desc: 'Islamic Q&A — .islamcity <question>', category: 'AI' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}islamcity <your Islamic question>`);
+  cmd(['hammer', 'hammerai'], { desc: 'Chat with Hammer AI', category: 'Nexray-AI' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'hammer <text>');
+    await react(sock, msg, '🔨');
+    try {
+      const r = await nx.ai.hammer({ text: args.join(' ') });
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
+      await sendReply(sock, msg, `🔨 *Hammer AI*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['heck'], { desc: 'Chat with Heck AI', category: 'Nexray-AI' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'heck <text>');
+    await react(sock, msg, '🤖');
+    try {
+      const r = await nx.ai.heck({ text: args.join(' ') });
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
+      await sendReply(sock, msg, `🤖 *Heck AI*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['ideogram'], { desc: 'Generate image with Ideogram AI', category: 'Nexray-AI' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'ideogram <prompt>');
+    await react(sock, msg, '🎨');
+    try {
+      const r = await nx.ai.ideogram({ prompt: args.join(' ') });
+      const m = await _media(r, axios);
+      if (m) { await _sendImg(sock, msg, m.buf, `🎨 *Ideogram AI*\nPrompt: ${args.join(' ')}`); await react(sock, msg, '✅'); }
+      else { const t = _jsonFmt(r); await sendReply(sock, msg, `🎨 *Ideogram:* ${t || 'No image generated'}`); }
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['image2prompt', 'img2prompt'], { desc: 'Generate prompt from image URL', category: 'Nexray-AI' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'image2prompt <image-url>');
+    await react(sock, msg, '🔍');
+    try {
+      const r = await nx.ai.image2prompt({ url: args[0] });
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
+      await sendReply(sock, msg, `🔍 *Image to Prompt*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['islamcity'], { desc: 'Islamic Q&A with IslamCity AI', category: 'Nexray-AI' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'islamcity <question>');
     await react(sock, msg, '☪️');
     try {
       const r = await nx.ai.islamcity({ text: args.join(' ') });
-      const t = _nxText(r); if (!t) throw new Error('No response');
-      await sendReply(sock, msg, `☪️ *IslamCity*\n\n${t}`);
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
+      await sendReply(sock, msg, `☪️ *IslamCity AI*\n\n${t}`);
       await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  cmd(['islamicai', 'islamai'], { desc: 'Islamic AI Q&A — .islamicai <question>', category: 'AI' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}islamicai <your question>`);
+  cmd(['islamicai', 'islamic-ai'], { desc: 'Islamic AI chat', category: 'Nexray-AI' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'islamicai <question>');
     await react(sock, msg, '☪️');
     try {
       const r = await nx.ai.islamic({ text: args.join(' ') });
-      const t = _nxText(r); if (!t) throw new Error('No response');
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
       await sendReply(sock, msg, `☪️ *Islamic AI*\n\n${t}`);
       await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  cmd(['kimiAI', 'kimi'], { desc: 'Kimi AI chat — .kimi <text>', category: 'AI' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}kimi <your question>`);
+  cmd(['jadve'], { desc: 'Chat with Jadve AI', category: 'Nexray-AI' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'jadve <text>');
+    await react(sock, msg, '🤖');
+    try {
+      const r = await nx.ai.jadve({ text: args.join(' ') });
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
+      await sendReply(sock, msg, `🤖 *Jadve AI*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['jeeves'], { desc: 'Chat with Jeeves AI', category: 'Nexray-AI' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'jeeves <text>');
+    await react(sock, msg, '🧐');
+    try {
+      const r = await nx.ai.jeeves({ text: args.join(' ') });
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
+      await sendReply(sock, msg, `🧐 *Jeeves AI*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['kimi'], { desc: 'Chat with Kimi AI', category: 'Nexray-AI' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'kimi <text>');
     await react(sock, msg, '🤖');
     try {
       const r = await nx.ai.kimi({ text: args.join(' ') });
-      const t = _nxText(r); if (!t) throw new Error('No response');
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
       await sendReply(sock, msg, `🤖 *Kimi AI*\n\n${t}`);
       await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  cmd(['luminai', 'lumin'], { desc: 'Lumin AI — .luminai <text>', category: 'AI' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}luminai <your question>`);
-    await react(sock, msg, '🤖');
+  cmd(['llamacoder', 'llama'], { desc: 'Chat with LlamaCoder AI', category: 'Nexray-AI' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'llamacoder <text>');
+    await react(sock, msg, '🦙');
+    try {
+      const r = await nx.ai.llamacoder({ text: args.join(' ') });
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
+      await sendReply(sock, msg, `🦙 *LlamaCoder AI*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['lumin'], { desc: 'Chat with Lumin AI', category: 'Nexray-AI' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'lumin <text>');
+    await react(sock, msg, '💡');
     try {
       const r = await nx.ai.lumin({ text: args.join(' ') });
-      const t = _nxText(r); if (!t) throw new Error('No response');
-      await sendReply(sock, msg, `🤖 *Lumin AI*\n\n${t}`);
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
+      await sendReply(sock, msg, `💡 *Lumin AI*\n\n${t}`);
       await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  cmd(['magicstudio', 'magicimg'], { desc: 'Magic Studio image generation — .magicstudio <prompt>', category: 'AI' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}magicstudio <image prompt>`);
-    await react(sock, msg, '🌀');
+  cmd(['magicstudio'], { desc: 'Generate image with MagicStudio AI', category: 'Nexray-AI' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'magicstudio <prompt>');
+    await react(sock, msg, '🪄');
     try {
       const r = await nx.ai.magicstudio({ prompt: args.join(' ') });
-      const buf = await _nxMedia(r, axios); if (!buf) throw new Error('No image');
-      await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: `✨ *Magic Studio*\n${args.join(' ')}` }, { quoted: msg });
-      await react(sock, msg, '✅');
+      const m = await _media(r, axios);
+      if (m) { await _sendImg(sock, msg, m.buf, `🪄 *MagicStudio AI*\nPrompt: ${args.join(' ')}`); await react(sock, msg, '✅'); }
+      else { const t = _jsonFmt(r); await sendReply(sock, msg, `🪄 *MagicStudio:* ${t || 'No image generated'}`); }
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  cmd(['mathgpt', 'mathsolve'], { desc: 'Solve math problems — .mathgpt <problem>', category: 'AI' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}mathgpt <math problem>`);
+  cmd(['mathgpt', 'math'], { desc: 'Solve math with MathGPT AI', category: 'Nexray-AI' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'mathgpt <math problem>');
     await react(sock, msg, '🧮');
     try {
       const r = await nx.ai.mathgpt({ text: args.join(' ') });
-      const t = _nxText(r); if (!t) throw new Error('No response');
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
       await sendReply(sock, msg, `🧮 *MathGPT*\n\n${t}`);
       await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  cmd(['monicaai', 'monica'], { desc: 'Monica AI chat — .monicaai <text>', category: 'AI' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}monicaai <your question>`);
+  cmd(['monica'], { desc: 'Chat with Monica AI', category: 'Nexray-AI' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'monica <text>');
     await react(sock, msg, '🤖');
     try {
       const r = await nx.ai.monica({ text: args.join(' ') });
-      const t = _nxText(r); if (!t) throw new Error('No response');
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
       await sendReply(sock, msg, `🤖 *Monica AI*\n\n${t}`);
       await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  cmd(['nexrayai', 'nxai'], { desc: 'NexRay AI chat — .nexrayai <text>', category: 'AI' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}nexrayai <your question>`);
+  cmd(['morphic'], { desc: 'Chat with Morphic AI', category: 'Nexray-AI' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'morphic <text>');
+    await react(sock, msg, '🔮');
+    try {
+      const r = await nx.ai.morphic({ text: args.join(' ') });
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
+      await sendReply(sock, msg, `🔮 *Morphic AI*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['muslim', 'muslimbot'], { desc: 'Islamic AI chat (Muslim)', category: 'Nexray-AI' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'muslim <question>');
+    await react(sock, msg, '☪️');
+    try {
+      const r = await nx.ai.muslim({ text: args.join(' ') });
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
+      await sendReply(sock, msg, `☪️ *Muslim AI*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['nanobanana', 'imgprompt'], { desc: 'Modify image with prompt (reply to image)', category: 'Nexray-AI' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'nanobanana <prompt> (reply to an image)');
+    await react(sock, msg, '🎨');
+    try {
+      const imgBuf = await _getImgFromMsg(msg, downloadContentFromMessage);
+      if (!imgBuf) return sendReply(sock, msg, '⚠️ Please reply to an image with your prompt!');
+      const r = await nx.ai.nanobanana({ image: imgBuf, param: args.join(' ') });
+      const m = await _media(r, axios);
+      if (m) { await _sendImg(sock, msg, m.buf, `🎨 *Nanobanana AI Edit*`); await react(sock, msg, '✅'); }
+      else throw new Error('No image returned');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['natalie', 'natalieai'], { desc: 'Chat with Natalie AI', category: 'Nexray-AI' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'natalie <text>');
     await react(sock, msg, '🤖');
     try {
-      const r = await nx.ai.nexray({ text: args.join(' ') });
-      const t = _nxText(r); if (!t) throw new Error('No response');
-      await sendReply(sock, msg, `🤖 *NexRay AI*\n\n${t}`);
+      const r = await nx.ai.natalie({ text: args.join(' ') });
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
+      await sendReply(sock, msg, `🤖 *Natalie AI*\n\n${t}`);
       await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  cmd(['perplexityai', 'perplexity'], { desc: 'Perplexity AI search — .perplexityai <query>', category: 'AI' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}perplexityai <query>`);
-    await react(sock, msg, '🔍');
+  cmd(['nexrayai', 'nx-ai'], { desc: 'Chat with NexRay AI', category: 'Nexray-AI' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'nexrayai <text>');
+    await react(sock, msg, '⚡');
+    try {
+      const r = await nx.ai.nexray({ text: args.join(' ') });
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
+      await sendReply(sock, msg, `⚡ *NexRay AI*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['nowtech'], { desc: 'Chat with Nowtech AI', category: 'Nexray-AI' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'nowtech <text>');
+    await react(sock, msg, '🤖');
+    try {
+      const r = await nx.ai.nowtech({ text: args.join(' ') });
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
+      await sendReply(sock, msg, `🤖 *Nowtech AI*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['openai', 'openaibot'], { desc: 'Chat with OpenAI', category: 'Nexray-AI' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'openai <text>');
+    await react(sock, msg, '🤖');
+    try {
+      const r = await nx.ai.openai({ text: args.join(' ') });
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
+      await sendReply(sock, msg, `🤖 *OpenAI*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['overchat'], { desc: 'Chat with Overchat AI', category: 'Nexray-AI' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'overchat <text>');
+    await react(sock, msg, '🤖');
+    try {
+      const r = await nx.ai.overchat({ text: args.join(' ') });
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
+      await sendReply(sock, msg, `🤖 *Overchat AI*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['perplexity'], { desc: 'Chat with Perplexity AI', category: 'Nexray-AI' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'perplexity <query>');
+    await react(sock, msg, '🔮');
     try {
       const r = await nx.ai.perplexity({ text: args.join(' ') });
-      const t = _nxText(r); if (!t) throw new Error('No response');
-      await sendReply(sock, msg, `🔍 *Perplexity AI*\n\n${t}`);
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
+      await sendReply(sock, msg, `🔮 *Perplexity AI*\n\n${t}`);
       await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  cmd(['quillbot', 'paraphrase'], { desc: 'Paraphrase text with QuillBot — .quillbot <text>', category: 'AI' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}quillbot <text to paraphrase>`);
-    await react(sock, msg, '✍️');
+  cmd(['powerbrain'], { desc: 'Chat with PowerBrain AI', category: 'Nexray-AI' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'powerbrain <text>');
+    await react(sock, msg, '🧠');
+    try {
+      const r = await nx.ai.powerbrain({ text: args.join(' ') });
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
+      await sendReply(sock, msg, `🧠 *PowerBrain AI*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['publicai', 'pub-ai'], { desc: 'Chat with Public AI', category: 'Nexray-AI' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'publicai <text>');
+    await react(sock, msg, '🌐');
+    try {
+      const r = await nx.ai.public({ text: args.join(' ') });
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
+      await sendReply(sock, msg, `🌐 *Public AI*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['quillbot', 'paraphrase'], { desc: 'Paraphrase text with QuillBot AI', category: 'Nexray-AI' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'quillbot <text>');
+    await react(sock, msg, '✏️');
     try {
       const r = await nx.ai.quillbot({ text: args.join(' ') });
-      const t = _nxText(r); if (!t) throw new Error('No response');
-      await sendReply(sock, msg, `✍️ *QuillBot Paraphrase*\n\n${t}`);
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
+      await sendReply(sock, msg, `✏️ *QuillBot AI*\n\n${t}`);
       await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  cmd(['simisimi', 'simi'], { desc: 'Chat with SimiSimi — .simisimi <text>', category: 'AI' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}simisimi <your message>`);
+  cmd(['riple'], { desc: 'Chat with Riple AI', category: 'Nexray-AI' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'riple <text>');
+    await react(sock, msg, '🤖');
+    try {
+      const r = await nx.ai.riple({ text: args.join(' ') });
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
+      await sendReply(sock, msg, `🤖 *Riple AI*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['schoolhub', 'school'], { desc: 'Chat with SchoolHub AI', category: 'Nexray-AI' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'schoolhub <question>');
+    await react(sock, msg, '🏫');
+    try {
+      const r = await nx.ai.schoolhub({ text: args.join(' ') });
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
+      await sendReply(sock, msg, `🏫 *SchoolHub AI*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['screnapp'], { desc: 'Chat with Screnapp AI', category: 'Nexray-AI' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'screnapp <text>');
+    await react(sock, msg, '🤖');
+    try {
+      const r = await nx.ai.screnapp({ text: args.join(' ') });
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
+      await sendReply(sock, msg, `🤖 *Screnapp AI*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['simisimi', 'simi'], { desc: 'Chat with Simi Simi', category: 'Nexray-AI' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'simisimi <text>');
     await react(sock, msg, '💬');
     try {
       const r = await nx.ai.simisimi({ text: args.join(' ') });
-      const t = _nxText(r); if (!t) throw new Error('No response');
-      await sendReply(sock, msg, `💬 *SimiSimi*\n\n${t}`);
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
+      await sendReply(sock, msg, `💬 *Simi Simi*\n\n${t}`);
       await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  cmd(['ailogo', 'sologo'], { desc: 'Generate logo with AI — .ailogo <text>', category: 'AI' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}ailogo <logo text>`);
-    await react(sock, msg, '🌀');
+  cmd(['skole'], { desc: 'Chat with Skole AI', category: 'Nexray-AI' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'skole <text>');
+    await react(sock, msg, '🤖');
+    try {
+      const r = await nx.ai.skole({ text: args.join(' ') });
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
+      await sendReply(sock, msg, `🤖 *Skole AI*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['sologo'], { desc: 'Generate logo with AI', category: 'Nexray-AI' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'sologo <prompt>');
+    await react(sock, msg, '🎨');
     try {
       const r = await nx.ai.sologo({ prompt: args.join(' ') });
-      const buf = await _nxMedia(r, axios); if (!buf) throw new Error('No image');
-      await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: `🎨 *AI Logo*\n${args.join(' ')}` }, { quoted: msg });
-      await react(sock, msg, '✅');
+      const m = await _media(r, axios);
+      if (m) { await _sendImg(sock, msg, m.buf, `🎨 *Sologo AI*\nPrompt: ${args.join(' ')}`); await react(sock, msg, '✅'); }
+      else { const t = _jsonFmt(r); await sendReply(sock, msg, `🎨 *Sologo:* ${t || 'No image generated'}`); }
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  cmd(['aistory', 'cerita'], { desc: 'Generate a short story with AI — .aistory <theme>', category: 'AI' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}aistory <story theme>`);
+  cmd(['story-ai', 'aistory'], { desc: 'Generate a story with AI', category: 'Nexray-AI' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'story-ai <topic>');
     await react(sock, msg, '📖');
     try {
-      const r = await nx.ai.story({ prompt: args.join(' ') });
-      const t = _nxText(r); if (!t) throw new Error('No response');
+      const r = await nx.ai.story({ text: args.join(' ') });
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
       await sendReply(sock, msg, `📖 *AI Story*\n\n${t}`);
       await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  cmd(['aimusic', 'suno'], { desc: 'Generate music with Suno AI — .aimusic <description>', category: 'AI' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}aimusic <music description>`);
-    await react(sock, msg, '🌀');
+  cmd(['suno', 'aimusic'], { desc: 'Generate music with Suno AI', category: 'Nexray-AI' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'suno <prompt>');
+    await react(sock, msg, '🎵');
     try {
-      const r = await nx.ai.suno({ prompt: args.join(' ') });
-      const buf = await _nxMedia(r, axios);
-      if (buf && _isAudBuf(buf)) {
-        await sock.sendMessage(msg.key.remoteJid, { audio: buf, mimetype: 'audio/mpeg', ptt: false }, { quoted: msg });
+      const r = await nx.ai.suno({ text: args.join(' ') });
+      const m = await _media(r, axios);
+      if (m && (m.ct.includes('audio') || m.ct.includes('mp'))) {
+        await _sendAudio(sock, msg, m.buf); await react(sock, msg, '✅');
       } else {
-        const t = _nxText(r); if (!t) throw new Error('No audio/response');
-        await sendReply(sock, msg, `🎵 *Suno AI Music*\n\n${t}`);
+        const t = _jsonFmt(r); await sendReply(sock, msg, `🎵 *Suno AI*\n\n${t || 'No audio generated'}`);
       }
-      await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  cmd(['turbochat', 'turbo'], { desc: 'TurboChat AI — .turbochat <text>', category: 'AI' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}turbochat <your question>`);
-    await react(sock, msg, '🤖');
+  cmd(['text2image', 'txt2img'], { desc: 'Generate image from text', category: 'Nexray-AI' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'text2image <prompt>');
+    await react(sock, msg, '🎨');
+    try {
+      const r = await nx.ai.text2image({ prompt: args.join(' ') });
+      const m = await _media(r, axios);
+      if (m) { await _sendImg(sock, msg, m.buf, `🎨 *Text to Image*\nPrompt: ${args.join(' ')}`); await react(sock, msg, '✅'); }
+      else { const t = _jsonFmt(r); await sendReply(sock, msg, `🎨 *Text2Image:* ${t || 'No image generated'}`); }
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['turbochat', 'turbo'], { desc: 'Chat with TurboChat AI', category: 'Nexray-AI' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'turbochat <text>');
+    await react(sock, msg, '⚡');
     try {
       const r = await nx.ai.turbochat({ text: args.join(' ') });
-      const t = _nxText(r); if (!t) throw new Error('No response');
-      await sendReply(sock, msg, `🤖 *TurboChat AI*\n\n${t}`);
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
+      await sendReply(sock, msg, `⚡ *TurboChat AI*\n\n${t}`);
       await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  cmd(['veniceai', 'venice'], { desc: 'Venice AI chat — .veniceai <text>', category: 'AI' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}veniceai <your question>`);
+  cmd(['turboseek'], { desc: 'Chat with TurboSeek AI', category: 'Nexray-AI' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'turboseek <query>');
+    await react(sock, msg, '🔎');
+    try {
+      const r = await nx.ai.turboseek({ text: args.join(' ') });
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
+      await sendReply(sock, msg, `🔎 *TurboSeek AI*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['venice'], { desc: 'Chat with Venice AI', category: 'Nexray-AI' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'venice <text>');
     await react(sock, msg, '🤖');
     try {
       const r = await nx.ai.venice({ text: args.join(' ') });
-      const t = _nxText(r); if (!t) throw new Error('No response');
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
       await sendReply(sock, msg, `🤖 *Venice AI*\n\n${t}`);
       await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  cmd(['veo2', 'aivideo'], { desc: 'Generate video with Veo2 AI — .veo2 <prompt>', category: 'AI' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}veo2 <video prompt>`);
-    await react(sock, msg, '🌀');
+  cmd(['veo2'], { desc: 'Generate video with Veo2 AI', category: 'Nexray-AI' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'veo2 <prompt>');
+    await react(sock, msg, '🎬');
     try {
       const r = await nx.ai.veo2({ prompt: args.join(' ') });
-      const buf = await _nxMedia(r, axios);
-      if (buf && buf.length > 1000) {
-        await sock.sendMessage(msg.key.remoteJid, { video: buf, mimetype: 'video/mp4', caption: `🎬 *Veo2 AI Video*\n${args.join(' ')}` }, { quoted: msg });
-      } else { throw new Error('No video generated'); }
-      await react(sock, msg, '✅');
+      const m = await _media(r, axios);
+      if (m && m.ct.includes('video')) { await _sendVideo(sock, msg, m.buf, `🎬 *Veo2 AI*`); await react(sock, msg, '✅'); }
+      else if (m) { await _sendImg(sock, msg, m.buf, `🎬 *Veo2 AI*`); await react(sock, msg, '✅'); }
+      else { const t = _jsonFmt(r); await sendReply(sock, msg, `🎬 *Veo2:* ${t || 'No media generated'}`); }
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  cmd(['veo3', 'aivideo3'], { desc: 'Generate video with Veo3 AI — .veo3 <prompt>', category: 'AI' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}veo3 <video prompt>`);
-    await react(sock, msg, '🌀');
+  cmd(['veo3'], { desc: 'Generate video with Veo3 AI', category: 'Nexray-AI' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'veo3 <prompt>');
+    await react(sock, msg, '🎬');
     try {
       const r = await nx.ai.veo3({ prompt: args.join(' ') });
-      const buf = await _nxMedia(r, axios);
-      if (buf && buf.length > 1000) {
-        await sock.sendMessage(msg.key.remoteJid, { video: buf, mimetype: 'video/mp4', caption: `🎬 *Veo3 AI Video*\n${args.join(' ')}` }, { quoted: msg });
-      } else { throw new Error('No video generated'); }
+      const m = await _media(r, axios);
+      if (m && m.ct.includes('video')) { await _sendVideo(sock, msg, m.buf, `🎬 *Veo3 AI*`); await react(sock, msg, '✅'); }
+      else if (m) { await _sendImg(sock, msg, m.buf, `🎬 *Veo3 AI*`); await react(sock, msg, '✅'); }
+      else { const t = _jsonFmt(r); await sendReply(sock, msg, `🎬 *Veo3:* ${t || 'No media generated'}`); }
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['vider'], { desc: 'Chat with Vider AI', category: 'Nexray-AI' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'vider <text>');
+    await react(sock, msg, '🤖');
+    try {
+      const r = await nx.ai.vider({ text: args.join(' ') });
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
+      await sendReply(sock, msg, `🤖 *Vider AI*\n\n${t}`);
       await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  cmd(['webpilot', 'browseweb'], { desc: 'Browse/summarize a website — .webpilot <url>', category: 'AI' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}webpilot <website url>`);
+  cmd(['webpilot'], { desc: 'Browse web with WebPilot AI', category: 'Nexray-AI' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'webpilot <url or question>');
     await react(sock, msg, '🌐');
     try {
       const r = await nx.ai.webpilot({ text: args.join(' ') });
-      const t = _nxText(r); if (!t) throw new Error('No response');
-      await sendReply(sock, msg, `🌐 *WebPilot*\n\n${t}`);
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
+      await sendReply(sock, msg, `🌐 *WebPilot AI*\n\n${t}`);
       await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  cmd(['writesonic', 'aiwrite'], { desc: 'AI writing assistant — .writesonic <topic>', category: 'AI' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}writesonic <writing topic>`);
+  cmd(['whiterabbitneo', 'wrn'], { desc: 'Chat with WhiteRabbitNeo AI', category: 'Nexray-AI' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'whiterabbitneo <text>');
+    await react(sock, msg, '🐇');
+    try {
+      const r = await nx.ai.whiterabbitneo({ text: args.join(' ') });
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
+      await sendReply(sock, msg, `🐇 *WhiteRabbitNeo AI*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['writesonic'], { desc: 'Chat with Writesonic AI', category: 'Nexray-AI' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'writesonic <text>');
     await react(sock, msg, '✍️');
     try {
       const r = await nx.ai.writesonic({ text: args.join(' ') });
-      const t = _nxText(r); if (!t) throw new Error('No response');
-      await sendReply(sock, msg, `✍️ *WriteSonic AI*\n\n${t}`);
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
+      await sendReply(sock, msg, `✍️ *Writesonic AI*\n\n${t}`);
       await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  // ──────────────────────────────────────────────────────────────────────────
-  // CANVAS COMMANDS
-  // ──────────────────────────────────────────────────────────────────────────
-
-  cmd(['ship', 'shipcouple'], { desc: 'Ship two names together — .ship <name1> <name2>', category: 'CANVAS' }, async (sock, msg, args) => {
-    if (args.length < 2) return sendReply(sock, msg, `Usage: ${P}ship <name1> <name2>`);
-    await react(sock, msg, '🌀');
+  cmd(['youchat', 'you'], { desc: 'Chat with You.com AI', category: 'Nexray-AI' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'youchat <text>');
+    await react(sock, msg, '🤖');
     try {
-      const r = await nx.canvas.ship({ username1: args[0], username2: args[1] });
-      const buf = await _nxMedia(r, axios); if (!buf) throw new Error('No image');
-      await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: `❤️ *Ship: ${args[0]} × ${args[1]}*` }, { quoted: msg });
+      const r = await nx.ai.youchat({ text: args.join(' ') });
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
+      await sendReply(sock, msg, `🤖 *You.com AI*\n\n${t}`);
       await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  cmd(['musiccard', 'lirikcard', 'lyriccard'], { desc: 'Music card — reply to image or include image URL for custom cover', category: 'CANVAS' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `🎵 *Music Card*\n\nUsage: ${P}musiccard <title> | <artist>\n💡 Reply to an image or include an image URL for cover art\nExample: ${P}musiccard Blinding Lights | The Weeknd`);
-    await react(sock, msg, '🌀');
-    try {
-      const _textArgs = args.filter(a => !/^https?:\/\//i.test(a));
-      const _raw = _textArgs.join(' ');
-      const [_title, _artist = 'Unknown Artist'] = _raw.split('|').map(s => s.trim());
-      let _imgUrl = null;
-      const _rCtx = msg.message?.extendedTextMessage?.contextInfo;
-      const _rImg = _rCtx?.quotedMessage?.imageMessage;
-      if (_rImg) { try { const _st=await downloadContentFromMessage(_rImg,'image'); let _ib=Buffer.from([]); for await(const c of _st) _ib=Buffer.concat([_ib,c]); if(_ib.length>500){const _up=await nx.uploader.upload({buffer:_ib});_imgUrl=_up?.result?.url||_up?.data?.url||_up?.url||null;} } catch {} }
-      if (!_imgUrl) { const _ua=args.find(a=>/^https?:\/\/.+\.(jpg|jpeg|png|webp|gif)/i.test(a)); if(_ua) _imgUrl=_ua; }
-      if (!_imgUrl) { try { _imgUrl=await sock.profilePictureUrl(msg.key.remoteJid,'image'); } catch {} }
-      if (!_imgUrl) _imgUrl = 'https://i.imgur.com/8sCo1iw.png';
-      const r = await nx.canvas.musiccard({ judul: _title, nama: _artist, image_url: _imgUrl });
-      let buf = r?.buffer || null;
-      if (!buf || !Buffer.isBuffer(buf) || buf.length < 500) buf = await _nxMedia(r, axios);
-      if (!buf) throw new Error('musiccard API returned no image');
-      await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: `🎵 *${_title}*\n👤 ${_artist}` }, { quoted: msg });
-      await react(sock, msg, '✅');
-    } catch (e) { await sendReply(sock, msg, `❌ Music card error: ${e.message}`); await react(sock, msg, '❌'); }
-  });
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 📺  ANIME  — 19 endpoints
+  // ═══════════════════════════════════════════════════════════════════════════
 
-  cmd(['cangura', 'guracard'], { desc: 'Generate Gura canvas — .cangura <text>', category: 'CANVAS' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}cangura <text>`);
-    await react(sock, msg, '🌀');
+  cmd(['anichin', 'anichin-search'], { desc: 'Search anime on Anichin', category: 'Nexray-Anime' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'anichin <anime name>');
+    await react(sock, msg, '🎌');
     try {
-      const r = await nx.canvas.gura({ text: args.join(' ') });
-      const buf = await _nxMedia(r, axios); if (!buf) throw new Error('No image');
-      await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: `🦈 *Gura Canvas*` }, { quoted: msg });
+      const r = await nx.anime.anichinSearch({ text: args.join(' ') });
+      const t = _jsonFmt(r); if (!t) throw new Error('No results');
+      await sendReply(sock, msg, `🎌 *Anichin Search*\n\n${t}`);
       await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  cmd(['canwanted', 'wantedcard'], { desc: 'Generate WANTED card — .canwanted <text>', category: 'CANVAS' }, async (sock, msg, args) => {
-    const _ctx = msg.message?.extendedTextMessage?.contextInfo;
-    const _imgM = msg.message?.imageMessage || _ctx?.quotedMessage?.imageMessage;
-    const text = args.join(' ') || 'WANTED';
-    if (!_imgM) return sendReply(sock, msg, `Reply to an image with ${P}canwanted [text]`);
-    await react(sock, msg, '🌀');
+  cmd(['anichin-detail'], { desc: 'Get anime detail from Anichin', category: 'Nexray-Anime' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'anichin-detail <url>');
+    await react(sock, msg, '🎌');
     try {
-      const _upload = await nx.uploader.upload({ buffer: await (async () => { const s = await downloadContentFromMessage(_imgM, 'image'); let b = Buffer.from([]); for await (const c of s) b = Buffer.concat([b,c]); return b; })() });
-      const _url = _upload?.result?.url || _upload?.data?.url || _upload?.url;
-      if (!_url) throw new Error('Upload failed');
-      const r = await nx.canvas.wanted({ url: _url, text });
-      const buf = await _nxMedia(r, axios); if (!buf) throw new Error('No image');
-      await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: `🔫 *WANTED*` }, { quoted: msg });
+      const r = await nx.anime.anichinDetail({ url: args[0] });
+      const t = _jsonFmt(r); if (!t) throw new Error('No data');
+      await sendReply(sock, msg, `🎌 *Anichin Detail*\n\n${t}`);
       await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  cmd(['canwasted', 'wasted'], { desc: 'WASTED effect on image — reply to image with .wasted', category: 'CANVAS' }, async (sock, msg) => {
-    const _ctx = msg.message?.extendedTextMessage?.contextInfo;
-    const _imgM = msg.message?.imageMessage || _ctx?.quotedMessage?.imageMessage;
-    if (!_imgM) return sendReply(sock, msg, `Reply to an image with ${P}wasted`);
-    await react(sock, msg, '🌀');
+  cmd(['anichin-genre'], { desc: 'Browse anime by genre on Anichin', category: 'Nexray-Anime' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'anichin-genre <genre>');
+    await react(sock, msg, '🎌');
     try {
-      const _upload = await nx.uploader.upload({ buffer: await (async () => { const s = await downloadContentFromMessage(_imgM, 'image'); let b = Buffer.from([]); for await (const c of s) b = Buffer.concat([b,c]); return b; })() });
-      const _url = _upload?.result?.url || _upload?.data?.url || _upload?.url;
-      if (!_url) throw new Error('Upload failed');
-      const r = await nx.canvas.wasted({ url: _url });
-      const buf = await _nxMedia(r, axios); if (!buf) throw new Error('No image');
-      await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: `💀 *WASTED*` }, { quoted: msg });
+      const r = await nx.anime.anichinGenre({ genre: args.join(' ') });
+      const t = _jsonFmt(r); if (!t) throw new Error('No data');
+      await sendReply(sock, msg, `🎌 *Anichin Genre: ${args.join(' ')}*\n\n${t}`);
       await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  cmd(['pixelate', 'pixelimg'], { desc: 'Pixelate an image — reply to image with .pixelate', category: 'CANVAS' }, async (sock, msg) => {
-    const _ctx = msg.message?.extendedTextMessage?.contextInfo;
-    const _imgM = msg.message?.imageMessage || _ctx?.quotedMessage?.imageMessage;
-    if (!_imgM) return sendReply(sock, msg, `Reply to an image with ${P}pixelate`);
-    await react(sock, msg, '🌀');
+  cmd(['anichin-genres'], { desc: 'List all Anichin genres', category: 'Nexray-Anime' }, async (sock, msg, args) => {
+    await react(sock, msg, '🎌');
     try {
-      const _upload = await nx.uploader.upload({ buffer: await (async () => { const s = await downloadContentFromMessage(_imgM, 'image'); let b = Buffer.from([]); for await (const c of s) b = Buffer.concat([b,c]); return b; })() });
-      const _url = _upload?.result?.url || _upload?.data?.url || _upload?.url;
-      if (!_url) throw new Error('Upload failed');
-      const r = await nx.canvas.pixelate({ url: _url });
-      const buf = await _nxMedia(r, axios); if (!buf) throw new Error('No image');
-      await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: `🔲 *Pixelated*` }, { quoted: msg });
+      const r = await nx.anime.anichinGenreList();
+      const t = _jsonFmt(r); if (!t) throw new Error('No data');
+      await sendReply(sock, msg, `🎌 *Anichin Genres*\n\n${t}`);
       await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  cmd(['glasseffect', 'glassimg'], { desc: 'Glass effect on image — reply to image with .glasseffect', category: 'CANVAS' }, async (sock, msg) => {
-    const _ctx = msg.message?.extendedTextMessage?.contextInfo;
-    const _imgM = msg.message?.imageMessage || _ctx?.quotedMessage?.imageMessage;
-    if (!_imgM) return sendReply(sock, msg, `Reply to an image with ${P}glasseffect`);
-    await react(sock, msg, '🌀');
+  cmd(['anichin-latest'], { desc: 'Latest anime on Anichin', category: 'Nexray-Anime' }, async (sock, msg, args) => {
+    await react(sock, msg, '🎌');
     try {
-      const _upload = await nx.uploader.upload({ buffer: await (async () => { const s = await downloadContentFromMessage(_imgM, 'image'); let b = Buffer.from([]); for await (const c of s) b = Buffer.concat([b,c]); return b; })() });
-      const _url = _upload?.result?.url || _upload?.data?.url || _upload?.url;
-      if (!_url) throw new Error('Upload failed');
-      const r = await nx.canvas.glass({ url: _url });
-      const buf = await _nxMedia(r, axios); if (!buf) throw new Error('No image');
-      await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: `🪟 *Glass Effect*` }, { quoted: msg });
+      const r = await nx.anime.anichinLatest();
+      const t = _jsonFmt(r); if (!t) throw new Error('No data');
+      await sendReply(sock, msg, `🎌 *Anichin Latest*\n\n${t}`);
       await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  cmd(['rainboweffect', 'rainbowimg'], { desc: 'Rainbow effect on image — reply to image with .rainboweffect', category: 'CANVAS' }, async (sock, msg) => {
-    const _ctx = msg.message?.extendedTextMessage?.contextInfo;
-    const _imgM = msg.message?.imageMessage || _ctx?.quotedMessage?.imageMessage;
-    if (!_imgM) return sendReply(sock, msg, `Reply to an image with ${P}rainboweffect`);
-    await react(sock, msg, '🌀');
+  cmd(['anichin-episode'], { desc: 'Get episode from Anichin', category: 'Nexray-Anime' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'anichin-episode <url>');
+    await react(sock, msg, '🎌');
     try {
-      const _upload = await nx.uploader.upload({ buffer: await (async () => { const s = await downloadContentFromMessage(_imgM, 'image'); let b = Buffer.from([]); for await (const c of s) b = Buffer.concat([b,c]); return b; })() });
-      const _url = _upload?.result?.url || _upload?.data?.url || _upload?.url;
-      if (!_url) throw new Error('Upload failed');
-      const r = await nx.canvas.rainbow({ url: _url });
-      const buf = await _nxMedia(r, axios); if (!buf) throw new Error('No image');
-      await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: `🌈 *Rainbow Effect*` }, { quoted: msg });
+      const r = await nx.anime.anichinEpisode({ url: args[0] });
+      const t = _jsonFmt(r); if (!t) throw new Error('No data');
+      await sendReply(sock, msg, `🎌 *Anichin Episode*\n\n${t}`);
       await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  // ──────────────────────────────────────────────────────────────────────────
-  // BERITA / NEWS (Indonesian)
-  // ──────────────────────────────────────────────────────────────────────────
-  const _beritaSources = [
-    ['antara','antara'],['cnbcindonesia','cnbcindonesia'],['cnnindonesia','cnn'],
-    ['detik','detik'],['kompas','kompas'],['liputan6','liputan6'],
-    ['republika','republika'],['viva','viva'],['tempo','tempo'],['tribun','tribun'],
-  ];
-  for (const [cmd_name, src] of _beritaSources) {
-    const _src = src;
-    cmd([`berita${cmd_name}`, `news${cmd_name}`], { desc: `Latest news from ${cmd_name} — .berita${cmd_name}`, category: 'INFO' }, async (sock, msg) => {
-      await react(sock, msg, '📰');
-      try {
-        const r = await nx.berita[_src]({});
-        const items = r?.result || r?.data || r;
-        if (!Array.isArray(items) || !items.length) throw new Error('No news');
-        const top = items.slice(0, 5);
-        const text = `📰 *${cmd_name.toUpperCase()} News*\n━━━━━━━━━━━━━━━━━━━━\n` +
-          top.map((n, i) => `${i+1}. *${n.title || n.judul || 'No title'}*\n   ${n.link || n.url || ''}`).join('\n\n');
-        await sendReply(sock, msg, text);
-        await react(sock, msg, '✅');
-      } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
-    });
+  cmd(['otakudesu', 'otaku-search'], { desc: 'Search anime on Otakudesu', category: 'Nexray-Anime' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'otakudesu <anime name>');
+    await react(sock, msg, '🎌');
+    try {
+      const r = await nx.anime.otakudesuSearch({ text: args.join(' ') });
+      const t = _jsonFmt(r); if (!t) throw new Error('No results');
+      await sendReply(sock, msg, `🎌 *Otakudesu Search*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['otakudesu-detail'], { desc: 'Get anime detail from Otakudesu', category: 'Nexray-Anime' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'otakudesu-detail <url>');
+    await react(sock, msg, '🎌');
+    try {
+      const r = await nx.anime.otakudesuDetail({ url: args[0] });
+      const t = _jsonFmt(r); if (!t) throw new Error('No data');
+      await sendReply(sock, msg, `🎌 *Otakudesu Detail*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['otakudesu-ongoing'], { desc: 'Ongoing anime on Otakudesu', category: 'Nexray-Anime' }, async (sock, msg, args) => {
+    await react(sock, msg, '🎌');
+    try {
+      const r = await nx.anime.otakudesuOngoing();
+      const t = _jsonFmt(r); if (!t) throw new Error('No data');
+      await sendReply(sock, msg, `🎌 *Otakudesu Ongoing*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['otakudesu-complete'], { desc: 'Completed anime on Otakudesu', category: 'Nexray-Anime' }, async (sock, msg, args) => {
+    await react(sock, msg, '🎌');
+    try {
+      const r = await nx.anime.otakudesuComplete();
+      const t = _jsonFmt(r); if (!t) throw new Error('No data');
+      await sendReply(sock, msg, `🎌 *Otakudesu Completed*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['otakudesu-episode'], { desc: 'Get episode from Otakudesu', category: 'Nexray-Anime' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'otakudesu-episode <url>');
+    await react(sock, msg, '🎌');
+    try {
+      const r = await nx.anime.otakudesuEpisode({ url: args[0] });
+      const t = _jsonFmt(r); if (!t) throw new Error('No data');
+      await sendReply(sock, msg, `🎌 *Otakudesu Episode*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['samehadaku', 'same-search'], { desc: 'Search anime on Samehadaku', category: 'Nexray-Anime' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'samehadaku <anime name>');
+    await react(sock, msg, '🎌');
+    try {
+      const r = await nx.anime.samehadakuSearch({ text: args.join(' ') });
+      const t = _jsonFmt(r); if (!t) throw new Error('No results');
+      await sendReply(sock, msg, `🎌 *Samehadaku Search*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['samehadaku-detail'], { desc: 'Get anime detail from Samehadaku', category: 'Nexray-Anime' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'samehadaku-detail <url>');
+    await react(sock, msg, '🎌');
+    try {
+      const r = await nx.anime.samehadakuDetail({ url: args[0] });
+      const t = _jsonFmt(r); if (!t) throw new Error('No data');
+      await sendReply(sock, msg, `🎌 *Samehadaku Detail*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['samehadaku-episode'], { desc: 'Get episode from Samehadaku', category: 'Nexray-Anime' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'samehadaku-episode <url>');
+    await react(sock, msg, '🎌');
+    try {
+      const r = await nx.anime.samehadakuEpisode({ url: args[0] });
+      const t = _jsonFmt(r); if (!t) throw new Error('No data');
+      await sendReply(sock, msg, `🎌 *Samehadaku Episode*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['samehadaku-latest'], { desc: 'Latest anime on Samehadaku', category: 'Nexray-Anime' }, async (sock, msg, args) => {
+    await react(sock, msg, '🎌');
+    try {
+      const r = await nx.anime.samehadakuLatest();
+      const t = _jsonFmt(r); if (!t) throw new Error('No data');
+      await sendReply(sock, msg, `🎌 *Samehadaku Latest*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['kusonime', 'kuso-search'], { desc: 'Search anime on Kusonime', category: 'Nexray-Anime' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'kusonime <anime name>');
+    await react(sock, msg, '🎌');
+    try {
+      const r = await nx.anime.kusonimeSearch({ text: args.join(' ') });
+      const t = _jsonFmt(r); if (!t) throw new Error('No results');
+      await sendReply(sock, msg, `🎌 *Kusonime Search*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['kusonime-detail'], { desc: 'Get anime detail from Kusonime', category: 'Nexray-Anime' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'kusonime-detail <url>');
+    await react(sock, msg, '🎌');
+    try {
+      const r = await nx.anime.kusonimeDetail({ url: args[0] });
+      const t = _jsonFmt(r); if (!t) throw new Error('No data');
+      await sendReply(sock, msg, `🎌 *Kusonime Detail*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['kusonime-latest'], { desc: 'Latest anime on Kusonime', category: 'Nexray-Anime' }, async (sock, msg, args) => {
+    await react(sock, msg, '🎌');
+    try {
+      const r = await nx.anime.kusonimeLatest();
+      const t = _jsonFmt(r); if (!t) throw new Error('No data');
+      await sendReply(sock, msg, `🎌 *Kusonime Latest*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['animequote', 'anime-quote'], { desc: 'Get random anime quote', category: 'Nexray-Anime' }, async (sock, msg, args) => {
+    await react(sock, msg, '💬');
+    try {
+      const r = await nx.anime.quote();
+      const t = _jsonFmt(r); if (!t) throw new Error('No data');
+      await sendReply(sock, msg, `💬 *Anime Quote*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 📰  BERITA / NEWS  — 10 endpoints
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  cmd(['berita-antara', 'antara'], { desc: 'Latest news from Antara', category: 'Nexray-News' }, async (sock, msg, args) => {
+    await react(sock, msg, '📰');
+    try {
+      const r = await nx.berita.antara();
+      const t = _jsonFmt(r); if (!t) throw new Error('No news');
+      await sendReply(sock, msg, `📰 *Antara News*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['berita-cnbc', 'cnbcindonesia'], { desc: 'Latest news from CNBC Indonesia', category: 'Nexray-News' }, async (sock, msg, args) => {
+    await react(sock, msg, '📰');
+    try {
+      const r = await nx.berita.cnbcindonesia();
+      const t = _jsonFmt(r); if (!t) throw new Error('No news');
+      await sendReply(sock, msg, `📰 *CNBC Indonesia*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['berita-cnn', 'cnn-news'], { desc: 'Latest news from CNN Indonesia', category: 'Nexray-News' }, async (sock, msg, args) => {
+    await react(sock, msg, '📰');
+    try {
+      const r = await nx.berita.cnn();
+      const t = _jsonFmt(r); if (!t) throw new Error('No news');
+      await sendReply(sock, msg, `📰 *CNN Indonesia*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['berita-detik', 'detik'], { desc: 'Latest news from Detik', category: 'Nexray-News' }, async (sock, msg, args) => {
+    await react(sock, msg, '📰');
+    try {
+      const r = await nx.berita.detik();
+      const t = _jsonFmt(r); if (!t) throw new Error('No news');
+      await sendReply(sock, msg, `📰 *Detik News*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['berita-kompas', 'kompas'], { desc: 'Latest news from Kompas', category: 'Nexray-News' }, async (sock, msg, args) => {
+    await react(sock, msg, '📰');
+    try {
+      const r = await nx.berita.kompas();
+      const t = _jsonFmt(r); if (!t) throw new Error('No news');
+      await sendReply(sock, msg, `📰 *Kompas News*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['berita-liputan6', 'liputan6'], { desc: 'Latest news from Liputan6', category: 'Nexray-News' }, async (sock, msg, args) => {
+    await react(sock, msg, '📰');
+    try {
+      const r = await nx.berita.liputan6();
+      const t = _jsonFmt(r); if (!t) throw new Error('No news');
+      await sendReply(sock, msg, `📰 *Liputan6 News*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['berita-republika', 'republika'], { desc: 'Latest news from Republika', category: 'Nexray-News' }, async (sock, msg, args) => {
+    await react(sock, msg, '📰');
+    try {
+      const r = await nx.berita.republika();
+      const t = _jsonFmt(r); if (!t) throw new Error('No news');
+      await sendReply(sock, msg, `📰 *Republika News*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['berita-tempo', 'tempo'], { desc: 'Latest news from Tempo', category: 'Nexray-News' }, async (sock, msg, args) => {
+    await react(sock, msg, '📰');
+    try {
+      const r = await nx.berita.tempo();
+      const t = _jsonFmt(r); if (!t) throw new Error('No news');
+      await sendReply(sock, msg, `📰 *Tempo News*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['berita-tribun', 'tribun'], { desc: 'Latest news from Tribun', category: 'Nexray-News' }, async (sock, msg, args) => {
+    await react(sock, msg, '📰');
+    try {
+      const r = await nx.berita.tribun();
+      const t = _jsonFmt(r); if (!t) throw new Error('No news');
+      await sendReply(sock, msg, `📰 *Tribun News*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['berita-viva', 'viva'], { desc: 'Latest news from Viva', category: 'Nexray-News' }, async (sock, msg, args) => {
+    await react(sock, msg, '📰');
+    try {
+      const r = await nx.berita.viva();
+      const t = _jsonFmt(r); if (!t) throw new Error('No news');
+      await sendReply(sock, msg, `📰 *Viva News*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 🖼️  CANVAS  — 10 endpoints
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  cmd(['canvas-gura', 'gura'], { desc: 'Gura template canvas (reply/send image URL)', category: 'Nexray-Canvas' }, async (sock, msg, args) => {
+    const url = args[0]; if (!url) return _noArgs(sock, msg, 'canvas-gura <image-url>');
+    await react(sock, msg, '🖼️');
+    try {
+      const r = await nx.canvas.gura({ url }); const m = await _media(r, axios);
+      if (m) { await _sendImg(sock, msg, m.buf, '🖼️ *Canvas Gura*'); await react(sock, msg, '✅'); }
+      else throw new Error('No image returned');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['canvas-jmk', 'jmk48'], { desc: 'JMK48 Tribun twibbon canvas', category: 'Nexray-Canvas' }, async (sock, msg, args) => {
+    const url = args[0]; if (!url) return _noArgs(sock, msg, 'canvas-jmk <image-url>');
+    await react(sock, msg, '🖼️');
+    try {
+      const r = await nx.canvas.jmk({ url }); const m = await _media(r, axios);
+      if (m) { await _sendImg(sock, msg, m.buf, '🖼️ *Canvas JMK48*'); await react(sock, msg, '✅'); }
+      else throw new Error('No image returned');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['canvas-lirik', 'lirik-canvas'], { desc: 'Music lyrics canvas', category: 'Nexray-Canvas' }, async (sock, msg, args) => {
+    if (args.length < 2) return _noArgs(sock, msg, 'canvas-lirik <image-url> <lyrics text>');
+    const url = args[0]; const text = args.slice(1).join(' ');
+    await react(sock, msg, '🎵');
+    try {
+      const r = await nx.canvas.lirik({ url, text }); const m = await _media(r, axios);
+      if (m) { await _sendImg(sock, msg, m.buf, '🎵 *Canvas Lirik*'); await react(sock, msg, '✅'); }
+      else throw new Error('No image returned');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['canvas-ship', 'ship'], { desc: 'Ship/couple canvas (2 image URLs)', category: 'Nexray-Canvas' }, async (sock, msg, args) => {
+    if (args.length < 2) return _noArgs(sock, msg, 'canvas-ship <url1> <url2>');
+    await react(sock, msg, '❤️');
+    try {
+      const r = await nx.canvas.ship({ url1: args[0], url2: args[1] }); const m = await _media(r, axios);
+      if (m) { await _sendImg(sock, msg, m.buf, '❤️ *Canvas Ship*'); await react(sock, msg, '✅'); }
+      else throw new Error('No image returned');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['canvas-wanted', 'wanted'], { desc: 'Wanted poster canvas', category: 'Nexray-Canvas' }, async (sock, msg, args) => {
+    const url = args[0]; if (!url) return _noArgs(sock, msg, 'canvas-wanted <image-url>');
+    await react(sock, msg, '🤠');
+    try {
+      const r = await nx.canvas.wanted({ url }); const m = await _media(r, axios);
+      if (m) { await _sendImg(sock, msg, m.buf, '🤠 *Wanted Poster*'); await react(sock, msg, '✅'); }
+      else throw new Error('No image returned');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['canvas-wasted', 'wasted'], { desc: 'Wasted overlay canvas', category: 'Nexray-Canvas' }, async (sock, msg, args) => {
+    const url = args[0]; if (!url) return _noArgs(sock, msg, 'canvas-wasted <image-url>');
+    await react(sock, msg, '💀');
+    try {
+      const r = await nx.canvas.wasted({ url }); const m = await _media(r, axios);
+      if (m) { await _sendImg(sock, msg, m.buf, '💀 *Wasted*'); await react(sock, msg, '✅'); }
+      else throw new Error('No image returned');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['musiccard', 'music-card'], { desc: 'Generate music card', category: 'Nexray-Canvas' }, async (sock, msg, args) => {
+    if (args.length < 3) return _noArgs(sock, msg, 'musiccard <title> <artist> <image-url>');
+    const [judul, nama, image_url] = [args[0], args[1], args[2]];
+    await react(sock, msg, '🎵');
+    try {
+      const r = await nx.canvas.musiccard({ judul, nama, image_url }); const m = await _media(r, axios);
+      if (m) { await _sendImg(sock, msg, m.buf, `🎵 *Music Card*\n${judul} — ${nama}`); await react(sock, msg, '✅'); }
+      else throw new Error('No image returned');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['canvas-pixelate', 'pixelate'], { desc: 'Pixelate image canvas', category: 'Nexray-Canvas' }, async (sock, msg, args) => {
+    const url = args[0]; if (!url) return _noArgs(sock, msg, 'canvas-pixelate <image-url>');
+    await react(sock, msg, '🔲');
+    try {
+      const r = await nx.canvas.pixelate({ url }); const m = await _media(r, axios);
+      if (m) { await _sendImg(sock, msg, m.buf, '🔲 *Pixelate Canvas*'); await react(sock, msg, '✅'); }
+      else throw new Error('No image returned');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['canvas-glass', 'glass-fx'], { desc: 'Glass effect canvas', category: 'Nexray-Canvas' }, async (sock, msg, args) => {
+    const url = args[0]; if (!url) return _noArgs(sock, msg, 'canvas-glass <image-url>');
+    await react(sock, msg, '🪟');
+    try {
+      const r = await nx.canvas.glass({ url }); const m = await _media(r, axios);
+      if (m) { await _sendImg(sock, msg, m.buf, '🪟 *Glass Effect*'); await react(sock, msg, '✅'); }
+      else throw new Error('No image returned');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['canvas-rainbow', 'rainbow-fx'], { desc: 'Rainbow effect canvas', category: 'Nexray-Canvas' }, async (sock, msg, args) => {
+    const url = args[0]; if (!url) return _noArgs(sock, msg, 'canvas-rainbow <image-url>');
+    await react(sock, msg, '🌈');
+    try {
+      const r = await nx.canvas.rainbow({ url }); const m = await _media(r, axios);
+      if (m) { await _sendImg(sock, msg, m.buf, '🌈 *Rainbow Effect*'); await react(sock, msg, '✅'); }
+      else throw new Error('No image returned');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ⬇️  DOWNLOADER  — 42 endpoints
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  // Helper: format downloader result
+  function _dlFmt(r, name) {
+    const t = _jsonFmt(r);
+    return t ? `⬇️ *${name} Downloader*\n\n${t}` : `⬇️ *${name}:* Could not retrieve link`;
   }
 
-  // ──────────────────────────────────────────────────────────────────────────
-  // DOWNLOADER (new platforms)
-  // ──────────────────────────────────────────────────────────────────────────
+  cmd(['dl', 'aio-dl'], { desc: 'All-in-one downloader (any URL)', category: 'Nexray-Downloader' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'dl <url>');
+    await react(sock, msg, '⬇️');
+    try {
+      const r = await nx.downloader.aio({ url: args[0] });
+      await sendReply(sock, msg, _dlFmt(r, 'AIO')); await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
 
-  cmd(['douyin', 'douyindl'], { desc: 'Download Douyin video — .douyin <url>', category: 'DOWNLOAD' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}douyin <douyin url>`);
-    await react(sock, msg, '🌀');
+  cmd(['applemusic-dl', 'amdl'], { desc: 'Download Apple Music', category: 'Nexray-Downloader' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'applemusic-dl <url>');
+    await react(sock, msg, '🍎');
+    try {
+      const r = await nx.downloader.applemusic({ url: args[0] });
+      await sendReply(sock, msg, _dlFmt(r, 'Apple Music')); await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['capcut-dl', 'capcutdl'], { desc: 'Download CapCut video', category: 'Nexray-Downloader' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'capcut-dl <url>');
+    await react(sock, msg, '🎬');
+    try {
+      const r = await nx.downloader.capcut({ url: args[0] });
+      await sendReply(sock, msg, _dlFmt(r, 'CapCut')); await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['douyin-dl', 'douyindl'], { desc: 'Download Douyin video', category: 'Nexray-Downloader' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'douyin-dl <url>');
+    await react(sock, msg, '⬇️');
     try {
       const r = await nx.downloader.douyin({ url: args[0] });
-      const url = r?.result?.url || r?.data?.url || r?.url;
-      if (!url) throw new Error('No download URL');
-      const buf = Buffer.from((await axios.get(url, { responseType: 'arraybuffer', timeout: 90000 })).data);
-      await sock.sendMessage(msg.key.remoteJid, { video: buf, mimetype: 'video/mp4', caption: '📱 *Douyin*' }, { quoted: msg });
-      await react(sock, msg, '✅');
+      await sendReply(sock, msg, _dlFmt(r, 'Douyin')); await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  cmd(['gofiledl', 'gofile'], { desc: 'Download from Gofile — .gofiledl <url>', category: 'DOWNLOAD' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}gofiledl <gofile.io url>`);
-    await react(sock, msg, '🌀');
+  cmd(['fb-dl', 'fbdl', 'facebook-dl'], { desc: 'Download Facebook video', category: 'Nexray-Downloader' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'fb-dl <url>');
+    await react(sock, msg, '📘');
+    try {
+      const r = await nx.downloader.facebook({ url: args[0] });
+      await sendReply(sock, msg, _dlFmt(r, 'Facebook')); await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['gdrive-dl', 'gdrived'], { desc: 'Download Google Drive file', category: 'Nexray-Downloader' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'gdrive-dl <url>');
+    await react(sock, msg, '📂');
+    try {
+      const r = await nx.downloader.gdrive({ url: args[0] });
+      await sendReply(sock, msg, _dlFmt(r, 'Google Drive')); await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['github-dl', 'gitdl'], { desc: 'Download GitHub repository', category: 'Nexray-Downloader' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'github-dl <url>');
+    await react(sock, msg, '💾');
+    try {
+      const r = await nx.downloader.github({ url: args[0] });
+      await sendReply(sock, msg, _dlFmt(r, 'GitHub')); await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['gofile-dl', 'gofile'], { desc: 'Download from GoFile', category: 'Nexray-Downloader' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'gofile-dl <url>');
+    await react(sock, msg, '📥');
     try {
       const r = await nx.downloader.gofile({ url: args[0] });
-      const url = r?.result?.url || r?.data?.url || r?.url;
-      if (!url) { await sendReply(sock, msg, `📁 *GoFile*\n\nDirect link: ${r?.result || JSON.stringify(r?.data || r)}`); }
-      else {
-        const buf = Buffer.from((await axios.get(url, { responseType: 'arraybuffer', timeout: 120000 })).data);
-        await sock.sendMessage(msg.key.remoteJid, { document: buf, fileName: `gofile_${Date.now()}.bin`, mimetype: 'application/octet-stream', caption: '📁 *GoFile*' }, { quoted: msg });
-      }
-      await react(sock, msg, '✅');
+      await sendReply(sock, msg, _dlFmt(r, 'GoFile')); await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  cmd(['stickerwa', 'wasticker'], { desc: 'Download WhatsApp sticker pack — .stickerwa <url>', category: 'DOWNLOAD' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}stickerwa <wa.me/addstickers url>`);
-    await react(sock, msg, '🌀');
+  cmd(['googledrive-dl', 'gdl'], { desc: 'Download from Google Drive (alt)', category: 'Nexray-Downloader' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'googledrive-dl <url>');
+    await react(sock, msg, '📂');
     try {
-      const r = await nx.downloader.stickerwa({ url: args[0] });
-      const url = r?.result?.url || r?.data?.url || r?.url;
-      if (!url) throw new Error('No URL');
-      const buf = Buffer.from((await axios.get(url, { responseType: 'arraybuffer', timeout: 60000 })).data);
-      await sock.sendMessage(msg.key.remoteJid, { document: buf, fileName: 'stickers.zip', mimetype: 'application/zip', caption: '🗂️ *WhatsApp Stickers*' }, { quoted: msg });
-      await react(sock, msg, '✅');
+      const r = await nx.downloader.googledrive({ url: args[0] });
+      await sendReply(sock, msg, _dlFmt(r, 'Google Drive')); await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  cmd(['threads', 'threadsdl'], { desc: 'Download Threads post — .threads <url>', category: 'DOWNLOAD' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}threads <threads url>`);
-    await react(sock, msg, '🌀');
+  cmd(['ig-dl', 'igdl', 'instagram-dl'], { desc: 'Download Instagram post/reel', category: 'Nexray-Downloader' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'ig-dl <url>');
+    await react(sock, msg, '📸');
     try {
-      const r = await nx.downloader.threads({ url: args[0] });
-      const url = r?.result?.url || r?.data?.url || r?.url;
-      if (!url) throw new Error('No download URL');
-      const buf = Buffer.from((await axios.get(url, { responseType: 'arraybuffer', timeout: 90000 })).data);
-      await sock.sendMessage(msg.key.remoteJid, { video: buf, mimetype: 'video/mp4', caption: '🧵 *Threads*' }, { quoted: msg });
-      await react(sock, msg, '✅');
+      const r = await nx.downloader.instagram({ url: args[0] });
+      await sendReply(sock, msg, _dlFmt(r, 'Instagram')); await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  cmd(['vimeo', 'vimeodl'], { desc: 'Download Vimeo video — .vimeo <url>', category: 'DOWNLOAD' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}vimeo <vimeo url>`);
-    await react(sock, msg, '🌀');
+  cmd(['igstory-dl', 'igstory'], { desc: 'Download Instagram Story', category: 'Nexray-Downloader' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'igstory-dl <url>');
+    await react(sock, msg, '📸');
     try {
-      const r = await nx.downloader.vimeo({ url: args[0] });
-      const url = r?.result?.url || r?.data?.url || r?.url;
-      if (!url) throw new Error('No download URL');
-      const buf = Buffer.from((await axios.get(url, { responseType: 'arraybuffer', timeout: 120000 })).data);
-      await sock.sendMessage(msg.key.remoteJid, { video: buf, mimetype: 'video/mp4', caption: '🎬 *Vimeo*' }, { quoted: msg });
-      await react(sock, msg, '✅');
+      const r = await nx.downloader.igstory({ url: args[0] });
+      await sendReply(sock, msg, _dlFmt(r, 'Instagram Story')); await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  // ──────────────────────────────────────────────────────────────────────────
-  // EDITOR COMMANDS
-  // ──────────────────────────────────────────────────────────────────────────
-
-  cmd(['editwanted', 'wantededit'], { desc: 'WANTED poster effect — reply to image with .editwanted [text]', category: 'EDITOR' }, async (sock, msg, args) => {
-    const _ctx = msg.message?.extendedTextMessage?.contextInfo;
-    const _imgM = msg.message?.imageMessage || _ctx?.quotedMessage?.imageMessage;
-    if (!_imgM) return sendReply(sock, msg, `Reply to an image with ${P}editwanted [text]`);
-    await react(sock, msg, '🌀');
+  cmd(['likee-dl', 'likeedl'], { desc: 'Download Likee video', category: 'Nexray-Downloader' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'likee-dl <url>');
+    await react(sock, msg, '⬇️');
     try {
-      const _upload = await nx.uploader.upload({ buffer: await (async () => { const s = await downloadContentFromMessage(_imgM, 'image'); let b = Buffer.from([]); for await (const c of s) b = Buffer.concat([b,c]); return b; })() });
-      const _url = _upload?.result?.url || _upload?.data?.url || _upload?.url;
-      if (!_url) throw new Error('Upload failed');
-      const r = await nx.editor.wanted({ url: _url, text: args.join(' ') || 'WANTED' });
-      const buf = await _nxMedia(r, axios); if (!buf) throw new Error('No image');
-      await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: `🔫 *WANTED*` }, { quoted: msg });
-      await react(sock, msg, '✅');
+      const r = await nx.downloader.likee({ url: args[0] });
+      await sendReply(sock, msg, _dlFmt(r, 'Likee')); await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  cmd(['editwasted', 'wastededit'], { desc: 'WASTED effect — reply to image with .editwasted', category: 'EDITOR' }, async (sock, msg) => {
-    const _ctx = msg.message?.extendedTextMessage?.contextInfo;
-    const _imgM = msg.message?.imageMessage || _ctx?.quotedMessage?.imageMessage;
-    if (!_imgM) return sendReply(sock, msg, `Reply to an image with ${P}editwasted`);
-    await react(sock, msg, '🌀');
+  cmd(['mediafire-dl', 'mfdl'], { desc: 'Download from MediaFire', category: 'Nexray-Downloader' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'mediafire-dl <url>');
+    await react(sock, msg, '🔥');
     try {
-      const _upload = await nx.uploader.upload({ buffer: await (async () => { const s = await downloadContentFromMessage(_imgM, 'image'); let b = Buffer.from([]); for await (const c of s) b = Buffer.concat([b,c]); return b; })() });
-      const _url = _upload?.result?.url || _upload?.data?.url || _upload?.url;
-      if (!_url) throw new Error('Upload failed');
-      const r = await nx.editor.wasted({ url: _url });
-      const buf = await _nxMedia(r, axios); if (!buf) throw new Error('No image');
-      await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: `💀 *WASTED*` }, { quoted: msg });
-      await react(sock, msg, '✅');
+      const r = await nx.downloader.mediafire({ url: args[0] });
+      await sendReply(sock, msg, _dlFmt(r, 'MediaFire')); await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  // ──────────────────────────────────────────────────────────────────────────
-  // EPHOTO COMMANDS — all 26 effects
-  // ──────────────────────────────────────────────────────────────────────────
-  const _ephotoEffects = [
-    ['ephotofire','fire'],['ephotoneon','neon'],['ephotogalaxy','galaxy'],
-    ['ephotoanime','anime'],['ephotoart','art'],['ephotoblood','blood'],
-    ['ephotoblur','blur'],['ephotobokeh','bokeh'],['ephotobrokenglass','brokenglass'],
-    ['ephotocartoon','cartoon'],['ephotoglitch','glitch'],['ephotogold','gold'],
-    ['ephotograffiti','graffiti'],['ephotohacker','hacker'],['ephotoice','ice'],
-    ['ephotolava','lava'],['ephotolightning','lightning'],['ephotomatrix','matrix'],
-    ['ephotometal','metal'],['ephotoocean','ocean'],['ephotopixel','pixel'],
-    ['ephotorainbow','rainbow'],['ephotoretro','retro'],['ephotosmoky','smoke'],
-    ['ephotospace','space'],['ephotowood','wood'],
-  ];
-  for (const [cmd_name, effect] of _ephotoEffects) {
-    const _effect = effect;
-    cmd([cmd_name], { desc: `${_effect.toUpperCase()} photo effect — .${cmd_name} <name>`, category: 'EPHOTO' }, async (sock, msg, args) => {
-      if (!args.length) return sendReply(sock, msg, `Usage: ${P}${cmd_name} <your name or text>`);
-      await react(sock, msg, '🌀');
-      try {
-        const r = await nx.ephoto[_effect]({ name: args.join(' ') });
-        const buf = await _nxMedia(r, axios); if (!buf) throw new Error('No image');
-        await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: `✨ *${_effect.toUpperCase()} Effect*\n_${args.join(' ')}_` }, { quoted: msg });
-        await react(sock, msg, '✅');
-      } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
-    });
-  }
-
-  // ──────────────────────────────────────────────────────────────────────────
-  // FUN COMMANDS
-  // ──────────────────────────────────────────────────────────────────────────
-
-  cmd(['alay', 'alaytext'], { desc: 'Convert text to alay style — .alay <text>', category: 'FUN' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}alay <text>`);
-    await react(sock, msg, '😄');
+  cmd(['mega-dl', 'megadl'], { desc: 'Download from MEGA', category: 'Nexray-Downloader' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'mega-dl <url>');
+    await react(sock, msg, '📦');
     try {
-      const r = await nx.fun.alay({ text: args.join(' ') });
-      const t = _nxText(r); if (!t) throw new Error('No response');
-      await sendReply(sock, msg, `😄 *Alay Text*\n\n${t}`);
-      await react(sock, msg, '✅');
+      const r = await nx.downloader.mega({ url: args[0] });
+      await sendReply(sock, msg, _dlFmt(r, 'MEGA')); await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  cmd(['livefunfact', 'funfact2'], { desc: 'Get a fun fact — .livefunfact', category: 'FUN' }, async (sock, msg) => {
-    await react(sock, msg, '🤩');
-    try {
-      const r = await nx.fun.livefunfact({});
-      const t = _nxText(r); if (!t) throw new Error('No response');
-      await sendReply(sock, msg, `🤩 *Fun Fact*\n\n${t}`);
-      await react(sock, msg, '✅');
-    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
-  });
-
-  // ──────────────────────────────────────────────────────────────────────────
-  // GAMES COMMANDS
-  // ──────────────────────────────────────────────────────────────────────────
-
-  cmd(['asahotak', 'tebakangka'], { desc: 'Number guessing game — .asahotak', category: 'GAMES' }, async (sock, msg) => {
+  cmd(['mlskin-dl', 'mlskindl'], { desc: 'Download MLBB skin', category: 'Nexray-Downloader' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'mlskin-dl <url>');
     await react(sock, msg, '🎮');
     try {
-      const r = await nx.games.asahotak({});
-      const t = _nxText(r) || JSON.stringify(r?.data || r);
-      await sendReply(sock, msg, `🎮 *Asah Otak*\n\n${t}`);
+      const r = await nx.downloader.mlskin({ url: args[0] });
+      await sendReply(sock, msg, _dlFmt(r, 'MLBB Skin')); await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['pinterest-dl', 'pindl'], { desc: 'Download Pinterest image/video', category: 'Nexray-Downloader' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'pinterest-dl <url>');
+    await react(sock, msg, '📌');
+    try {
+      const r = await nx.downloader.pinterest({ url: args[0] });
+      const m = await _media(r, axios);
+      if (m) { await _sendImg(sock, msg, m.buf, '📌 *Pinterest Download*'); await react(sock, msg, '✅'); }
+      else { await sendReply(sock, msg, _dlFmt(r, 'Pinterest')); await react(sock, msg, '✅'); }
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['pinterest-search-dl', 'pinsdl'], { desc: 'Download Pinterest image from search', category: 'Nexray-Downloader' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'pinterest-search-dl <query>');
+    await react(sock, msg, '📌');
+    try {
+      const r = await nx.downloader.pinterestSearch({ text: args.join(' ') });
+      await sendReply(sock, msg, _dlFmt(r, 'Pinterest Search')); await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['pixiv-dl', 'pixivdl'], { desc: 'Download Pixiv artwork', category: 'Nexray-Downloader' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'pixiv-dl <url>');
+    await react(sock, msg, '🎨');
+    try {
+      const r = await nx.downloader.pixiv({ url: args[0] });
+      await sendReply(sock, msg, _dlFmt(r, 'Pixiv')); await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['playstore-dl', 'apkdl'], { desc: 'Download APK from Play Store', category: 'Nexray-Downloader' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'playstore-dl <url>');
+    await react(sock, msg, '📱');
+    try {
+      const r = await nx.downloader.playstore({ url: args[0] });
+      await sendReply(sock, msg, _dlFmt(r, 'Play Store')); await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['reddit-dl', 'redditdl'], { desc: 'Download Reddit video/image', category: 'Nexray-Downloader' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'reddit-dl <url>');
+    await react(sock, msg, '🤖');
+    try {
+      const r = await nx.downloader.reddit({ url: args[0] });
+      await sendReply(sock, msg, _dlFmt(r, 'Reddit')); await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['reels-dl', 'reelsdl'], { desc: 'Download Instagram Reels', category: 'Nexray-Downloader' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'reels-dl <url>');
+    await react(sock, msg, '📱');
+    try {
+      const r = await nx.downloader.reels({ url: args[0] });
+      await sendReply(sock, msg, _dlFmt(r, 'Reels')); await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['saavn-dl', 'saavndl'], { desc: 'Download Saavn music', category: 'Nexray-Downloader' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'saavn-dl <url>');
+    await react(sock, msg, '🎵');
+    try {
+      const r = await nx.downloader.saavn({ url: args[0] });
+      await sendReply(sock, msg, _dlFmt(r, 'Saavn')); await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['savefrom-dl', 'sfrom'], { desc: 'Download via SaveFrom', category: 'Nexray-Downloader' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'savefrom-dl <url>');
+    await react(sock, msg, '⬇️');
+    try {
+      const r = await nx.downloader.savefrom({ url: args[0] });
+      await sendReply(sock, msg, _dlFmt(r, 'SaveFrom')); await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['soundcloud-dl', 'scdl'], { desc: 'Download SoundCloud track', category: 'Nexray-Downloader' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'soundcloud-dl <url>');
+    await react(sock, msg, '🎵');
+    try {
+      const r = await nx.downloader.soundcloud({ url: args[0] });
+      await sendReply(sock, msg, _dlFmt(r, 'SoundCloud')); await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['spotify-dl', 'spotifydl'], { desc: 'Download Spotify track', category: 'Nexray-Downloader' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'spotify-dl <url>');
+    await react(sock, msg, '🎵');
+    try {
+      const r = await nx.downloader.spotify({ url: args[0] });
+      await sendReply(sock, msg, _dlFmt(r, 'Spotify')); await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['stickerwa-dl', 'stickerwadl'], { desc: 'Download WhatsApp sticker', category: 'Nexray-Downloader' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'stickerwa-dl <url>');
+    await react(sock, msg, '🎭');
+    try {
+      const r = await nx.downloader.stickerwa({ url: args[0] });
+      await sendReply(sock, msg, _dlFmt(r, 'StickerWA')); await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['threads-dl', 'threadsdl'], { desc: 'Download Threads post', category: 'Nexray-Downloader' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'threads-dl <url>');
+    await react(sock, msg, '🧵');
+    try {
+      const r = await nx.downloader.threads({ url: args[0] });
+      await sendReply(sock, msg, _dlFmt(r, 'Threads')); await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['tt-dl', 'ttdl', 'tiktok-dl'], { desc: 'Download TikTok video (no watermark)', category: 'Nexray-Downloader' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'tt-dl <url>');
+    await react(sock, msg, '🎵');
+    try {
+      const r = await nx.downloader.tiktok({ url: args[0] });
+      await sendReply(sock, msg, _dlFmt(r, 'TikTok')); await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['tt-dl2', 'ttdlv1'], { desc: 'Download TikTok video v1', category: 'Nexray-Downloader' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'tt-dl2 <url>');
+    await react(sock, msg, '🎵');
+    try {
+      const r = await nx.downloader.tiktokV1({ url: args[0] });
+      await sendReply(sock, msg, _dlFmt(r, 'TikTok v1')); await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['tt-dl3', 'ttdlv2'], { desc: 'Download TikTok video v2', category: 'Nexray-Downloader' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'tt-dl3 <url>');
+    await react(sock, msg, '🎵');
+    try {
+      const r = await nx.downloader.tiktokV2({ url: args[0] });
+      await sendReply(sock, msg, _dlFmt(r, 'TikTok v2')); await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['twit-dl', 'xdl', 'twitter-dl'], { desc: 'Download Twitter/X video', category: 'Nexray-Downloader' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'twit-dl <url>');
+    await react(sock, msg, '🐦');
+    try {
+      const r = await nx.downloader.twitter({ url: args[0] });
+      await sendReply(sock, msg, _dlFmt(r, 'Twitter/X')); await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['twit-dl2', 'xdlv1'], { desc: 'Download Twitter/X video v1', category: 'Nexray-Downloader' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'twit-dl2 <url>');
+    await react(sock, msg, '🐦');
+    try {
+      const r = await nx.downloader.twitterV1({ url: args[0] });
+      await sendReply(sock, msg, _dlFmt(r, 'Twitter/X v1')); await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['video-dl', 'videodl'], { desc: 'Download online video (generic)', category: 'Nexray-Downloader' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'video-dl <url>');
+    await react(sock, msg, '🎬');
+    try {
+      const r = await nx.downloader.video({ url: args[0] });
+      await sendReply(sock, msg, _dlFmt(r, 'Video')); await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['vimeo-dl', 'vimeodl'], { desc: 'Download Vimeo video', category: 'Nexray-Downloader' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'vimeo-dl <url>');
+    await react(sock, msg, '🎬');
+    try {
+      const r = await nx.downloader.vimeo({ url: args[0] });
+      await sendReply(sock, msg, _dlFmt(r, 'Vimeo')); await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['wetv-dl', 'wetvdl'], { desc: 'Download WeTV video', category: 'Nexray-Downloader' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'wetv-dl <url>');
+    await react(sock, msg, '📺');
+    try {
+      const r = await nx.downloader.wetv({ url: args[0] });
+      await sendReply(sock, msg, _dlFmt(r, 'WeTV')); await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['yt-audio', 'ytaudio'], { desc: 'Download YouTube audio (MP3)', category: 'Nexray-Downloader' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'yt-audio <url>');
+    await react(sock, msg, '🎵');
+    try {
+      const r = await nx.downloader.ytAudio({ url: args[0] });
+      await sendReply(sock, msg, _dlFmt(r, 'YouTube Audio')); await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['yt-video', 'ytvideo'], { desc: 'Download YouTube video (MP4)', category: 'Nexray-Downloader' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'yt-video <url>');
+    await react(sock, msg, '🎬');
+    try {
+      const r = await nx.downloader.ytVideo({ url: args[0] });
+      await sendReply(sock, msg, _dlFmt(r, 'YouTube Video')); await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['ytmp3'], { desc: 'Download YouTube as MP3', category: 'Nexray-Downloader' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'ytmp3 <url>');
+    await react(sock, msg, '🎵');
+    try {
+      const r = await nx.downloader.ytmp3({ url: args[0] });
+      await sendReply(sock, msg, _dlFmt(r, 'YouTube MP3')); await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['ytmp4'], { desc: 'Download YouTube as MP4', category: 'Nexray-Downloader' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'ytmp4 <url>');
+    await react(sock, msg, '🎬');
+    try {
+      const r = await nx.downloader.ytmp4({ url: args[0] });
+      await sendReply(sock, msg, _dlFmt(r, 'YouTube MP4')); await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['ytv1', 'ytdl1'], { desc: 'Download YouTube video v1', category: 'Nexray-Downloader' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'ytv1 <url>');
+    await react(sock, msg, '🎬');
+    try {
+      const r = await nx.downloader.ytV1({ url: args[0] });
+      await sendReply(sock, msg, _dlFmt(r, 'YouTube v1')); await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['ytv2', 'ytdl2'], { desc: 'Download YouTube video v2', category: 'Nexray-Downloader' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'ytv2 <url>');
+    await react(sock, msg, '🎬');
+    try {
+      const r = await nx.downloader.ytV2({ url: args[0] });
+      await sendReply(sock, msg, _dlFmt(r, 'YouTube v2')); await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['zoho-dl', 'zohodl'], { desc: 'Download from Zoho WorkDrive', category: 'Nexray-Downloader' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'zoho-dl <url>');
+    await react(sock, msg, '📥');
+    try {
+      const r = await nx.downloader.zoho({ url: args[0] });
+      await sendReply(sock, msg, _dlFmt(r, 'Zoho')); await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 🎭  EDITOR  — 2 endpoints
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  cmd(['editor-wanted', 'ewanted'], { desc: 'Wanted poster editor effect', category: 'Nexray-Editor' }, async (sock, msg, args) => {
+    const url = args[0]; if (!url) return _noArgs(sock, msg, 'editor-wanted <image-url>');
+    await react(sock, msg, '🤠');
+    try {
+      const r = await nx.editor.wanted({ url }); const m = await _media(r, axios);
+      if (m) { await _sendImg(sock, msg, m.buf, '🤠 *Wanted Poster*'); await react(sock, msg, '✅'); }
+      else throw new Error('No image returned');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['editor-wasted', 'ewasted'], { desc: 'Wasted overlay editor effect', category: 'Nexray-Editor' }, async (sock, msg, args) => {
+    const url = args[0]; if (!url) return _noArgs(sock, msg, 'editor-wasted <image-url>');
+    await react(sock, msg, '💀');
+    try {
+      const r = await nx.editor.wasted({ url }); const m = await _media(r, axios);
+      if (m) { await _sendImg(sock, msg, m.buf, '💀 *Wasted Effect*'); await react(sock, msg, '✅'); }
+      else throw new Error('No image returned');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 📸  EPHOTO  — 27 photo effects
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  const _ephoto = (fn, label, emoji) => async (sock, msg, args) => {
+    const url = args[0]; if (!url) return _noArgs(sock, msg, `ephoto-${label.toLowerCase()} <image-url>`);
+    await react(sock, msg, emoji);
+    try {
+      const r = await fn({ url }); const m = await _media(r, axios);
+      if (m) { await _sendImg(sock, msg, m.buf, `${emoji} *Ephoto ${label}*`); await react(sock, msg, '✅'); }
+      else throw new Error('No image returned');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  };
+
+  cmd(['ephoto-real', 'phreal'], { desc: 'Ephoto real effect', category: 'Nexray-Ephoto' }, _ephoto(o => nx.ephoto.real(o), 'Real', '📷'));
+  cmd(['ephoto-anime', 'phanime'], { desc: 'Ephoto anime effect', category: 'Nexray-Ephoto' }, _ephoto(o => nx.ephoto.anime(o), 'Anime', '🎌'));
+  cmd(['ephoto-art', 'phart'], { desc: 'Ephoto art effect', category: 'Nexray-Ephoto' }, _ephoto(o => nx.ephoto.art(o), 'Art', '🎨'));
+  cmd(['ephoto-blood', 'phblood'], { desc: 'Ephoto blood effect', category: 'Nexray-Ephoto' }, _ephoto(o => nx.ephoto.blood(o), 'Blood', '🩸'));
+  cmd(['ephoto-blur', 'phblur'], { desc: 'Ephoto blur effect', category: 'Nexray-Ephoto' }, _ephoto(o => nx.ephoto.blur(o), 'Blur', '🌫️'));
+  cmd(['ephoto-bokeh', 'phbokeh'], { desc: 'Ephoto bokeh effect', category: 'Nexray-Ephoto' }, _ephoto(o => nx.ephoto.bokeh(o), 'Bokeh', '✨'));
+  cmd(['ephoto-broken', 'phbroken'], { desc: 'Ephoto broken glass effect', category: 'Nexray-Ephoto' }, _ephoto(o => nx.ephoto.brokenglass(o), 'Broken Glass', '🪟'));
+  cmd(['ephoto-cartoon', 'phcartoon'], { desc: 'Ephoto cartoon effect', category: 'Nexray-Ephoto' }, _ephoto(o => nx.ephoto.cartoon(o), 'Cartoon', '🎭'));
+  cmd(['ephoto-fire', 'phfire'], { desc: 'Ephoto fire effect', category: 'Nexray-Ephoto' }, _ephoto(o => nx.ephoto.fire(o), 'Fire', '🔥'));
+  cmd(['ephoto-galaxy', 'phgalaxy'], { desc: 'Ephoto galaxy effect', category: 'Nexray-Ephoto' }, _ephoto(o => nx.ephoto.galaxy(o), 'Galaxy', '🌌'));
+  cmd(['ephoto-glitch', 'phglitch'], { desc: 'Ephoto glitch effect', category: 'Nexray-Ephoto' }, _ephoto(o => nx.ephoto.glitch(o), 'Glitch', '📺'));
+  cmd(['ephoto-gold', 'phgold'], { desc: 'Ephoto gold effect', category: 'Nexray-Ephoto' }, _ephoto(o => nx.ephoto.gold(o), 'Gold', '✨'));
+  cmd(['ephoto-graffiti', 'phgraffiti'], { desc: 'Ephoto graffiti effect', category: 'Nexray-Ephoto' }, _ephoto(o => nx.ephoto.graffiti(o), 'Graffiti', '🎨'));
+  cmd(['ephoto-hacker', 'phhacker'], { desc: 'Ephoto hacker effect', category: 'Nexray-Ephoto' }, _ephoto(o => nx.ephoto.hacker(o), 'Hacker', '💻'));
+  cmd(['ephoto-ice', 'phice'], { desc: 'Ephoto ice effect', category: 'Nexray-Ephoto' }, _ephoto(o => nx.ephoto.ice(o), 'Ice', '❄️'));
+  cmd(['ephoto-lava', 'phlava'], { desc: 'Ephoto lava effect', category: 'Nexray-Ephoto' }, _ephoto(o => nx.ephoto.lava(o), 'Lava', '🌋'));
+  cmd(['ephoto-lightning', 'phlightning'], { desc: 'Ephoto lightning effect', category: 'Nexray-Ephoto' }, _ephoto(o => nx.ephoto.lightning(o), 'Lightning', '⚡'));
+  cmd(['ephoto-matrix', 'phmatrix'], { desc: 'Ephoto matrix effect', category: 'Nexray-Ephoto' }, _ephoto(o => nx.ephoto.matrix(o), 'Matrix', '💊'));
+  cmd(['ephoto-metal', 'phmetal'], { desc: 'Ephoto metal effect', category: 'Nexray-Ephoto' }, _ephoto(o => nx.ephoto.metal(o), 'Metal', '🔩'));
+  cmd(['ephoto-neon', 'phneon'], { desc: 'Ephoto neon effect', category: 'Nexray-Ephoto' }, _ephoto(o => nx.ephoto.neon(o), 'Neon', '💡'));
+  cmd(['ephoto-ocean', 'phocean'], { desc: 'Ephoto ocean effect', category: 'Nexray-Ephoto' }, _ephoto(o => nx.ephoto.ocean(o), 'Ocean', '🌊'));
+  cmd(['ephoto-pixel', 'phpixel'], { desc: 'Ephoto pixel effect', category: 'Nexray-Ephoto' }, _ephoto(o => nx.ephoto.pixel(o), 'Pixel', '🔲'));
+  cmd(['ephoto-rainbow', 'phrainbow'], { desc: 'Ephoto rainbow effect', category: 'Nexray-Ephoto' }, _ephoto(o => nx.ephoto.rainbow(o), 'Rainbow', '🌈'));
+  cmd(['ephoto-retro', 'phretro'], { desc: 'Ephoto retro effect', category: 'Nexray-Ephoto' }, _ephoto(o => nx.ephoto.retro(o), 'Retro', '📺'));
+  cmd(['ephoto-smoke', 'phsmoke'], { desc: 'Ephoto smoke effect', category: 'Nexray-Ephoto' }, _ephoto(o => nx.ephoto.smoke(o), 'Smoke', '💨'));
+  cmd(['ephoto-space', 'phspace'], { desc: 'Ephoto space effect', category: 'Nexray-Ephoto' }, _ephoto(o => nx.ephoto.space(o), 'Space', '🚀'));
+  cmd(['ephoto-wood', 'phwood'], { desc: 'Ephoto wood effect', category: 'Nexray-Ephoto' }, _ephoto(o => nx.ephoto.wood(o), 'Wood', '🪵'));
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 😄  FUN  — 2 endpoints
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  cmd(['alay', 'alaytext'], { desc: 'Convert text to alay style', category: 'Nexray-Fun' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'alay <text>');
+    await react(sock, msg, '😂');
+    try {
+      const r = await nx.fun.alay({ text: args.join(' ') });
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
+      await sendReply(sock, msg, `😂 *Alay Text*\n\n${t}`);
       await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  cmd(['islamicquiz', 'quizislam'], { desc: 'Islamic quiz — .islamicquiz', category: 'GAMES' }, async (sock, msg) => {
+  cmd(['funfact', 'livefunfact'], { desc: 'Get a live fun fact', category: 'Nexray-Fun' }, async (sock, msg, args) => {
+    await react(sock, msg, '💡');
+    try {
+      const r = await nx.fun.livefunfact();
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
+      await sendReply(sock, msg, `💡 *Fun Fact*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 🎮  GAMES  — 8 endpoints
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  cmd(['asahotak', 'soal-otak'], { desc: 'Brain teaser quiz game', category: 'Nexray-Games' }, async (sock, msg, args) => {
+    await react(sock, msg, '🧠');
+    try {
+      const r = await nx.games.asahotak();
+      const t = _jsonFmt(r); if (!t) throw new Error('No data');
+      await sendReply(sock, msg, `🧠 *Asah Otak*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['tebak-islam', 'islamgame'], { desc: 'Islamic quiz game', category: 'Nexray-Games' }, async (sock, msg, args) => {
     await react(sock, msg, '☪️');
     try {
-      const r = await nx.games.islamic({});
-      const d = r?.result || r?.data || r;
-      if (d?.question) {
-        await sendReply(sock, msg, `☪️ *Islamic Quiz*\n━━━━━━━━━━━━━━━━━━━━\n\n❓ ${d.question}\n\nA. ${d.a || ''}\nB. ${d.b || ''}\nC. ${d.c || ''}\nD. ${d.d || ''}\n\n_Answer: ${d.answer || d.jawaban || '?'}_`);
-      } else {
-        await sendReply(sock, msg, `☪️ *Islamic Quiz*\n\n${_nxText(r) || 'No data'}`);
-      }
+      const r = await nx.games.islamic();
+      const t = _jsonFmt(r); if (!t) throw new Error('No data');
+      await sendReply(sock, msg, `☪️ *Islamic Quiz*\n\n${t}`);
       await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  cmd(['susunkata', 'wordgame'], { desc: 'Word scramble game — .susunkata', category: 'GAMES' }, async (sock, msg) => {
+  cmd(['siapakahaku', 'tebak-tokoh'], { desc: 'Who am I? character guessing game', category: 'Nexray-Games' }, async (sock, msg, args) => {
+    await react(sock, msg, '🕵️');
+    try {
+      const r = await nx.games.siapakahaku();
+      const t = _jsonFmt(r); if (!t) throw new Error('No data');
+      await sendReply(sock, msg, `🕵️ *Siapakah Aku?*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['susunkata', 'susun-kata'], { desc: 'Word arrangement game', category: 'Nexray-Games' }, async (sock, msg, args) => {
     await react(sock, msg, '🔤');
     try {
-      const r = await nx.games.susunkata({});
-      const d = r?.result || r?.data || r;
-      const t = typeof d === 'string' ? d : JSON.stringify(d);
+      const r = await nx.games.susunkata();
+      const t = _jsonFmt(r); if (!t) throw new Error('No data');
       await sendReply(sock, msg, `🔤 *Susun Kata*\n\n${t}`);
       await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  cmd(['tebakbendera', 'flagquiz'], { desc: 'Flag guessing game — .tebakbendera', category: 'GAMES' }, async (sock, msg) => {
-    await react(sock, msg, '🏳️');
+  cmd(['tebak-bendera', 'tebabendera'], { desc: 'Guess the flag game', category: 'Nexray-Games' }, async (sock, msg, args) => {
+    await react(sock, msg, '🚩');
     try {
-      return sendReply(sock, msg, `❌ *Tebak Bendera* is not available in the current API version.`);
-      const buf = await _nxMedia(r, axios);
-      const d = r?.result || r?.data || r;
-      if (buf && _isImgBuf(buf)) {
-        await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: `🏳️ *Tebak Bendera*\n_Whose flag is this?_\n\nAnswer: ${d?.answer || d?.jawaban || '?'}` }, { quoted: msg });
-      } else {
-        await sendReply(sock, msg, `🏳️ *Tebak Bendera*\n\n${_nxText(r) || JSON.stringify(d)}`);
-      }
+      const r = await nx.games.tebakbendera();
+      const t = _jsonFmt(r); if (!t) throw new Error('No data');
+      await sendReply(sock, msg, `🚩 *Tebak Bendera*\n\n${t}`);
       await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  cmd(['tebakgambar', 'picquiz'], { desc: 'Picture guessing game — .tebakgambar', category: 'GAMES' }, async (sock, msg) => {
+  cmd(['tebak-gambar', 'tebagambar'], { desc: 'Guess the picture game', category: 'Nexray-Games' }, async (sock, msg, args) => {
     await react(sock, msg, '🖼️');
     try {
-      return sendReply(sock, msg, `❌ *Tebak Gambar* is not available in the current API version.`);
-      const buf = await _nxMedia(r, axios);
-      const d = r?.result || r?.data || r;
-      if (buf && _isImgBuf(buf)) {
-        await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: `🖼️ *Tebak Gambar*\n_What is this?_\n\nAnswer: ${d?.answer || d?.jawaban || '?'}` }, { quoted: msg });
-      } else {
-        await sendReply(sock, msg, `🖼️ *Tebak Gambar*\n\n${_nxText(r) || JSON.stringify(d)}`);
-      }
+      const r = await nx.games.tebakgambar();
+      const m = await _media(r, axios);
+      const t = _jsonFmt(r);
+      if (m) { await _sendImg(sock, msg, m.buf, `🖼️ *Tebak Gambar*\n${t || ''}`); }
+      else if (t) { await sendReply(sock, msg, `🖼️ *Tebak Gambar*\n\n${t}`); }
+      else throw new Error('No data');
       await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  cmd(['tebakkata', 'wordquiz'], { desc: 'Word quiz game — .tebakkata', category: 'GAMES' }, async (sock, msg) => {
-    await react(sock, msg, '❓');
+  cmd(['tebak-kata', 'tebakata'], { desc: 'Word guessing game', category: 'Nexray-Games' }, async (sock, msg, args) => {
+    await react(sock, msg, '🔤');
     try {
-      const r = await nx.games.tebakkata({});
-      const d = r?.result || r?.data || r;
-      const t = typeof d === 'string' ? d : (d?.question ? `❓ ${d.question}\n\nAnswer: ${d.answer || d.jawaban || '?'}` : JSON.stringify(d));
-      await sendReply(sock, msg, `❓ *Tebak Kata*\n\n${t}`);
+      const r = await nx.games.tebakkata();
+      const t = _jsonFmt(r); if (!t) throw new Error('No data');
+      await sendReply(sock, msg, `🔤 *Tebak Kata*\n\n${t}`);
       await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  cmd(['tebaklirik', 'lyricquiz'], { desc: 'Guess the song from lyrics — .tebaklirik', category: 'GAMES' }, async (sock, msg) => {
+  cmd(['tebak-lirik', 'tebalirik'], { desc: 'Guess the song lyrics game', category: 'Nexray-Games' }, async (sock, msg, args) => {
     await react(sock, msg, '🎵');
     try {
-      const r = await nx.games.tebaklirik({});
-      const d = r?.result || r?.data || r;
-      const t = typeof d === 'string' ? d : (d?.lirik ? `🎵 _${d.lirik}_\n\nAnswer: ${d.answer || d.jawaban || '?'}` : JSON.stringify(d));
+      const r = await nx.games.tebaklirik();
+      const t = _jsonFmt(r); if (!t) throw new Error('No data');
       await sendReply(sock, msg, `🎵 *Tebak Lirik*\n\n${t}`);
       await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  // ──────────────────────────────────────────────────────────────────────────
-  // INFORMATION COMMANDS
-  // ──────────────────────────────────────────────────────────────────────────
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ℹ️  INFORMATION  — 10 endpoints
+  // ═══════════════════════════════════════════════════════════════════════════
 
-  cmd(['harilibur', 'publicholiday'], { desc: 'Indonesian public holidays — .harilibur [year]', category: 'INFO' }, async (sock, msg, args) => {
-    await react(sock, msg, '📅');
+  cmd(['tagihan-pln', 'plncek'], { desc: 'Cek tagihan PLN listrik', category: 'Nexray-Info' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'tagihan-pln <nomor-pelanggan>');
+    await react(sock, msg, '💡');
     try {
-      const r = await nx.information.hariLibur({ year: args[0] || new Date().getFullYear() });
-      const items = r?.result || r?.data || r;
-      const t = Array.isArray(items) ? items.slice(0,10).map(h => `📅 *${h.tanggal || h.date}* — ${h.nama || h.name}`).join('\n') : _nxText(r);
-      await sendReply(sock, msg, `📅 *Hari Libur Indonesia*\n━━━━━━━━━━━━━━━━━━━━\n${t || 'No data'}`);
+      const r = await nx.information.cektagihanpln({ id: args[0] });
+      const t = _jsonFmt(r); if (!t) throw new Error('No data');
+      await sendReply(sock, msg, `💡 *Tagihan PLN*\n\n${t}`);
       await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  cmd(['kursrupiah', 'exchangerate'], { desc: 'IDR exchange rate — .kursrupiah', category: 'INFO' }, async (sock, msg) => {
-    await react(sock, msg, '💱');
-    try {
-      const r = await nx.information.kurs({});
-      const items = r?.result || r?.data || r;
-      const t = Array.isArray(items) ? items.slice(0,10).map(k => `💱 ${k.mata_uang || k.currency}: *${k.kurs_tengah || k.rate || k.nilai}*`).join('\n') : _nxText(r);
-      await sendReply(sock, msg, `💱 *Kurs Rupiah BI*\n━━━━━━━━━━━━━━━━━━━━\n${t || 'No data'}`);
-      await react(sock, msg, '✅');
-    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
-  });
-
-  cmd(['prakiraan', 'forecast'], { desc: 'Indonesian weather forecast — .prakiraan <city>', category: 'INFO' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}prakiraan <city name>`);
-    await react(sock, msg, '🌤️');
-    try {
-      const r = await nx.information.prakiraan({ kota: args.join(' ') });
-      const t = _nxText(r) || JSON.stringify(r?.result || r?.data || r);
-      await sendReply(sock, msg, `🌤️ *Prakiraan Cuaca*\n━━━━━━━━━━━━━━━━━━━━\n${t}`);
-      await react(sock, msg, '✅');
-    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
-  });
-
-  cmd(['cekrekening', 'checkbank'], { desc: 'Check Indonesian bank account — .cekrekening <bank> <no>', category: 'INFO' }, async (sock, msg, args) => {
-    if (args.length < 2) return sendReply(sock, msg, `Usage: ${P}cekrekening <bank_code> <account_number>\nExample: ${P}cekrekening bca 1234567890`);
+  cmd(['cek-rekening', 'rekening'], { desc: 'Cek info rekening bank', category: 'Nexray-Info' }, async (sock, msg, args) => {
+    if (args.length < 2) return _noArgs(sock, msg, 'cek-rekening <bank> <nomor>');
     await react(sock, msg, '🏦');
     try {
-      const r = await nx.information.checkRekening({ bank: args[0], no: args[1] });
-      const t = _nxText(r) || JSON.stringify(r?.result || r?.data || r);
-      await sendReply(sock, msg, `🏦 *Cek Rekening*\n━━━━━━━━━━━━━━━━━━━━\n${t}`);
+      const r = await nx.information.checkRekening({ bank: args[0], number: args[1] });
+      const t = _jsonFmt(r); if (!t) throw new Error('No data');
+      await sendReply(sock, msg, `🏦 *Cek Rekening*\n\n${t}`);
       await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  // ──────────────────────────────────────────────────────────────────────────
-  // MAKER COMMANDS
-  // ──────────────────────────────────────────────────────────────────────────
-
-  cmd(['balogo', 'bluearchivelogo'], { desc: 'Blue Archive logo maker — .balogo <text>', category: 'MAKER' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}balogo <text>`);
-    await react(sock, msg, '🌀');
+  cmd(['cuaca', 'weather-id'], { desc: 'Cek cuaca kota (Indonesia)', category: 'Nexray-Info' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'cuaca <kota>');
+    await react(sock, msg, '🌤️');
     try {
-      const r = await nx.maker.balogo({ text: args.join(' ') });
-      const buf = await _nxMedia(r, axios); if (!buf) throw new Error('No image');
-      await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: `🎮 *Blue Archive Logo*\n_${args.join(' ')}_` }, { quoted: msg });
+      const r = await nx.information.cuaca({ city: args.join(' ') });
+      const t = _jsonFmt(r); if (!t) throw new Error('No data');
+      await sendReply(sock, msg, `🌤️ *Cuaca ${args.join(' ')}*\n\n${t}`);
       await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  cmd(['bannerblur', 'blurbanner'], { desc: 'Blur banner maker — .bannerblur <text>', category: 'MAKER' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}bannerblur <text>`);
-    await react(sock, msg, '🌀');
+  cmd(['weather', 'cuaca-en'], { desc: 'Get weather info (English)', category: 'Nexray-Info' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'weather <city>');
+    await react(sock, msg, '🌤️');
     try {
-      const r = await nx.maker.bannerBlur({ text: args.join(' ') });
-      const buf = await _nxMedia(r, axios); if (!buf) throw new Error('No image');
-      await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: `🖼️ *Banner Blur*\n_${args.join(' ')}_` }, { quoted: msg });
+      const r = await nx.information.weather({ city: args.join(' ') });
+      const t = _jsonFmt(r); if (!t) throw new Error('No data');
+      await sendReply(sock, msg, `🌤️ *Weather: ${args.join(' ')}*\n\n${t}`);
       await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  cmd(['fakechat', 'fakewhatsapp'], { desc: 'Create fake WA chat screenshot — .fakechat <name>|<message>', category: 'MAKER' }, async (sock, msg, args) => {
-    const text = args.join(' ');
-    const [name, ...msgParts] = text.split('|');
-    const message = msgParts.join('|').trim();
-    if (!name || !message) return sendReply(sock, msg, `Usage: ${P}fakechat <name>|<message>\nExample: ${P}fakechat John|Hello World!`);
-    await react(sock, msg, '🌀');
+  cmd(['kodepos', 'postal-code'], { desc: 'Cek kode pos Indonesia', category: 'Nexray-Info' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'kodepos <kelurahan/desa>');
+    await react(sock, msg, '📮');
     try {
-      const r = await nx.maker.fakechat({ text: `${name.trim()}: ${message}` });
-      const buf = await _nxMedia(r, axios); if (!buf) throw new Error('No image');
-      await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: `💬 *Fake Chat*` }, { quoted: msg });
+      const r = await nx.information.kodepos({ text: args.join(' ') });
+      const t = _jsonFmt(r); if (!t) throw new Error('No data');
+      await sendReply(sock, msg, `📮 *Kode Pos*\n\n${t}`);
       await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  cmd(['fakegram', 'fakeinstagram'], { desc: 'Create fake Instagram post — .fakegram <username>|<caption>', category: 'MAKER' }, async (sock, msg, args) => {
-    const _ctx = msg.message?.extendedTextMessage?.contextInfo;
-    const _imgM = msg.message?.imageMessage || _ctx?.quotedMessage?.imageMessage;
-    const text = args.join(' ');
-    const [username, ...capParts] = text.split('|');
-    const caption = capParts.join('|').trim();
-    if (!username) return sendReply(sock, msg, `Usage: ${P}fakegram <username>|<caption>\nReply to image or include url`);
-    await react(sock, msg, '🌀');
+  cmd(['gempa', 'earthquake'], { desc: 'Info gempa bumi terkini (BMKG)', category: 'Nexray-Info' }, async (sock, msg, args) => {
+    await react(sock, msg, '🌍');
     try {
-      let imgUrl = args.find(a => a.startsWith('http')) || null;
-      if (!imgUrl && _imgM) {
-        const _upload = await nx.uploader.upload({ buffer: await (async () => { const s = await downloadContentFromMessage(_imgM, 'image'); let b = Buffer.from([]); for await (const c of s) b = Buffer.concat([b,c]); return b; })() });
-        imgUrl = _upload?.result?.url || _upload?.data?.url || _upload?.url;
+      const r = await nx.information.gempa();
+      const t = _jsonFmt(r); if (!t) throw new Error('No data');
+      await sendReply(sock, msg, `🌍 *Gempa Terkini (BMKG)*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['hari-libur', 'libur'], { desc: 'Jadwal hari libur nasional', category: 'Nexray-Info' }, async (sock, msg, args) => {
+    await react(sock, msg, '📅');
+    try {
+      const r = await nx.information.hariLibur();
+      const t = _jsonFmt(r); if (!t) throw new Error('No data');
+      await sendReply(sock, msg, `📅 *Hari Libur Nasional*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['kurs', 'exchange-rate'], { desc: 'Info kurs mata uang hari ini', category: 'Nexray-Info' }, async (sock, msg, args) => {
+    await react(sock, msg, '💱');
+    try {
+      const r = await nx.information.kurs();
+      const t = _jsonFmt(r); if (!t) throw new Error('No data');
+      await sendReply(sock, msg, `💱 *Kurs Mata Uang*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['prakiraan', 'forecast'], { desc: 'Prakiraan cuaca Indonesia', category: 'Nexray-Info' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'prakiraan <kota>');
+    await react(sock, msg, '🌥️');
+    try {
+      const r = await nx.information.prakiraan({ city: args.join(' ') });
+      const t = _jsonFmt(r); if (!t) throw new Error('No data');
+      await sendReply(sock, msg, `🌥️ *Prakiraan Cuaca: ${args.join(' ')}*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['sholat', 'jadwal-sholat'], { desc: 'Jadwal sholat berdasarkan kota', category: 'Nexray-Info' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'sholat <kota>');
+    await react(sock, msg, '🕌');
+    try {
+      const r = await nx.information.sholat({ city: args.join(' ') });
+      const t = _jsonFmt(r); if (!t) throw new Error('No data');
+      await sendReply(sock, msg, `🕌 *Jadwal Sholat: ${args.join(' ')}*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 🏗️  MAKER  — 22 endpoints
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  const _makerImg = (fn, label, emoji, params) => async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, `${label.toLowerCase().replace(/ /g,'-')} ${params}`);
+    await react(sock, msg, emoji);
+    try {
+      const r = await fn(args); const m = await _media(r, axios);
+      if (m) { await _sendImg(sock, msg, m.buf, `${emoji} *${label}*`); await react(sock, msg, '✅'); }
+      else { const t = _jsonFmt(r); await sendReply(sock, msg, `${emoji} *${label}*\n\n${t || 'No image'}`); }
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  };
+
+  cmd(['attp', 'attp-sticker'], { desc: 'Buat sticker animasi teks', category: 'Nexray-Maker' },
+    _makerImg(args => nx.maker.attp({ text: args.join(' ') }), 'ATTP Sticker', '✨', '<text>'));
+
+  cmd(['balogo', 'ba-logo'], { desc: 'Buat logo style BA', category: 'Nexray-Maker' },
+    _makerImg(args => nx.maker.balogo({ text: args.join(' ') }), 'BA Logo', '🎨', '<text>'));
+
+  cmd(['banner-blur', 'bannerblur'], { desc: 'Buat banner blur keren', category: 'Nexray-Maker' },
+    _makerImg(args => nx.maker.bannerBlur({ text: args.join(' ') }), 'Banner Blur', '🖼️', '<text>'));
+
+  cmd(['maker-card', 'mcard'], { desc: 'Buat kartu ucapan', category: 'Nexray-Maker' },
+    _makerImg(args => nx.maker.card({ text: args.join(' ') }), 'Maker Card', '🃏', '<text>'));
+
+  cmd(['fakechat', 'fake-chat'], { desc: 'Buat fake chat WhatsApp', category: 'Nexray-Maker' },
+    _makerImg(args => nx.maker.fakechat({ text: args.join(' ') }), 'Fake Chat WA', '💬', '<text>'));
+
+  cmd(['fakegram', 'fake-gram'], { desc: 'Buat fake Instagram post (username + text)', category: 'Nexray-Maker' }, async (sock, msg, args) => {
+    if (args.length < 2) return _noArgs(sock, msg, 'fakegram <username> <text>');
+    await react(sock, msg, '📸');
+    try {
+      const r = await nx.maker.fakegram({ username: args[0], text: args.slice(1).join(' ') });
+      const m = await _media(r, axios);
+      if (m) { await _sendImg(sock, msg, m.buf, '📸 *Fake Instagram*'); await react(sock, msg, '✅'); }
+      else throw new Error('No image returned');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['faketweet', 'fake-tweet'], { desc: 'Buat fake tweet (username + text)', category: 'Nexray-Maker' }, async (sock, msg, args) => {
+    if (args.length < 2) return _noArgs(sock, msg, 'faketweet <username> <text>');
+    await react(sock, msg, '🐦');
+    try {
+      const r = await nx.maker.faketweet({ username: args[0], text: args.slice(1).join(' ') });
+      const m = await _media(r, axios);
+      if (m) { await _sendImg(sock, msg, m.buf, '🐦 *Fake Tweet*'); await react(sock, msg, '✅'); }
+      else throw new Error('No image returned');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['kaligrafi'], { desc: 'Buat kaligrafi dari teks Arab', category: 'Nexray-Maker' },
+    _makerImg(args => nx.maker.kaligrafi({ text: args.join(' ') }), 'Kaligrafi', '🕌', '<text-arab>'));
+
+  cmd(['kartunama', 'name-card'], { desc: 'Buat kartu nama', category: 'Nexray-Maker' },
+    _makerImg(args => nx.maker.kartunama({ text: args.join(' ') }), 'Kartu Nama', '💼', '<text>'));
+
+  cmd(['maker-meme', 'mmeme'], { desc: 'Buat meme dari teks', category: 'Nexray-Maker' },
+    _makerImg(args => nx.maker.meme({ text: args.join(' ') }), 'Meme Maker', '😂', '<top|bottom>'));
+
+  cmd(['nulis', 'handwriting'], { desc: 'Konversi teks ke tulisan tangan', category: 'Nexray-Maker' },
+    _makerImg(args => nx.maker.nulis({ text: args.join(' ') }), 'Nulis (Handwriting)', '✍️', '<text>'));
+
+  cmd(['maker-profil', 'mprofil'], { desc: 'Buat profil keren (url + text)', category: 'Nexray-Maker' }, async (sock, msg, args) => {
+    if (args.length < 2) return _noArgs(sock, msg, 'maker-profil <image-url> <text>');
+    await react(sock, msg, '👤');
+    try {
+      const r = await nx.maker.profil({ url: args[0], text: args.slice(1).join(' ') });
+      const m = await _media(r, axios);
+      if (m) { await _sendImg(sock, msg, m.buf, '👤 *Profil Maker*'); await react(sock, msg, '✅'); }
+      else throw new Error('No image returned');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['qrcode', 'make-qr'], { desc: 'Buat QR code dari teks/link', category: 'Nexray-Maker' },
+    _makerImg(args => nx.maker.qrcode({ text: args.join(' ') }), 'QR Code', '📱', '<text/url>'));
+
+  cmd(['maker-quote', 'mquote'], { desc: 'Buat gambar quote keren', category: 'Nexray-Maker' },
+    _makerImg(args => nx.maker.quote({ text: args.join(' ') }), 'Quote Maker', '💬', '<text>'));
+
+  cmd(['sertifikat', 'certificate'], { desc: 'Buat sertifikat', category: 'Nexray-Maker' },
+    _makerImg(args => nx.maker.sertifikat({ text: args.join(' ') }), 'Sertifikat', '🏆', '<name>'));
+
+  cmd(['maker-sticker', 'msticker'], { desc: 'Buat sticker dari teks', category: 'Nexray-Maker' },
+    _makerImg(args => nx.maker.sticker({ text: args.join(' ') }), 'Sticker Maker', '🎭', '<text>'));
+
+  cmd(['storify', 'story-maker'], { desc: 'Buat gambar story dari teks', category: 'Nexray-Maker' },
+    _makerImg(args => nx.maker.storify({ text: args.join(' ') }), 'Storify', '📱', '<text>'));
+
+  cmd(['tiktokcrd', 'tt-card'], { desc: 'Buat TikTok card', category: 'Nexray-Maker' },
+    _makerImg(args => nx.maker.tiktokcrd({ text: args.join(' ') }), 'TikTok Card', '🎵', '<text>'));
+
+  cmd(['watermark', 'add-watermark'], { desc: 'Tambah watermark ke gambar', category: 'Nexray-Maker' }, async (sock, msg, args) => {
+    if (args.length < 2) return _noArgs(sock, msg, 'watermark <image-url> <text>');
+    await react(sock, msg, '💧');
+    try {
+      const r = await nx.maker.watermark({ url: args[0], text: args.slice(1).join(' ') });
+      const m = await _media(r, axios);
+      if (m) { await _sendImg(sock, msg, m.buf, '💧 *Watermark*'); await react(sock, msg, '✅'); }
+      else throw new Error('No image returned');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['welcome-card', 'welcomecard'], { desc: 'Buat kartu welcome grup', category: 'Nexray-Maker' },
+    _makerImg(args => nx.maker.welcome({ text: args.join(' ') }), 'Welcome Card', '👋', '<text>'));
+
+  cmd(['ytthumb', 'yt-thumbnail'], { desc: 'Buat YouTube thumbnail', category: 'Nexray-Maker' },
+    _makerImg(args => nx.maker.ytthumb({ text: args.join(' ') }), 'YouTube Thumbnail', '🎬', '<text>'));
+
+  cmd(['ytcard', 'yt-card'], { desc: 'Buat YouTube card', category: 'Nexray-Maker' },
+    _makerImg(args => nx.maker.ytcard({ text: args.join(' ') }), 'YouTube Card', '▶️', '<text>'));
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 💳  PAYMENT  — 3 endpoints
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  cmd(['qris', 'make-qris'], { desc: 'Buat QRIS dari gambar/url', category: 'Nexray-Payment' }, async (sock, msg, args) => {
+    await react(sock, msg, '💳');
+    try {
+      let r;
+      if (args[0] && args[0].startsWith('http')) {
+        r = await nx.payment.qris({ url: args[0] });
+      } else {
+        const imgBuf = await _getImgFromMsg(msg, downloadContentFromMessage);
+        if (!imgBuf) return sendReply(sock, msg, '⚠️ Reply to a QRIS image, or send /qris <url>');
+        r = await nx.payment.qris({ file: imgBuf });
       }
-      const r = await nx.maker.fakegram({ username: username.trim(), text: caption || 'No caption' });
-      const buf = await _nxMedia(r, axios); if (!buf) throw new Error('No image');
-      await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: `📸 *Fake Instagram Post*` }, { quoted: msg });
-      await react(sock, msg, '✅');
+      const m = await _media(r, axios);
+      if (m) { await _sendImg(sock, msg, m.buf, '💳 *QRIS*'); await react(sock, msg, '✅'); }
+      else { const t = _jsonFmt(r); await sendReply(sock, msg, `💳 *QRIS*\n\n${t || 'Done'}`); await react(sock, msg, '✅'); }
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  cmd(['faketweet', 'faketwitter'], { desc: 'Create fake tweet — .faketweet <@user>|<tweet text>', category: 'MAKER' }, async (sock, msg, args) => {
-    const text = args.join(' ');
-    const [user, ...tweetParts] = text.split('|');
-    const tweet = tweetParts.join('|').trim();
-    if (!user || !tweet) return sendReply(sock, msg, `Usage: ${P}faketweet <@username>|<tweet text>`);
-    await react(sock, msg, '🌀');
-    try {
-      const r = await nx.maker.faketweet({ username: user.trim().replace('@',''), text: tweet });
-      const buf = await _nxMedia(r, axios); if (!buf) throw new Error('No image');
-      await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: `🐦 *Fake Tweet*` }, { quoted: msg });
-      await react(sock, msg, '✅');
-    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
-  });
-
-  cmd(['kaligrafi', 'arabicart'], { desc: 'Arabic calligraphy maker — .kaligrafi <text>', category: 'MAKER' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}kaligrafi <arabic text>`);
-    await react(sock, msg, '🌀');
-    try {
-      const r = await nx.maker.kaligrafi({ text: args.join(' ') });
-      const buf = await _nxMedia(r, axios); if (!buf) throw new Error('No image');
-      await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: `✍️ *Kaligrafi*\n_${args.join(' ')}_` }, { quoted: msg });
-      await react(sock, msg, '✅');
-    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
-  });
-
-  cmd(['nulis', 'handwriting'], { desc: 'Handwriting effect — .nulis <text>', category: 'MAKER' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}nulis <text to handwrite>`);
-    await react(sock, msg, '🌀');
-    try {
-      const r = await nx.maker.nulis({ text: args.join(' ') });
-      const buf = await _nxMedia(r, axios); if (!buf) throw new Error('No image');
-      await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: `✍️ *Handwriting*\n_${args.join(' ')}_` }, { quoted: msg });
-      await react(sock, msg, '✅');
-    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
-  });
-
-  cmd(['storify', 'storymaker'], { desc: 'Story card maker — .storify <text>', category: 'MAKER' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}storify <story text>`);
-    await react(sock, msg, '🌀');
-    try {
-      const r = await nx.maker.storify({ text: args.join(' ') });
-      const buf = await _nxMedia(r, axios); if (!buf) throw new Error('No image');
-      await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: `📖 *Story Card*` }, { quoted: msg });
-      await react(sock, msg, '✅');
-    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
-  });
-
-  cmd(['tiktokcrd', 'tiktokcard'], { desc: 'TikTok-style card — .tiktokcrd <text>', category: 'MAKER' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}tiktokcrd <text>`);
-    await react(sock, msg, '🌀');
-    try {
-      const r = await nx.maker.tiktokcrd({ text: args.join(' ') });
-      const buf = await _nxMedia(r, axios); if (!buf) throw new Error('No image');
-      await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: `🎵 *TikTok Card*\n_${args.join(' ')}_` }, { quoted: msg });
-      await react(sock, msg, '✅');
-    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
-  });
-
-  cmd(['watermark', 'addwatermark'], { desc: 'Add watermark to image — reply to image with .watermark <text>', category: 'MAKER' }, async (sock, msg, args) => {
-    const _ctx = msg.message?.extendedTextMessage?.contextInfo;
-    const _imgM = msg.message?.imageMessage || _ctx?.quotedMessage?.imageMessage;
-    if (!_imgM || !args.length) return sendReply(sock, msg, `Reply to image with ${P}watermark <your watermark text>`);
-    await react(sock, msg, '🌀');
-    try {
-      const _wmStream = await downloadContentFromMessage(_imgM, 'image');
-      let _wmBuf = Buffer.from([]);
-      for await (const c of _wmStream) _wmBuf = Buffer.concat([_wmBuf, c]);
-      let buf = null;
-      // Try NexRay watermark (needs upload → url)
-      try {
-        const _upload = await nx.uploader.upload({ buffer: _wmBuf });
-        const _url = _upload?.result?.url || _upload?.data?.url || _upload?.url;
-        if (_url) {
-          const r = await nx.maker.watermark({ url: _url, text: args.join(' ') });
-          buf = await _nxMedia(r, axios);
-        }
-      } catch {}
-      // Fallback: send original image with watermark text as caption overlay
-      if (!buf) {
-        await sock.sendMessage(msg.key.remoteJid, {
-          image: _wmBuf,
-          caption: `🖼️ *Watermarked Image*\n📝 ${args.join(' ')}`
-        }, { quoted: msg });
-        await react(sock, msg, '✅');
-        return;
-      }
-      await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: `🖼️ *Watermarked*\n📝 ${args.join(' ')}` }, { quoted: msg });
-      await react(sock, msg, '✅');
-    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
-  });
-
-  cmd(['ytthumb', 'youtubethumb'], { desc: 'Generate YouTube thumbnail — .ytthumb <title>', category: 'MAKER' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}ytthumb <video title>`);
-    await react(sock, msg, '🌀');
-    try {
-      let buf = null; let _ytCaption = `▶️ *YouTube Thumbnail*\n_${args.join(' ')}_`;
-      // Try NexRay first
-      try { const r = await nx.maker.ytthumb({ text: args.join(' ') }); buf = await _nxMedia(r, axios); } catch {}
-      // Fallback: if input is a YouTube URL, extract thumbnail directly
-      if (!buf) {
-        const _ytId = args.join(' ').match(/(?:v=|youtu\.be\/|embed\/)([a-zA-Z0-9_-]{11})/)?.[1];
-        if (_ytId) {
-          for (const q of ['maxresdefault','hqdefault','sddefault','default']) {
-            try {
-              const _tb = Buffer.from((await axios.get(`https://img.youtube.com/vi/${_ytId}/${q}.jpg`, { responseType: 'arraybuffer', timeout: 10000 })).data);
-              if (_tb && _tb.length > 2000) { buf = _tb; break; }
-            } catch {}
-          }
-        }
-      }
-      // Fallback: search YouTube and grab first result thumbnail
-      if (!buf) {
-        try {
-          const _sr = await nx.search.youtube({ query: args.join(' ') });
-          const _first = (_sr?.result || _sr?.data?.result || [])[0];
-          if (_first?.image_url) {
-            buf = Buffer.from((await axios.get(_first.image_url, { responseType: 'arraybuffer', timeout: 15000 })).data);
-            _ytCaption = `▶️ *${_first.title || args.join(' ')}*\n👤 ${_first.channel || ''}  ⏱️ ${_first.duration || ''}`;
-          }
-        } catch {}
-      }
-      if (!buf) throw new Error('No thumbnail found');
-      await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: _ytCaption }, { quoted: msg });
-      await react(sock, msg, '✅');
-    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
-  });
-
-  cmd(['ytcard', 'youtubecard'], { desc: 'Generate YouTube card — .ytcard <title>', category: 'MAKER' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}ytcard <video title>`);
-    await react(sock, msg, '🌀');
-    try {
-      let buf = null; let _ytcCaption = `▶️ *YouTube Card*\n_${args.join(' ')}_`;
-      // Try NexRay first
-      try { const r = await nx.maker.ytcard({ text: args.join(' ') }); buf = await _nxMedia(r, axios); } catch {}
-      // iTunes fallback: find matching song artwork
-      if (!buf) {
-        const _it = await _itunesCard(args.join(' '), axios);
-        if (_it?.buf) { buf = _it.buf; _ytcCaption = _it.caption; }
-      }
-      if (!buf) throw new Error('No image');
-      await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: _ytcCaption }, { quoted: msg });
-      await react(sock, msg, '✅');
-    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
-  });
-
-  cmd(['welcomecard', 'maswelcome'], { desc: 'Generate welcome card — .welcomecard <name>', category: 'MAKER' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}welcomecard <name>`);
-    await react(sock, msg, '🌀');
-    try {
-      const _wcName = args.join(' ');
-      const _wcAvatarUrl = 'https://api.dicebear.com/7.x/avataaars/png?seed=' + encodeURIComponent(_wcName) + '&backgroundColor=b6e3f4,c0aede,d1d4f9';
-      const r = await nx.maker.welcome({ url: _wcAvatarUrl, text: _wcName });
-      const buf = await _nxMedia(r, axios); if (!buf) throw new Error('No image');
-      await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: `👋 *Welcome Card*\n_${_wcName}_` }, { quoted: msg });
-      await react(sock, msg, '✅');
-    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
-  });
-
-  // ──────────────────────────────────────────────────────────────────────────
-  // PAYMENT COMMANDS
-  // ──────────────────────────────────────────────────────────────────────────
-
-  cmd(['qriscode', 'makeqris'], { desc: 'Generate QRIS payment code — .qriscode <amount>', category: 'PAYMENT' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}qriscode <amount in IDR>`);
-    await react(sock, msg, '🌀');
-    try {
-      const r = await nx.payment.qris({ amount: args[0] });
-      const buf = await _nxMedia(r, axios); if (!buf) throw new Error('No image');
-      await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: `💳 *QRIS Payment*\n💰 Amount: Rp ${args[0]}` }, { quoted: msg });
-      await react(sock, msg, '✅');
-    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
-  });
-
-  cmd(['saweria', 'saweriacek'], { desc: 'Check Saweria donations — .saweria <username>', category: 'PAYMENT' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}saweria <saweria username>`);
-    await react(sock, msg, '💸');
+  cmd(['saweria-cek', 'saweria-check'], { desc: 'Cek donasi Saweria', category: 'Nexray-Payment' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'saweria-cek <username>');
+    await react(sock, msg, '💰');
     try {
       const r = await nx.payment.saweriaCheck({ username: args[0] });
-      const t = _nxText(r) || JSON.stringify(r?.result || r?.data || r);
-      await sendReply(sock, msg, `💸 *Saweria Check*\n━━━━━━━━━━━━━━━━━━━━\n${t}`);
+      const t = _jsonFmt(r); if (!t) throw new Error('No data');
+      await sendReply(sock, msg, `💰 *Saweria: ${args[0]}*\n\n${t}`);
       await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  // ──────────────────────────────────────────────────────────────────────────
-  // PRIMBON COMMANDS (Indonesian fortune/horoscope)
-  // ──────────────────────────────────────────────────────────────────────────
-  const _primbon = [
-    ['artinama','artinama','name','Name meaning','🔮'],
-    ['nomerhoki','nomerhoki','nomer','Lucky number','🔢'],
-    ['ramalanbintang','ramalanbintang','bintang','Horoscope (star sign)','⭐'],
-    ['ramalanjodoh','ramalanjodoh','nama','Love compatibility','💑'],
-    ['ramalanmimpi','ramalanmimpi','mimpi','Dream interpretation','😴'],
-    ['ramalannama','ramalannama','nama','Name fortune','🔮'],
-    ['ramalanrezeki','ramalanrezeki','nama','Fortune reading','💰'],
-    ['ramalanshio','ramalanshio','shio','Chinese zodiac (shio)','🐉'],
-    ['ramalanweton','ramalanweton','weton','Javanese weton reading','📅'],
-    ['ramalanzodiak','ramalanzodiak','zodiak','Zodiac fortune','♈'],
-  ];
-  for (const [cmd_name, ep, param, label, emoji] of _primbon) {
-    const _ep = ep; const _param = param; const _label = label; const _emoji = emoji;
-    cmd([cmd_name], { desc: `${_label} — .${cmd_name} <${_param}>`, category: 'PRIMBON' }, async (sock, msg, args) => {
-      if (!args.length) return sendReply(sock, msg, `Usage: ${P}${cmd_name} <${_param}>`);
-      await react(sock, msg, _emoji);
-      try {
-        const params = {}; params[_param] = args.join(' ');
-        const r = await nx.primbon[_ep](params);
-        const t = _nxText(r) || JSON.stringify(r?.result || r?.data || r);
-        await sendReply(sock, msg, `${_emoji} *${_label}*\n━━━━━━━━━━━━━━━━━━━━\n${t}`);
-        await react(sock, msg, '✅');
-      } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
-    });
-  }
-
-  // ──────────────────────────────────────────────────────────────────────────
-  // RANDOM COMMANDS
-  // ──────────────────────────────────────────────────────────────────────────
-
-  cmd(['randomcat', 'catpic'], { desc: 'Random cat picture — .randomcat', category: 'RANDOM' }, async (sock, msg) => {
-    await react(sock, msg, '🐱');
+  cmd(['saweria-donate', 'saweria-dl'], { desc: 'Donasi via Saweria', category: 'Nexray-Payment' }, async (sock, msg, args) => {
+    if (args.length < 2) return _noArgs(sock, msg, 'saweria-donate <username> <amount>');
+    await react(sock, msg, '💸');
     try {
-      let buf = null;
-      try { const r = await nx.random.cat({}); buf = await _nxMedia(r, axios); } catch {}
-      if (!buf) {
-        const _c = await axios.get('https://api.thecatapi.com/v1/images/search', { timeout: 15000 });
-        const _u = _c.data?.[0]?.url;
-        if (_u) buf = Buffer.from((await axios.get(_u, { responseType: 'arraybuffer', timeout: 15000 })).data);
+      const r = await nx.payment.saweriaDonate({ username: args[0], amount: args[1] });
+      const t = _jsonFmt(r); if (!t) throw new Error('No data');
+      await sendReply(sock, msg, `💸 *Saweria Donate*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 🔮  PRIMBON  — 10 endpoints
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  cmd(['arti-nama', 'artinama'], { desc: 'Arti nama berdasarkan primbon Jawa', category: 'Nexray-Primbon' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'arti-nama <nama>');
+    await react(sock, msg, '🔮');
+    try {
+      const r = await nx.primbon.artinama({ name: args.join(' ') });
+      const t = _jsonFmt(r); if (!t) throw new Error('No data');
+      await sendReply(sock, msg, `🔮 *Arti Nama: ${args.join(' ')}*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['nomer-hoki', 'nomerhoki'], { desc: 'Nomer hoki berdasarkan nama', category: 'Nexray-Primbon' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'nomer-hoki <nama>');
+    await react(sock, msg, '🎰');
+    try {
+      const r = await nx.primbon.nomerhoki({ name: args.join(' ') });
+      const t = _jsonFmt(r); if (!t) throw new Error('No data');
+      await sendReply(sock, msg, `🎰 *Nomer Hoki: ${args.join(' ')}*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['ramalan-bintang', 'zodiak'], { desc: 'Ramalan bintang/zodiak', category: 'Nexray-Primbon' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'ramalan-bintang <zodiak>');
+    await react(sock, msg, '⭐');
+    try {
+      const r = await nx.primbon.ramalanbintang({ bintang: args.join(' ') });
+      const t = _jsonFmt(r); if (!t) throw new Error('No data');
+      await sendReply(sock, msg, `⭐ *Ramalan Bintang: ${args.join(' ')}*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['ramalan-jodoh', 'jodoh'], { desc: 'Ramalan jodoh dua nama', category: 'Nexray-Primbon' }, async (sock, msg, args) => {
+    if (args.length < 2) return _noArgs(sock, msg, 'ramalan-jodoh <nama1> <nama2>');
+    await react(sock, msg, '❤️');
+    try {
+      const r = await nx.primbon.ramalanjodoh({ name1: args[0], name2: args.slice(1).join(' ') });
+      const t = _jsonFmt(r); if (!t) throw new Error('No data');
+      await sendReply(sock, msg, `❤️ *Ramalan Jodoh*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['ramalan-mimpi', 'tafsirmimpi'], { desc: 'Tafsir ramalan mimpi', category: 'Nexray-Primbon' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'ramalan-mimpi <mimpi>');
+    await react(sock, msg, '😴');
+    try {
+      const r = await nx.primbon.ramalanmimpi({ text: args.join(' ') });
+      const t = _jsonFmt(r); if (!t) throw new Error('No data');
+      await sendReply(sock, msg, `😴 *Ramalan Mimpi*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['ramalan-nama', 'ramalannama'], { desc: 'Ramalan berdasarkan nama', category: 'Nexray-Primbon' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'ramalan-nama <nama>');
+    await react(sock, msg, '🔮');
+    try {
+      const r = await nx.primbon.ramalannama({ name: args.join(' ') });
+      const t = _jsonFmt(r); if (!t) throw new Error('No data');
+      await sendReply(sock, msg, `🔮 *Ramalan Nama: ${args.join(' ')}*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['ramalan-rezeki', 'rezeki'], { desc: 'Ramalan rezeki berdasarkan nama', category: 'Nexray-Primbon' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'ramalan-rezeki <nama>');
+    await react(sock, msg, '💰');
+    try {
+      const r = await nx.primbon.ramalanrezeki({ name: args.join(' ') });
+      const t = _jsonFmt(r); if (!t) throw new Error('No data');
+      await sendReply(sock, msg, `💰 *Ramalan Rezeki: ${args.join(' ')}*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['ramalan-shio', 'shio'], { desc: 'Ramalan shio berdasarkan tahun', category: 'Nexray-Primbon' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'ramalan-shio <tahun>');
+    await react(sock, msg, '🐉');
+    try {
+      const r = await nx.primbon.ramalanshio({ year: args[0] });
+      const t = _jsonFmt(r); if (!t) throw new Error('No data');
+      await sendReply(sock, msg, `🐉 *Ramalan Shio ${args[0]}*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['weton', 'ramalan-weton'], { desc: 'Ramalan weton Jawa', category: 'Nexray-Primbon' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'weton <tanggal-lahir>');
+    await react(sock, msg, '🗓️');
+    try {
+      const r = await nx.primbon.ramalanweton({ date: args.join(' ') });
+      const t = _jsonFmt(r); if (!t) throw new Error('No data');
+      await sendReply(sock, msg, `🗓️ *Ramalan Weton*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['ramalan-zodiak', 'zodiak2'], { desc: 'Ramalan zodiak berdasarkan tanggal lahir', category: 'Nexray-Primbon' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'ramalan-zodiak <tanggal-lahir>');
+    await react(sock, msg, '♈');
+    try {
+      const r = await nx.primbon.ramalanzodiak({ date: args.join(' ') });
+      const t = _jsonFmt(r); if (!t) throw new Error('No data');
+      await sendReply(sock, msg, `♈ *Ramalan Zodiak*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 🎲  RANDOM  — 10 endpoints
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  const _random = (fn, label, emoji, isImg = false) => async (sock, msg, args) => {
+    await react(sock, msg, emoji);
+    try {
+      const r = await fn();
+      if (isImg) {
+        const m = await _media(r, axios);
+        if (m) { await _sendImg(sock, msg, m.buf, `${emoji} *${label}*`); }
+        else { const t = _jsonFmt(r); await sendReply(sock, msg, `${emoji} *${label}*\n\n${t || 'No image'}`); }
+      } else {
+        const t = _jsonFmt(r); if (!t) throw new Error('No data');
+        await sendReply(sock, msg, `${emoji} *${label}*\n\n${t}`);
       }
-      if (!buf) throw new Error('No image');
-      await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: '🐱 *Random Cat*' }, { quoted: msg });
       await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
-  });
+  };
 
-  cmd(['randomdog', 'dogpic'], { desc: 'Random dog picture — .randomdog', category: 'RANDOM' }, async (sock, msg) => {
-    await react(sock, msg, '🐶');
+  cmd(['random-anime', 'ranime'], { desc: 'Random anime image', category: 'Nexray-Random' }, _random(() => nx.random.anime(), 'Random Anime', '🎌', true));
+  cmd(['random-ba', 'rba'], { desc: 'Random Blue Archive image', category: 'Nexray-Random' }, _random(() => nx.random.ba(), 'Random BA', '🎮', true));
+  cmd(['random-cat', 'rcat'], { desc: 'Random cat image', category: 'Nexray-Random' }, _random(() => nx.random.cat(), 'Random Cat', '🐱', true));
+  cmd(['random-dog', 'rdog'], { desc: 'Random dog image', category: 'Nexray-Random' }, _random(() => nx.random.dog(), 'Random Dog', '🐶', true));
+  cmd(['random-fact', 'rfact'], { desc: 'Random fact', category: 'Nexray-Random' }, _random(() => nx.random.fact(), 'Random Fact', '💡'));
+  cmd(['random-fox', 'rfox'], { desc: 'Random fox image', category: 'Nexray-Random' }, _random(() => nx.random.fox(), 'Random Fox', '🦊', true));
+  cmd(['random-meme', 'rmeme'], { desc: 'Random meme image', category: 'Nexray-Random' }, _random(() => nx.random.meme(), 'Random Meme', '😂', true));
+  cmd(['random-quote', 'rquote'], { desc: 'Random quote', category: 'Nexray-Random' }, _random(() => nx.random.quote(), 'Random Quote', '💬'));
+  cmd(['random-waifu', 'rwaifu'], { desc: 'Random waifu image', category: 'Nexray-Random' }, _random(() => nx.random.waifu(), 'Random Waifu', '🎌', true));
+  cmd(['random-word', 'rword'], { desc: 'Random word of the day', category: 'Nexray-Random' }, _random(() => nx.random.word(), 'Random Word', '📖'));
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 🔍  SEARCH  — 34 endpoints
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  const _search = (fn, label, emoji, argKey = 'text') => async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, `search-${label.toLowerCase().replace(/ /g,'-')} <query>`);
+    await react(sock, msg, emoji);
     try {
-      let buf = null;
-      try { const r = await nx.random.dog({}); buf = await _nxMedia(r, axios); } catch {}
-      if (!buf) {
-        const _d = await axios.get('https://dog.ceo/api/breeds/image/random', { timeout: 15000 });
-        const _u = _d.data?.message;
-        if (_u) buf = Buffer.from((await axios.get(_u, { responseType: 'arraybuffer', timeout: 15000 })).data);
-      }
-      if (!buf) throw new Error('No image');
-      await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: '🐶 *Random Dog*' }, { quoted: msg });
+      const param = {}; param[argKey] = args.join(' ');
+      const r = await fn(param);
+      const t = _jsonFmt(r); if (!t) throw new Error('No results');
+      await sendReply(sock, msg, `${emoji} *${label}*\n\n${t}`);
       await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
-  });
+  };
 
-  cmd(['randomwaifu', 'waifupic'], { desc: 'Random waifu picture — .randomwaifu', category: 'RANDOM' }, async (sock, msg) => {
-    await react(sock, msg, '🌸');
-    try {
-      const r = await nx.random.waifu({});
-      const buf = await _nxMedia(r, axios); if (!buf) throw new Error('No image');
-      await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: '🌸 *Random Waifu*' }, { quoted: msg });
-      await react(sock, msg, '✅');
-    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
-  });
+  cmd(['search-font8', 'font8'], { desc: 'Search fonts on 8font', category: 'Nexray-Search' }, _search(o => nx.search.font8(o), '8Font Search', '🔤'));
+  cmd(['search-applemusic', 'srch-amusic'], { desc: 'Search Apple Music', category: 'Nexray-Search' }, _search(o => nx.search.applemusic(o), 'Apple Music Search', '🍎', 'query'));
+  cmd(['search-apkpure', 'srch-apk'], { desc: 'Search APK on APKPure', category: 'Nexray-Search' }, _search(o => nx.search.apkpure(o), 'APKPure Search', '📱'));
+  cmd(['search-canva', 'srch-canva'], { desc: 'Search templates on Canva', category: 'Nexray-Search' }, _search(o => nx.search.canva(o), 'Canva Search', '🎨'));
+  cmd(['search-capcut', 'srch-capcut'], { desc: 'Search CapCut templates', category: 'Nexray-Search' }, _search(o => nx.search.capcut(o), 'CapCut Search', '🎬'));
+  cmd(['search-deezer', 'srch-deezer'], { desc: 'Search music on Deezer', category: 'Nexray-Search' }, _search(o => nx.search.deezer(o), 'Deezer Search', '🎵'));
+  cmd(['search-font', 'srch-font'], { desc: 'Search fonts', category: 'Nexray-Search' }, _search(o => nx.search.font(o), 'Font Search', '🔤'));
+  cmd(['search-github', 'srch-github'], { desc: 'Search GitHub repositories', category: 'Nexray-Search' }, _search(o => nx.search.github(o), 'GitHub Search', '💻'));
+  cmd(['search-google', 'srch-google'], { desc: 'Search on Google', category: 'Nexray-Search' }, _search(o => nx.search.google(o), 'Google Search', '🔍', 'query'));
+  cmd(['search-gimage', 'srch-gimg'], { desc: 'Search Google Images', category: 'Nexray-Search' }, _search(o => nx.search.googleImages(o), 'Google Images', '🖼️', 'query'));
+  cmd(['search-scholar', 'srch-scholar'], { desc: 'Search Google Scholar papers', category: 'Nexray-Search' }, _search(o => nx.search.googleScholar(o), 'Google Scholar', '📚', 'query'));
+  cmd(['search-gnews', 'srch-gnews'], { desc: 'Search Google News', category: 'Nexray-Search' }, _search(o => nx.search.googlenews(o), 'Google News', '📰', 'query'));
+  cmd(['search-instagram', 'srch-ig'], { desc: 'Search Instagram users', category: 'Nexray-Search' }, _search(o => nx.search.instagram(o), 'Instagram Search', '📸'));
+  cmd(['search-islamqa', 'islamqa'], { desc: 'Search Islamic Q&A', category: 'Nexray-Search' }, _search(o => nx.search.islamqa(o), 'IslamQA Search', '☪️'));
+  cmd(['search-jkt48', 'jkt48'], { desc: 'Search JKT48 info', category: 'Nexray-Search' }, _search(o => nx.search.jkt48(o), 'JKT48 Search', '🎤'));
+  cmd(['search-lirik', 'srch-lirik'], { desc: 'Search song lyrics', category: 'Nexray-Search' }, _search(o => nx.search.lirik(o), 'Lirik Search', '🎵'));
+  cmd(['lyrics', 'srch-lyrics'], { desc: 'Search song lyrics (English)', category: 'Nexray-Search' }, _search(o => nx.search.lyrics(o), 'Lyrics Search', '🎶'));
+  cmd(['search-npm', 'srch-npm'], { desc: 'Search NPM packages', category: 'Nexray-Search' }, _search(o => nx.search.npm(o), 'NPM Search', '📦'));
+  cmd(['search-pinterest', 'srch-pin'], { desc: 'Search Pinterest images', category: 'Nexray-Search' }, _search(o => nx.search.pinterest(o), 'Pinterest Search', '📌'));
+  cmd(['search-playstore', 'srch-play'], { desc: 'Search Google Play Store apps', category: 'Nexray-Search' }, _search(o => nx.search.playstore(o), 'Play Store Search', '📱'));
+  cmd(['search-reddit', 'srch-reddit'], { desc: 'Search Reddit posts', category: 'Nexray-Search' }, _search(o => nx.search.reddit(o), 'Reddit Search', '🤖'));
+  cmd(['search-shopee', 'srch-shopee'], { desc: 'Search products on Shopee', category: 'Nexray-Search' }, _search(o => nx.search.shopee(o), 'Shopee Search', '🛒'));
+  cmd(['search-soundcloud', 'srch-sc'], { desc: 'Search SoundCloud tracks', category: 'Nexray-Search' }, _search(o => nx.search.soundcloud(o), 'SoundCloud Search', '🎵'));
+  cmd(['search-spotify', 'srch-spotify'], { desc: 'Search Spotify tracks', category: 'Nexray-Search' }, _search(o => nx.search.spotify(o), 'Spotify Search', '🎵'));
+  cmd(['search-stickerwa', 'srch-sticker'], { desc: 'Search WhatsApp stickers', category: 'Nexray-Search' }, _search(o => nx.search.stickerwa(o), 'Sticker WA Search', '🎭'));
+  cmd(['search-tiktok', 'srch-tt'], { desc: 'Search TikTok videos', category: 'Nexray-Search' }, _search(o => nx.search.tiktok(o), 'TikTok Search', '🎵'));
+  cmd(['search-twitter', 'srch-x'], { desc: 'Search Twitter/X posts', category: 'Nexray-Search' }, _search(o => nx.search.twitter(o), 'Twitter/X Search', '🐦'));
+  cmd(['search-wikipedia', 'wiki'], { desc: 'Search Wikipedia', category: 'Nexray-Search' }, _search(o => nx.search.wikipedia(o), 'Wikipedia', '📖'));
+  cmd(['search-wiktionary', 'wiktionary'], { desc: 'Search Wiktionary dictionary', category: 'Nexray-Search' }, _search(o => nx.search.wiktionary(o), 'Wiktionary', '📖'));
+  cmd(['search-youtube', 'srch-yt'], { desc: 'Search YouTube videos', category: 'Nexray-Search' }, _search(o => nx.search.youtube(o), 'YouTube Search', '▶️'));
+  cmd(['search-ytmusic', 'srch-ytm'], { desc: 'Search YouTube Music', category: 'Nexray-Search' }, _search(o => nx.search.youtubeMusic(o), 'YouTube Music Search', '🎵'));
+  cmd(['search-bukalapak', 'srch-buka'], { desc: 'Search products on Bukalapak', category: 'Nexray-Search' }, _search(o => nx.search.bukalapak(o), 'Bukalapak Search', '🛒'));
+  cmd(['search-tokopedia', 'srch-toped'], { desc: 'Search products on Tokopedia', category: 'Nexray-Search' }, _search(o => nx.search.tokopedia(o), 'Tokopedia Search', '🛒'));
+  cmd(['search-wallpaper', 'wallpaper'], { desc: 'Search wallpapers', category: 'Nexray-Search' }, _search(o => nx.search.wallpaper(o), 'Wallpaper Search', '🖼️'));
 
-  cmd(['randomfox', 'foxpic'], { desc: 'Random fox picture — .randomfox', category: 'RANDOM' }, async (sock, msg) => {
-    await react(sock, msg, '🦊');
-    try {
-      const r = await nx.random.fox({});
-      const buf = await _nxMedia(r, axios); if (!buf) throw new Error('No image');
-      await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: '🦊 *Random Fox*' }, { quoted: msg });
-      await react(sock, msg, '✅');
-    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
-  });
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 👁️  STALKER  — 15 endpoints
+  // ═══════════════════════════════════════════════════════════════════════════
 
-  cmd(['randomba', 'bapic'], { desc: 'Random Blue Archive picture — .randomba', category: 'RANDOM' }, async (sock, msg) => {
+  cmd(['stalk-ff', 'ffstalk', 'freefireid'], { desc: 'Stalk Free Fire player by UID', category: 'Nexray-Stalker' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'stalk-ff <uid>');
     await react(sock, msg, '🎮');
     try {
-      const r = await nx.random.ba({});
-      const buf = await _nxMedia(r, axios); if (!buf) throw new Error('No image');
-      await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: '🎮 *Random Blue Archive*' }, { quoted: msg });
+      const r = await nx.stalker.freefire({ uid: args[0] });
+      const t = _jsonFmt(r); if (!t) throw new Error('No data');
+      await sendReply(sock, msg, `🎮 *Free Fire: ${args[0]}*\n\n${t}`);
       await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  cmd(['randommeme', 'memepic'], { desc: 'Random meme picture — .randommeme', category: 'RANDOM' }, async (sock, msg) => {
-    await react(sock, msg, '😂');
-    try {
-      const r = await nx.random.meme({});
-      const buf = await _nxMedia(r, axios); if (!buf) throw new Error('No image');
-      await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: '😂 *Random Meme*' }, { quoted: msg });
-      await react(sock, msg, '✅');
-    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
-  });
-
-  cmd(['randomquote', 'quotepic'], { desc: 'Random quote image — .randomquote', category: 'RANDOM' }, async (sock, msg) => {
-    await react(sock, msg, '💬');
-    try {
-      const r = await nx.random.quote({});
-      const buf = await _nxMedia(r, axios);
-      if (buf && _isImgBuf(buf)) {
-        await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: '💬 *Random Quote*' }, { quoted: msg });
-      } else {
-        const t = _nxText(r); if (!t) throw new Error('No response');
-        await sendReply(sock, msg, `💬 *Random Quote*\n\n_${t}_`);
-      }
-      await react(sock, msg, '✅');
-    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
-  });
-
-  cmd(['animerandom', 'randomanime'], { desc: 'Random anime gif — .animerandom', category: 'RANDOM' }, async (sock, msg) => {
-    await react(sock, msg, '🌀');
-    try {
-      const r = await nx.random.anime({});
-      const buf = await _nxMedia(r, axios); if (!buf) throw new Error('No image');
-      await sock.sendMessage(msg.key.remoteJid, { video: buf, mimetype: 'video/mp4', gifPlayback: true, caption: '🎌 *Random Anime GIF*' }, { quoted: msg });
-      await react(sock, msg, '✅');
-    } catch (e) {
-      // Try as image fallback
-      try {
-        const r2 = await nx.random.anime({});
-        const buf2 = await _nxMedia(r2, axios);
-        if (buf2) await sock.sendMessage(msg.key.remoteJid, { image: buf2, caption: '🎌 *Random Anime*' }, { quoted: msg });
-        await react(sock, msg, '✅');
-      } catch { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
-    }
-  });
-
-  // ──────────────────────────────────────────────────────────────────────────
-  // SEARCH COMMANDS (new platforms)
-  // ──────────────────────────────────────────────────────────────────────────
-
-  cmd(['shopee', 'shopsearch'], { desc: 'Search Shopee products — .shopee <query>', category: 'SEARCH' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}shopee <product name>`);
-    await react(sock, msg, '🛍️');
-    try {
-      const r = await nx.search.shopee({ query: args.join(' ') });
-      const items = r?.result || r?.data || r;
-      const t = Array.isArray(items) ? `🛍️ *Shopee Search: ${args.join(' ')}*\n━━━━━━━━━━━━━━━━━━━━\n` +
-        items.slice(0,5).map((i, n) => `${n+1}. *${i.name||i.title||'No name'}*\n   💰 ${i.price||i.harga||'?'}\n   🔗 ${i.link||i.url||''}`).join('\n\n')
-        : _nxText(r);
-      await sendReply(sock, msg, t || 'No results found');
-      await react(sock, msg, '✅');
-    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
-  });
-
-  cmd(['tokopedia', 'tokosearch'], { desc: 'Search Tokopedia products — .tokopedia <query>', category: 'SEARCH' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}tokopedia <product name>`);
-    await react(sock, msg, '🟢');
-    try {
-      const r = await nx.search.tokopedia({ query: args.join(' ') });
-      const items = r?.result || r?.data || r;
-      const t = Array.isArray(items) ? `🟢 *Tokopedia: ${args.join(' ')}*\n━━━━━━━━━━━━━━━━━━━━\n` +
-        items.slice(0,5).map((i, n) => `${n+1}. *${i.name||i.title||'No name'}*\n   💰 ${i.price||i.harga||'?'}\n   🔗 ${i.link||i.url||''}`).join('\n\n')
-        : _nxText(r);
-      await sendReply(sock, msg, t || 'No results found');
-      await react(sock, msg, '✅');
-    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
-  });
-
-  cmd(['deezer', 'deezersearch'], { desc: 'Search Deezer music — .deezer <song name>', category: 'SEARCH' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}deezer <song/artist name>`);
-    await react(sock, msg, '🎵');
-    try {
-      const r = await nx.search.deezer({ text: args.join(' ') });
-      const items = r?.result || r?.data || r;
-      const t = Array.isArray(items) ? `🎵 *Deezer: ${args.join(' ')}*\n━━━━━━━━━━━━━━━━━━━━\n` +
-        items.slice(0,5).map((i, n) => `${n+1}. *${i.title||i.name||'No title'}*\n   🎤 ${i.artist||'?'}\n   💿 ${i.album||'?'}\n   🔗 ${i.link||''}`).join('\n\n')
-        : _nxText(r);
-      await sendReply(sock, msg, t || 'No results found');
-      await react(sock, msg, '✅');
-    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
-  });
-
-  cmd(['googlenews', 'gnews'], { desc: 'Google News search — .googlenews <query>', category: 'SEARCH' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}googlenews <news query>`);
-    await react(sock, msg, '📰');
-    try {
-      const r = await nx.search.googlenews({ text: args.join(' ') });
-      const items = r?.result || r?.data || r;
-      const t = Array.isArray(items) ? `📰 *Google News: ${args.join(' ')}*\n━━━━━━━━━━━━━━━━━━━━\n` +
-        items.slice(0,5).map((i, n) => `${n+1}. *${i.title||'No title'}*\n   🔗 ${i.link||i.url||''}`).join('\n\n')
-        : _nxText(r);
-      await sendReply(sock, msg, t || 'No results found');
-      await react(sock, msg, '✅');
-    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
-  });
-
-  cmd(['scholarsearch', 'gscholar'], { desc: 'Google Scholar search — .scholarseach <topic>', category: 'SEARCH' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}scholarseach <research topic>`);
-    await react(sock, msg, '🎓');
-    try {
-      const r = await nx.search.googleScholar({ text: args.join(' ') });
-      const items = r?.result || r?.data || r;
-      const t = Array.isArray(items) ? `🎓 *Google Scholar: ${args.join(' ')}*\n━━━━━━━━━━━━━━━━━━━━\n` +
-        items.slice(0,5).map((i, n) => `${n+1}. *${i.title||'No title'}*\n   📝 ${i.snippet||''}\n   🔗 ${i.link||''}`).join('\n\n')
-        : _nxText(r);
-      await sendReply(sock, msg, t || 'No results found');
-      await react(sock, msg, '✅');
-    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
-  });
-
-  cmd(['wallpaper', 'wallpapersearch'], { desc: 'Search wallpapers — .wallpaper <query>', category: 'SEARCH' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}wallpaper <theme/keyword>`);
-    await react(sock, msg, '🖼️');
-    try {
-      const r = await nx.search.wallpaper({ text: args.join(' ') });
-      const buf = await _nxMedia(r, axios);
-      if (buf && _isImgBuf(buf)) {
-        await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: `🖼️ *Wallpaper: ${args.join(' ')}*` }, { quoted: msg });
-      } else {
-        const items = r?.result || r?.data || r;
-        const url = Array.isArray(items) ? items[0]?.url || items[0]?.image : null;
-        if (url) {
-          const b = Buffer.from((await axios.get(url, { responseType: 'arraybuffer', timeout: 30000 })).data);
-          await sock.sendMessage(msg.key.remoteJid, { image: b, caption: `🖼️ *Wallpaper: ${args.join(' ')}*` }, { quoted: msg });
-        } else throw new Error('No image found');
-      }
-      await react(sock, msg, '✅');
-    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
-  });
-
-  cmd(['youtubemusic', 'ytmusic'], { desc: 'YouTube Music search — .youtubemusic <song>', category: 'SEARCH' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}youtubemusic <song name>`);
-    await react(sock, msg, '🎵');
-    try {
-      const r = await nx.search.youtubeMusic({ query: args.join(' ') });
-      const items = r?.result || r?.data || r;
-      const t = Array.isArray(items) ? `🎵 *YouTube Music: ${args.join(' ')}*\n━━━━━━━━━━━━━━━━━━━━\n` +
-        items.slice(0,5).map((i, n) => `${n+1}. *${i.title||'No title'}*\n   🎤 ${i.artist||i.channel||'?'}\n   🔗 ${i.link||i.url||''}`).join('\n\n')
-        : _nxText(r);
-      await sendReply(sock, msg, t || 'No results found');
-      await react(sock, msg, '✅');
-    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
-  });
-
-  cmd(['npmpackage', 'npmsearch'], { desc: 'Search NPM packages — .npmpackage <package name>', category: 'SEARCH' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}npmpackage <package name>`);
-    await react(sock, msg, '📦');
-    try {
-      const r = await nx.search.npm({ text: args.join(' ') });
-      const d = r?.result || r?.data || r;
-      const t = typeof d === 'string' ? d : (d?.name ? `📦 *${d.name}*\n📝 ${d.description || 'No desc'}\n🔗 ${d.link || ''}` : JSON.stringify(d));
-      await sendReply(sock, msg, `📦 *NPM Search*\n━━━━━━━━━━━━━━━━━━━━\n${t}`);
-      await react(sock, msg, '✅');
-    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
-  });
-
-  // ──────────────────────────────────────────────────────────────────────────
-  // STALKER COMMANDS (new)
-  // ──────────────────────────────────────────────────────────────────────────
-
-  cmd(['genshinstalk', 'genshininfo'], { desc: 'Genshin Impact player info — .genshinstalk <uid>', category: 'STALK' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}genshinstalk <uid>`);
-    await react(sock, msg, '🗡️');
+  cmd(['stalk-genshin', 'genshinstalk'], { desc: 'Stalk Genshin Impact player by UID', category: 'Nexray-Stalker' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'stalk-genshin <uid>');
+    await react(sock, msg, '⚔️');
     try {
       const r = await nx.stalker.genshin({ uid: args[0] });
-      const d = r?.result || r?.data || r;
-      const t = typeof d === 'string' ? d : JSON.stringify(d, null, 2);
-      await sendReply(sock, msg, `🗡️ *Genshin Impact*\n━━━━━━━━━━━━━━━━━━━━\n${t}`);
+      const t = _jsonFmt(r); if (!t) throw new Error('No data');
+      await sendReply(sock, msg, `⚔️ *Genshin: ${args[0]}*\n\n${t}`);
       await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  cmd(['pubgstalk', 'pubginfo'], { desc: 'PUBG player info — .pubgstalk <username>', category: 'STALK' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}pubgstalk <pubg username>`);
+  cmd(['stalk-github', 'githubstalk'], { desc: 'Stalk GitHub user profile', category: 'Nexray-Stalker' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'stalk-github <username>');
+    await react(sock, msg, '💻');
+    try {
+      const r = await nx.stalker.github({ username: args[0] });
+      const t = _jsonFmt(r); if (!t) throw new Error('No data');
+      await sendReply(sock, msg, `💻 *GitHub: @${args[0]}*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['stalk-ig', 'igstalk', 'instagramstalk'], { desc: 'Stalk Instagram user profile', category: 'Nexray-Stalker' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'stalk-ig <username>');
+    await react(sock, msg, '📸');
+    try {
+      const r = await nx.stalker.instagram({ username: args[0] });
+      const t = _jsonFmt(r); if (!t) throw new Error('No data');
+      await sendReply(sock, msg, `📸 *Instagram: @${args[0]}*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['stalk-ml', 'mlstalk', 'mobilelegendsstalk'], { desc: 'Stalk Mobile Legends player by ID+ZoneID', category: 'Nexray-Stalker' }, async (sock, msg, args) => {
+    if (args.length < 2) return _noArgs(sock, msg, 'stalk-ml <id> <zone-id>');
     await react(sock, msg, '🎮');
     try {
-      const r = await nx.stalker.pubg({ username: args.join(' ') });
-      const d = r?.result || r?.data || r;
-      const t = typeof d === 'string' ? d : JSON.stringify(d, null, 2);
-      await sendReply(sock, msg, `🎮 *PUBG Player*\n━━━━━━━━━━━━━━━━━━━━\n${t}`);
+      const r = await nx.stalker.ml({ id: args[0], zoneid: args[1] });
+      const t = _jsonFmt(r); if (!t) throw new Error('No data');
+      await sendReply(sock, msg, `🎮 *Mobile Legends: ${args[0]}*\n\n${t}`);
       await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  cmd(['redditorstalk', 'redditor'], { desc: 'Reddit user profile — .redditorstalk <username>', category: 'STALK' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}redditorstalk <reddit username>`);
+  cmd(['stalk-npm', 'npmstalk'], { desc: 'Stalk NPM package details', category: 'Nexray-Stalker' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'stalk-npm <package-name>');
+    await react(sock, msg, '📦');
+    try {
+      const r = await nx.stalker.npm({ package: args[0] });
+      const t = _jsonFmt(r); if (!t) throw new Error('No data');
+      await sendReply(sock, msg, `📦 *NPM: ${args[0]}*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['stalk-pinterest', 'pinstalk'], { desc: 'Stalk Pinterest user profile', category: 'Nexray-Stalker' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'stalk-pinterest <username>');
+    await react(sock, msg, '📌');
+    try {
+      const r = await nx.stalker.pinterest({ username: args[0] });
+      const t = _jsonFmt(r); if (!t) throw new Error('No data');
+      await sendReply(sock, msg, `📌 *Pinterest: @${args[0]}*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['stalk-pubg', 'pubgstalk'], { desc: 'Stalk PUBG player profile', category: 'Nexray-Stalker' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'stalk-pubg <username>');
+    await react(sock, msg, '🎮');
+    try {
+      const r = await nx.stalker.pubg({ username: args[0] });
+      const t = _jsonFmt(r); if (!t) throw new Error('No data');
+      await sendReply(sock, msg, `🎮 *PUBG: ${args[0]}*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['stalk-reddit', 'redditstalk'], { desc: 'Stalk Reddit user profile', category: 'Nexray-Stalker' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'stalk-reddit <username>');
     await react(sock, msg, '🤖');
     try {
       const r = await nx.stalker.reddit({ username: args[0] });
-      const d = r?.result || r?.data || r;
-      const t = typeof d === 'string' ? d : `👤 *u/${d?.name || args[0]}*\n📝 ${d?.description || d?.about || ''}\n👥 Karma: ${d?.karma || d?.link_karma || '?'}`;
-      await sendReply(sock, msg, `🤖 *Reddit Profile*\n━━━━━━━━━━━━━━━━━━━━\n${t}`);
+      const t = _jsonFmt(r); if (!t) throw new Error('No data');
+      await sendReply(sock, msg, `🤖 *Reddit: u/${args[0]}*\n\n${t}`);
       await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  cmd(['snackvideostalk', 'snackvideoinfo'], { desc: 'SnackVideo user info — .snackvideostalk <username>', category: 'STALK' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}snackvideostalk <username>`);
+  cmd(['stalk-snackvideo', 'snackvideostalk'], { desc: 'Stalk Snack Video user', category: 'Nexray-Stalker' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'stalk-snackvideo <username>');
     await react(sock, msg, '📱');
     try {
       const r = await nx.stalker.snackvideo({ username: args[0] });
-      const d = r?.result || r?.data || r;
-      const t = typeof d === 'string' ? d : JSON.stringify(d, null, 2);
-      await sendReply(sock, msg, `📱 *SnackVideo*\n━━━━━━━━━━━━━━━━━━━━\n${t}`);
+      const t = _jsonFmt(r); if (!t) throw new Error('No data');
+      await sendReply(sock, msg, `📱 *Snack Video: @${args[0]}*\n\n${t}`);
       await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  cmd(['spotifystalk', 'stalkspotify'], { desc: 'Spotify user profile — .spotifystalk <username>', category: 'STALK' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}spotifystalk <spotify username>`);
-    await react(sock, msg, '🟢');
-    try {
-      const r = await nx.stalker.spotify({ username: args[0] });
-      const d = r?.result || r?.data || r;
-      const t = typeof d === 'string' ? d : JSON.stringify(d, null, 2);
-      await sendReply(sock, msg, `🟢 *Spotify Profile*\n━━━━━━━━━━━━━━━━━━━━\n${t}`);
-      await react(sock, msg, '✅');
-    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
-  });
-
-  cmd(['wabio', 'whatsappbio'], { desc: 'WhatsApp user bio — .wabio <number>', category: 'STALK' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}wabio <phone number>`);
-    await react(sock, msg, '📱');
-    try {
-      const r = await nx.stalker.whatsapp({ number: args[0].replace(/[^0-9]/g,'') });
-      const d = r?.result || r?.data || r;
-      const t = typeof d === 'string' ? d : JSON.stringify(d, null, 2);
-      await sendReply(sock, msg, `📱 *WhatsApp Info*\n━━━━━━━━━━━━━━━━━━━━\n${t}`);
-      await react(sock, msg, '✅');
-    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
-  });
-
-  // ──────────────────────────────────────────────────────────────────────────
-  // TEXTPRO COMMANDS — all 22 effects
-  // ──────────────────────────────────────────────────────────────────────────
-  const _textproEffects = [
-    ['tpfire','fire'],['tpneon','neon'],['tpgold','gold'],['tpice','ice'],
-    ['tpglitch','glitch'],['tpavengers','avengers'],['tpspace','space'],
-    ['tpminecraft','minecraft'],['tpmatrix','matrix'],['tpgraffiti','graffiti'],
-    ['tpsmoky','smoke'],['tpwood','wood'],['tpocean','ocean'],['tpmetal','metal'],
-    ['tplava','lava'],['tpretro','retro'],['tprainbow','rainbow'],['tpblood','blood'],
-    ['tpgradient','gradient'],['tpgalaxy','galaxy'],['tpgalaxy2','galaxy2'],['tpemas','emas'],
-  ];
-  for (const [cmd_name, effect] of _textproEffects) {
-    const _effect = effect;
-    cmd([cmd_name], { desc: `${_effect.toUpperCase()} text effect — .${cmd_name} <text>`, category: 'TEXTPRO' }, async (sock, msg, args) => {
-      if (!args.length) return sendReply(sock, msg, `Usage: ${P}${cmd_name} <your text>`);
-      await react(sock, msg, '✨');
-      try {
-        const r = await nx.textpro[_effect]({ text: args.join(' ') });
-        const buf = await _nxMedia(r, axios); if (!buf) throw new Error('No image');
-        await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: `✨ *${_effect.toUpperCase()} Text*\n_${args.join(' ')}_` }, { quoted: msg });
-        await react(sock, msg, '✅');
-      } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
-    });
-  }
-
-  // ──────────────────────────────────────────────────────────────────────────
-  // TOOLS COMMANDS (new)
-  // ──────────────────────────────────────────────────────────────────────────
-
-  cmd(['blurface', 'faceblur'], { desc: 'Blur faces in image — reply to image with .blurface', category: 'TOOLS' }, async (sock, msg) => {
-    const _ctx = msg.message?.extendedTextMessage?.contextInfo;
-    const _imgM = msg.message?.imageMessage || _ctx?.quotedMessage?.imageMessage;
-    if (!_imgM) return sendReply(sock, msg, `Reply to an image with ${P}blurface`);
-    await react(sock, msg, '🌀');
-    try {
-      const _upload = await nx.uploader.upload({ buffer: await (async () => { const s = await downloadContentFromMessage(_imgM, 'image'); let b = Buffer.from([]); for await (const c of s) b = Buffer.concat([b,c]); return b; })() });
-      const _url = _upload?.result?.url || _upload?.data?.url || _upload?.url;
-      if (!_url) throw new Error('Upload failed');
-      const r = await nx.tools.blurface({ url: _url });
-      const buf = await _nxMedia(r, axios); if (!buf) throw new Error('No image');
-      await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: '😶 *Face Blurred*' }, { quoted: msg });
-      await react(sock, msg, '✅');
-    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
-  });
-
-  cmd(['emojimix', 'emix'], { desc: 'Mix two emojis — .emojimix <emoji1> <emoji2>', category: 'TOOLS' }, async (sock, msg, args) => {
-    if (args.length < 2) return sendReply(sock, msg, `Usage: ${P}emojimix <emoji1> <emoji2>`);
-    await react(sock, msg, '🌀');
-    try {
-      const r = await nx.tools.emojimix({ emoji1: args[0], emoji2: args[1] });
-      const buf = await _nxMedia(r, axios); if (!buf) throw new Error('No image');
-      await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: `🎭 *Emoji Mix*: ${args[0]} + ${args[1]}` }, { quoted: msg });
-      await react(sock, msg, '✅');
-    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
-  });
-
-  cmd(['emojigif', 'egif'], { desc: 'Get emoji GIF — .emojigif <emoji>', category: 'TOOLS' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}emojigif <emoji>`);
-    await react(sock, msg, '🌀');
-    try {
-      const r = await nx.tools.emojigif({ emoji: args[0] });
-      const buf = await _nxMedia(r, axios); if (!buf) throw new Error('No image');
-      await sock.sendMessage(msg.key.remoteJid, { video: buf, mimetype: 'video/mp4', gifPlayback: true, caption: `${args[0]} *Emoji GIF*` }, { quoted: msg });
-      await react(sock, msg, '✅');
-    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
-  });
-
-  cmd(['faceswap', 'swapface'], { desc: 'Face swap between two images — .faceswap <url1> <url2>', category: 'TOOLS' }, async (sock, msg, args) => {
-    const _ctx = msg.message?.extendedTextMessage?.contextInfo;
-    const _imgM = msg.message?.imageMessage || _ctx?.quotedMessage?.imageMessage;
-    if (args.length < 2 && !_imgM) return sendReply(sock, msg, `Usage: ${P}faceswap <image_url1> <image_url2>\nOR reply to an image with ${P}faceswap <second_image_url>`);
-    await react(sock, msg, '🌀');
-    try {
-      let url1 = args[0], url2 = args[1];
-      if (_imgM && !url2) {
-        const _upload = await nx.uploader.upload({ buffer: await (async () => { const s = await downloadContentFromMessage(_imgM, 'image'); let b = Buffer.from([]); for await (const c of s) b = Buffer.concat([b,c]); return b; })() });
-        url1 = _upload?.result?.url || _upload?.data?.url || _upload?.url;
-        url2 = args[0];
-      }
-      const r = await nx.tools.faceswap({ url1, url2 });
-      const buf = await _nxMedia(r, axios); if (!buf) throw new Error('No image');
-      await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: '😵 *Face Swap*' }, { quoted: msg });
-      await react(sock, msg, '✅');
-    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
-  });
-
-  cmd(['nsfwcheck', 'ceknsfw'], { desc: 'Check if image is NSFW — reply to image with .nsfwcheck', category: 'TOOLS' }, async (sock, msg) => {
-    const _ctx = msg.message?.extendedTextMessage?.contextInfo;
-    const _imgM = msg.message?.imageMessage || _ctx?.quotedMessage?.imageMessage;
-    if (!_imgM) return sendReply(sock, msg, `Reply to an image with ${P}nsfwcheck`);
-    await react(sock, msg, '🔍');
-    try {
-      const _upload = await nx.uploader.upload({ buffer: await (async () => { const s = await downloadContentFromMessage(_imgM, 'image'); let b = Buffer.from([]); for await (const c of s) b = Buffer.concat([b,c]); return b; })() });
-      const _url = _upload?.result?.url || _upload?.data?.url || _upload?.url;
-      if (!_url) throw new Error('Upload failed');
-      const r = await nx.tools.nsfwChecker({ url: _url });
-      const d = r?.result || r?.data || r;
-      const t = typeof d === 'string' ? d : `🔞 NSFW: ${d?.nsfw || d?.isNsfw ? '❌ YES' : '✅ NO'}\n📊 Score: ${d?.score || d?.probability || '?'}`;
-      await sendReply(sock, msg, `🔍 *NSFW Check*\n━━━━━━━━━━━━━━━━━━━━\n${t}`);
-      await react(sock, msg, '✅');
-    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
-  });
-
-  cmd(['trackip', 'iplookup'], { desc: 'Track/lookup IP address — .trackip <ip>', category: 'TOOLS' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}trackip <ip address>`);
-    await react(sock, msg, '🌐');
-    try {
-      const r = await nx.tools.trackip({ ip: args[0] });
-      const d = r?.result || r?.data || r;
-      const t = typeof d === 'string' ? d : `🌐 *IP Track: ${args[0]}*\n━━━━━━━━━━━━━━━━━━━━\n🗺️ Country: ${d?.country||'?'}\n🏙️ City: ${d?.city||'?'}\n📡 ISP: ${d?.isp||'?'}\n📍 Lat: ${d?.lat||'?'}, Lon: ${d?.lon||'?'}`;
-      await sendReply(sock, msg, t);
-      await react(sock, msg, '✅');
-    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
-  });
-
-  cmd(['unblurimg', 'unblur'], { desc: 'Unblur/sharpen image — reply to image with .unblurimg', category: 'TOOLS' }, async (sock, msg) => {
-    const _ctx = msg.message?.extendedTextMessage?.contextInfo;
-    const _imgM = msg.message?.imageMessage || _ctx?.quotedMessage?.imageMessage;
-    if (!_imgM) return sendReply(sock, msg, `Reply to a blurry image with ${P}unblurimg`);
-    await react(sock, msg, '🌀');
-    try {
-      const _upload = await nx.uploader.upload({ buffer: await (async () => { const s = await downloadContentFromMessage(_imgM, 'image'); let b = Buffer.from([]); for await (const c of s) b = Buffer.concat([b,c]); return b; })() });
-      const _url = _upload?.result?.url || _upload?.data?.url || _upload?.url;
-      if (!_url) throw new Error('Upload failed');
-      const r = await nx.tools.unblur({ url: _url });
-      const buf = await _nxMedia(r, axios); if (!buf) throw new Error('No image');
-      await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: '🔍 *Unblurred*' }, { quoted: msg });
-      await react(sock, msg, '✅');
-    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
-  });
-
-  cmd(['hdvideo', 'videohd'], { desc: 'Enhance video to HD — .hdvideo <video url>', category: 'TOOLS' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}hdvideo <video url>`);
-    await react(sock, msg, '🌀');
-    try {
-      const r = await nx.tools.hdvideo({ url: args[0] });
-      const url = r?.result?.url || r?.data?.url || r?.url;
-      if (!url) throw new Error('No URL returned');
-      await sendReply(sock, msg, `🎬 *HD Video*\n\n🔗 Download: ${url}`);
-      await react(sock, msg, '✅');
-    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
-  });
-
-  cmd(['image2qr', 'imgtoqr'], { desc: 'Convert image to QR code — reply to image with .image2qr', category: 'TOOLS' }, async (sock, msg) => {
-    const _ctx = msg.message?.extendedTextMessage?.contextInfo;
-    const _imgM = msg.message?.imageMessage || _ctx?.quotedMessage?.imageMessage;
-    if (!_imgM) return sendReply(sock, msg, `Reply to an image with ${P}image2qr`);
-    await react(sock, msg, '🌀');
-    try {
-      const _upload = await nx.uploader.upload({ buffer: await (async () => { const s = await downloadContentFromMessage(_imgM, 'image'); let b = Buffer.from([]); for await (const c of s) b = Buffer.concat([b,c]); return b; })() });
-      const _url = _upload?.result?.url || _upload?.data?.url || _upload?.url;
-      if (!_url) throw new Error('Upload failed');
-      const r = await nx.tools.image2qr({ url: _url });
-      const buf = await _nxMedia(r, axios); if (!buf) throw new Error('No QR');
-      await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: '🔲 *Image to QR*' }, { quoted: msg });
-      await react(sock, msg, '✅');
-    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
-  });
-
-  cmd(['removevokal', 'instrumental'], { desc: 'Remove vocals from song — .removevokal <song url>', category: 'TOOLS' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}removevokal <audio/song url>`);
-    await react(sock, msg, '🌀');
-    try {
-      const r = await nx.tools.removevokal({ url: args[0] });
-      const buf = await _nxMedia(r, axios);
-      if (buf && _isAudBuf(buf)) {
-        await sock.sendMessage(msg.key.remoteJid, { audio: buf, mimetype: 'audio/mpeg', ptt: false }, { quoted: msg });
-      } else {
-        const url = r?.result?.url || r?.data?.url || r?.url;
-        if (url) await sendReply(sock, msg, `🎵 *Instrumental (no vocals)*\n\n🔗 ${url}`);
-        else throw new Error('No audio returned');
-      }
-      await react(sock, msg, '✅');
-    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
-  });
-
-  cmd(['tiktokearnings', 'ttearnings'], { desc: 'Calculate TikTok earnings — .tiktokearnings <followers>', category: 'TOOLS' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}tiktokearnings <follower count>`);
-    await react(sock, msg, '💰');
-    try {
-      const r = await nx.tools.tiktokearnings({ username: args[0] });
-      const t = _nxText(r) || JSON.stringify(r?.result || r?.data || r);
-      await sendReply(sock, msg, `💰 *TikTok Earnings*\n━━━━━━━━━━━━━━━━━━━━\n${t}`);
-      await react(sock, msg, '✅');
-    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
-  });
-
-  cmd(['tiktokhashtags', 'tthashtags'], { desc: 'TikTok hashtag suggestions — .tiktokhashtags <niche>', category: 'TOOLS' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}tiktokhashtags <niche/topic>`);
-    await react(sock, msg, '#️⃣');
-    try {
-      const r = await nx.tools.tiktokhashtags({ hashtags: args.join(' ') });
-      const t = _nxText(r) || JSON.stringify(r?.result || r?.data || r);
-      await sendReply(sock, msg, `#️⃣ *TikTok Hashtags*\n━━━━━━━━━━━━━━━━━━━━\n${t}`);
-      await react(sock, msg, '✅');
-    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
-  });
-
-  cmd(['usernamegen', 'unamegen'], { desc: 'Generate username ideas — .usernamegen <keyword>', category: 'TOOLS' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}usernamegen <keyword>`);
-    await react(sock, msg, '🆔');
-    try {
-      const r = await nx.tools.usernamegen({ name: args.join(' ') });
-      const t = _nxText(r) || JSON.stringify(r?.result || r?.data || r);
-      await sendReply(sock, msg, `🆔 *Username Generator*\n━━━━━━━━━━━━━━━━━━━━\n${t}`);
-      await react(sock, msg, '✅');
-    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
-  });
-
-  cmd(['vcc', 'virtualcard'], { desc: 'Generate virtual credit card — .vcc', category: 'TOOLS' }, async (sock, msg) => {
-    await react(sock, msg, '💳');
-    try {
-      const r = await nx.tools.vcc({});
-      const d = r?.result || r?.data || r;
-      const t = typeof d === 'string' ? d : `💳 *Virtual Card*\n━━━━━━━━━━━━━━━━━━━━\n💳 Number: ${d?.number||d?.card_number||'?'}\n📅 Expiry: ${d?.expiry||d?.exp||'?'}\n🔐 CVV: ${d?.cvv||'?'}\n👤 Name: ${d?.name||'?'}`;
-      await sendReply(sock, msg, t);
-      await react(sock, msg, '✅');
-    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
-  });
-
-  cmd(['wink', 'winkgif'], { desc: 'Get a wink anime gif — .wink', category: 'TOOLS' }, async (sock, msg) => {
-    await react(sock, msg, '😉');
-    try {
-      const r = await nx.tools.wink({});
-      const buf = await _nxMedia(r, axios); if (!buf) throw new Error('No gif');
-      await sock.sendMessage(msg.key.remoteJid, { video: buf, mimetype: 'video/mp4', gifPlayback: true, caption: '😉' }, { quoted: msg });
-      await react(sock, msg, '✅');
-    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
-  });
-
-  cmd(['winrateml', 'mlwinrate'], { desc: 'MLBB win rate calculator — .winrateml <wins> <total>', category: 'TOOLS' }, async (sock, msg, args) => {
-    if (args.length < 2) return sendReply(sock, msg, `Usage: ${P}winrateml <wins> <total games>`);
-    await react(sock, msg, '🎮');
-    try {
-      const r = await nx.tools.winrateMLBB({ wins: args[0], total: args[1] });
-      const t = _nxText(r) || JSON.stringify(r?.result || r?.data || r);
-      await sendReply(sock, msg, `🎮 *ML Win Rate*\n━━━━━━━━━━━━━━━━━━━━\n${t}`);
-      await react(sock, msg, '✅');
-    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
-  });
-
-  cmd(['ytsum', 'ytsummarize'], { desc: 'Summarize a YouTube video — .ytsum <youtube url>', category: 'TOOLS' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}ytsum <youtube url>`);
-    await react(sock, msg, '📝');
-    try {
-      const r = await nx.tools.ytSummarizeV1({ url: args[0] });
-      const t = _nxText(r); if (!t) throw new Error('No summary');
-      await sendReply(sock, msg, `📝 *YouTube Summary*\n━━━━━━━━━━━━━━━━━━━━\n${t}`);
-      await react(sock, msg, '✅');
-    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
-  });
-
-  cmd(['ytsub', 'ytranscribe'], { desc: 'Get subtitles from YouTube — .ytsub <youtube url>', category: 'TOOLS' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}ytsub <youtube url>`);
-    await react(sock, msg, '📜');
-    try {
-      const r = await nx.tools.ytTranscribe({ url: args[0] });
-      const t = _nxText(r); if (!t) throw new Error('No transcript');
-      const trimmed = t.length > 4000 ? t.slice(0, 4000) + '\n...[truncated]' : t;
-      await sendReply(sock, msg, `📜 *YouTube Transcript*\n━━━━━━━━━━━━━━━━━━━━\n${trimmed}`);
-      await react(sock, msg, '✅');
-    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
-  });
-
-  cmd(['whatsmusic', 'cekmusik'], { desc: 'Identify music playing — .whatsmusic <audio url>', category: 'TOOLS' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}whatsmusic <audio url>`);
+  cmd(['stalk-spotify', 'spotifystalk'], { desc: 'Stalk Spotify user profile', category: 'Nexray-Stalker' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'stalk-spotify <username>');
     await react(sock, msg, '🎵');
     try {
-      const r = await nx.tools.whatsmusic({ url: args[0] });
-      const d = r?.result || r?.data || r;
-      const t = typeof d === 'string' ? d : `🎵 *${d?.title||'Unknown'}*\n🎤 ${d?.artist||'?'}\n💿 ${d?.album||'?'}`;
-      await sendReply(sock, msg, `🎵 *What's This Music?*\n━━━━━━━━━━━━━━━━━━━━\n${t}`);
+      const r = await nx.stalker.spotify({ username: args[0] });
+      const t = _jsonFmt(r); if (!t) throw new Error('No data');
+      await sendReply(sock, msg, `🎵 *Spotify: ${args[0]}*\n\n${t}`);
       await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  cmd(['html2image', 'html2img'], { desc: 'Convert HTML/URL to image — .html2image <url or html>', category: 'TOOLS' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}html2image <url or html code>`);
-    await react(sock, msg, '🌀');
+  cmd(['stalk-tiktok', 'ttstalk', 'tiktokstalk'], { desc: 'Stalk TikTok user profile', category: 'Nexray-Stalker' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'stalk-tiktok <username>');
+    await react(sock, msg, '🎵');
     try {
-      const r = await nx.tools.html2img({ url: args.join(' ') });
-      const buf = await _nxMedia(r, axios); if (!buf) throw new Error('No image');
-      await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: '🌐 *HTML to Image*' }, { quoted: msg });
+      const r = await nx.stalker.tiktok({ username: args[0] });
+      const t = _jsonFmt(r); if (!t) throw new Error('No data');
+      await sendReply(sock, msg, `🎵 *TikTok: @${args[0]}*\n\n${t}`);
       await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  cmd(['subdomains', 'subdomainfinder'], { desc: 'Find subdomains — .subdomains <domain>', category: 'TOOLS' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}subdomains <domain.com>`);
-    await react(sock, msg, '🔍');
+  cmd(['stalk-twitter', 'xstalk', 'twitterstalk'], { desc: 'Stalk Twitter/X user profile', category: 'Nexray-Stalker' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'stalk-twitter <username>');
+    await react(sock, msg, '🐦');
     try {
-      const r = await nx.tools.subdomainfinder({ domain: args[0] });
-      const d = r?.result || r?.data || r;
-      const t = Array.isArray(d) ? d.slice(0,20).join('\n') : (typeof d === 'string' ? d : JSON.stringify(d));
-      await sendReply(sock, msg, `🔍 *Subdomains: ${args[0]}*\n━━━━━━━━━━━━━━━━━━━━\n${t || 'None found'}`);
+      const r = await nx.stalker.twitter({ username: args[0] });
+      const t = _jsonFmt(r); if (!t) throw new Error('No data');
+      await sendReply(sock, msg, `🐦 *Twitter/X: @${args[0]}*\n\n${t}`);
       await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  cmd(['dnslookup', 'dnsinfo'], { desc: 'DNS lookup — .dnslookup <domain>', category: 'TOOLS' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}dnslookup <domain.com>`);
+  cmd(['stalk-youtube', 'ytstalk'], { desc: 'Stalk YouTube channel', category: 'Nexray-Stalker' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'stalk-youtube <username>');
+    await react(sock, msg, '▶️');
+    try {
+      const r = await nx.stalker.youtube({ username: args[0] });
+      const t = _jsonFmt(r); if (!t) throw new Error('No data');
+      await sendReply(sock, msg, `▶️ *YouTube: ${args[0]}*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['stalk-wa', 'wastalk', 'whatsappstalk'], { desc: 'Stalk WhatsApp number info', category: 'Nexray-Stalker' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'stalk-wa <phone-number>');
+    await react(sock, msg, '📱');
+    try {
+      const r = await nx.stalker.whatsapp({ number: args[0] });
+      const t = _jsonFmt(r); if (!t) throw new Error('No data');
+      await sendReply(sock, msg, `📱 *WhatsApp: ${args[0]}*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 🔠  TEXTPRO  — 22 text effect endpoints (return images)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  const _textpro = (fn, label, emoji) => async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, `textpro-${label.toLowerCase()} <text>`);
+    await react(sock, msg, emoji);
+    try {
+      const r = await fn({ text: args.join(' ') }); const m = await _media(r, axios);
+      if (m) { await _sendImg(sock, msg, m.buf, `${emoji} *TextPro ${label}*`); await react(sock, msg, '✅'); }
+      else { const t = _jsonFmt(r); await sendReply(sock, msg, `${emoji} *TextPro ${label}*\n${t || 'No image'}`); }
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  };
+
+  cmd(['tp-avengers', 'textpro-avengers'], { desc: 'Avengers text effect', category: 'Nexray-TextPro' }, _textpro(o => nx.textpro.avengers(o), 'Avengers', '🦸'));
+  cmd(['tp-bear', 'textpro-bear'], { desc: 'Bear text effect', category: 'Nexray-TextPro' }, _textpro(o => nx.textpro.bear(o), 'Bear', '🐻'));
+  cmd(['tp-candy', 'textpro-candy'], { desc: 'Candy text effect', category: 'Nexray-TextPro' }, _textpro(o => nx.textpro.candy(o), 'Candy', '🍬'));
+  cmd(['tp-chrome', 'textpro-chrome'], { desc: 'Chrome text effect', category: 'Nexray-TextPro' }, _textpro(o => nx.textpro.chrome(o), 'Chrome', '⚪'));
+  cmd(['tp-diamond', 'textpro-diamond'], { desc: 'Diamond text effect', category: 'Nexray-TextPro' }, _textpro(o => nx.textpro.diamond(o), 'Diamond', '💎'));
+  cmd(['tp-fire', 'textpro-fire'], { desc: 'Fire text effect', category: 'Nexray-TextPro' }, _textpro(o => nx.textpro.fire(o), 'Fire', '🔥'));
+  cmd(['tp-glitch', 'textpro-glitch'], { desc: 'Glitch text effect', category: 'Nexray-TextPro' }, _textpro(o => nx.textpro.glitch(o), 'Glitch', '📺'));
+  cmd(['tp-gold', 'textpro-gold'], { desc: 'Gold text effect', category: 'Nexray-TextPro' }, _textpro(o => nx.textpro.gold(o), 'Gold', '✨'));
+  cmd(['tp-gradient', 'textpro-gradient'], { desc: 'Gradient text effect', category: 'Nexray-TextPro' }, _textpro(o => nx.textpro.gradient(o), 'Gradient', '🌈'));
+  cmd(['tp-ice', 'textpro-ice'], { desc: 'Ice text effect', category: 'Nexray-TextPro' }, _textpro(o => nx.textpro.ice(o), 'Ice', '❄️'));
+  cmd(['tp-lava', 'textpro-lava'], { desc: 'Lava text effect', category: 'Nexray-TextPro' }, _textpro(o => nx.textpro.lava(o), 'Lava', '🌋'));
+  cmd(['tp-lightning', 'textpro-lightning'], { desc: 'Lightning text effect', category: 'Nexray-TextPro' }, _textpro(o => nx.textpro.lightning(o), 'Lightning', '⚡'));
+  cmd(['tp-minecraft', 'textpro-minecraft'], { desc: 'Minecraft text effect', category: 'Nexray-TextPro' }, _textpro(o => nx.textpro.minecraft(o), 'Minecraft', '⛏️'));
+  cmd(['tp-neon', 'textpro-neon'], { desc: 'Neon text effect', category: 'Nexray-TextPro' }, _textpro(o => nx.textpro.neon(o), 'Neon', '💡'));
+  cmd(['tp-ocean', 'textpro-ocean'], { desc: 'Ocean text effect', category: 'Nexray-TextPro' }, _textpro(o => nx.textpro.ocean(o), 'Ocean', '🌊'));
+  cmd(['tp-phantom', 'textpro-phantom'], { desc: 'Phantom text effect', category: 'Nexray-TextPro' }, _textpro(o => nx.textpro.phantom(o), 'Phantom', '👻'));
+  cmd(['tp-retro', 'textpro-retro'], { desc: 'Retro text effect', category: 'Nexray-TextPro' }, _textpro(o => nx.textpro.retro(o), 'Retro', '📺'));
+  cmd(['tp-shadow', 'textpro-shadow'], { desc: 'Shadow text effect', category: 'Nexray-TextPro' }, _textpro(o => nx.textpro.shadow(o), 'Shadow', '🌑'));
+  cmd(['tp-smoke', 'textpro-smoke'], { desc: 'Smoke text effect', category: 'Nexray-TextPro' }, _textpro(o => nx.textpro.smoke(o), 'Smoke', '💨'));
+  cmd(['tp-space', 'textpro-space'], { desc: 'Space text effect', category: 'Nexray-TextPro' }, _textpro(o => nx.textpro.space(o), 'Space', '🚀'));
+  cmd(['tp-superstar', 'textpro-superstar'], { desc: 'Superstar text effect', category: 'Nexray-TextPro' }, _textpro(o => nx.textpro.superstar(o), 'Superstar', '⭐'));
+  cmd(['tp-unicorn', 'textpro-unicorn'], { desc: 'Unicorn text effect', category: 'Nexray-TextPro' }, _textpro(o => nx.textpro.unicorn(o), 'Unicorn', '🦄'));
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 🛠️  TOOLS  — 57 endpoints
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  cmd(['alightmotion', 'alight-motion'], { desc: 'Generate Alight Motion preset', category: 'Nexray-Tools' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'alightmotion <text>');
+    await react(sock, msg, '🎬');
+    try {
+      const r = await nx.tools.alightmotion({ text: args.join(' ') });
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
+      await sendReply(sock, msg, `🎬 *Alight Motion Preset*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['blurface', 'blur-face'], { desc: 'Blur faces in an image', category: 'Nexray-Tools' }, async (sock, msg, args) => {
+    const url = args[0]; if (!url) return _noArgs(sock, msg, 'blurface <image-url>');
+    await react(sock, msg, '😶');
+    try {
+      const r = await nx.tools.blurface({ url }); const m = await _media(r, axios);
+      if (m) { await _sendImg(sock, msg, m.buf, '😶 *Blur Face*'); await react(sock, msg, '✅'); }
+      else throw new Error('No image returned');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['brokenlink', 'check-link'], { desc: 'Check for broken links on a website', category: 'Nexray-Tools' }, async (sock, msg, args) => {
+    const url = args[0]; if (!url) return _noArgs(sock, msg, 'brokenlink <url>');
+    await react(sock, msg, '🔗');
+    try {
+      const r = await nx.tools.brokenlink({ url });
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
+      await sendReply(sock, msg, `🔗 *Broken Link Check*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['currency', 'convert-currency'], { desc: 'Convert currency', category: 'Nexray-Tools' }, async (sock, msg, args) => {
+    if (args.length < 3) return _noArgs(sock, msg, 'currency <amount> <from> <to>  e.g. currency 100 USD IDR');
+    await react(sock, msg, '💱');
+    try {
+      const r = await nx.tools.currency({ amount: args[0], from: args[1].toUpperCase(), to: args[2].toUpperCase() });
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
+      await sendReply(sock, msg, `💱 *Currency Converter*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['dnslookup', 'dns-lookup'], { desc: 'DNS lookup for a domain', category: 'Nexray-Tools' }, async (sock, msg, args) => {
+    const domain = args[0]; if (!domain) return _noArgs(sock, msg, 'dnslookup <domain>');
     await react(sock, msg, '🌐');
     try {
-      const r = await nx.tools.dnslookup({ domain: args[0] });
-      const t = _nxText(r) || JSON.stringify(r?.result || r?.data || r, null, 2);
-      await sendReply(sock, msg, `🌐 *DNS Lookup: ${args[0]}*\n━━━━━━━━━━━━━━━━━━━━\n${t}`);
+      const r = await nx.tools.dnslookup({ domain });
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
+      await sendReply(sock, msg, `🌐 *DNS Lookup: ${domain}*\n\n${t}`);
       await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  cmd(['webphishing', 'cekphishing'], { desc: 'Check if URL is phishing — .webphishing <url>', category: 'TOOLS' }, async (sock, msg, args) => {
-    if (!args.length) return sendReply(sock, msg, `Usage: ${P}webphishing <url to check>`);
+  cmd(['emojigif', 'emoji-gif'], { desc: 'Convert emoji to GIF', category: 'Nexray-Tools' }, async (sock, msg, args) => {
+    const emoji = args[0]; if (!emoji) return _noArgs(sock, msg, 'emojigif <emoji>');
+    await react(sock, msg, '😀');
+    try {
+      const r = await nx.tools.emojigif({ emoji }); const m = await _media(r, axios);
+      if (m) { await _sendImg(sock, msg, m.buf, `😀 *Emoji GIF: ${emoji}`); await react(sock, msg, '✅'); }
+      else { const t = _jsonFmt(r); await sendReply(sock, msg, `😀 *Emoji GIF*\n${t || 'No result'}`); }
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['emojimix', 'emoji-mix'], { desc: 'Mix two emojis together', category: 'Nexray-Tools' }, async (sock, msg, args) => {
+    if (args.length < 2) return _noArgs(sock, msg, 'emojimix <emoji1> <emoji2>');
+    await react(sock, msg, '🎨');
+    try {
+      const r = await nx.tools.emojimix({ emoji1: args[0], emoji2: args[1] }); const m = await _media(r, axios);
+      if (m) { await _sendImg(sock, msg, m.buf, `🎨 *Emoji Mix: ${args[0]}+${args[1]}*`); await react(sock, msg, '✅'); }
+      else throw new Error('No image returned');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['enhance', 'enhancer'], { desc: 'Enhance image quality', category: 'Nexray-Tools' }, async (sock, msg, args) => {
+    const url = args[0]; if (!url) return _noArgs(sock, msg, 'enhance <image-url>');
+    await react(sock, msg, '✨');
+    try {
+      const r = await nx.tools.enhancer({ url }); const m = await _media(r, axios);
+      if (m) { await _sendImg(sock, msg, m.buf, '✨ *Image Enhanced*'); await react(sock, msg, '✅'); }
+      else throw new Error('No image returned');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['enhance2', 'enhancerv1'], { desc: 'Enhance image quality v1', category: 'Nexray-Tools' }, async (sock, msg, args) => {
+    const url = args[0]; if (!url) return _noArgs(sock, msg, 'enhance2 <image-url>');
+    await react(sock, msg, '✨');
+    try {
+      const r = await nx.tools.enhancerV1({ url }); const m = await _media(r, axios);
+      if (m) { await _sendImg(sock, msg, m.buf, '✨ *Image Enhanced v1*'); await react(sock, msg, '✅'); }
+      else throw new Error('No image returned');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['enhance3', 'enhancerv2'], { desc: 'Enhance image quality v2', category: 'Nexray-Tools' }, async (sock, msg, args) => {
+    const url = args[0]; if (!url) return _noArgs(sock, msg, 'enhance3 <image-url>');
+    await react(sock, msg, '✨');
+    try {
+      const r = await nx.tools.enhancerV2({ url }); const m = await _media(r, axios);
+      if (m) { await _sendImg(sock, msg, m.buf, '✨ *Image Enhanced v2*'); await react(sock, msg, '✅'); }
+      else throw new Error('No image returned');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['faceswap', 'face-swap'], { desc: 'Swap faces between two image URLs', category: 'Nexray-Tools' }, async (sock, msg, args) => {
+    if (args.length < 2) return _noArgs(sock, msg, 'faceswap <url1> <url2>');
+    await react(sock, msg, '🔄');
+    try {
+      const r = await nx.tools.faceswap({ url1: args[0], url2: args[1] }); const m = await _media(r, axios);
+      if (m) { await _sendImg(sock, msg, m.buf, '🔄 *Face Swap*'); await react(sock, msg, '✅'); }
+      else throw new Error('No image returned');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['hdvideo', 'hd-video'], { desc: 'Enhance video to HD quality', category: 'Nexray-Tools' }, async (sock, msg, args) => {
+    const url = args[0]; if (!url) return _noArgs(sock, msg, 'hdvideo <video-url>');
+    await react(sock, msg, '📹');
+    try {
+      const r = await nx.tools.hdvideo({ url });
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
+      await sendReply(sock, msg, `📹 *HD Video*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['hdvideo2', 'hd-video2'], { desc: 'Enhance video to HD quality v1', category: 'Nexray-Tools' }, async (sock, msg, args) => {
+    const url = args[0]; if (!url) return _noArgs(sock, msg, 'hdvideo2 <video-url>');
+    await react(sock, msg, '📹');
+    try {
+      const r = await nx.tools.hdvideoV1({ url });
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
+      await sendReply(sock, msg, `📹 *HD Video v1*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['html2img', 'html-to-image'], { desc: 'Convert HTML to image', category: 'Nexray-Tools' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'html2img <html-code>');
+    await react(sock, msg, '🌐');
+    try {
+      const r = await nx.tools.html2img({ html: args.join(' ') }); const m = await _media(r, axios);
+      if (m) { await _sendImg(sock, msg, m.buf, '🌐 *HTML to Image*'); await react(sock, msg, '✅'); }
+      else throw new Error('No image returned');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['img2qr', 'image-to-qr'], { desc: 'Convert image to QR code', category: 'Nexray-Tools' }, async (sock, msg, args) => {
+    const url = args[0]; if (!url) return _noArgs(sock, msg, 'img2qr <image-url>');
+    await react(sock, msg, '📱');
+    try {
+      const r = await nx.tools.image2qr({ url }); const m = await _media(r, axios);
+      if (m) { await _sendImg(sock, msg, m.buf, '📱 *Image to QR*'); await react(sock, msg, '✅'); }
+      else throw new Error('No image returned');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['nikparse', 'cek-nik'], { desc: 'Parse Indonesian NIK ID number', category: 'Nexray-Tools' }, async (sock, msg, args) => {
+    const nik = args[0]; if (!nik) return _noArgs(sock, msg, 'nikparse <nik>');
+    await react(sock, msg, '🪪');
+    try {
+      const r = await nx.tools.nikparse({ nik });
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
+      await sendReply(sock, msg, `🪪 *NIK Parse*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['nsfw-check', 'nsfwcheck', 'cek-nsfw'], { desc: 'Check if image contains NSFW content', category: 'Nexray-Tools' }, async (sock, msg, args) => {
+    const url = args[0]; if (!url) return _noArgs(sock, msg, 'nsfw-check <image-url>');
+    await react(sock, msg, '🔞');
+    try {
+      const r = await nx.tools.nsfwChecker({ url });
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
+      await sendReply(sock, msg, `🔞 *NSFW Check*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['ocr', 'image-to-text'], { desc: 'Extract text from image (OCR)', category: 'Nexray-Tools' }, async (sock, msg, args) => {
+    const url = args[0]; if (!url) return _noArgs(sock, msg, 'ocr <image-url>');
+    await react(sock, msg, '📝');
+    try {
+      const r = await nx.tools.ocr({ url });
+      const t = _jsonFmt(r); if (!t) throw new Error('No text found');
+      await sendReply(sock, msg, `📝 *OCR Result*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['remini'], { desc: 'Enhance image with Remini AI', category: 'Nexray-Tools' }, async (sock, msg, args) => {
+    const url = args[0]; if (!url) return _noArgs(sock, msg, 'remini <image-url>');
+    await react(sock, msg, '✨');
+    try {
+      const r = await nx.tools.remini({ url }); const m = await _media(r, axios);
+      if (m) { await _sendImg(sock, msg, m.buf, '✨ *Remini Enhanced*'); await react(sock, msg, '✅'); }
+      else throw new Error('No image returned');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['removebg', 'remove-bg'], { desc: 'Remove background from image', category: 'Nexray-Tools' }, async (sock, msg, args) => {
+    const url = args[0]; if (!url) return _noArgs(sock, msg, 'removebg <image-url>');
+    await react(sock, msg, '✂️');
+    try {
+      const r = await nx.tools.removebg({ url }); const m = await _media(r, axios);
+      if (m) { await _sendImg(sock, msg, m.buf, '✂️ *Background Removed*'); await react(sock, msg, '✅'); }
+      else throw new Error('No image returned');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['removebg2', 'remove-bgv1'], { desc: 'Remove background from image v1', category: 'Nexray-Tools' }, async (sock, msg, args) => {
+    const url = args[0]; if (!url) return _noArgs(sock, msg, 'removebg2 <image-url>');
+    await react(sock, msg, '✂️');
+    try {
+      const r = await nx.tools.removebgV1({ url }); const m = await _media(r, axios);
+      if (m) { await _sendImg(sock, msg, m.buf, '✂️ *BG Removed v1*'); await react(sock, msg, '✅'); }
+      else throw new Error('No image returned');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['removebg3', 'remove-bgv2'], { desc: 'Remove background from image v2', category: 'Nexray-Tools' }, async (sock, msg, args) => {
+    const url = args[0]; if (!url) return _noArgs(sock, msg, 'removebg3 <image-url>');
+    await react(sock, msg, '✂️');
+    try {
+      const r = await nx.tools.removebgV2({ url }); const m = await _media(r, axios);
+      if (m) { await _sendImg(sock, msg, m.buf, '✂️ *BG Removed v2*'); await react(sock, msg, '✅'); }
+      else throw new Error('No image returned');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['removevocal', 'remove-vocal'], { desc: 'Remove vocal track from audio/video', category: 'Nexray-Tools' }, async (sock, msg, args) => {
+    const url = args[0]; if (!url) return _noArgs(sock, msg, 'removevocal <audio-url>');
+    await react(sock, msg, '🎵');
+    try {
+      const r = await nx.tools.removevokal({ url }); const m = await _media(r, axios);
+      if (m && (m.ct.includes('audio') || m.ct.includes('mp'))) {
+        await _sendAudio(sock, msg, m.buf); await react(sock, msg, '✅');
+      } else {
+        const t = _jsonFmt(r); await sendReply(sock, msg, `🎵 *Remove Vocal*\n\n${t || 'Done'}`);
+      }
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['skip-adlinksumo', 'skipadlink'], { desc: 'Skip Adlinksumo shortened link', category: 'Nexray-Tools' }, async (sock, msg, args) => {
+    const url = args[0]; if (!url) return _noArgs(sock, msg, 'skip-adlinksumo <adlinksumo-url>');
+    await react(sock, msg, '⏭️');
+    try {
+      const r = await nx.tools.skipAdlinksumo({ url });
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
+      await sendReply(sock, msg, `⏭️ *Skip Adlinksumo*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['spamngl', 'spam-ngl'], { desc: 'Spam NGL link', category: 'Nexray-Tools' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'spamngl <ngl-text>');
+    await react(sock, msg, '📨');
+    try {
+      const r = await nx.tools.spamngl({ text: args.join(' ') });
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
+      await sendReply(sock, msg, `📨 *Spam NGL*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['ssweb', 'screenshot-web'], { desc: 'Take screenshot of a website', category: 'Nexray-Tools' }, async (sock, msg, args) => {
+    const url = args[0]; if (!url) return _noArgs(sock, msg, 'ssweb <url>');
+    await react(sock, msg, '📸');
+    try {
+      const r = await nx.tools.ssweb({ url }); const m = await _media(r, axios);
+      if (m) { await _sendImg(sock, msg, m.buf, `📸 *Screenshot: ${url}`); await react(sock, msg, '✅'); }
+      else throw new Error('No screenshot returned');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['subdomain-finder', 'subdomainfinder'], { desc: 'Find subdomains of a domain', category: 'Nexray-Tools' }, async (sock, msg, args) => {
+    const domain = args[0]; if (!domain) return _noArgs(sock, msg, 'subdomain-finder <domain>');
+    await react(sock, msg, '🌐');
+    try {
+      const r = await nx.tools.subdomainfinder({ domain });
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
+      await sendReply(sock, msg, `🌐 *Subdomain Finder: ${domain}*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['tg-sticker', 'telegramsticker'], { desc: 'Convert image to Telegram sticker format', category: 'Nexray-Tools' }, async (sock, msg, args) => {
+    const url = args[0]; if (!url) return _noArgs(sock, msg, 'tg-sticker <image-url>');
+    await react(sock, msg, '🎭');
+    try {
+      const r = await nx.tools.telegramSticker({ url }); const m = await _media(r, axios);
+      if (m) { await _sendImg(sock, msg, m.buf, '🎭 *Telegram Sticker*'); await react(sock, msg, '✅'); }
+      else { const t = _jsonFmt(r); await sendReply(sock, msg, `🎭 *TG Sticker*\n${t}`); }
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['tiktok-earnings', 'ttearnings'], { desc: 'Estimate TikTok creator earnings', category: 'Nexray-Tools' }, async (sock, msg, args) => {
+    const username = args[0]; if (!username) return _noArgs(sock, msg, 'tiktok-earnings <username>');
+    await react(sock, msg, '💰');
+    try {
+      const r = await nx.tools.tiktokearnings({ username });
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
+      await sendReply(sock, msg, `💰 *TikTok Earnings: @${username}*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['tiktok-hashtags', 'tthashtags'], { desc: 'Search TikTok trending hashtags', category: 'Nexray-Tools' }, async (sock, msg, args) => {
+    const hashtag = args[0]; if (!hashtag) return _noArgs(sock, msg, 'tiktok-hashtags <hashtag>');
+    await react(sock, msg, '#️⃣');
+    try {
+      const r = await nx.tools.tiktokhashtags({ hashtag });
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
+      await sendReply(sock, msg, `#️⃣ *TikTok Hashtags: ${hashtag}*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['trackip', 'track-ip'], { desc: 'Track IP address location', category: 'Nexray-Tools' }, async (sock, msg, args) => {
+    const ip = args[0]; if (!ip) return _noArgs(sock, msg, 'trackip <ip-address>');
+    await react(sock, msg, '📍');
+    try {
+      const r = await nx.tools.trackip({ ip });
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
+      await sendReply(sock, msg, `📍 *Track IP: ${ip}*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['translate', 'trans'], { desc: 'Translate text', category: 'Nexray-Tools' }, async (sock, msg, args) => {
+    if (args.length < 2) return _noArgs(sock, msg, 'translate <lang> <text>  e.g. translate en Halo dunia');
+    await react(sock, msg, '🌐');
+    try {
+      const to = args[0]; const text = args.slice(1).join(' ');
+      const r = await nx.tools.translate({ text, to });
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
+      await sendReply(sock, msg, `🌐 *Translate → ${to.toUpperCase()}*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['tts', 'google-tts'], { desc: 'Text to speech (Google TTS)', category: 'Nexray-Tools' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'tts <text>  (or: tts en <text>)');
+    await react(sock, msg, '🔊');
+    try {
+      const hasLang = args[0].length === 2 && /^[a-z]+$/.test(args[0]);
+      const lang = hasLang ? args[0] : 'id';
+      const text = hasLang ? args.slice(1).join(' ') : args.join(' ');
+      const r = await nx.tools.ttsGoogle({ text, lang }); const m = await _media(r, axios);
+      if (m) { await _sendAudio(sock, msg, m.buf); await react(sock, msg, '✅'); }
+      else throw new Error('No audio returned');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['unblur', 'deblur'], { desc: 'Unblur a blurry image', category: 'Nexray-Tools' }, async (sock, msg, args) => {
+    const url = args[0]; if (!url) return _noArgs(sock, msg, 'unblur <image-url>');
     await react(sock, msg, '🔍');
     try {
-      const r = await nx.tools.webphishing({ url: args[0] });
-      const d = r?.result || r?.data || r;
-      const t = typeof d === 'string' ? d : `🔍 *Phishing Check*\n🌐 URL: ${args[0]}\n⚠️ Result: ${d?.phishing ? '❌ PHISHING' : '✅ SAFE'}\n📊 Score: ${d?.score || d?.confidence || '?'}`;
-      await sendReply(sock, msg, t);
+      const r = await nx.tools.unblur({ url }); const m = await _media(r, axios);
+      if (m) { await _sendImg(sock, msg, m.buf, '🔍 *Image Unblurred*'); await react(sock, msg, '✅'); }
+      else throw new Error('No image returned');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['upscale', 'upscale-img'], { desc: 'Upscale image resolution', category: 'Nexray-Tools' }, async (sock, msg, args) => {
+    const url = args[0]; if (!url) return _noArgs(sock, msg, 'upscale <image-url>');
+    await react(sock, msg, '📐');
+    try {
+      const r = await nx.tools.upscale({ url }); const m = await _media(r, axios);
+      if (m) { await _sendImg(sock, msg, m.buf, '📐 *Image Upscaled*'); await react(sock, msg, '✅'); }
+      else throw new Error('No image returned');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['upscale2', 'upscalev1'], { desc: 'Upscale image resolution v1', category: 'Nexray-Tools' }, async (sock, msg, args) => {
+    const url = args[0]; if (!url) return _noArgs(sock, msg, 'upscale2 <image-url>');
+    await react(sock, msg, '📐');
+    try {
+      const r = await nx.tools.upscaleV1({ url }); const m = await _media(r, axios);
+      if (m) { await _sendImg(sock, msg, m.buf, '📐 *Upscaled v1*'); await react(sock, msg, '✅'); }
+      else throw new Error('No image returned');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['upscale3', 'upscalev2'], { desc: 'Upscale image resolution v2', category: 'Nexray-Tools' }, async (sock, msg, args) => {
+    const url = args[0]; if (!url) return _noArgs(sock, msg, 'upscale3 <image-url>');
+    await react(sock, msg, '📐');
+    try {
+      const r = await nx.tools.upscaleV2({ url }); const m = await _media(r, axios);
+      if (m) { await _sendImg(sock, msg, m.buf, '📐 *Upscaled v2*'); await react(sock, msg, '✅'); }
+      else throw new Error('No image returned');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['upscale4', 'upscalev3'], { desc: 'Upscale image resolution v3', category: 'Nexray-Tools' }, async (sock, msg, args) => {
+    const url = args[0]; if (!url) return _noArgs(sock, msg, 'upscale4 <image-url>');
+    await react(sock, msg, '📐');
+    try {
+      const r = await nx.tools.upscaleV3({ url }); const m = await _media(r, axios);
+      if (m) { await _sendImg(sock, msg, m.buf, '📐 *Upscaled v3*'); await react(sock, msg, '✅'); }
+      else throw new Error('No image returned');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['upscale5', 'upscalev4'], { desc: 'Upscale image resolution v4', category: 'Nexray-Tools' }, async (sock, msg, args) => {
+    const url = args[0]; if (!url) return _noArgs(sock, msg, 'upscale5 <image-url>');
+    await react(sock, msg, '📐');
+    try {
+      const r = await nx.tools.upscaleV4({ url }); const m = await _media(r, axios);
+      if (m) { await _sendImg(sock, msg, m.buf, '📐 *Upscaled v4*'); await react(sock, msg, '✅'); }
+      else throw new Error('No image returned');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['upscale6', 'upscalev5'], { desc: 'Upscale image resolution v5', category: 'Nexray-Tools' }, async (sock, msg, args) => {
+    const url = args[0]; if (!url) return _noArgs(sock, msg, 'upscale6 <image-url>');
+    await react(sock, msg, '📐');
+    try {
+      const r = await nx.tools.upscaleV5({ url }); const m = await _media(r, axios);
+      if (m) { await _sendImg(sock, msg, m.buf, '📐 *Upscaled v5*'); await react(sock, msg, '✅'); }
+      else throw new Error('No image returned');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['usernamegen', 'username-gen'], { desc: 'Generate username ideas', category: 'Nexray-Tools' }, async (sock, msg, args) => {
+    if (!args.length) return _noArgs(sock, msg, 'usernamegen <name>');
+    await react(sock, msg, '👤');
+    try {
+      const r = await nx.tools.usernamegen({ name: args.join(' ') });
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
+      await sendReply(sock, msg, `👤 *Username Ideas for: ${args.join(' ')}*\n\n${t}`);
       await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  // ──────────────────────────────────────────────────────────────────────────
-  // UPLOADER COMMAND
-  // ──────────────────────────────────────────────────────────────────────────
-
-  cmd(['upload', 'uploadimg'], { desc: 'Upload image/file and get direct link — reply to media with .upload', category: 'TOOLS' }, async (sock, msg) => {
-    const _ctx = msg.message?.extendedTextMessage?.contextInfo;
-    const _imgM = msg.message?.imageMessage || _ctx?.quotedMessage?.imageMessage;
-    const _docM = msg.message?.documentMessage || _ctx?.quotedMessage?.documentMessage;
-    const _audM = msg.message?.audioMessage || _ctx?.quotedMessage?.audioMessage;
-    const _vidM = msg.message?.videoMessage || _ctx?.quotedMessage?.videoMessage;
-    const media = _imgM || _docM || _audM || _vidM;
-    if (!media) return sendReply(sock, msg, `Reply to any media with ${P}upload to get a direct link.`);
-    await react(sock, msg, '🌀');
+  cmd(['vcc', 'virtual-cc'], { desc: 'Generate virtual credit card info', category: 'Nexray-Tools' }, async (sock, msg, args) => {
+    await react(sock, msg, '💳');
     try {
-      const type = _imgM ? 'image' : _docM ? 'document' : _audM ? 'audio' : 'video';
-      const stream = await downloadContentFromMessage(media, type);
-      let buf = Buffer.from([]);
-      for await (const chunk of stream) buf = Buffer.concat([buf, chunk]);
-      const r = await nx.uploader.upload({ buffer: buf });
-      const url = r?.result?.url || r?.data?.url || r?.url;
-      if (!url) throw new Error('Upload failed — no URL returned');
-      await sendReply(sock, msg, `📤 *Upload Successful!*\n\n🔗 ${url}\n\n_File size: ${(buf.length/1024).toFixed(1)} KB_`);
+      const r = await nx.tools.vcc();
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
+      await sendReply(sock, msg, `💳 *Virtual CC*\n\n${t}`);
       await react(sock, msg, '✅');
-    } catch (e) { await sendReply(sock, msg, `❌ Upload failed: ${e.message}`); await react(sock, msg, '❌'); }
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  console.log('[nexray_bot] All NexRay commands registered ✅');
+  cmd(['virtual-number', 'virtualnumber'], { desc: 'Get virtual number for OTP', category: 'Nexray-Tools' }, async (sock, msg, args) => {
+    await react(sock, msg, '📲');
+    try {
+      const r = await nx.tools.virtualNumber({ number: args[0] });
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
+      await sendReply(sock, msg, `📲 *Virtual Number*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['virtual-number2', 'virtualnum2'], { desc: 'Get virtual number for OTP v1', category: 'Nexray-Tools' }, async (sock, msg, args) => {
+    await react(sock, msg, '📲');
+    try {
+      const r = await nx.tools.virtualNumberV1();
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
+      await sendReply(sock, msg, `📲 *Virtual Number v1*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['webphishing', 'phishing-check'], { desc: 'Check if a website is phishing', category: 'Nexray-Tools' }, async (sock, msg, args) => {
+    const url = args[0]; if (!url) return _noArgs(sock, msg, 'webphishing <url>');
+    await react(sock, msg, '🛡️');
+    try {
+      const r = await nx.tools.webphishing({ url });
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
+      await sendReply(sock, msg, `🛡️ *Phishing Check: ${url}*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['webtozip', 'website-to-zip'], { desc: 'Download a website as a ZIP file', category: 'Nexray-Tools' }, async (sock, msg, args) => {
+    const url = args[0]; if (!url) return _noArgs(sock, msg, 'webtozip <url>');
+    await react(sock, msg, '📦');
+    try {
+      const r = await nx.tools.webtozip({ url });
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
+      await sendReply(sock, msg, `📦 *Website to ZIP*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['whatsmusic', 'identify-music'], { desc: 'Identify music from audio/video URL', category: 'Nexray-Tools' }, async (sock, msg, args) => {
+    const url = args[0]; if (!url) return _noArgs(sock, msg, 'whatsmusic <audio-url>');
+    await react(sock, msg, '🎵');
+    try {
+      const r = await nx.tools.whatsmusic({ url });
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
+      await sendReply(sock, msg, `🎵 *Music Identified*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['wink', 'wink-effect'], { desc: 'Wink enhance image or video', category: 'Nexray-Tools' }, async (sock, msg, args) => {
+    const url = args[0]; if (!url) return _noArgs(sock, msg, 'wink <image/video-url>');
+    await react(sock, msg, '✨');
+    try {
+      const r = await nx.tools.wink({ url }); const m = await _media(r, axios);
+      if (m) { await _sendImg(sock, msg, m.buf, '✨ *Wink Enhanced*'); await react(sock, msg, '✅'); }
+      else { const t = _jsonFmt(r); await sendReply(sock, msg, `✨ *Wink*\n${t}`); }
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['winrate-mlbb', 'winrateml'], { desc: 'MLBB win-rate calculator', category: 'Nexray-Tools' }, async (sock, msg, args) => {
+    await react(sock, msg, '🎮');
+    try {
+      const r = await nx.tools.winrateMLBB();
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
+      await sendReply(sock, msg, `🎮 *MLBB Win-Rate*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['yt-summarize', 'ytsummarize'], { desc: 'Summarize a YouTube video', category: 'Nexray-Tools' }, async (sock, msg, args) => {
+    const url = args[0]; if (!url) return _noArgs(sock, msg, 'yt-summarize <youtube-url>');
+    await react(sock, msg, '📝');
+    try {
+      const r = await nx.tools.ytSummarizeV1({ url });
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
+      await sendReply(sock, msg, `📝 *YouTube Summary*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['yt-summarize2', 'ytsummarize2'], { desc: 'Summarize a YouTube video v2', category: 'Nexray-Tools' }, async (sock, msg, args) => {
+    const url = args[0]; if (!url) return _noArgs(sock, msg, 'yt-summarize2 <youtube-url>');
+    await react(sock, msg, '📝');
+    try {
+      const r = await nx.tools.ytSummarizeV2({ url });
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
+      await sendReply(sock, msg, `📝 *YouTube Summary v2*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  cmd(['yt-transcribe', 'yttranscribe'], { desc: 'Transcribe YouTube video to text', category: 'Nexray-Tools' }, async (sock, msg, args) => {
+    const url = args[0]; if (!url) return _noArgs(sock, msg, 'yt-transcribe <youtube-url>');
+    await react(sock, msg, '📝');
+    try {
+      const r = await nx.tools.ytTranscribe({ url });
+      const t = _jsonFmt(r); if (!t) throw new Error('No response');
+      await sendReply(sock, msg, `📝 *YouTube Transcript*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ☁️  UPLOADER  — 1 endpoint
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  cmd(['upload-nx', 'nxupload'], { desc: 'Upload file to Nexray CDN (reply to a file/image)', category: 'Nexray-Uploader' }, async (sock, msg, args) => {
+    await react(sock, msg, '☁️');
+    try {
+      let fileBuf = await _getImgFromMsg(msg, downloadContentFromMessage);
+      if (!fileBuf) {
+        // Try other message types
+        const docMsg = msg.message?.documentMessage ??
+          msg.message?.extendedTextMessage?.contextInfo?.quotedMessage?.documentMessage ?? null;
+        if (docMsg) {
+          const stream = await downloadContentFromMessage(docMsg, 'document');
+          let buf = Buffer.from([]);
+          for await (const chunk of stream) buf = Buffer.concat([buf, chunk]);
+          fileBuf = buf.length > 100 ? buf : null;
+        }
+      }
+      if (!fileBuf) return sendReply(sock, msg, '⚠️ Please reply to an image or document to upload!');
+      const r = await nx.uploader.upload({ file: fileBuf });
+      const t = _jsonFmt(r); if (!t) throw new Error('Upload failed');
+      await sendReply(sock, msg, `☁️ *Nexray CDN Upload*\n\n${t}`);
+      await react(sock, msg, '✅');
+    } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
+  });
+
+  console.log('[nexray_bot] ✅ All NexRay commands registered successfully! (369 endpoints across 19 categories)');
 };
