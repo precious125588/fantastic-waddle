@@ -252,6 +252,7 @@ tr:hover td{background:color-mix(in srgb,var(--accent) 3%,transparent);}
       <button type="button" class="nav-item" data-tab="users" onclick="showTab('users')"><span class="nav-icon">👥</span>Users / Bots</button>
       <button type="button" class="nav-item" data-tab="logs" onclick="showTab('logs')"><span class="nav-icon">📋</span>Live Logs</button>
       <button type="button" class="nav-item" data-tab="system" onclick="showTab('system')"><span class="nav-icon">⚙️</span>System</button>
+      <button type="button" class="nav-item" data-tab="settings" onclick="showTab('settings')"><span class="nav-icon">🔧</span>Settings</button>
     </nav>
     <div class="sb-footer">
       <div class="sb-status"><div class="sb-dot" id="sbDot"></div><span id="sbStatusTxt">Connecting...</span></div>
@@ -335,6 +336,46 @@ tr:hover td{background:color-mix(in srgb,var(--accent) 3%,transparent);}
             <button type="button" class="log-tab" onclick="setLogFilter('admin',this)">Admin</button>
           </div>
           <div class="log-box" id="logBox"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── SETTINGS ── -->
+    <div id="tab-settings" class="tab-pane">
+      <div class="page-header">
+        <div class="page-title">Settings</div>
+        <div class="page-sub">Configure bot token and integrations</div>
+      </div>
+      <!-- Telegram Bot Token -->
+      <div class="section" style="margin-bottom:18px">
+        <div class="section-hd">
+          <div class="section-title">📡 Telegram Bot Token</div>
+          <div id="tgBotStatus" style="font-size:.75rem;color:var(--muted)">Loading...</div>
+        </div>
+        <div class="section-body">
+          <p style="font-size:.8rem;color:var(--muted);margin-bottom:14px">Paste your Telegram bot token here. Saving will immediately restart the Telegram polling with the new token.</p>
+          <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;">
+            <div style="flex:1;min-width:220px">
+              <label style="display:block;font-size:.75rem;color:var(--muted);margin-bottom:5px;font-weight:600">Bot Token (from @BotFather)</label>
+              <input type="text" id="tgTokenInput" class="search-input" style="width:100%;font-family:monospace;font-size:.8rem" placeholder="123456789:ABCdef…"/>
+            </div>
+            <button type="button" class="btn btn-primary" id="saveTgTokenBtn" onclick="saveBotToken()">💾 Save &amp; Start Polling</button>
+            <button type="button" class="btn btn-danger" onclick="removeBotToken()">✕ Remove Token</button>
+          </div>
+          <div id="tgTokenMsg" style="display:none;margin-top:10px;font-size:.78rem;padding:8px 12px;border-radius:8px;"></div>
+          <div style="margin-top:14px;padding:12px;background:var(--card2);border-radius:10px;font-size:.75rem;color:var(--muted)">
+            <strong style="color:var(--text)">Current token:</strong> <span id="tgTokenMasked" style="font-family:monospace">—</span>
+            &nbsp;·&nbsp;
+            <strong style="color:var(--text)">Status:</strong> <span id="tgBotActive">—</span>
+          </div>
+        </div>
+      </div>
+      <!-- Quick Actions -->
+      <div class="section">
+        <div class="section-hd"><div class="section-title">⚡ Quick Bot Actions</div></div>
+        <div class="section-body" style="display:flex;gap:10px;flex-wrap:wrap;">
+          <button type="button" class="btn btn-outline" onclick="reconnectFailed()">↻ Reconnect Failed Bots</button>
+          <button type="button" class="btn btn-danger" onclick="confirmPauseAll()">⏸ Pause All Bots</button>
         </div>
       </div>
     </div>
@@ -454,6 +495,7 @@ function showTab(id){
   const btn=document.querySelector(`.nav-item[data-tab="${id}"]`);if(btn)btn.classList.add('active');
   if(id==='users')loadUsers();
   if(id==='system')loadSystem();
+  if(id==='settings')loadSettings();
   if(id==='logs'&&!logSse)startLogStream();
 }
 
@@ -516,10 +558,23 @@ function updateDashboard(d){
   if(!d.running||!d.running.length){list.innerHTML='<div class="empty"><div class="empty-icon">🤖</div><div class="empty-text">No bots yet</div></div>';return;}
   list.innerHTML=d.running.map(bot=>{
     const num=(bot.number||'').replace('@s.whatsapp.net','');
+    const jidEnc=encodeURIComponent(bot.number||num+'@s.whatsapp.net');
     const badge=bot.paused?'<span class="badge badge-yellow">⏸ Paused</span>':bot.alive?'<span class="badge badge-green"><span class="dot-live"></span> Online</span>':'<span class="badge badge-red">Offline</span>';
-    return`<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border);font-size:.8rem;">
+    const pauseBtn=bot.paused
+      ?`<button type="button" class="act-btn act-green" onclick="resumeBot('${jidEnc}','${num}')">▶</button>`
+      :bot.alive
+        ?`<button type="button" class="act-btn act-yellow" onclick="pauseBot('${jidEnc}','${num}')">⏸</button>`
+        :`<button type="button" class="act-btn act-green" onclick="resumeBot('${jidEnc}','${num}')">▶</button>`;
+    return`<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border);font-size:.8rem;flex-wrap:wrap;gap:6px;">
       <div style="display:flex;align-items:center;gap:10px;">${badge}<span style="font-family:monospace">${num}</span></div>
-      <div style="color:var(--muted);font-size:.72rem;display:flex;gap:14px;"><span>PID: ${bot.pid||'—'}</span><span>Up: ${fmtUptime(bot.uptimeMs)}</span><span>↺ ${bot.restarts||0}</span></div>
+      <div style="color:var(--muted);font-size:.72rem;display:flex;gap:14px;align-items:center;flex-wrap:wrap;">
+        <span>PID: ${bot.pid||'—'}</span><span>Up: ${fmtUptime(bot.uptimeMs)}</span><span>↺ ${bot.restarts||0}</span>
+        <div style="display:flex;gap:5px;">
+          ${pauseBtn}
+          <button type="button" class="act-btn act-blue" onclick="restartBot('${jidEnc}','${num}')">↻</button>
+          <button type="button" class="act-btn act-red" onclick="confirmDelete('${jidEnc}','${num}')">✕</button>
+        </div>
+      </div>
     </div>`;
   }).join('');
 }
@@ -705,6 +760,77 @@ async function loadSystem(){
 
 async function clearErrors(){openModal('🗑','Clear Error Log','Delete all error records?',async()=>{try{const d=await api('/api/admin/errors',{method:'DELETE'});if(d.ok)toast('Error log cleared','info');}catch{}});}
 function doBackup(){window.open(`/api/admin/backup?token=${token}`);}
+
+// ══════════════════════════════════════════════════════
+// SETTINGS
+// ══════════════════════════════════════════════════════
+async function loadSettings(){
+  try{
+    const d=await api('/api/admin/settings');
+    if(!d.ok)return;
+    document.getElementById('tgTokenMasked').textContent=d.telegramBotToken||'(none)';
+    const active=d.botActive;
+    const el=document.getElementById('tgBotActive');
+    el.textContent=active?'✅ Running':'⚠️ Stopped';
+    el.style.color=active?'var(--green)':'var(--yellow)';
+    document.getElementById('tgBotStatus').textContent=active?'● Polling':'○ Idle';
+    document.getElementById('tgBotStatus').style.color=active?'var(--green)':'var(--muted)';
+  }catch{}
+}
+
+async function saveBotToken(){
+  const inp=document.getElementById('tgTokenInput');
+  const tok=inp.value.trim();
+  if(!tok){showTgMsg('Paste a token first.','err');return;}
+  const btn=document.getElementById('saveTgTokenBtn');
+  btn.disabled=true;btn.innerHTML='<span class="spin"></span>Saving...';
+  try{
+    const d=await api('/api/admin/settings/bot-token',{method:'POST',body:JSON.stringify({token:tok})});
+    if(d.ok){
+      showTgMsg(d.message||'Token saved and polling started!','ok');
+      inp.value='';
+      loadSettings();
+    } else {
+      showTgMsg(d.error||'Failed to save token.','err');
+    }
+  }catch{showTgMsg('Network error.','err');}
+  btn.disabled=false;btn.textContent='💾 Save & Start Polling';
+}
+
+async function removeBotToken(){
+  openModal('⚠️','Remove Bot Token','Stop Telegram polling and remove the token?',async()=>{
+    try{
+      const d=await api('/api/admin/settings/bot-token',{method:'DELETE'});
+      if(d.ok){showTgMsg('Token removed. Telegram bot stopped.','info');loadSettings();}
+      else showTgMsg(d.error||'Failed.','err');
+    }catch{showTgMsg('Network error.','err');}
+  });
+}
+
+function showTgMsg(msg,type){
+  const el=document.getElementById('tgTokenMsg');
+  el.style.display='block';
+  el.textContent=msg;
+  el.style.background=type==='ok'?'rgba(34,197,94,.12)':type==='err'?'rgba(239,68,68,.1)':'rgba(148,163,184,.08)';
+  el.style.color=type==='ok'?'var(--green)':type==='err'?'var(--red)':'var(--muted)';
+  el.style.border=type==='ok'?'1px solid rgba(34,197,94,.25)':type==='err'?'1px solid rgba(239,68,68,.2)':'1px solid var(--border)';
+  setTimeout(()=>{el.style.display='none';},5000);
+}
+
+async function confirmPauseAll(){
+  openModal('⏸','Pause All Bots','Stop all running bots? They keep their sessions and can be resumed.',async()=>{
+    const d=await api('/api/admin/users');
+    if(!d.ok)return;
+    const running=(d.users||[]).filter(u=>u.running&&!u.paused);
+    if(!running.length){toast('No active bots to pause','info');return;}
+    let done=0;
+    for(const u of running){
+      try{const r=await api(`/api/admin/pause/${encodeURIComponent(u.jid)}`,{method:'POST'});if(r.ok)done++;}catch{}
+    }
+    toast(`⏸ Paused ${done}/${running.length} bots`,'info');
+    setTimeout(loadUsers,800);
+  },'Pause All','btn-danger');
+}
 
 // ══════════════════════════════════════════════════════
 // STARTUP

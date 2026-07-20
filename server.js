@@ -66,6 +66,11 @@ function writeJson(f, d)   { try { fs.writeFileSync(f,JSON.stringify(d,null,2),'
 let errorLog = readJson(ERROR_FILE, []);
 let pairLog  = readJson(PAIR_FILE,  []);
 
+const ADMIN_SETTINGS_FILE = path.join(NEXSTORE, 'admin_settings.json');
+let adminSettings = readJson(ADMIN_SETTINGS_FILE, {});
+// Apply persisted bot token over env at startup
+if (adminSettings.telegramBotToken) process.env.TELEGRAM_BOT_TOKEN = adminSettings.telegramBotToken;
+
 function logError(number, message, type='pairing') {
     errorLog.unshift({number,message,type,timestamp:new Date().toISOString()});
     if (errorLog.length > 500) errorLog = errorLog.slice(0,500);
@@ -442,6 +447,47 @@ app.get('/api/admin/backup', (req,res) => {
     res.setHeader('Content-Type','application/json');
     res.setHeader('Content-Disposition',`attachment; filename="mais-backup-${Date.now()}.json"`);
     res.send(JSON.stringify(backup,null,2));
+});
+
+// ── Admin: settings (bot token, etc.) ────────────────────────────────────────
+app.get('/api/admin/settings', (req, res) => {
+    if (!isAdmin(req)) return res.status(403).json({ok:false,error:'Unauthorized'});
+    const tok = process.env.TELEGRAM_BOT_TOKEN || '';
+    const masked = tok.length > 8 ? tok.slice(0,6) + '…' + tok.slice(-4) : tok ? '••••••••' : '';
+    res.json({ok:true, telegramBotToken: masked, hasTelegramBot: !!tok, botActive: !!global._telegramBotLoaded});
+});
+
+app.post('/api/admin/settings/bot-token', async (req, res) => {
+    if (!isAdmin(req)) return res.status(403).json({ok:false,error:'Unauthorized'});
+    const {token} = req.body;
+    if (!token || typeof token !== 'string' || token.trim().length < 10)
+        return res.status(400).json({ok:false,error:'Invalid token — must be at least 10 characters.'});
+    const newToken = token.trim();
+    process.env.TELEGRAM_BOT_TOKEN = newToken;
+    adminSettings.telegramBotToken = newToken;
+    writeJson(ADMIN_SETTINGS_FILE, adminSettings);
+    try {
+        // Uncache and reload the telegram bot module
+        try { delete require.cache[require.resolve('./bot')]; } catch {}
+        global._telegramBotLoaded = false;
+        require('./bot');
+        global._telegramBotLoaded = true;
+        logger.log('admin', 'Telegram bot token updated and polling restarted');
+        res.json({ok:true, message:'Token saved. Bot polling restarted.'});
+    } catch(e) {
+        logger.error('admin', 'Bot token reload error: '+e.message);
+        res.status(500).json({ok:false, error:'Token saved but bot failed to start: '+e.message});
+    }
+});
+
+app.delete('/api/admin/settings/bot-token', (req, res) => {
+    if (!isAdmin(req)) return res.status(403).json({ok:false,error:'Unauthorized'});
+    delete process.env.TELEGRAM_BOT_TOKEN;
+    delete adminSettings.telegramBotToken;
+    writeJson(ADMIN_SETTINGS_FILE, adminSettings);
+    global._telegramBotLoaded = false;
+    logger.log('admin', 'Telegram bot token removed');
+    res.json({ok:true, message:'Token removed. Telegram bot stopped.'});
 });
 
 app.get('/admin', (_,res) => {

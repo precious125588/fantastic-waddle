@@ -12676,11 +12676,9 @@ ${CONFIG.PREFIX}remind <time> <message>
 });
 cmd(["vv", "viewonce"], { desc: "Reveal view-once message (reply to it)", category: "TOOLS" }, async (sock, msg) => {
   const ctx = msg.message?.extendedTextMessage?.contextInfo;
-  if (!ctx?.quotedMessage) { await sendReply(sock, msg, `❌ Reply to a view-once message with ${CONFIG.PREFIX}vv`); return; }
+  if (!ctx?.quotedMessage) { await react(sock, msg, "❌"); return; }
   await react(sock, msg, "🌀");
   const vo = ctx.quotedMessage?.viewOnceMessage?.message || ctx.quotedMessage?.viewOnceMessageV2?.message || ctx.quotedMessage?.viewOnceMessageV2Extension?.message || ctx.quotedMessage;
-  const sender = ctx.participant || msg.key.remoteJid;
-  const cap = ` *ViewOnce Revealed*\nFrom: ${sender.split("@")[0]}`;
   const jid = msg.key.remoteJid;
   let _vvSent = false;
   try {
@@ -12688,13 +12686,13 @@ cmd(["vv", "viewonce"], { desc: "Reveal view-once message (reply to it)", catego
       const stream = await downloadContentFromMessage(vo.imageMessage, "image");
       let buf = Buffer.from([]);
       for await (const c of stream) buf = Buffer.concat([buf, c]);
-      await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: cap + "" }, { quoted: msg });
+      await sock.sendMessage(msg.key.remoteJid, { image: buf }, { quoted: msg });
       _vvSent = true;
     } else if (vo.videoMessage) {
       const stream = await downloadContentFromMessage(vo.videoMessage, "video");
       let buf = Buffer.from([]);
       for await (const c of stream) buf = Buffer.concat([buf, c]);
-      await sock.sendMessage(msg.key.remoteJid, { video: buf, caption: cap + "" }, { quoted: msg });
+      await sock.sendMessage(msg.key.remoteJid, { video: buf }, { quoted: msg });
       _vvSent = true;
     } else if (vo.audioMessage) {
       const stream = await downloadContentFromMessage(vo.audioMessage, "audio");
@@ -12703,12 +12701,12 @@ cmd(["vv", "viewonce"], { desc: "Reveal view-once message (reply to it)", catego
       await sock.sendMessage(msg.key.remoteJid, { audio: buf, mimetype: "audio/mp4" }, { quoted: msg });
       _vvSent = true;
     } else {
-      await sendReply(sock, msg, `❌ Could not detect media type in view-once message.`);
+      await react(sock, msg, "❌");
     }
     if (_vvSent) {
       await react(sock, msg, "✅");
     }
-  } catch (e) { await sendReply(sock, msg, `❌ Failed to reveal: ${e.message}`); }
+  } catch (e) { await react(sock, msg, "❌"); }
 });
 
 // ── v4.9.4 NEW: .vv2 — save view-once silently to OWNER DM ──────────
