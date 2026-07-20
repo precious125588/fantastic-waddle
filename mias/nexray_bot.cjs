@@ -2452,10 +2452,14 @@ module.exports = function registerNexrayCmds(cmd, CONFIG, sendReply, react, down
       const petLv   = _s(_pi.level || _pi.PetLevel || top.pet_level);
       const petExp  = _n(_pi.exp || _pi.PetExp || top.pet_exp);
       const petSkill= _s(_pi.skillName || top.pet_skill);
-      // Last login
-      const lastLogin = (top.lastLoginAt || top.last_login)
-        ? new Date((top.lastLoginAt || top.last_login) * (String(top.lastLoginAt || top.last_login).length < 13 ? 1000 : 1)).toLocaleDateString('en-GB', { day:'2-digit', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit' })
-        : 'N/A';
+      // Last login + joined date
+      const _fmtTs = (v) => {
+        if (!v) return 'N/A';
+        const ms = String(v).length < 13 ? Number(v) * 1000 : Number(v);
+        return new Date(ms).toLocaleDateString('en-GB', { day:'2-digit', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit' });
+      };
+      const lastLogin = _fmtTs(top.lastLoginAt || top.last_login || _ai.lastLoginAt);
+      const joinedAt  = _fmtTs(top.createAt || top.created_at || top.accountCreated || _ai.createAt || _ai.created_at || _raw.AccountCreateTime);
 
       const out =
 `🔫 *FREE FIRE ACCOUNT INFO*
@@ -2485,6 +2489,7 @@ ${petSkill !== 'N/A' ? '🎯 *Pet Skill:* ' + petSkill + '\n' : ''}
 📋 *OTHER INFO*
 💳 *Credit Score:* ${ffCredit}
 🕐 *Last Login:* ${lastLogin}
+📅 *Joined FF:* ${joinedAt}
 ${ffSig !== 'N/A' ? '💬 *Bio:* ' + ffSig : ''}`.trim();
 
       await sendReply(sock, msg, out);

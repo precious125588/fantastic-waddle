@@ -22187,7 +22187,9 @@ cmd(["ffstalk","stalkff","freefire"], { desc: "Get Free Fire account info — .f
   const _gLeaderL = _s(_r.guild_leader_level || _nd.guild_leader_level);
   const _petNm    = _s(_r.pet_name || (_pi.id ? `ID:${_pi.id}` : null) || _nd.pet_name);
   const _petLv    = _s(_r.pet_level || _pi.level || _pi.petLevel || _nd.pet_level || _nd.petLevel || null);
-  const _lastLogin = (_r.last_login || _nd.last_login) ? new Date(_r.last_login || _nd.last_login).toLocaleDateString("en-GB") : "N/A";
+  const _fmtFF = (v) => { if (!v) return "N/A"; const ms = String(v).length < 13 ? Number(v)*1000 : Number(v); return new Date(ms).toLocaleDateString("en-GB", { day:"2-digit", month:"short", year:"numeric", hour:"2-digit", minute:"2-digit" }); };
+  const _lastLogin = _fmtFF(_r.lastLoginAt || _r.last_login || _nd.lastLoginAt || _nd.last_login);
+  const _joinedAt  = _fmtFF(_r.createAt || _r.created_at || _nd.createAt || _nd.created_at || _nd.accountCreated || _nd.AccountCreateTime);
   const _prime   = _s(_r.primeStatus||_r.prime||_nd.primeStatus||null);
   const _primeLv = _s(_r.primeLv||_r.primeLevel||_nd.primeLv||_p?.AccountInfo?.AccountBadgeCnt);
   const _badges  = _s(_p?.AccountInfo?.AccountBadgeCnt||_nd.badgeCount);
@@ -22227,6 +22229,7 @@ ${_prime&&_prime!=='N/A'?`💎 *Prime:* ${_prime}${_primeLv&&_primeLv!=='N/A'?` 
 ⚥ *Gender:* ${_gender}
 💳 *Credit Score:* ${_credit}
 🕐 *Last Login:* ${_lastLogin}
+📅 *Joined FF:* ${_joinedAt}
 ${_ffSig !== "N/A" ? `💬 *Bio:* ${_ffSig}` : ""}`;
   await sendReply(sock, msg, out);
   await react(sock, msg, "✅");
