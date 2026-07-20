@@ -5934,27 +5934,35 @@ cmd(["snack2","snackvideo2"], { desc: "SnackVideo Downloader", category: "DOWNLO
   } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); }
 });
 
-cmd(["spotifyv2","spotdlv2"], { desc: "Spotify Downloader V2", category: "DOWNLOAD" }, async (sock, msg, args) => {
-  const url = args.join(" ");
-  if (!_paIsUrl(url)) return await sendReply(sock, msg, `🎧 *Spotify V2*\n\nUsage: ${CONFIG.PREFIX}spotifyv2 <spotify-track-url>`);
+cmd(["spotifyv2","spotdlv2"], { desc: "Spotify Downloader (NexRay primary) — .spotifyv2 <spotify URL>", category: "DOWNLOAD" }, async (sock, msg, args) => {
+  const url = (args.join(" ") || "").trim();
+  if (!url || !/spotify\.com/i.test(url)) return await sendReply(sock, msg, `🎧 *Spotify Downloader*\n━━━━━━━━━━━━━━━━━━━━\nUsage: ${CONFIG.PREFIX}spotifyv2 <spotify track URL>\nExample: ${CONFIG.PREFIX}spotifyv2 https://open.spotify.com/track/...`);
   await react(sock, msg, "🎧");
-  await sendReply(sock, msg, '⏳ Downloading Spotify track (v2)...');
+  const _spJid = msg.key.remoteJid;
+  const _spSt  = await sock.sendMessage(_spJid, { text: `🎧 *Spotify*\n\n⏳ Processing...` }, { quoted: msg });
   try {
-    const r = await _paGet('/api/download/spotifydlv2', { url });
-    if (r.ok && r.data?.success && r.data.result) {
-      const res = r.data.result;
-      const audioUrl = res?.url || res?.audio || res?.download;
-      const title = res?.title || res?.name || 'Spotify Track';
-      if (audioUrl) {
-        const buf = await _paBuf(audioUrl, 45000);
-        await sock.sendMessage(msg.key.remoteJid, { audio: buf, mimetype: 'audio/mpeg', ptt: false, fileName: `${title}.mp3` }, { quoted: msg });
-        return await react(sock, msg, '✅');
-      }
-    }
-    await sendReply(sock, msg, `❌ Spotify V2 failed. Try ${CONFIG.PREFIX}spotify.`);
-  } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); }
+    if (!nx) throw new Error('NexRay module not loaded');
+    const _nr = await nx.downloader.spotify({ url });
+    const _nd = _nr?.result || _nr?.data || _nr || {};
+    const _nt = _nd?.title||_nd?.name||_nd?.track||'Spotify Track';
+    const _na = _nd?.artist||_nd?.artists||_nd?.author||'';
+    const _nc = _nd?.cover||_nd?.thumbnail||_nd?.image||_nd?.artwork||'';
+    const _nu = _nd?.download||_nd?.url||_nd?.audio||_nd?.mp3||_nd?.link;
+    if (!_nu) throw new Error('No download URL in NexRay response');
+    await sock.sendMessage(_spJid, { text: `🎧 *Spotify*\n\n⬇️ Downloading *${_nt}*...`, edit: _spSt.key });
+    const _aud = Buffer.from((await axios.get(_nu, { responseType: 'arraybuffer', timeout: 120000 })).data);
+    if (_aud.length < 1000) throw new Error('Downloaded file too small');
+    const _pl = { audio: _aud, mimetype: 'audio/mpeg', ptt: false, fileName: `${_nt.replace(/[^a-zA-Z0-9 ]/g,'')}.mp3` };
+    if (_nc) { try { const _tb=Buffer.from((await axios.get(_nc,{responseType:'arraybuffer',timeout:12000})).data); if(_tb.length>500) _pl.contextInfo={externalAdReply:{title:_nt,body:_na,thumbnail:_tb,mediaType:1,renderLargerThumbnail:true}}; } catch {} }
+    await sock.sendMessage(_spJid, _pl, { quoted: msg });
+    try { await sock.sendMessage(_spJid, { delete: _spSt.key }); } catch {}
+    return await react(sock, msg, '✅');
+  } catch (e) {
+    try { const _r2=await _paGet('/api/download/spotifydlv2',{url}); if(_r2.ok&&_r2.data?.result){const _res2=_r2.data.result;const _au2=_res2?.url||_res2?.audio||_res2?.download;const _tl2=_res2?.title||_res2?.name||'Spotify Track';if(_au2){const _buf2=await _paBuf(_au2,60000);await sock.sendMessage(_spJid,{audio:_buf2,mimetype:'audio/mpeg',ptt:false,fileName:`${_tl2}.mp3`},{quoted:msg});try{await sock.sendMessage(_spJid,{delete:_spSt.key});}catch{};return await react(sock,msg,'✅');}}} catch {}
+    await sock.sendMessage(_spJid,{text:`❌ *Spotify Error:* ${e.message}`,edit:_spSt.key}).catch(()=>sendReply(sock,msg,`❌ Spotify failed: ${e.message}`));
+    await react(sock, msg, '❌');
+  }
 });
-
 cmd(["ytmp3v2","mp3v2","ytaudiov2"], { desc: "YouTube MP3 via Prince API", category: "DOWNLOAD" }, async (sock, msg, args) => {
   const query = args.join(" ");
   if (!query) return await sendReply(sock, msg, `🎵 *YouTube MP3 V2*\n\nUsage: ${CONFIG.PREFIX}ytmp3v2 <url or song name>`);
@@ -7471,19 +7479,8 @@ _Tip: \`${CONFIG.PREFIX}debug 50\` shows the last 50 log lines._`;
 //  MISC / ALIVE / PING / UPTIME
 // ═══════════════════════════════════════════════════════════════════════════════
 cmd(["ping", "alive", "runtime", "uptime"], { desc: "Bot status check", category: "MISC" }, async (sock, msg) => {
-  const c = extractCommandName(msg);
-  const jid = msg.key.remoteJid;
-  const start = Date.now();
-  const sent = await sock.sendMessage(jid, { text: `⚡ *MIAS MDX*\n\n⬡ Measuring...` }, { quoted: msg });
-  const lat = Date.now() - start;
   const up = fmtUptime(process.uptime(), true);
-  const mem = (process.memoryUsage().rss / 1048576).toFixed(1);
-  const out = c === "ping"
-    ? `🏓 *PONG — BOT SLEEP CHECK*\n\n╭───────────────◆\n│ ⚡ Response: *${lat}ms*\n│ 💤 Sleep: *${lat < 300 ? "awake" : lat < 900 ? "light" : "heavy"}*\n╰───────────────◆\n\nⓘ _The bot has been active for ${up}._`
-    : (c === "runtime" || c === "uptime")
-      ? `⏱️ *MIAS MDX RUNTIME*\n\n╭───────────────◆\n│ 🧠 Memory: *${mem}MB*\n│ 📦 Commands: *${commands.size}*\n│ 🔖 Version: *${CONFIG.VERSION}*\n╰───────────────◆\n\nⓘ _The bot has been active for ${up}._`
-      : `🟢 *${CONFIG.BOT_NAME} IS ALIVE*\n\n╭───────────────◆\n│ 👑 Owner: *${CONFIG.OWNER_NAME}*\n│ ⚙️ Mode: *ACTIVE*\n│ 🏓 Ping: *${lat}ms*\n╰───────────────◆\n\nⓘ _The bot has been active for ${up}._`;
-  await editMessage(sock, jid, sent.key, out);
+  await sendReply(sock, msg, `ⓘ _The bot has been active for ${up}._`);
 });
 
 cmd("owner", { desc: "Show owner info + contact card", category: "MISC" }, async (sock, msg) => {
@@ -7627,7 +7624,7 @@ cmd(["play", "music", "song"], { desc: "Play/download song (audio)", category: "
                 externalAdReply: {
                   title: songTitle,
                   body: [_artst, _dur, _nexVidUrl ? 'Reply "v" or "video" for the video version' : ''].filter(Boolean).join(' • '),
-                  thumbnailUrl: _nexThumb,
+                  thumbnail: await (async()=>{ try{ const _t=Buffer.from((await axios.get(_nexThumb,{responseType:'arraybuffer',timeout:8000})).data); return _t.length>500?_t:undefined; }catch{return undefined;} })(),
                   mediaType: 1,
                   renderLargerThumbnail: true,
                   showAdAttribution: false,
@@ -7663,7 +7660,7 @@ cmd(["play", "music", "song"], { desc: "Play/download song (audio)", category: "
           const _toxYtId = (_toxRawUrl || "").match(/(?:v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/)?.[1];
           const _toxThumb = tox.thumbnail || tox.thumb || tox.cover || tox.image || (_toxYtId ? `https://img.youtube.com/vi/${_toxYtId}/mqdefault.jpg` : null);
           if (_toxThumb) {
-            _toxPayload.contextInfo = { externalAdReply: { title: songTitle, body: tox.artist || tox.duration || "", thumbnailUrl: _toxThumb, mediaType: 1, renderLargerThumbnail: true, showAdAttribution: false } };
+            _toxPayload.contextInfo = { externalAdReply: { title: songTitle, body: tox.artist || tox.duration || "", thumbnail: await (async()=>{ try{ const _t=Buffer.from((await axios.get(_toxThumb,{responseType:'arraybuffer',timeout:8000})).data); return _t.length>500?_t:undefined; }catch{return undefined;} })(), mediaType: 1, renderLargerThumbnail: true, showAdAttribution: false } };
           }
           await sock.sendMessage(jid, _toxPayload, { quoted: msg });
           await editMessage(sock, jid, statusKey, `🎵 *${CONFIG.BOT_NAME} Player*\n\n✅ *${songTitle}* sent!`);
@@ -7877,7 +7874,7 @@ cmd(["play", "music", "song"], { desc: "Play/download song (audio)", category: "
         const _playExt  = hasOggS ? "ogg" : hasM4A ? "m4a" : "mp3";
         const _playPayload = { audio: buf, mimetype: _playMime, ptt: false, fileName: `${_safeName}.${_playExt}` };
         if (_ytThumb) {
-          _playPayload.contextInfo = { externalAdReply: { title, body: "", thumbnailUrl: _ytThumb, mediaType: 1, renderLargerThumbnail: true, showAdAttribution: false } };
+          _playPayload.contextInfo = { externalAdReply: { title, body: "", thumbnail: await (async()=>{ try{ const _t=Buffer.from((await axios.get(_ytThumb,{responseType:'arraybuffer',timeout:8000})).data); return _t.length>500?_t:undefined; }catch{return undefined;} })(), mediaType: 1, renderLargerThumbnail: true, showAdAttribution: false } };
         }
         try {
           await sock.sendMessage(jid, _playPayload, { quoted: msg });
@@ -22121,7 +22118,11 @@ cmd(["ffstalk","stalkff","freefire"], { desc: "Get Free Fire account info — .f
   const _gLeader  = _s(_r.guild_leader_name || _nd.guild_leader_name);
   const _gLeaderL = _s(_r.guild_leader_level || _nd.guild_leader_level);
   const _petNm    = _s(_r.pet_name || (_pi.id ? `ID:${_pi.id}` : null) || _nd.pet_name);
-  const _petLv    = _s(_r.pet_level || _pi.level || _nd.pet_level);
+  const _lastLogin = (_r.last_login || _nd.last_login) ? new Date(_r.last_login || _nd.last_login).toLocaleDateString("en-GB") : "N/A";
+  const _prime   = _s(_r.primeStatus||_r.prime||_nd.primeStatus||null);
+  const _primeLv = _s(_r.primeLv||_r.primeLevel||_nd.primeLv||_p?.AccountInfo?.AccountBadgeCnt);
+  const _badges  = _s(_p?.AccountInfo?.AccountBadgeCnt||_nd.badgeCount);
+  const _gallery2 = []; try{const _sk=_p?.OutfitInfo?.OutfitItems||_r.outfits||_r.gallery||[];if(Array.isArray(_sk))_sk.slice(0,3).forEach(s=>{const u=s?.url||s?.image||s?.icon;if(u)_gallery2.push(u);});}catch{}
   const _credit   = _s(_ci.creditScore || _nd.credit_score);
   const _season   = _s(_ai.AccountSeasonId || _nd.season_id);
   const _ver      = _s(_p.ReleaseVersion || _nd.release_version);
@@ -22137,6 +22138,9 @@ cmd(["ffstalk","stalkff","freefire"], { desc: "Get Free Fire account info — .f
 ⭐ *EXP:* ${_ffExp}
 ❤️ *Likes:* ${_ffLikes}
 🏅 *Season:* ${_season}  |  📦 *Version:* ${_ver}
+${_prime&&_prime!=='N/A'?`💎 *Prime:* ${_prime}${_primeLv&&_primeLv!=='N/A'?` (Lv.${_primeLv})`:''}
+`:''}${_badges&&_badges!=='N/A'?`🏆 *Badges:* ${_badges}
+`:''}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━
 🎮 *RANKED STATS*
 🏆 *BR Rank Points:* ${_brPts}  |  Peak: ${_brMax}
@@ -22158,6 +22162,11 @@ cmd(["ffstalk","stalkff","freefire"], { desc: "Get Free Fire account info — .f
 ${_ffSig !== "N/A" ? `💬 *Bio:* ${_ffSig}` : ""}`;
   await sendReply(sock, msg, out);
   await react(sock, msg, "✅");
+  if (_gallery2.length > 0) {
+    for (const _gUrl of _gallery2) {
+      try { const _gBuf=Buffer.from((await axios.get(_gUrl,{responseType:'arraybuffer',timeout:15000})).data); if(_gBuf.length>500) await sock.sendMessage(msg.key.remoteJid,{image:_gBuf,caption:'🖼️ Gallery / Outfit'},{quoted:msg}); } catch {}
+    }
+  }
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -25789,8 +25798,14 @@ cmd(["gst", "gstatus", "groupstatus"], { desc: "Post a group status (text/image/
   try {
     await devtrust.sendMessage(m.key.remoteJid, { react: { text: '🌀', key: m.key } });
 
-    // Resolve quoted message (compatible with main bot's `_quoted` shape)//
-    const ctx = m.message?.extendedTextMessage?.contextInfo;
+    // Resolve quoted message — check all msg types (bare .gst has type 'conversation')
+    const ctx =
+      m.message?.extendedTextMessage?.contextInfo ||
+      m.message?.imageMessage?.contextInfo         ||
+      m.message?.videoMessage?.contextInfo         ||
+      m.message?.audioMessage?.contextInfo         ||
+      m.message?.documentMessage?.contextInfo      ||
+      null;
     const qStanza = ctx?.quotedMessage || null;
     let quotedMsg = null;
     if (qStanza) {
@@ -25900,7 +25915,14 @@ cmd(["gst", "gstatus", "groupstatus"], { desc: "Post a group status (text/image/
                     _vidPosted = true;
                 } catch (_vidErr1) {}
                 if (!_vidPosted) {
-                    await devtrust.sendMessage(m.chat, { video: media, caption: caption || '', mimetype: 'video/mp4', contextInfo: { isGroupStatus: true } });
+                    try {
+                      const { generateWAMessage: _gwm } = await import('@kelvdra/baileys').catch(()=>({}));
+                      if (_gwm) {
+                        const _vm = await _gwm(m.chat,{video:media,caption:caption||'',mimetype:'video/mp4'},{messageId:generateMessageId()});
+                        if (_vm?.message?.videoMessage) { _vm.message.videoMessage.contextInfo={isGroupStatus:true}; await devtrust.relayMessage(m.chat,{groupStatusMessageV2:{message:_vm.message}},{messageId:_vm.key.id}); _vidPosted=true; }
+                      }
+                    } catch {}
+                    if (!_vidPosted) await devtrust.sendMessage(m.chat, { video: media, caption: caption || '', mimetype: 'video/mp4', contextInfo: { isGroupStatus: true } });
                 }
                 await devtrust.sendMessage(m.chat, { react: { text: '✅', key: m.key } });
             }
@@ -25920,7 +25942,14 @@ cmd(["gst", "gstatus", "groupstatus"], { desc: "Post a group status (text/image/
                     _audPosted = true;
                 } catch (_audErr1) {}
                 if (!_audPosted) {
-                    await devtrust.sendMessage(m.chat, { audio: media, mimetype: _audMime, ptt: true, contextInfo: { isGroupStatus: true } });
+                    try {
+                      const { generateWAMessage: _gwm2 } = await import('@kelvdra/baileys').catch(()=>({}));
+                      if (_gwm2) {
+                        const _am = await _gwm2(m.chat,{audio:media,mimetype:_audMime,ptt:true},{messageId:generateMessageId()});
+                        if (_am?.message?.audioMessage) { _am.message.audioMessage.contextInfo={isGroupStatus:true}; await devtrust.relayMessage(m.chat,{groupStatusMessageV2:{message:_am.message}},{messageId:_am.key.id}); _audPosted=true; }
+                      }
+                    } catch {}
+                    if (!_audPosted) await devtrust.sendMessage(m.chat, { audio: media, mimetype: _audMime, ptt: true, contextInfo: { isGroupStatus: true } });
                 }
                 await devtrust.sendMessage(m.chat, { react: { text: '✅', key: m.key } });
             }
@@ -34084,7 +34113,12 @@ Generates a stylish Spotify-style music card image.`);
     return;
   }
   await react(sock, msg, "🌀");
-  const query = args.join(" ").trim();
+  let _mcCoverUrl = null;
+  const _mcCtxQ = msg.message?.extendedTextMessage?.contextInfo;
+  const _mcQImg  = _mcCtxQ?.quotedMessage?.imageMessage;
+  if (_mcQImg) { try { const _mst=await downloadContentFromMessage(_mcQImg,'image');let _mib=Buffer.from([]);for await(const c of _mst)_mib=Buffer.concat([_mib,c]);if(_mib.length>500&&nx){const _mup=await nx.uploader.upload({buffer:_mib});_mcCoverUrl=_mup?.result?.url||_mup?.data?.url||_mup?.url||null;} } catch {} }
+  if (!_mcCoverUrl) { const _uam=args.find(a=>/^https?:\/\/.+\.(jpg|jpeg|png|webp|gif)/i.test(a));if(_uam)_mcCoverUrl=_uam; }
+  const query = args.filter(a=>/^https?:\/\//i.test(a)?false:true).join(' ').trim()||args.join(' ').trim();
   const jid = msg.key.remoteJid;
   const _mcStMsg = await sock.sendMessage(jid, { text: `🎨 *${CONFIG.BOT_NAME} Music Card*\n\n⬡ Searching song info...\n⬡ Generating card...` }, { quoted: msg });
   const _mcKey = _mcStMsg.key;
@@ -34488,35 +34522,14 @@ Aliases: ${CONFIG.PREFIX}airtoreal | ${CONFIG.PREFIX}img2real | ${CONFIG.PREFIX}
 
     let _resultBuf = null;
 
-    // 0) NexRay remini → enhancer → upscale chain (primary)
+    // 0) NexRay — /ephoto/real  (primary toreal endpoint)
     if (!_resultBuf && nx) {
       try {
-        // Upload the image to NexRay's uploader first to get a URL
-        const _nxUpload = await nx.uploader.upload({ file: _imgBuf });
-        const _imgUrl = _nxUpload?.result?.url || _nxUpload?.data?.url || _nxUpload?.url;
-        if (_imgUrl) {
-          // Try remini (HD enhancement)
-          try {
-            const _nxRem = await nx.tools.remini({ url: _imgUrl });
-            if (_nxRem?.type === 'media' && _nxRem.buffer?.length > 1000) {
-              _resultBuf = _nxRem.buffer;
-            } else {
-              const _ru = _nxRem?.result?.url || _nxRem?.data?.url || _nxRem?.url;
-              if (_ru) _resultBuf = Buffer.from((await axios.get(_ru, { responseType: "arraybuffer", timeout: 60000 })).data);
-            }
-          } catch {}
-          // Try enhancer if remini failed
-          if (!_resultBuf) {
-            try {
-              const _nxEnh = await nx.tools.enhancer({ url: _imgUrl });
-              if (_nxEnh?.type === 'media' && _nxEnh.buffer?.length > 1000) {
-                _resultBuf = _nxEnh.buffer;
-              } else {
-                const _eu = _nxEnh?.result?.url || _nxEnh?.data?.url || _nxEnh?.url;
-                if (_eu) _resultBuf = Buffer.from((await axios.get(_eu, { responseType: "arraybuffer", timeout: 60000 })).data);
-              }
-            } catch {}
-          }
+        const _nxUp = await nx.uploader.upload({ buffer: _imgBuf });
+        const _nxIU = _nxUp?.result?.url||_nxUp?.data?.url||_nxUp?.url;
+        if (_nxIU) {
+          try { const _nxR=await nx.ephoto.real({url:_nxIU}); if(_nxR?.type==='media'&&_nxR.buffer?.length>1000){_resultBuf=_nxR.buffer;}else{const _ru=_nxR?.result?.url||_nxR?.data?.url||_nxR?.url;if(_ru)_resultBuf=Buffer.from((await axios.get(_ru,{responseType:'arraybuffer',timeout:60000})).data);} } catch {}
+          if (!_resultBuf) { try { const _nxRem=await nx.tools.remini({url:_nxIU}); if(_nxRem?.type==='media'&&_nxRem.buffer?.length>1000){_resultBuf=_nxRem.buffer;}else{const _ru2=_nxRem?.result?.url||_nxRem?.data?.url||_nxRem?.url;if(_ru2)_resultBuf=Buffer.from((await axios.get(_ru2,{responseType:'arraybuffer',timeout:60000})).data);} } catch {} }
         }
       } catch {}
     }
