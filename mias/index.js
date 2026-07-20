@@ -7478,9 +7478,35 @@ _Tip: \`${CONFIG.PREFIX}debug 50\` shows the last 50 log lines._`;
 // ═══════════════════════════════════════════════════════════════════════════════
 //  MISC / ALIVE / PING / UPTIME
 // ═══════════════════════════════════════════════════════════════════════════════
-cmd(["ping", "alive", "runtime", "uptime"], { desc: "Bot status check", category: "MISC" }, async (sock, msg) => {
+cmd("ping", { desc: "Bot ping / latency check", category: "MISC" }, async (sock, msg) => {
+  const t0 = Date.now();
+  await react(sock, msg, "🏓");
+  const ms = Date.now() - t0;
   const up = fmtUptime(process.uptime(), true);
-  await sendReply(sock, msg, `ⓘ _The bot has been active for ${up}._`);
+  await sendReply(sock, msg, `🏓 *Pong!*
+
+⚡ *Latency:* ${ms}ms
+⏱️ *Uptime:* ${up}
+🤖 *Bot:* ${CONFIG.BOT_NAME}
+🔑 *Prefix:* ${CONFIG.PREFIX}
+⌨️ *Commands:* ${commands.size}+`);
+});
+
+cmd(["alive", "runtime", "uptime"], { desc: "Bot alive status and uptime info", category: "MISC" }, async (sock, msg) => {
+  await react(sock, msg, "🌿");
+  const up = fmtUptime(process.uptime(), true);
+  const mem = process.memoryUsage();
+  const memMB = Math.round(mem.heapUsed / 1024 / 1024);
+  await sendReply(sock, msg, `🌿 *${CONFIG.BOT_NAME} is Alive!*
+━━━━━━━━━━━━━━━━━━━━━━━━
+⏱️ *Uptime:* ${up}
+💾 *Memory:* ${memMB} MB
+🟢 *Node.js:* ${process.version}
+⌨️ *Commands:* ${commands.size}+
+🔑 *Prefix:* ${CONFIG.PREFIX}
+📦 *Version:* v${CONFIG.VERSION || '1.0'}
+━━━━━━━━━━━━━━━━━━━━━━━━
+_Everything is running perfectly!_`);
 });
 
 cmd("owner", { desc: "Show owner info + contact card", category: "MISC" }, async (sock, msg) => {
@@ -22118,6 +22144,7 @@ cmd(["ffstalk","stalkff","freefire"], { desc: "Get Free Fire account info — .f
   const _gLeader  = _s(_r.guild_leader_name || _nd.guild_leader_name);
   const _gLeaderL = _s(_r.guild_leader_level || _nd.guild_leader_level);
   const _petNm    = _s(_r.pet_name || (_pi.id ? `ID:${_pi.id}` : null) || _nd.pet_name);
+  const _petLv    = _s(_r.pet_level || _pi.level || _pi.petLevel || _nd.pet_level || _nd.petLevel || null);
   const _lastLogin = (_r.last_login || _nd.last_login) ? new Date(_r.last_login || _nd.last_login).toLocaleDateString("en-GB") : "N/A";
   const _prime   = _s(_r.primeStatus||_r.prime||_nd.primeStatus||null);
   const _primeLv = _s(_r.primeLv||_r.primeLevel||_nd.primeLv||_p?.AccountInfo?.AccountBadgeCnt);
@@ -33995,6 +34022,23 @@ Or: *${CONFIG.PREFIX}gst Hello everyone!* (text-only status)`);
 
       let posted = false;
 
+      // ══ PATH 0 ══ generateWAMessageContent → relayMessage to GROUP JID (CORRECT for group status ring)
+      if (!posted) {
+        try {
+          const _up0 = typeof sock.waUploadToServer === "function"
+            ? sock.waUploadToServer.bind(sock)
+            : sock.waUploadToServer;
+          if (!_up0) throw new Error("waUploadToServer not available");
+          const _inner0 = await generateWAMessageContent(mediaPayload, { upload: _up0 });
+          if (!_inner0) throw new Error("generateWAMessageContent returned null");
+          await sock.relayMessage(chat, { groupStatusMessageV2: { message: _inner0 } }, { messageId: _genId() });
+          posted = true;
+          console.log(`[gst-v18] PATH-0 success (generateWAMessageContent + relayToGroup) kind=${qInner.kind}`);
+        } catch (e_p0) {
+          try { console.error("[gst-v18] PATH-0 failed:", e_p0?.message || e_p0); } catch {}
+        }
+      }
+
       // ══ PATH 1 ══ sendMessage("status@broadcast") — MOST RELIABLE for all media
       // This is the same codepath Baileys uses internally for autolike/autoview,
       // and it handles the upload automatically.
@@ -34123,6 +34167,7 @@ Generates a stylish Spotify-style music card image.`);
   const _mcKey = _mcStMsg.key;
   try {
     let cardBuf = null;
+  let _mcItCaption = null;
 
     // 0a) NexRay — tiktokcrd card (music card image) as primary
     if (!cardBuf && nx) {
@@ -34198,13 +34243,36 @@ Generates a stylish Spotify-style music card image.`);
       } catch {}
     }
 
+    // 6) iTunes API — album artwork as music card (always available, no key needed)
+    if (!cardBuf) {
+      try {
+        const _itR = await axios.get(
+          `https://itunes.apple.com/search?term=${encodeURIComponent(query)}&media=music&limit=1`,
+          { timeout: 15000 }
+        );
+        const _trk = _itR?.data?.results?.[0];
+        if (_trk) {
+          const _artUrl = (_trk.artworkUrl100 || '').replace('100x100bb.jpg', '600x600bb.jpg').replace('100x100bb.png', '600x600bb.png');
+          if (_artUrl) {
+            const _artBuf = Buffer.from((await axios.get(_artUrl, { responseType: 'arraybuffer', timeout: 15000 })).data);
+            if (_artBuf && _artBuf.length > 500) {
+              cardBuf = _artBuf;
+              // Store caption override for iTunes result
+              const _dur = _trk.trackTimeMillis ? `${Math.floor(_trk.trackTimeMillis/60000)}:${String(Math.floor((_trk.trackTimeMillis/1000)%60)).padStart(2,'0')}` : '';
+              _mcItCaption = `🎵 *${_trk.trackName}*\n👤 ${_trk.artistName}\n💿 ${_trk.collectionName || ''}\n⏱️ ${_dur}  🎭 ${_trk.primaryGenreName || ''}`;
+            }
+          }
+        }
+      } catch (_itE) {}
+    }
+
     if (!cardBuf || cardBuf.length < 500) {
       await editMessage(sock, jid, _mcKey, `🎨 *${CONFIG.BOT_NAME} Music Card*\n\n❌ Could not generate card right now. Try again later.`);
       await react(sock, msg, "❌");
       return;
     }
 
-    await sock.sendMessage(jid, { image: cardBuf, caption: `🎨 *Music Card*\n_${query}_` }, { quoted: msg });
+    await sock.sendMessage(jid, { image: cardBuf, caption: _mcItCaption || `🎨 *Music Card*\n_${query}_` }, { quoted: msg });
     await editMessage(sock, jid, _mcKey, `🎨 *${CONFIG.BOT_NAME} Music Card*\n\n✅ Done!`);
     await react(sock, msg, "✅");
   } catch (e) {

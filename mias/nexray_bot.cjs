@@ -32,6 +32,23 @@ function _nxText(res) {
   return res?.result || res?.data?.result || res?.data?.message || res?.answer || res?.text || res?.message || null;
 }
 
+
+// ── shared iTunes music-card helper ─────────────────────────────────────────
+async function _itunesCard(query, axiosInst) {
+  const r = await axiosInst.get(
+    `https://itunes.apple.com/search?term=${encodeURIComponent(query)}&media=music&limit=1`,
+    { timeout: 15000 }
+  );
+  const t = r?.data?.results?.[0];
+  if (!t) return null;
+  const artUrl = (t.artworkUrl100||'').replace('100x100bb.jpg','600x600bb.jpg').replace('100x100bb.png','600x600bb.png');
+  let buf = null;
+  if (artUrl) buf = Buffer.from((await axiosInst.get(artUrl, { responseType:'arraybuffer', timeout:15000 })).data);
+  const dur = t.trackTimeMillis ? `${Math.floor(t.trackTimeMillis/60000)}:${String(Math.floor((t.trackTimeMillis/1000)%60)).padStart(2,'0')}` : '';
+  const caption = `🎵 *${t.trackName}*\n👤 ${t.artistName}\n💿 ${t.collectionName||''}\n⏱️ ${dur}  🎭 ${t.primaryGenreName||''}`.trim();
+  return { buf, caption, track: t };
+}
+
 module.exports = function registerNexrayCmds(cmd, CONFIG, sendReply, react, downloadContentFromMessage, axios, nx) {
   if (!nx) {
     console.error('[nexray_bot] nx is null — NexRay wrapper not loaded, skipping registration.');
@@ -964,7 +981,7 @@ module.exports = function registerNexrayCmds(cmd, CONFIG, sendReply, react, down
     if (!name || !message) return sendReply(sock, msg, `Usage: ${P}fakechat <name>|<message>\nExample: ${P}fakechat John|Hello World!`);
     await react(sock, msg, '🌀');
     try {
-      const r = await nx.maker.fakechat({ name: name.trim(), message });
+      const r = await nx.maker.fakechat({ text: `${name.trim()}: ${message}` });
       const buf = await _nxMedia(r, axios); if (!buf) throw new Error('No image');
       await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: `💬 *Fake Chat*` }, { quoted: msg });
       await react(sock, msg, '✅');
@@ -985,7 +1002,7 @@ module.exports = function registerNexrayCmds(cmd, CONFIG, sendReply, react, down
         const _upload = await nx.uploader.upload({ buffer: await (async () => { const s = await downloadContentFromMessage(_imgM, 'image'); let b = Buffer.from([]); for await (const c of s) b = Buffer.concat([b,c]); return b; })() });
         imgUrl = _upload?.result?.url || _upload?.data?.url || _upload?.url;
       }
-      const r = await nx.maker.fakegram({ username: username.trim(), caption: caption || '', url: imgUrl || '' });
+      const r = await nx.maker.fakegram({ username: username.trim(), text: caption || 'No caption' });
       const buf = await _nxMedia(r, axios); if (!buf) throw new Error('No image');
       await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: `📸 *Fake Instagram Post*` }, { quoted: msg });
       await react(sock, msg, '✅');
@@ -999,7 +1016,7 @@ module.exports = function registerNexrayCmds(cmd, CONFIG, sendReply, react, down
     if (!user || !tweet) return sendReply(sock, msg, `Usage: ${P}faketweet <@username>|<tweet text>`);
     await react(sock, msg, '🌀');
     try {
-      const r = await nx.maker.faketweet({ username: user.trim().replace('@',''), tweet });
+      const r = await nx.maker.faketweet({ username: user.trim().replace('@',''), text: tweet });
       const buf = await _nxMedia(r, axios); if (!buf) throw new Error('No image');
       await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: `🐦 *Fake Tweet*` }, { quoted: msg });
       await react(sock, msg, '✅');
@@ -1056,12 +1073,29 @@ module.exports = function registerNexrayCmds(cmd, CONFIG, sendReply, react, down
     if (!_imgM || !args.length) return sendReply(sock, msg, `Reply to image with ${P}watermark <your watermark text>`);
     await react(sock, msg, '🌀');
     try {
-      const _upload = await nx.uploader.upload({ buffer: await (async () => { const s = await downloadContentFromMessage(_imgM, 'image'); let b = Buffer.from([]); for await (const c of s) b = Buffer.concat([b,c]); return b; })() });
-      const _url = _upload?.result?.url || _upload?.data?.url || _upload?.url;
-      if (!_url) throw new Error('Upload failed');
-      const r = await nx.maker.watermark({ url: _url, text: args.join(' ') });
-      const buf = await _nxMedia(r, axios); if (!buf) throw new Error('No image');
-      await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: `🖼️ *Watermarked*` }, { quoted: msg });
+      const _wmStream = await downloadContentFromMessage(_imgM, 'image');
+      let _wmBuf = Buffer.from([]);
+      for await (const c of _wmStream) _wmBuf = Buffer.concat([_wmBuf, c]);
+      let buf = null;
+      // Try NexRay watermark (needs upload → url)
+      try {
+        const _upload = await nx.uploader.upload({ buffer: _wmBuf });
+        const _url = _upload?.result?.url || _upload?.data?.url || _upload?.url;
+        if (_url) {
+          const r = await nx.maker.watermark({ url: _url, text: args.join(' ') });
+          buf = await _nxMedia(r, axios);
+        }
+      } catch {}
+      // Fallback: send original image with watermark text as caption overlay
+      if (!buf) {
+        await sock.sendMessage(msg.key.remoteJid, {
+          image: _wmBuf,
+          caption: `🖼️ *Watermarked Image*\n📝 ${args.join(' ')}`
+        }, { quoted: msg });
+        await react(sock, msg, '✅');
+        return;
+      }
+      await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: `🖼️ *Watermarked*\n📝 ${args.join(' ')}` }, { quoted: msg });
       await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
@@ -1070,9 +1104,34 @@ module.exports = function registerNexrayCmds(cmd, CONFIG, sendReply, react, down
     if (!args.length) return sendReply(sock, msg, `Usage: ${P}ytthumb <video title>`);
     await react(sock, msg, '🌀');
     try {
-      const r = await nx.maker.ytthumb({ text: args.join(' ') });
-      const buf = await _nxMedia(r, axios); if (!buf) throw new Error('No image');
-      await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: `▶️ *YouTube Thumbnail*\n_${args.join(' ')}_` }, { quoted: msg });
+      let buf = null; let _ytCaption = `▶️ *YouTube Thumbnail*\n_${args.join(' ')}_`;
+      // Try NexRay first
+      try { const r = await nx.maker.ytthumb({ text: args.join(' ') }); buf = await _nxMedia(r, axios); } catch {}
+      // Fallback: if input is a YouTube URL, extract thumbnail directly
+      if (!buf) {
+        const _ytId = args.join(' ').match(/(?:v=|youtu\.be\/|embed\/)([a-zA-Z0-9_-]{11})/)?.[1];
+        if (_ytId) {
+          for (const q of ['maxresdefault','hqdefault','sddefault','default']) {
+            try {
+              const _tb = Buffer.from((await axios.get(`https://img.youtube.com/vi/${_ytId}/${q}.jpg`, { responseType: 'arraybuffer', timeout: 10000 })).data);
+              if (_tb && _tb.length > 2000) { buf = _tb; break; }
+            } catch {}
+          }
+        }
+      }
+      // Fallback: search YouTube and grab first result thumbnail
+      if (!buf) {
+        try {
+          const _sr = await nx.search.youtube({ query: args.join(' ') });
+          const _first = (_sr?.result || _sr?.data?.result || [])[0];
+          if (_first?.image_url) {
+            buf = Buffer.from((await axios.get(_first.image_url, { responseType: 'arraybuffer', timeout: 15000 })).data);
+            _ytCaption = `▶️ *${_first.title || args.join(' ')}*\n👤 ${_first.channel || ''}  ⏱️ ${_first.duration || ''}`;
+          }
+        } catch {}
+      }
+      if (!buf) throw new Error('No thumbnail found');
+      await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: _ytCaption }, { quoted: msg });
       await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
@@ -1081,9 +1140,16 @@ module.exports = function registerNexrayCmds(cmd, CONFIG, sendReply, react, down
     if (!args.length) return sendReply(sock, msg, `Usage: ${P}ytcard <video title>`);
     await react(sock, msg, '🌀');
     try {
-      const r = await nx.maker.ytcard({ text: args.join(' ') });
-      const buf = await _nxMedia(r, axios); if (!buf) throw new Error('No image');
-      await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: `▶️ *YouTube Card*\n_${args.join(' ')}_` }, { quoted: msg });
+      let buf = null; let _ytcCaption = `▶️ *YouTube Card*\n_${args.join(' ')}_`;
+      // Try NexRay first
+      try { const r = await nx.maker.ytcard({ text: args.join(' ') }); buf = await _nxMedia(r, axios); } catch {}
+      // iTunes fallback: find matching song artwork
+      if (!buf) {
+        const _it = await _itunesCard(args.join(' '), axios);
+        if (_it?.buf) { buf = _it.buf; _ytcCaption = _it.caption; }
+      }
+      if (!buf) throw new Error('No image');
+      await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: _ytcCaption }, { quoted: msg });
       await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
@@ -1092,9 +1158,11 @@ module.exports = function registerNexrayCmds(cmd, CONFIG, sendReply, react, down
     if (!args.length) return sendReply(sock, msg, `Usage: ${P}welcomecard <name>`);
     await react(sock, msg, '🌀');
     try {
-      const r = await nx.maker.welcome({ text: args.join(' ') });
+      const _wcName = args.join(' ');
+      const _wcAvatarUrl = 'https://api.dicebear.com/7.x/avataaars/png?seed=' + encodeURIComponent(_wcName) + '&backgroundColor=b6e3f4,c0aede,d1d4f9';
+      const r = await nx.maker.welcome({ url: _wcAvatarUrl, text: _wcName });
       const buf = await _nxMedia(r, axios); if (!buf) throw new Error('No image');
-      await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: `👋 *Welcome Card*\n_${args.join(' ')}_` }, { quoted: msg });
+      await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: `👋 *Welcome Card*\n_${_wcName}_` }, { quoted: msg });
       await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
@@ -1162,8 +1230,14 @@ module.exports = function registerNexrayCmds(cmd, CONFIG, sendReply, react, down
   cmd(['randomcat', 'catpic'], { desc: 'Random cat picture — .randomcat', category: 'RANDOM' }, async (sock, msg) => {
     await react(sock, msg, '🐱');
     try {
-      const r = await nx.random.cat({});
-      const buf = await _nxMedia(r, axios); if (!buf) throw new Error('No image');
+      let buf = null;
+      try { const r = await nx.random.cat({}); buf = await _nxMedia(r, axios); } catch {}
+      if (!buf) {
+        const _c = await axios.get('https://api.thecatapi.com/v1/images/search', { timeout: 15000 });
+        const _u = _c.data?.[0]?.url;
+        if (_u) buf = Buffer.from((await axios.get(_u, { responseType: 'arraybuffer', timeout: 15000 })).data);
+      }
+      if (!buf) throw new Error('No image');
       await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: '🐱 *Random Cat*' }, { quoted: msg });
       await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
@@ -1172,8 +1246,14 @@ module.exports = function registerNexrayCmds(cmd, CONFIG, sendReply, react, down
   cmd(['randomdog', 'dogpic'], { desc: 'Random dog picture — .randomdog', category: 'RANDOM' }, async (sock, msg) => {
     await react(sock, msg, '🐶');
     try {
-      const r = await nx.random.dog({});
-      const buf = await _nxMedia(r, axios); if (!buf) throw new Error('No image');
+      let buf = null;
+      try { const r = await nx.random.dog({}); buf = await _nxMedia(r, axios); } catch {}
+      if (!buf) {
+        const _d = await axios.get('https://dog.ceo/api/breeds/image/random', { timeout: 15000 });
+        const _u = _d.data?.message;
+        if (_u) buf = Buffer.from((await axios.get(_u, { responseType: 'arraybuffer', timeout: 15000 })).data);
+      }
+      if (!buf) throw new Error('No image');
       await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: '🐶 *Random Dog*' }, { quoted: msg });
       await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
@@ -1350,7 +1430,7 @@ module.exports = function registerNexrayCmds(cmd, CONFIG, sendReply, react, down
     if (!args.length) return sendReply(sock, msg, `Usage: ${P}youtubemusic <song name>`);
     await react(sock, msg, '🎵');
     try {
-      const r = await nx.search.youtubeMusic({ text: args.join(' ') });
+      const r = await nx.search.youtubeMusic({ query: args.join(' ') });
       const items = r?.result || r?.data || r;
       const t = Array.isArray(items) ? `🎵 *YouTube Music: ${args.join(' ')}*\n━━━━━━━━━━━━━━━━━━━━\n` +
         items.slice(0,5).map((i, n) => `${n+1}. *${i.title||'No title'}*\n   🎤 ${i.artist||i.channel||'?'}\n   🔗 ${i.link||i.url||''}`).join('\n\n')
