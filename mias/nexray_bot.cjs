@@ -3271,6 +3271,4 @@ ${ffSig !== 'N/A' ? '💬 *Bio:* ' + ffSig : ''}`.trim();
       await react(sock, msg, '✅');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
-
-
-  
+}; // end registerNexrayCmds
