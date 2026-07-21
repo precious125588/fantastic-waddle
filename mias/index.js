@@ -18007,20 +18007,18 @@ cmd(["tovv"], {
     const cap = (args.join(" ") || node.caption || "").trim();
     const jid = msg.key.remoteJid;
 
-    // Preferred path: build a true viewOnceMessageV2 envelope and relay it.
-    const _prep =
-      (typeof Baileys !== "undefined" && Baileys && typeof Baileys.prepareWAMessageMedia === "function")
-        ? Baileys.prepareWAMessageMedia
-        : (typeof prepareWAMessageMedia === "function" ? prepareWAMessageMedia : null);
-
     let relayed = false;
-    if (_prep && generateWAMessageFromContent && proto) {
+
+    // PRIMARY: use generateWAMessageContent (same function gst uses for uploads)
+    // to properly upload the media and build a real viewOnceMessageV2 envelope.
+    // prepareWAMessageMedia is often missing on @kelvdra/baileys; generateWAMessageContent
+    // is always available (imported at the top of this file alongside the Baileys require).
+    if (typeof generateWAMessageContent === "function" && typeof generateWAMessageFromContent === "function") {
       try {
-        const mediaForPrep = img
+        const mediaForGen = img
           ? { image: buf, caption: cap }
           : { video: buf, caption: cap, mimetype: node.mimetype || "video/mp4" };
-        const prepared = await _prep(mediaForPrep, { upload: sock.waUploadToServer });
-        // prepared has `.imageMessage` or `.videoMessage`.
+        const prepared = await generateWAMessageContent(mediaForGen, { upload: sock.waUploadToServer });
         const innerMsg = {};
         if (img && prepared.imageMessage) {
           prepared.imageMessage.viewOnce = true;
@@ -18029,25 +18027,53 @@ cmd(["tovv"], {
           prepared.videoMessage.viewOnce = true;
           innerMsg.videoMessage = prepared.videoMessage;
         } else {
-          throw new Error("prepareWAMessageMedia returned unexpected shape");
+          throw new Error("generateWAMessageContent returned unexpected shape");
         }
-        // Wrap in viewOnceMessageV2 — what modern WhatsApp clients render
-        // as the proper "tap to view" bubble.
-        const content = {
-          viewOnceMessageV2: {
-            message: innerMsg,
-          },
-        };
-        // NOTE: deliberately NO `quoted:` here — view-once cannot be a reply.
+        // Wrap in viewOnceMessageV2 — the envelope WhatsApp clients render as
+        // the real "tap to view" bubble with auto-burn behaviour.
+        // NOTE: deliberately NO `quoted:` — view-once msgs cannot be replies.
+        const content = { viewOnceMessageV2: { message: innerMsg } };
         const wam = await generateWAMessageFromContent(jid, content, {});
         await sock.relayMessage(jid, wam.message, { messageId: wam.key.id });
         relayed = true;
-      } catch (eEnv) {
-        console.log("[tovv] envelope path failed, falling back:", eEnv?.message || eEnv);
+      } catch (eGen) {
+        console.log("[tovv] generateWAMessageContent path failed, falling back:", eGen?.message || eGen);
       }
     }
 
-    // Fallback path: high-level sendMessage with viewOnce flag (no quoted).
+    // FALLBACK: prepareWAMessageMedia approach (older Baileys versions)
+    if (!relayed) {
+      const _prep =
+        (typeof Baileys !== "undefined" && Baileys && typeof Baileys.prepareWAMessageMedia === "function")
+          ? Baileys.prepareWAMessageMedia
+          : (typeof prepareWAMessageMedia === "function" ? prepareWAMessageMedia : null);
+      if (_prep && typeof generateWAMessageFromContent === "function") {
+        try {
+          const mediaForPrep = img
+            ? { image: buf, caption: cap }
+            : { video: buf, caption: cap, mimetype: node.mimetype || "video/mp4" };
+          const prepared = await _prep(mediaForPrep, { upload: sock.waUploadToServer });
+          const innerMsg = {};
+          if (img && prepared.imageMessage) {
+            prepared.imageMessage.viewOnce = true;
+            innerMsg.imageMessage = prepared.imageMessage;
+          } else if (vid && prepared.videoMessage) {
+            prepared.videoMessage.viewOnce = true;
+            innerMsg.videoMessage = prepared.videoMessage;
+          } else {
+            throw new Error("prepareWAMessageMedia returned unexpected shape");
+          }
+          const content = { viewOnceMessageV2: { message: innerMsg } };
+          const wam = await generateWAMessageFromContent(jid, content, {});
+          await sock.relayMessage(jid, wam.message, { messageId: wam.key.id });
+          relayed = true;
+        } catch (eEnv) {
+          console.log("[tovv] prepareWAMessageMedia path failed:", eEnv?.message || eEnv);
+        }
+      }
+    }
+
+    // LAST RESORT: high-level sendMessage with viewOnce flag (no quoted).
     if (!relayed) {
       const payload = img
         ? { image: buf, caption: cap, viewOnce: true }
@@ -25937,180 +25963,99 @@ cmd(["gst", "gstatus", "groupstatus"], { desc: "Post a group status (text/image/
             const mime = (quotedMsg.msg || quotedMsg).mimetype || '';
             const caption = textInput || quotedMsg.caption || '';
 
-            // IMAGE STATUS — v-fix: wrap in groupStatusMessageV2 so it posts to group status ring, not chat
+            // IMAGE STATUS — relay to group JID as groupStatusMessageV2 (same pattern as text-only path)
             if (/image/.test(mime)) {
                 let media = await quotedMsg.download();
                 if (!media || !media.length) { await devtrust.sendMessage(m.chat, { react: { text: '❌', key: m.key } }); return reply('❌ Could not download image.'); }
                 let _imgPosted = false;
-                // Try proper upload-then-relay (posts to actual group status ring)
+                // PRIMARY: upload via generateWAMessageContent, relay to GROUP JID (not status@broadcast)
                 try {
                     const _imgContent = await generateWAMessageContent(
                         { image: media, caption: caption || '' },
                         { upload: devtrust.waUploadToServer.bind(devtrust) }
                     );
-                    // Get group members + bot self-JID for statusJidList
-                    let _gstMembers = [];
+                    await devtrust.relayMessage(m.chat, { groupStatusMessageV2: { message: _imgContent } }, { messageId: generateMessageId() });
+                    _imgPosted = true;
+                } catch (_imgErr1) {
+                    // FALLBACK: plain sendMessage with isGroupStatus context
                     try {
-                      const _gstMeta = await devtrust.groupMetadata(m.chat);
-                      _gstMembers = (_gstMeta?.participants || [])
-                        .map(p => typeof p.id === 'string' ? p.id : String(p.id || ''))
-                        .filter(j => j.endsWith('@s.whatsapp.net'));
-                    } catch {}
-                    // FIX: Baileys requires the bot's own JID in statusJidList
-                    const _gstSelfJid = devtrust.user?.id ? devtrust.user.id.split(':')[0].split('@')[0] + '@s.whatsapp.net' : null;
-                    if (_gstSelfJid && !_gstMembers.includes(_gstSelfJid)) _gstMembers.push(_gstSelfJid);
-                    const _gstStatusOpts = _gstMembers.length ? { statusJidList: _gstMembers } : {};
-                    const _gstCtxInfo = { isGroupStatus: true, forwardingScore: 999, isForwarded: true };
-                    // Try relay to status@broadcast (shows in group status ring)
-                    try {
-                      await devtrust.relayMessage('status@broadcast', { groupStatusMessageV2: { message: _imgContent } }, { messageId: generateMessageId(), ..._gstStatusOpts });
-                      _imgPosted = true;
-                    } catch (_imgErr2) {
-                      // Fallback: direct relay to group chat with groupStatusMessageV2
-                      try {
-                        await devtrust.relayMessage(m.chat, { groupStatusMessageV2: { message: _imgContent } }, { messageId: generateMessageId() });
+                        await devtrust.sendMessage(m.chat, { image: media, caption: caption || '', contextInfo: { isGroupStatus: true } });
                         _imgPosted = true;
-                      } catch {}
-                    }
-                } catch (_imgErr1) {}
-                if (!_imgPosted) {
-                    // Last fallback: sendMessage with isGroupStatus flag to status@broadcast
-                    const _fbMembers = [];
-                    try { const _fbMeta = await devtrust.groupMetadata(m.chat); _fbMembers.push(...(_fbMeta?.participants||[]).map(p=>String(p.id||'')).filter(j=>j.endsWith('@s.whatsapp.net'))); } catch {}
-                    if (_gstSelfJid && !_fbMembers.includes(_gstSelfJid)) _fbMembers.push(_gstSelfJid);
-                    try {
-                      await devtrust.sendMessage('status@broadcast', { image: media, caption: caption || '', contextInfo: { isGroupStatus: true } }, _fbMembers.length ? { statusJidList: _fbMembers } : {});
-                      _imgPosted = true;
-                    } catch {
-                      await devtrust.sendMessage(m.chat, { image: media, caption: caption || '', contextInfo: { isGroupStatus: true } });
-                      _imgPosted = true;
-                    }
+                    } catch {}
                 }
-                // FIX: only react ✅ on confirmed success — outer catch sends ❌ on throw
                 if (!_imgPosted) throw new Error('All image posting attempts failed');
                 await devtrust.sendMessage(m.chat, { react: { text: '✅', key: m.key } });
             }
 
-            // VIDEO STATUS — fix: upload media first via generateWAMessageContent
+            // VIDEO STATUS — relay to group JID as groupStatusMessageV2
             else if (/video/.test(mime)) {
                 let media = await quotedMsg.download();
                 if (!media || !media.length) { await devtrust.sendMessage(m.chat, { react: { text: '❌', key: m.key } }); return reply('❌ Could not download video.'); }
                 let _vidPosted = false;
+                // PRIMARY: upload via generateWAMessageContent, relay to GROUP JID (not status@broadcast)
                 try {
                     const _vidContent = await generateWAMessageContent(
                         { video: media, caption: caption || '', mimetype: 'video/mp4' },
                         { upload: devtrust.waUploadToServer.bind(devtrust) }
                     );
-                    let _vidGstMembers = [];
-                    try { const _vgm = await devtrust.groupMetadata(m.chat); _vidGstMembers = (_vgm?.participants||[]).map(p=>String(p.id||'')).filter(j=>j.endsWith('@s.whatsapp.net')); } catch {}
-                    // FIX: Baileys requires the bot's own JID in statusJidList
-                    const _vidSelfJid = devtrust.user?.id ? devtrust.user.id.split(':')[0].split('@')[0] + '@s.whatsapp.net' : null;
-                    if (_vidSelfJid && !_vidGstMembers.includes(_vidSelfJid)) _vidGstMembers.push(_vidSelfJid);
-                    const _vidStatusOpts = _vidGstMembers.length ? { statusJidList: _vidGstMembers } : {};
+                    await devtrust.relayMessage(m.chat, { groupStatusMessageV2: { message: _vidContent } }, { messageId: generateMessageId() });
+                    _vidPosted = true;
+                } catch (_vidErr1) {
+                    // FALLBACK: plain sendMessage with isGroupStatus context
                     try {
-                      await devtrust.relayMessage('status@broadcast', { groupStatusMessageV2: { message: _vidContent } }, { messageId: generateMessageId(), ..._vidStatusOpts });
-                      _vidPosted = true;
-                    } catch (_vidErr2) {
-                      try {
-                        await devtrust.relayMessage(m.chat, { groupStatusMessageV2: { message: _vidContent } }, { messageId: generateMessageId() });
+                        await devtrust.sendMessage(m.chat, { video: media, caption: caption || '', mimetype: 'video/mp4', contextInfo: { isGroupStatus: true } });
                         _vidPosted = true;
-                      } catch {}
-                    }
-                } catch (_vidErr1) {}
-                if (!_vidPosted) {
-                    try {
-                      const { generateWAMessage: _gwm } = await import('@kelvdra/baileys').catch(()=>({}));
-                      if (_gwm) {
-                        const _vm = await _gwm(m.chat,{video:media,caption:caption||'',mimetype:'video/mp4'},{messageId:generateMessageId()});
-                        if (_vm?.message?.videoMessage) { _vm.message.videoMessage.contextInfo={isGroupStatus:true}; await devtrust.relayMessage(m.chat,{groupStatusMessageV2:{message:_vm.message}},{messageId:_vm.key.id}); _vidPosted=true; }
-                      }
                     } catch {}
-                    if (!_vidPosted) {
-                      await devtrust.sendMessage(m.chat, { video: media, caption: caption || '', mimetype: 'video/mp4', contextInfo: { isGroupStatus: true } });
-                      _vidPosted = true;
-                    }
                 }
-                // FIX: only react ✅ on confirmed success — outer catch sends ❌ on throw
                 if (!_vidPosted) throw new Error('All video posting attempts failed');
                 await devtrust.sendMessage(m.chat, { react: { text: '✅', key: m.key } });
             }
 
-            // AUDIO STATUS (Voice Note) — upload via generateWAMessageContent
+            // AUDIO STATUS (Voice Note) — relay to group JID as groupStatusMessageV2
             else if (/audio/.test(mime)) {
                 let media = await quotedMsg.download();
                 if (!media || !media.length) { await devtrust.sendMessage(m.chat, { react: { text: '❌', key: m.key } }); return reply('❌ Could not download audio.'); }
                 const _audMime = /ogg|opus/.test(mime) ? 'audio/ogg; codecs=opus' : 'audio/mpeg';
                 let _audPosted = false;
+                // PRIMARY: upload via generateWAMessageContent, relay to GROUP JID (not status@broadcast)
                 try {
                     const _audContent = await generateWAMessageContent(
                         { audio: media, mimetype: _audMime, ptt: true },
                         { upload: devtrust.waUploadToServer.bind(devtrust) }
                     );
-                    let _audGstMembers = [];
-                    try { const _agm = await devtrust.groupMetadata(m.chat); _audGstMembers = (_agm?.participants||[]).map(p=>String(p.id||'')).filter(j=>j.endsWith('@s.whatsapp.net')); } catch {}
-                    // FIX: Baileys requires the bot's own JID in statusJidList
-                    const _audSelfJid = devtrust.user?.id ? devtrust.user.id.split(':')[0].split('@')[0] + '@s.whatsapp.net' : null;
-                    if (_audSelfJid && !_audGstMembers.includes(_audSelfJid)) _audGstMembers.push(_audSelfJid);
-                    const _audStatusOpts = _audGstMembers.length ? { statusJidList: _audGstMembers } : {};
+                    await devtrust.relayMessage(m.chat, { groupStatusMessageV2: { message: _audContent } }, { messageId: generateMessageId() });
+                    _audPosted = true;
+                } catch (_audErr1) {
+                    // FALLBACK: plain sendMessage with isGroupStatus context
                     try {
-                      await devtrust.relayMessage('status@broadcast', { groupStatusMessageV2: { message: _audContent } }, { messageId: generateMessageId(), ..._audStatusOpts });
-                      _audPosted = true;
-                    } catch (_audErr2) {
-                      try {
-                        await devtrust.relayMessage(m.chat, { groupStatusMessageV2: { message: _audContent } }, { messageId: generateMessageId() });
+                        await devtrust.sendMessage(m.chat, { audio: media, mimetype: _audMime, ptt: true, contextInfo: { isGroupStatus: true } });
                         _audPosted = true;
-                      } catch {}
-                    }
-                } catch (_audErr1) {}
-                if (!_audPosted) {
-                    try {
-                      const { generateWAMessage: _gwm2 } = await import('@kelvdra/baileys').catch(()=>({}));
-                      if (_gwm2) {
-                        const _am = await _gwm2(m.chat,{audio:media,mimetype:_audMime,ptt:true},{messageId:generateMessageId()});
-                        if (_am?.message?.audioMessage) { _am.message.audioMessage.contextInfo={isGroupStatus:true}; await devtrust.relayMessage(m.chat,{groupStatusMessageV2:{message:_am.message}},{messageId:_am.key.id}); _audPosted=true; }
-                      }
                     } catch {}
-                    if (!_audPosted) {
-                      await devtrust.sendMessage(m.chat, { audio: media, mimetype: _audMime, ptt: true, contextInfo: { isGroupStatus: true } });
-                      _audPosted = true;
-                    }
                 }
-                // FIX: only react ✅ on confirmed success — outer catch sends ❌ on throw
                 if (!_audPosted) throw new Error('All audio posting attempts failed');
                 await devtrust.sendMessage(m.chat, { react: { text: '✅', key: m.key } });
             }
 
-            // STICKER STATUS — upload via generateWAMessageContent
+            // STICKER STATUS — relay to group JID as groupStatusMessageV2
             else if (/webp/.test(mime)) {
                 let media = await quotedMsg.download();
                 if (!media || !media.length) { await devtrust.sendMessage(m.chat, { react: { text: '❌', key: m.key } }); return reply('❌ Could not download sticker.'); }
                 let _stkPosted = false;
+                // PRIMARY: upload via generateWAMessageContent, relay to GROUP JID (not status@broadcast)
                 try {
                     const _stkContent = await generateWAMessageContent(
                         { sticker: media },
                         { upload: devtrust.waUploadToServer.bind(devtrust) }
                     );
-                    let _stkGstMembers = [];
-                    try { const _sgm = await devtrust.groupMetadata(m.chat); _stkGstMembers = (_sgm?.participants||[]).map(p=>String(p.id||'')).filter(j=>j.endsWith('@s.whatsapp.net')); } catch {}
-                    // FIX: Baileys requires the bot's own JID in statusJidList
-                    const _stkSelfJid = devtrust.user?.id ? devtrust.user.id.split(':')[0].split('@')[0] + '@s.whatsapp.net' : null;
-                    if (_stkSelfJid && !_stkGstMembers.includes(_stkSelfJid)) _stkGstMembers.push(_stkSelfJid);
-                    const _stkStatusOpts = _stkGstMembers.length ? { statusJidList: _stkGstMembers } : {};
-                    try {
-                      await devtrust.relayMessage('status@broadcast', { groupStatusMessageV2: { message: _stkContent } }, { messageId: generateMessageId(), ..._stkStatusOpts });
-                      _stkPosted = true;
-                    } catch (_stkErr2) {
-                      try {
-                        await devtrust.relayMessage(m.chat, { groupStatusMessageV2: { message: _stkContent } }, { messageId: generateMessageId() });
-                        _stkPosted = true;
-                      } catch {}
-                    }
-                } catch (_stkErr1) {}
-                if (!_stkPosted) {
-                    await devtrust.sendMessage(m.chat, { sticker: media, contextInfo: { isGroupStatus: true } });
+                    await devtrust.relayMessage(m.chat, { groupStatusMessageV2: { message: _stkContent } }, { messageId: generateMessageId() });
                     _stkPosted = true;
+                } catch (_stkErr1) {
+                    // FALLBACK: plain sendMessage with isGroupStatus context
+                    try {
+                        await devtrust.sendMessage(m.chat, { sticker: media, contextInfo: { isGroupStatus: true } });
+                        _stkPosted = true;
+                    } catch {}
                 }
-                // FIX: only react ✅ on confirmed success — outer catch sends ❌ on throw
                 if (!_stkPosted) throw new Error('All sticker posting attempts failed');
                 await devtrust.sendMessage(m.chat, { react: { text: '✅', key: m.key } });
             }
