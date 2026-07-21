@@ -71,7 +71,7 @@ export async function viewOnce(sock, msg) {
       return;
     }
     await reactNix(sock, msg, '👁️');
-    const { downloadContentFromMessage } = await import('@kelvdra/baileys');
+    const { downloadContentFromMessage } = await import('@whiskeysockets/baileys');
     const mediaMsg = imageMsg || videoMsg;
     const type = imageMsg ? 'image' : 'video';
     const stream = await downloadContentFromMessage(mediaMsg, type);
