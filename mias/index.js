@@ -35250,3 +35250,403 @@ try {
 // ════════════════════════════════════════════════════════════════════════════
 // END LATE-PATCH v19
 // ════════════════════════════════════════════════════════════════════════════
+
+// ════════════════════════════════════════════════════════════════════════════
+// LATE-PATCH v20 — GST final media fix + raw getcmd + reply-run/addcmd
+// ════════════════════════════════════════════════════════════════════════════
+(function _miasLatePatchV20() {
+  try {
+    const _v20AsyncFn = Object.getPrototypeOf(async function () {}).constructor;
+    const _v20ArgNames = [
+      "sock", "msg", "args", "axios", "CONFIG", "sendReply", "react", "getBody", "getSender",
+      "isGroup", "isOwner", "isCreator", "getSettings", "downloadContentFromMessage", "prexzyGet", "dcGet",
+      "sendCTAButtons", "sendNativeFlowButtons", "editMessage", "Buffer", "fs", "path", "process", "commands",
+      "saveNow", "_knownContacts", "generateWAMessageContent", "generateMessageIDV2", "jidNormalizedUser"
+    ];
+
+    const _v20EscapePrefix = () => String(CONFIG.PREFIX || ".").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const _v20CleanCode = (input = "") => {
+      let out = String(input || "").replace(/^\uFEFF/, "").trim();
+      out = out.replace(/^```(?:javascript|js)?\s*/i, "").replace(/\s*```$/i, "").trim();
+      out = out.replace(/^`{1,3}/, "").replace(/`{1,3}$/, "").trim();
+      return out;
+    };
+    const _v20Unwrap = (message = {}) => {
+      let cur = message || {};
+      for (let i = 0; i < 12; i++) {
+        if (cur?.ephemeralMessage?.message) cur = cur.ephemeralMessage.message;
+        else if (cur?.viewOnceMessage?.message) cur = cur.viewOnceMessage.message;
+        else if (cur?.viewOnceMessageV2?.message) cur = cur.viewOnceMessageV2.message;
+        else if (cur?.viewOnceMessageV2Extension?.message) cur = cur.viewOnceMessageV2Extension.message;
+        else if (cur?.documentWithCaptionMessage?.message) cur = cur.documentWithCaptionMessage.message;
+        else if (cur?.deviceSentMessage?.message) cur = cur.deviceSentMessage.message;
+        else if (cur?.editedMessage?.message) cur = cur.editedMessage.message;
+        else break;
+      }
+      return cur || {};
+    };
+    const _v20TextFromMessage = (message = {}) => {
+      const m = _v20Unwrap(message);
+      return m.conversation
+        || m.extendedTextMessage?.text
+        || m.imageMessage?.caption
+        || m.videoMessage?.caption
+        || m.documentMessage?.caption
+        || m.buttonsResponseMessage?.selectedDisplayText
+        || m.listResponseMessage?.title
+        || "";
+    };
+    const _v20Context = (msg = {}) => {
+      const m = _v20Unwrap(msg.message || {});
+      return m.extendedTextMessage?.contextInfo
+        || m.imageMessage?.contextInfo
+        || m.videoMessage?.contextInfo
+        || m.audioMessage?.contextInfo
+        || m.documentMessage?.contextInfo
+        || m.stickerMessage?.contextInfo
+        || m.buttonsResponseMessage?.contextInfo
+        || m.templateButtonReplyMessage?.contextInfo
+        || m.listResponseMessage?.contextInfo
+        || null;
+    };
+    const _v20Inner = (message = {}) => {
+      const m = _v20Unwrap(message || {});
+      if (m.imageMessage) return { kind: "image", raw: m.imageMessage };
+      if (m.videoMessage) return { kind: "video", raw: m.videoMessage };
+      if (m.audioMessage) return { kind: "audio", raw: m.audioMessage };
+      if (m.stickerMessage) return { kind: "sticker", raw: m.stickerMessage };
+      if (m.documentMessage) return { kind: "document", raw: m.documentMessage };
+      return null;
+    };
+    const _v20Download = async (node, kind) => {
+      const stream = await downloadContentFromMessage(node, kind === "sticker" ? "sticker" : kind);
+      const chunks = [];
+      for await (const chunk of stream) chunks.push(Buffer.from(chunk));
+      return Buffer.concat(chunks);
+    };
+    const _v20QuotedSource = async (msg) => {
+      const ctx = _v20Context(msg);
+      const quoted = ctx?.quotedMessage ? _v20Unwrap(ctx.quotedMessage) : null;
+      if (!quoted) return "";
+      const text = _v20TextFromMessage(quoted);
+      if (text) return _v20CleanCode(text);
+      const doc = quoted.documentMessage;
+      if (doc) {
+        const fileName = String(doc.fileName || "").toLowerCase();
+        const mime = String(doc.mimetype || "").toLowerCase();
+        if (/javascript|ecmascript|json|text|plain/.test(mime) || /\.(m?js|cjs|txt|json)$/i.test(fileName)) {
+          const buf = await _v20Download(doc, "document");
+          return _v20CleanCode(buf.toString("utf8"));
+        }
+      }
+      return "";
+    };
+    const _v20CodeAfterCommand = (msg, names) => {
+      const raw = _v20TextFromMessage(msg.message || {}) || getBody(msg) || "";
+      const prefix = _v20EscapePrefix();
+      const words = [].concat(names).map(n => String(n).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
+      return _v20CleanCode(raw.replace(new RegExp(`^\\s*${prefix}(?:${words})\\s*`, "i"), ""));
+    };
+    const _v20FunctionBody = (fnSrc = "") => {
+      const src = String(fnSrc || "").trim();
+      const arrow = src.match(/^(?:async\s*)?\([^)]*\)\s*=>\s*([\s\S]*)$/) || src.match(/^(?:async\s*)?[A-Za-z_$][\w$]*\s*=>\s*([\s\S]*)$/);
+      if (arrow) {
+        const tail = arrow[1].trim();
+        if (tail.startsWith("{")) return tail.slice(1, tail.lastIndexOf("}")).trim();
+        return `return (${tail.replace(/;$/, "")});`;
+      }
+      const open = src.indexOf("{");
+      const close = src.lastIndexOf("}");
+      if (open !== -1 && close > open) return src.slice(open + 1, close).trim();
+      return src;
+    };
+    const _v20ParseCommandModule = (input = "") => {
+      let src = _v20CleanCode(input);
+      if (!src) return null;
+      src = src.replace(new RegExp(`^\\s*${_v20EscapePrefix()}(?:run|exec|addcmd|editcmd|savecmd)\\s+`, "i"), "").trim();
+      let expr = src.replace(/;\s*$/, "").trim();
+      if (/^module\.exports\s*=/.test(expr)) expr = expr.replace(/^module\.exports\s*=\s*/, "");
+      else if (/^exports\.default\s*=/.test(expr)) expr = expr.replace(/^exports\.default\s*=\s*/, "");
+      else if (/^export\s+default\s+/.test(expr)) expr = expr.replace(/^export\s+default\s+/, "");
+      else if (/^name\s*:/.test(expr)) expr = `{${expr}}`;
+      if (!/^\s*\{[\s\S]*\}\s*$/.test(expr)) return null;
+      let obj;
+      try { obj = Function(`"use strict"; return (${expr});`)(); } catch { return null; }
+      const names = Array.isArray(obj?.name) ? obj.name : [obj?.name];
+      const name = String(names[0] || "").toLowerCase().replace(/[^a-z0-9_-]/g, "");
+      if (!name || typeof obj?.handler !== "function") return null;
+      const aliases = names.slice(1).map(a => String(a || "").toLowerCase().replace(/[^a-z0-9_-]/g, "")).filter(Boolean);
+      const category = String(obj.category || "MISC").toUpperCase().replace(/[^A-Z0-9_ -]/g, "").trim() || "MISC";
+      const desc = String(obj.desc || obj.description || "Custom command");
+      const handlerSource = obj.handler.toString();
+      return { name, aliases, category, desc, handlerSource, handlerCode: _v20FunctionBody(handlerSource), source: src };
+    };
+    const _v20ModuleSource = (name, entry, rawCode = "", rawSource = "") => {
+      const aliases = Array.isArray(entry.aliases) ? entry.aliases : [];
+      const nameField = aliases.length ? JSON.stringify([name, ...aliases]) : JSON.stringify(name);
+      const category = JSON.stringify(entry.category || "MISC");
+      const desc = JSON.stringify(entry.desc || "Custom command");
+      let handler = "";
+      if (rawSource && _v20ParseCommandModule(rawSource)) return _v20CleanCode(rawSource);
+      if (rawCode && /^\s*(?:async\s*)?(?:function|\([^)]*\)\s*=>|[A-Za-z_$][\w$]*\s*=>)/.test(rawCode)) handler = rawCode.trim();
+      else if (rawCode) handler = `async (sock, msg, args) => {\n${rawCode.split("\n").map(l => "    " + l).join("\n")}\n  }`;
+      else if (typeof entry._origHandler === "function") handler = entry._origHandler.toString();
+      else if (typeof entry.handler === "function") handler = entry.handler.toString();
+      return `module.exports = {\n  name: ${nameField},\n  category: ${category},\n  desc: ${desc},\n  handler: ${handler}\n};`;
+    };
+    const _v20CompileHandler = (handlerCode) => new _v20AsyncFn(..._v20ArgNames, handlerCode);
+    const _v20InstallRuntime = async (sock, msg, parsed, mode = "addcmd") => {
+      if (!parsed?.name || !parsed.handlerCode) throw new Error("Invalid command source");
+      if (mode === "addcmd" && commands.has(parsed.name)) throw new Error(`Command ${parsed.name} already exists. Use editcmd/savecmd to overwrite it.`);
+      const handlerFn = _v20CompileHandler(parsed.handlerCode);
+      cmd([parsed.name, ...(parsed.aliases || [])], { desc: parsed.desc, category: parsed.category, runtime: true, ownerOnly: false, aliases: parsed.aliases || [] }, async (sock, msg, args) => {
+        try {
+          await handlerFn(sock, msg, args, axios, CONFIG, sendReply, react, getBody, getSender,
+            isGroup, isOwner, isCreator, getSettings, downloadContentFromMessage, prexzyGet, dcGet,
+            sendCTAButtons, sendNativeFlowButtons, editMessage, Buffer, fs, path, process, commands,
+            saveNow, _knownContacts, generateWAMessageContent, generateMessageIDV2, jidNormalizedUser);
+        } catch (e) {
+          await sendReply(sock, msg, `❌ ${parsed.name} error: ${e?.message || e}`);
+          try { await react(sock, msg, "❌"); } catch {}
+        }
+      });
+      try { if (typeof _runtimeRegisteredCmds !== "undefined") _runtimeRegisteredCmds.add(parsed.name); } catch {}
+      try {
+        if (typeof _addCmdToMenuCategory === "function") {
+          const used = _addCmdToMenuCategory(parsed.name, parsed.category);
+          if (typeof _runtimeCmdCategory !== "undefined") _runtimeCmdCategory.set(parsed.name, used);
+          parsed.category = used || parsed.category;
+        }
+      } catch {}
+      try {
+        if (typeof _runtimeCmdSource !== "undefined") {
+          _runtimeCmdSource.set(parsed.name, {
+            name: parsed.name,
+            category: parsed.category,
+            desc: parsed.desc,
+            code: parsed.handlerCode,
+            source: _v20ModuleSource(parsed.name, { category: parsed.category, desc: parsed.desc, aliases: parsed.aliases }, parsed.handlerCode),
+            wasWrapped: false,
+            public: true,
+          });
+          if (typeof _saveRuntimeCmds === "function") _saveRuntimeCmds();
+        }
+      } catch {}
+      try {
+        const dir = path.join(__dirname, "commands", parsed.category);
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(path.join(dir, `${parsed.name}.js`), _v20ModuleSource(parsed.name, { category: parsed.category, desc: parsed.desc, aliases: parsed.aliases }, parsed.handlerCode), "utf8");
+      } catch {}
+      await sendReply(sock, msg, `✅ Command *${CONFIG.PREFIX}${parsed.name}* saved & live.`);
+      try { await react(sock, msg, "✅"); } catch {}
+      return true;
+    };
+
+    const __gstV20 = async (sock, msg, args) => {
+      const chat = msg.key.remoteJid;
+      const text = (args || []).join(" ").trim();
+      if (!String(chat || "").endsWith("@g.us")) return sendReply(sock, msg, "👥 Group only.");
+      let posted = false;
+      let lastErr = "";
+      try { await sock.sendMessage(chat, { react: { text: "🌀", key: msg.key } }); } catch {}
+      try {
+        const ctx = _v20Context(msg);
+        const quoted = ctx?.quotedMessage ? _v20Unwrap(ctx.quotedMessage) : null;
+        const direct = _v20Unwrap(msg.message || {});
+        const qInner = _v20Inner(quoted) || _v20Inner(direct);
+        const quotedText = quoted ? _v20TextFromMessage(quoted) : "";
+        const finalText = text || quotedText;
+        if (!qInner && !finalText) {
+          try { await sock.sendMessage(chat, { react: { text: "❌", key: msg.key } }); } catch {}
+          return sendReply(sock, msg, `📢 *Group Status*\n\nReply to image/video/audio/sticker/document or type:\n${CONFIG.PREFIX}gst your text`);
+        }
+        let memberJids = [];
+        try {
+          const meta = await sock.groupMetadata(chat);
+          try { if (typeof updateLidMappingsFromMeta === "function") updateLidMappingsFromMeta(meta); } catch {}
+          memberJids = (meta.participants || [])
+            .map(p => {
+              const id = typeof p.id === "string" ? p.id : String(p.id || "");
+              try { return typeof resolveLid === "function" ? resolveLid(id) : id; } catch { return id; }
+            })
+            .filter(j => typeof j === "string" && j.endsWith("@s.whatsapp.net"));
+        } catch (e) { lastErr = e?.message || String(e); }
+        if (!memberJids.length) {
+          try { memberJids = [...(_knownContacts || [])].filter(j => String(j || "").endsWith("@s.whatsapp.net")); } catch {}
+        }
+        if (!memberJids.length) {
+          try { memberJids = [jidNormalizedUser(sock.user?.id || "")].filter(Boolean); } catch {}
+        }
+        const gid = () => (typeof generateMessageIDV2 === "function" ? generateMessageIDV2() : ("MIAS" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8)));
+        const statusOpts = { statusJidList: memberJids, messageId: gid() };
+        let payload;
+        if (!qInner) {
+          payload = { text: finalText, contextInfo: { isGroupStatus: true, mentionedJid: [] } };
+        } else {
+          const buf = await _v20Download(qInner.raw, qInner.kind);
+          if (!buf || buf.length < 10) throw new Error("empty media buffer; resend the source media and try again");
+          const mime = qInner.raw.mimetype || "";
+          const cap = text || qInner.raw.caption || "";
+          payload = qInner.kind === "image" ? { image: buf, caption: cap }
+            : qInner.kind === "video" ? { video: buf, caption: cap, mimetype: mime || "video/mp4", gifPlayback: false }
+            : qInner.kind === "audio" ? { audio: buf, mimetype: /ogg|opus/i.test(mime) ? "audio/ogg; codecs=opus" : (mime || "audio/mpeg"), ptt: !!qInner.raw.ptt }
+            : qInner.kind === "sticker" ? { sticker: buf }
+            : { document: buf, fileName: qInner.raw.fileName || "file", mimetype: mime || "application/octet-stream", caption: cap };
+        }
+
+        const attempts = [];
+        attempts.push(async () => sock.sendMessage("status@broadcast", payload, statusOpts));
+        attempts.push(async () => {
+          const upload = typeof sock.waUploadToServer === "function" ? sock.waUploadToServer.bind(sock) : sock.waUploadToServer;
+          if (!upload || typeof generateWAMessageContent !== "function") throw new Error("upload helper unavailable");
+          const inner = await generateWAMessageContent(payload, { upload });
+          return sock.relayMessage("status@broadcast", { groupStatusMessageV2: { message: inner } }, {
+            messageId: gid(),
+            statusJidList: memberJids,
+            additionalNodes: [{ tag: "meta", attrs: {}, content: [{ tag: "mentioned_users", attrs: {}, content: [{ tag: "to", attrs: { jid: chat }, content: undefined }] }] }],
+          });
+        });
+        attempts.push(async () => {
+          const upload = typeof sock.waUploadToServer === "function" ? sock.waUploadToServer.bind(sock) : sock.waUploadToServer;
+          if (!upload || typeof generateWAMessageContent !== "function") throw new Error("upload helper unavailable");
+          const inner = await generateWAMessageContent(payload, { upload });
+          return sock.relayMessage(chat, { groupStatusMessageV2: { message: inner } }, { messageId: gid() });
+        });
+        attempts.push(async () => sock.sendMessage(chat, { ...payload, contextInfo: { ...(payload.contextInfo || {}), isGroupStatus: true } }));
+        attempts.push(async () => sock.sendMessage(chat, payload));
+
+        for (const attempt of attempts) {
+          try { await attempt(); posted = true; break; }
+          catch (e) { lastErr = e?.message || String(e); }
+        }
+        if (!posted) throw new Error(lastErr || "all posting methods failed");
+        try { await sock.sendMessage(chat, { react: { text: "✅", key: msg.key } }); } catch {}
+      } catch (e) {
+        try { await sock.sendMessage(chat, { react: { text: "❌", key: msg.key } }); } catch {}
+        await sendReply(sock, msg, `❌ GST failed: ${e?.message || e}`);
+      }
+    };
+
+    const __getcmdV20 = async (sock, msg, args) => {
+      const jid = msg.key.remoteJid;
+      if (!args[0]) return sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}getcmd <command>`);
+      const raw = String(args[0]).toLowerCase().replace(/^[.!#/]/, "").trim();
+      let name = raw;
+      let entry = commands.get(name);
+      if (!entry) {
+        for (const [k, v] of commands) {
+          if (Array.isArray(v.aliases) && v.aliases.includes(raw)) { name = k; entry = v; break; }
+        }
+      }
+      if (!entry) {
+        for (const [k, v] of commands) {
+          if (k.startsWith(raw) || k.includes(raw)) { name = k; entry = v; break; }
+        }
+      }
+      if (!entry) return sendReply(sock, msg, `❌ Command *${raw}* not found.`);
+      let stored = null;
+      try { stored = (typeof _runtimeCmdSource !== "undefined" && _runtimeCmdSource.get(name)) || null; } catch {}
+      const source = _v20ModuleSource(name, entry, stored?.code || "", stored?.source || "");
+      const buf = Buffer.from(source, "utf8");
+      try {
+        await sock.sendMessage(jid, { document: buf, mimetype: "application/javascript", fileName: `${name}.js` }, { quoted: msg });
+      } catch {
+        for (let s = source; s.length;) {
+          const part = s.slice(0, 3900); s = s.slice(3900);
+          await sock.sendMessage(jid, { text: part }, { quoted: msg }).catch(() => {});
+        }
+      }
+    };
+
+    const __addcmdV20 = async (sock, msg, args) => {
+      let body = _v20CodeAfterCommand(msg, ["addcmd", "editcmd", "savecmd"]);
+      if (!body) body = await _v20QuotedSource(msg);
+      if (!body) return sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}addcmd <name> | <category> | <desc>\n<JS code>\n\nOr reply to a raw .js command from ${CONFIG.PREFIX}getcmd with ${CONFIG.PREFIX}addcmd`);
+      const caller = extractCommandName(msg) || "addcmd";
+      const parsedModule = _v20ParseCommandModule(body);
+      if (parsedModule) {
+        try { return await _v20InstallRuntime(sock, msg, parsedModule, caller === "addcmd" ? "addcmd" : "editcmd"); }
+        catch (e) { try { await react(sock, msg, "❌"); } catch {}; return sendReply(sock, msg, `❌ addcmd failed: ${e?.message || e}`); }
+      }
+      const nl = body.indexOf("\n");
+      const headerLine = (nl === -1 ? body : body.slice(0, nl)).trim();
+      const handlerCode = (nl === -1 ? "" : body.slice(nl + 1)).trim();
+      if (!handlerCode) return sendReply(sock, msg, "❌ No JS code found below the header.");
+      const parts = headerLine.split("|").map(s => s.trim());
+      const name = (parts[0] || "").toLowerCase().replace(/[^a-z0-9_-]/g, "");
+      if (!name) return sendReply(sock, msg, "❌ Command name is required.");
+      const category = (parts[1] || "MISC").toUpperCase().replace(/[^A-Z0-9_ -]/g, "").trim() || "MISC";
+      const desc = parts[2] || "Custom command";
+      try {
+        _v20CompileHandler(handlerCode);
+        return await _v20InstallRuntime(sock, msg, { name, aliases: [], category, desc, handlerCode }, caller === "addcmd" ? "addcmd" : "editcmd");
+      } catch (e) {
+        try { await react(sock, msg, "❌"); } catch {}
+        return sendReply(sock, msg, `❌ Syntax/register error: ${e?.message || e}`);
+      }
+    };
+
+    const __runV20 = async (sock, msg, args) => {
+      let code = args && args.length ? args.join(" ") : "";
+      if (!code) code = await _v20QuotedSource(msg);
+      code = _v20CleanCode(code);
+      if (!code) return sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}run <javascript>\nOr reply to raw JS command source with ${CONFIG.PREFIX}run`);
+      const parsed = _v20ParseCommandModule(code);
+      if (parsed) {
+        try { return await _v20InstallRuntime(sock, msg, parsed, "editcmd"); }
+        catch (e) { try { await react(sock, msg, "❌"); } catch {}; return sendReply(sock, msg, `❌ run/add command failed: ${e?.message || e}`); }
+      }
+      await react(sock, msg, "⚙️");
+      const logs = [];
+      const fakeConsole = {
+        log: (...a) => logs.push(a.map(x => typeof x === "object" ? JSON.stringify(x, null, 2) : String(x)).join(" ")),
+        info: (...a) => logs.push(a.map(String).join(" ")),
+        warn: (...a) => logs.push(a.map(String).join(" ")),
+        error: (...a) => logs.push(a.map(String).join(" ")),
+        dir: (...a) => logs.push(a.map(x => typeof x === "object" ? JSON.stringify(x, null, 2) : String(x)).join(" ")),
+      };
+      try {
+        let body;
+        try { new _v20AsyncFn("__p__", `return (${code});`); body = `return (${code});`; }
+        catch { body = code; }
+        const fn = new _v20AsyncFn("sock", "msg", "args", "axios", "fs", "path", "process", "Buffer", "cmd", "commands", "sendReply", "react", "CONFIG", "getSettings", "getOwnerJid", "isOwner", "isGroup", "console", body);
+        const result = await fn(sock, msg, args, axios, fs, path, process, Buffer, cmd, commands, sendReply, react, CONFIG, getSettings, getOwnerJid, isOwner, isGroup, fakeConsole);
+        let pretty;
+        try { pretty = JSON.stringify(result, null, 2); } catch { pretty = String(result); }
+        if (pretty === undefined || pretty === "undefined") pretty = "(no return value)";
+        let out = "⚙️ *Run Output*\n━━━━━━━━━━━━━━━━━━━━\n";
+        if (logs.length) out += `📋 *console:*\n${logs.join("\n").slice(0, 1500)}\n\n`;
+        out += `📤 *Return:* \`\`\`${pretty.slice(0, 1800)}\`\`\``;
+        await sendReply(sock, msg, out);
+        try { await react(sock, msg, "✅"); } catch {}
+      } catch (e) {
+        try { await react(sock, msg, "❌"); } catch {}
+        await sendReply(sock, msg, `⚙️ *Run Error*\n━━━━━━━━━━━━━━━━━━━━\n❌ *Error:* ${e?.message || e}`);
+      }
+    };
+
+    for (const n of ["gst", "gstatus", "groupstatus"]) {
+      const e = commands.get(n) || { desc: "Group status", category: "GROUP" };
+      e.handler = __gstV20; e._origHandler = __gstV20; commands.set(n, e);
+    }
+    {
+      const e = commands.get("getcmd") || { desc: "Get raw command source", category: "OWNER", ownerOnly: true, creatorOnly: true };
+      e.handler = __getcmdV20; e._origHandler = __getcmdV20; commands.set("getcmd", e);
+    }
+    for (const n of ["addcmd", "editcmd", "savecmd"]) {
+      const e = commands.get(n) || { desc: "Save command", category: "OWNER", ownerOnly: true };
+      e.handler = __addcmdV20; e._origHandler = __addcmdV20; commands.set(n, e);
+    }
+    for (const n of ["run", "exec"]) {
+      const e = commands.get(n) || { desc: "Run JS", category: "OWNER", ownerOnly: true };
+      e.handler = __runV20; e._origHandler = __runV20; commands.set(n, e);
+    }
+    console.log("[LATE-PATCH-v20] gst media final + raw getcmd + reply run/addcmd installed ✓");
+  } catch (e) {
+    try { console.error("[LATE-PATCH-v20] init failed:", e?.message || e); } catch {}
+  }
+})();
+// ════════════════════════════════════════════════════════════════════════════
+// END LATE-PATCH v20
+// ════════════════════════════════════════════════════════════════════════════
+
