@@ -1,17 +1,29 @@
-const {
-    default: makeWASocket,
-    jidDecode,
-    DisconnectReason,
-    PHONENUMBER_MCC,
-    makeCacheableSignalKeyStore,
-    useMultiFileAuthState,
-    Browsers,
-    getContentType,
-    proto,
-    downloadContentFromMessage,
-    fetchLatestBaileysVersion,
-    makeInMemoryStore
-} = require("@whiskeysockets/baileys");
+// @itsliaaa/baileys is ESM-only — cannot use require(). Load via dynamic import.
+let makeWASocket, jidDecode, DisconnectReason, PHONENUMBER_MCC,
+    makeCacheableSignalKeyStore, useMultiFileAuthState, Browsers,
+    getContentType, proto, downloadContentFromMessage, fetchLatestBaileysVersion,
+    makeInMemoryStore;
+
+const _baileysReady = (async () => {
+    try {
+        const B = await import("@whiskeysockets/baileys");
+        makeWASocket               = B.default || B.makeWASocket;
+        jidDecode                  = B.jidDecode;
+        DisconnectReason           = B.DisconnectReason;
+        PHONENUMBER_MCC            = B.PHONENUMBER_MCC || {};
+        makeCacheableSignalKeyStore = B.makeCacheableSignalKeyStore;
+        useMultiFileAuthState      = B.useMultiFileAuthState;
+        Browsers                   = B.Browsers;
+        getContentType             = B.getContentType;
+        proto                      = B.proto;
+        downloadContentFromMessage = B.downloadContentFromMessage;
+        fetchLatestBaileysVersion  = B.fetchLatestBaileysVersion;
+        makeInMemoryStore          = B.makeInMemoryStore;
+    } catch (e) {
+        console.error('[pair] Failed to load @whiskeysockets/baileys:', e.message);
+        throw e;
+    }
+})();
 const NodeCache = require("node-cache");
 const _ = require('lodash')
 const {
@@ -395,6 +407,7 @@ function ensureDirectoryExists(dirPath) {
 }
 
 async function startpairing(nexusDevNumber) {
+    await _baileysReady; // ensure ESM baileys is loaded before use
     ensureDirectoryExists(PAIRING_ROOT);
     
     if (!rentbotTracker.has(nexusDevNumber)) {

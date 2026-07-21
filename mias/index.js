@@ -7747,13 +7747,13 @@ async function ytSearch(query) {
 
 cmd(["play", "music", "song"], { desc: "Play/download song (audio)", category: "DOWNLOAD" }, async (sock, msg, args) => {
   if (!args.length) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}play <song name or URL>`); return; }
-  await react(sock, msg, "🎵");
+  await react(sock, msg, "🌀");
   const query = args.join(" ");
   const isUrl = /^https?:\/\//i.test(query);
   const jid = msg.key.remoteJid;
   try {
     // Send initial status message that we'll keep editing
-    const statusMsg = await sock.sendMessage(jid, { text: `🎵 *MIAS MDX Player*\n\n🔍 Searching for *"${query}"*...` }, { quoted: msg });
+    const statusMsg = await sock.sendMessage(jid, { text: `🌀 *MIAS MDX Player*\n\n🔍 Searching for *"${query}"*...` }, { quoted: msg });
     const statusKey = statusMsg.key;
 
     // ── NEXORA FAST PATH — direct MP3, highest priority ────────────────────────
@@ -7787,7 +7787,7 @@ cmd(["play", "music", "song"], { desc: "Play/download song (audio)", category: "
                 externalAdReply: {
                   title: songTitle,
                   body: [_artst, _dur, _nexVidUrl ? 'Reply "v" or "video" for the video version' : ''].filter(Boolean).join(' • '),
-                  thumbnail: await (async()=>{ try{ const _t=Buffer.from((await axios.get(_nexThumb,{responseType:'arraybuffer',timeout:8000})).data); return _t.length>500?_t:undefined; }catch{return undefined;} })(),
+                  thumbnailUrl: _nexThumb || undefined,
                   mediaType: 1,
                   renderLargerThumbnail: true,
                   showAdAttribution: false,
@@ -7804,6 +7804,7 @@ cmd(["play", "music", "song"], { desc: "Play/download song (audio)", category: "
             }
             // No redundant "sent!" confirmation bubble — just clear the "searching..." status.
             try { await sock.sendMessage(jid, { delete: statusKey }); } catch { try { await editMessage(sock, jid, statusKey, ""); } catch {} }
+            await react(sock, msg, "✅");
             return;
           }
         }
@@ -7823,9 +7824,10 @@ cmd(["play", "music", "song"], { desc: "Play/download song (audio)", category: "
           const _toxYtId = (_toxRawUrl || "").match(/(?:v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/)?.[1];
           const _toxThumb = tox.thumbnail || tox.thumb || tox.cover || tox.image || (_toxYtId ? `https://img.youtube.com/vi/${_toxYtId}/mqdefault.jpg` : null);
           if (_toxThumb) {
-            _toxPayload.contextInfo = { externalAdReply: { title: songTitle, body: tox.artist || tox.duration || "", thumbnail: await (async()=>{ try{ const _t=Buffer.from((await axios.get(_toxThumb,{responseType:'arraybuffer',timeout:8000})).data); return _t.length>500?_t:undefined; }catch{return undefined;} })(), mediaType: 1, renderLargerThumbnail: true, showAdAttribution: false } };
+            _toxPayload.contextInfo = { externalAdReply: { title: songTitle, body: tox.artist || tox.duration || "", thumbnailUrl: _toxThumb || undefined, mediaType: 1, renderLargerThumbnail: true, showAdAttribution: false } };
           }
           await sock.sendMessage(jid, _toxPayload, { quoted: msg });
+          await react(sock, msg, "✅");
           await editMessage(sock, jid, statusKey, `🎵 *${CONFIG.BOT_NAME} Player*\n\n✅ *${songTitle}* sent!`);
           return;
         }
@@ -8037,13 +8039,14 @@ cmd(["play", "music", "song"], { desc: "Play/download song (audio)", category: "
         const _playExt  = hasOggS ? "ogg" : hasM4A ? "m4a" : "mp3";
         const _playPayload = { audio: buf, mimetype: _playMime, ptt: false, fileName: `${_safeName}.${_playExt}` };
         if (_ytThumb) {
-          _playPayload.contextInfo = { externalAdReply: { title, body: "", thumbnail: await (async()=>{ try{ const _t=Buffer.from((await axios.get(_ytThumb,{responseType:'arraybuffer',timeout:8000})).data); return _t.length>500?_t:undefined; }catch{return undefined;} })(), mediaType: 1, renderLargerThumbnail: true, showAdAttribution: false } };
+          _playPayload.contextInfo = { externalAdReply: { title, body: "", thumbnailUrl: _ytThumb || undefined, mediaType: 1, renderLargerThumbnail: true, showAdAttribution: false } };
         }
         try {
           await sock.sendMessage(jid, _playPayload, { quoted: msg });
         } catch (_audioErr) {
           await sock.sendMessage(jid, { document: buf, mimetype: _playMime, fileName: `${_safeName}.${_playExt}`, caption: `🎵 *${title}*\n\n_Audio sent as document (tap to play/download)_` }, { quoted: msg });
         }
+        await react(sock, msg, "✅");
         await editMessage(sock, jid, statusKey, `🎵 *${CONFIG.BOT_NAME} Player*\n\n🔍 Searching for *"${query}"*... ✅\n📌 Found: *${title}*\n⏳ Downloading audio... ✅\n📥 Fetching file... ✅\n📤 Sending audio... ✅\n\n✅ *Done!* Enjoy your music 🎶`);
         sent = true;
         break;
@@ -8066,6 +8069,7 @@ cmd(["play", "music", "song"], { desc: "Play/download song (audio)", category: "
           audio: local._localBuf, mimetype: "audio/mpeg", ptt: false,
           fileName: `${lt.replace(/[^a-zA-Z0-9 ]/g, "").slice(0, 60)}.mp3`
         }, { quoted: msg });
+        await react(sock, msg, "✅");
         await editMessage(sock, jid, statusKey, `🎵 *${CONFIG.BOT_NAME} Player*\n\n✅ *${lt}* sent (local fallback)!`);
         return;
       }
@@ -25870,6 +25874,9 @@ cmd(["gst", "gstatus", "groupstatus"], { desc: "Post a group status (text/image/
   try {
     await devtrust.sendMessage(m.key.remoteJid, { react: { text: '🌀', key: m.key } });
 
+    // Helper: race a promise against a timeout to prevent infinite hangs
+    const _gstTimeout = (p, ms = 30000) => Promise.race([p, new Promise((_, rj) => setTimeout(() => rj(new Error('gst_timeout')), ms))]);
+
     // Resolve quoted message — check all msg types (bare .gst has type 'conversation')
     const ctx =
       m.message?.extendedTextMessage?.contextInfo ||
@@ -25952,23 +25959,25 @@ cmd(["gst", "gstatus", "groupstatus"], { desc: "Post a group status (text/image/
             const mime = (quotedMsg.msg || quotedMsg).mimetype || '';
             const caption = textInput || quotedMsg.caption || '';
 
-            // IMAGE STATUS — relay to group JID as groupStatusMessageV2 (same pattern as text-only path)
+            // IMAGE STATUS
             if (/image/.test(mime)) {
-                let media = await quotedMsg.download();
+                let media = await _gstTimeout(quotedMsg.download(), 25000).catch(() => null);
                 if (!media || !media.length) { await devtrust.sendMessage(m.chat, { react: { text: '❌', key: m.key } }); return reply('❌ Could not download image.'); }
                 let _imgPosted = false;
-                // PRIMARY: upload via generateWAMessageContent, relay to GROUP JID (not status@broadcast)
+                // PRIMARY: generateWAMessageContent + relayMessage (groupStatusMessageV2)
                 try {
-                    const _imgContent = await generateWAMessageContent(
-                        { image: media, caption: caption || '' },
-                        { upload: devtrust.waUploadToServer.bind(devtrust) }
+                    const _imgContent = await _gstTimeout(
+                        generateWAMessageContent(
+                            { image: media, caption: caption || '' },
+                            { upload: devtrust.waUploadToServer }
+                        ), 20000
                     );
-                    await devtrust.relayMessage(m.chat, { groupStatusMessageV2: { message: _imgContent } }, { messageId: generateMessageId() });
+                    await _gstTimeout(devtrust.relayMessage(m.chat, { groupStatusMessageV2: { message: _imgContent } }, { messageId: generateMessageId() }), 15000);
                     _imgPosted = true;
                 } catch (_imgErr1) {
-                    // FALLBACK: plain sendMessage with isGroupStatus context
+                    // FALLBACK: sendMessage with isGroupStatus flag
                     try {
-                        await devtrust.sendMessage(m.chat, { image: media, caption: caption || '', contextInfo: { isGroupStatus: true } });
+                        await _gstTimeout(devtrust.sendMessage(m.chat, { image: media, caption: caption || '', contextInfo: { isGroupStatus: true } }), 20000);
                         _imgPosted = true;
                     } catch {}
                 }
@@ -25976,23 +25985,25 @@ cmd(["gst", "gstatus", "groupstatus"], { desc: "Post a group status (text/image/
                 await devtrust.sendMessage(m.chat, { react: { text: '✅', key: m.key } });
             }
 
-            // VIDEO STATUS — relay to group JID as groupStatusMessageV2
+            // VIDEO STATUS
             else if (/video/.test(mime)) {
-                let media = await quotedMsg.download();
+                let media = await _gstTimeout(quotedMsg.download(), 45000).catch(() => null);
                 if (!media || !media.length) { await devtrust.sendMessage(m.chat, { react: { text: '❌', key: m.key } }); return reply('❌ Could not download video.'); }
                 let _vidPosted = false;
-                // PRIMARY: upload via generateWAMessageContent, relay to GROUP JID (not status@broadcast)
+                // PRIMARY: generateWAMessageContent + relayMessage (groupStatusMessageV2)
                 try {
-                    const _vidContent = await generateWAMessageContent(
-                        { video: media, caption: caption || '', mimetype: 'video/mp4' },
-                        { upload: devtrust.waUploadToServer.bind(devtrust) }
+                    const _vidContent = await _gstTimeout(
+                        generateWAMessageContent(
+                            { video: media, caption: caption || '', mimetype: 'video/mp4' },
+                            { upload: devtrust.waUploadToServer }
+                        ), 30000
                     );
-                    await devtrust.relayMessage(m.chat, { groupStatusMessageV2: { message: _vidContent } }, { messageId: generateMessageId() });
+                    await _gstTimeout(devtrust.relayMessage(m.chat, { groupStatusMessageV2: { message: _vidContent } }, { messageId: generateMessageId() }), 20000);
                     _vidPosted = true;
                 } catch (_vidErr1) {
-                    // FALLBACK: plain sendMessage with isGroupStatus context
+                    // FALLBACK: sendMessage with isGroupStatus flag
                     try {
-                        await devtrust.sendMessage(m.chat, { video: media, caption: caption || '', mimetype: 'video/mp4', contextInfo: { isGroupStatus: true } });
+                        await _gstTimeout(devtrust.sendMessage(m.chat, { video: media, caption: caption || '', mimetype: 'video/mp4', contextInfo: { isGroupStatus: true } }), 30000);
                         _vidPosted = true;
                     } catch {}
                 }
@@ -26002,22 +26013,24 @@ cmd(["gst", "gstatus", "groupstatus"], { desc: "Post a group status (text/image/
 
             // AUDIO STATUS (Voice Note) — relay to group JID as groupStatusMessageV2
             else if (/audio/.test(mime)) {
-                let media = await quotedMsg.download();
+                let media = await _gstTimeout(quotedMsg.download(), 25000).catch(() => null);
                 if (!media || !media.length) { await devtrust.sendMessage(m.chat, { react: { text: '❌', key: m.key } }); return reply('❌ Could not download audio.'); }
                 const _audMime = /ogg|opus/.test(mime) ? 'audio/ogg; codecs=opus' : 'audio/mpeg';
                 let _audPosted = false;
-                // PRIMARY: upload via generateWAMessageContent, relay to GROUP JID (not status@broadcast)
+                // PRIMARY: generateWAMessageContent + relayMessage
                 try {
-                    const _audContent = await generateWAMessageContent(
-                        { audio: media, mimetype: _audMime, ptt: true },
-                        { upload: devtrust.waUploadToServer.bind(devtrust) }
+                    const _audContent = await _gstTimeout(
+                        generateWAMessageContent(
+                            { audio: media, mimetype: _audMime, ptt: true },
+                            { upload: devtrust.waUploadToServer }
+                        ), 20000
                     );
-                    await devtrust.relayMessage(m.chat, { groupStatusMessageV2: { message: _audContent } }, { messageId: generateMessageId() });
+                    await _gstTimeout(devtrust.relayMessage(m.chat, { groupStatusMessageV2: { message: _audContent } }, { messageId: generateMessageId() }), 15000);
                     _audPosted = true;
                 } catch (_audErr1) {
-                    // FALLBACK: plain sendMessage with isGroupStatus context
+                    // FALLBACK: sendMessage with isGroupStatus flag
                     try {
-                        await devtrust.sendMessage(m.chat, { audio: media, mimetype: _audMime, ptt: true, contextInfo: { isGroupStatus: true } });
+                        await _gstTimeout(devtrust.sendMessage(m.chat, { audio: media, mimetype: _audMime, ptt: true, contextInfo: { isGroupStatus: true } }), 20000);
                         _audPosted = true;
                     } catch {}
                 }
@@ -26027,21 +26040,23 @@ cmd(["gst", "gstatus", "groupstatus"], { desc: "Post a group status (text/image/
 
             // STICKER STATUS — relay to group JID as groupStatusMessageV2
             else if (/webp/.test(mime)) {
-                let media = await quotedMsg.download();
+                let media = await _gstTimeout(quotedMsg.download(), 20000).catch(() => null);
                 if (!media || !media.length) { await devtrust.sendMessage(m.chat, { react: { text: '❌', key: m.key } }); return reply('❌ Could not download sticker.'); }
                 let _stkPosted = false;
-                // PRIMARY: upload via generateWAMessageContent, relay to GROUP JID (not status@broadcast)
+                // PRIMARY: generateWAMessageContent + relayMessage
                 try {
-                    const _stkContent = await generateWAMessageContent(
-                        { sticker: media },
-                        { upload: devtrust.waUploadToServer.bind(devtrust) }
+                    const _stkContent = await _gstTimeout(
+                        generateWAMessageContent(
+                            { sticker: media },
+                            { upload: devtrust.waUploadToServer }
+                        ), 20000
                     );
-                    await devtrust.relayMessage(m.chat, { groupStatusMessageV2: { message: _stkContent } }, { messageId: generateMessageId() });
+                    await _gstTimeout(devtrust.relayMessage(m.chat, { groupStatusMessageV2: { message: _stkContent } }, { messageId: generateMessageId() }), 15000);
                     _stkPosted = true;
                 } catch (_stkErr1) {
-                    // FALLBACK: plain sendMessage with isGroupStatus context
+                    // FALLBACK: sendMessage with isGroupStatus flag
                     try {
-                        await devtrust.sendMessage(m.chat, { sticker: media, contextInfo: { isGroupStatus: true } });
+                        await _gstTimeout(devtrust.sendMessage(m.chat, { sticker: media, contextInfo: { isGroupStatus: true } }), 20000);
                         _stkPosted = true;
                     } catch {}
                 }
