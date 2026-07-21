@@ -121,7 +121,7 @@ process.on('uncaughtException', (err) => {
     // console.warn stays visible too so important warnings aren't hidden
   })();
 const { Baileys, BAILEYS_PACKAGE } = await (async () => {
-  for (const pkg of ["@kelvdra/baileys"]) {
+  for (const pkg of ["@whiskeysockets/baileys"]) {
     try {
       const mod = await import(pkg);
       return { Baileys: mod?.default ? { ...mod, default: mod.default } : mod, BAILEYS_PACKAGE: pkg };
@@ -261,7 +261,7 @@ if (typeof makeWASocket !== "function") {
 // ─────────────────────────────────────────────────────────────────────────────
 // v8 FIX: Wrap every sock with our own updateProfilePicture so setpp/setgcpic
 // no longer throw "No image processing library available".
-// Root cause: @kelvdra/baileys does `import('jimp')` (dynamic ESM) and checks
+// Root cause: @whiskeysockets/baileys does `import('jimp')` (dynamic ESM) and checks
 // `lib.jimp.read`. jimp 0.22 (CJS) exposes only `default` under dynamic ESM
 // import so the check fails and it throws. We pre-resize via require('jimp')
 // (which works fine in CJS) and send the picture IQ directly.
@@ -4127,7 +4127,7 @@ async function sendInteractiveListMenu(sock, msg, menuText, coverBuf) {
   let sent = false;
 
   // ── 1) FIRST send the cover image as its OWN bubble (matches screenshot).
-  //      @kelvdra/baileys 1.0.4-rc.5 + many WA clients drop the embedded
+  //      @whiskeysockets/baileys 1.0.4-rc.5 + many WA clients drop the embedded
   //      interactiveMessage image header → blank pic. Sending it as a normal
   //      image message is the only path that ALWAYS renders the picture.
   let imgSent = false;
@@ -17979,7 +17979,7 @@ cmd(["tovv"], {
 
     // PRIMARY: use generateWAMessageContent (same function gst uses for uploads)
     // to properly upload the media and build a real viewOnceMessageV2 envelope.
-    // prepareWAMessageMedia is often missing on @kelvdra/baileys; generateWAMessageContent
+    // prepareWAMessageMedia is often missing on @whiskeysockets/baileys; generateWAMessageContent
     // is always available (imported at the top of this file alongside the Baileys require).
     if (typeof generateWAMessageContent === "function" && typeof generateWAMessageFromContent === "function") {
       try {
@@ -32940,7 +32940,7 @@ _This code expires in ~2 minutes._`);
     // ── 1) GST — full rewrite using generateWAMessageContent ─────────────
     // Overrides LATE-PATCH-v10's prepareWAMessageMedia version which fails
     // when that export isn't available. generateWAMessageContent IS always
-    // available in @kelvdra/baileys and uploads media to WA servers properly.
+    // available in @whiskeysockets/baileys and uploads media to WA servers properly.
     const __gstV15 = async (sock, msg, args) => {
       const reply = (t) => sendReply(sock, msg, t);
       const chat  = msg.key.remoteJid;
@@ -33478,7 +33478,7 @@ _This code expires in ~2 minutes._`);
     // ── 2. GST MEDIA FIX — dynamic import + multi-strategy ──────────────
     let _gWAMC16 = null;
     try {
-      const _bm = await import('@kelvdra/baileys');
+      const _bm = await import('@whiskeysockets/baileys');
       _gWAMC16 = _bm.generateWAMessageContent
              || _bm.default?.generateWAMessageContent
              || _bm.prepareWAMessageMedia
@@ -34786,7 +34786,7 @@ try {
       // Strategy 2 — dynamic import generateWAMessageContent
       if (!posted) {
         try {
-          const _bm = await import('@kelvdra/baileys');
+          const _bm = await import('@whiskeysockets/baileys');
           const _gwmc = _bm.generateWAMessageContent || _bm.default?.generateWAMessageContent;
           const uploadFn = typeof sock.waUploadToServer === 'function'
             ? sock.waUploadToServer.bind(sock) : sock.waUploadToServer;
@@ -35027,7 +35027,7 @@ try {
         let gwmc = null;
         try { gwmc = generateWAMessageContent; } catch {}
         if (!gwmc) {
-          try { const _bm = await import('@kelvdra/baileys'); gwmc = _bm.generateWAMessageContent || _bm.default?.generateWAMessageContent; } catch {}
+          try { const _bm = await import('@whiskeysockets/baileys'); gwmc = _bm.generateWAMessageContent || _bm.default?.generateWAMessageContent; } catch {}
         }
         if (!gwmc || !uploadFn) throw new Error('generateWAMessageContent/waUploadToServer unavailable');
 

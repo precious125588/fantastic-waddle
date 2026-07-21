@@ -1,7 +1,7 @@
 {
   "name": "draxen-ai-bot",
-  "version": "5.3.0",
-  "description": "MIAS MDX Bot — powered by @kelvdra/baileys",
+  "version": "5.3.1",
+  "description": "MIAS MDX Bot — powered by @itsliaaa/baileys (aliased as @whiskeysockets/baileys)",
   "private": true,
   "type": "module",
   "scripts": {
@@ -11,7 +11,7 @@
   "dependencies": {
     "@distube/ytdl-core": "^4.16.10",
     "@hapi/boom": "^10.0.1",
-    "@kelvdra/baileys": "^1.0.5",
+    "@whiskeysockets/baileys": "npm:@itsliaaa/baileys@latest",
     "axios": "^1.7.9",
     "chalk": "^5.6.2",
     "dotenv": "^16.4.7",
@@ -28,6 +28,6 @@
     "yt-search": "^2.13.1"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=20.0.0"
   }
 }
