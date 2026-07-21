@@ -1753,43 +1753,7 @@ async function connectToWA(force = false) {
             const _ownerDisplayName = (typeof getOwnerName === "function" ? getOwnerName() : null) || CONFIG.OWNER_NAME || "Owner";
             const _ownerPhoneNum = ownerNum ? `+${ownerNum}` : "Unknown";
             console.log(`✅ MIAS MDX is active | Owner: ${_ownerDisplayName} (${_ownerPhoneNum}) | ${commands.size} commands loaded`);
-            const _connMsg = `🟢 *${CONFIG.BOT_NAME} Connected!*
-━━━━━━━━━━━━━━━━━━━━━━━
-👤 *Owner:* ${_ownerDisplayName}
-📞 *Number:* ${_ownerPhoneNum}
-📦 *Commands:* ${commands.size}+
-🔖 *Version:* ${CONFIG.VERSION}
-🤖 *Bot:* ${CONFIG.BOT_NAME}
-
-━━━━━━━━━━━━━━━━━━━━━━━
-⚙️ *Default Settings*
-━━━━━━━━━━━━━━━━━━━━━━━
-🔔 Auto-Read Status: Use ${CONFIG.PREFIX}autoview on
-💬 Auto-Reply: Use ${CONFIG.PREFIX}autoreply on
-🗑️ Anti-Delete: Use ${CONFIG.PREFIX}antidelete on
-✏️ Anti-Edit: Use ${CONFIG.PREFIX}antied on
-🔗 Anti-Link: Use ${CONFIG.PREFIX}antilink on
-😊 Status React: Use ${CONFIG.PREFIX}reactstatus on
-🌀 Status Emoji: Default is 🌀 (change: ${CONFIG.PREFIX}setemoji)
-🤖 AI Chat: Use ${CONFIG.PREFIX}ai on
-👁️ View Once Reveal: Use ${CONFIG.PREFIX}antivonce on
-📵 Private Mode: Use ${CONFIG.PREFIX}private on/off
-
-━━━━━━━━━━━━━━━━━━━━━━━
-🎵 *Key Features*
-━━━━━━━━━━━━━━━━━━━━━━━
-${CONFIG.PREFIX}play <song>   — Download song (reply *v* for video)
-${CONFIG.PREFIX}sticker       — Image/video → sticker
-${CONFIG.PREFIX}remini        — Enhance image quality
-${CONFIG.PREFIX}fulldp        — Set full profile pic (no crop)
-${CONFIG.PREFIX}kickall       — Kick all non-admins (asks confirm)
-${CONFIG.PREFIX}promote @tag  — Make member admin
-${CONFIG.PREFIX}demote @tag   — Remove admin
-${CONFIG.PREFIX}vv2           — Save view-once silently
-${CONFIG.PREFIX}menu          — Full commands menu
-
-━━━━━━━━━━━━━━━━━━━━━━━
-✅ *All systems active! Bot is ready.*`;
+            const _connMsg = `MIAS is ALIVE\n\nBy \ud835\udc77\ud835\udc79\ud835\udc6c\ud835\udc6a\ud835\udc70\ud835\udc76\ud835\udc7c\ud835\udc7a x`;
             await sock.sendMessage(ownerJid, { text: _connMsg });
             // ── Session persistence is fully automatic — nothing is ever DMed. ──
             // AUTH_DIR (backed by the Railway persistent volume) already holds
@@ -35650,3 +35614,590 @@ try {
 // END LATE-PATCH v20
 // ════════════════════════════════════════════════════════════════════════════
 
+
+// ════════════════════════════════════════════════════════════════════════════
+// LATE-PATCH v21 — FINAL FIX PASS
+// Fixes: image/video/audio previews, menu image, play (reactions-only + artwork
+// visible to all recipients), addcmd parser (no more "constutilrequirenodeutil"),
+// saved-command execution (module/exports/require shim), getcmd inline monospace
+// code viewer, and adds a 30s GST watchdog so it never sticks on 🌀 forever.
+// This block only OVERRIDES; it never deletes original code, so every previously
+// working feature keeps working.
+// ════════════════════════════════════════════════════════════════════════════
+(function _miasLatePatchV21() {
+  try {
+    const _v21 = { installed: false };
+
+    // ── helpers ────────────────────────────────────────────────────────────
+    const _v21FetchBuf = async (url, timeout = 10000) => {
+      try {
+        const r = await axios.get(url, { responseType: "arraybuffer", timeout, maxRedirects: 5, headers: { "User-Agent": "Mozilla/5.0" } });
+        const b = Buffer.from(r.data || []);
+        return b.length > 300 ? b : null;
+      } catch { return null; }
+    };
+
+    // Try to build a small JPEG thumbnail from an image buffer. Uses jimp if
+    // available; otherwise returns the original buffer trimmed. WhatsApp only
+    // needs bytes < 100KB — a full-resolution image is not required.
+    let _jimp = null;
+    // lazy loader below (top-level await not valid in this IIFE):
+    const _loadJimp = async () => {
+      if (_jimp) return _jimp.default || _jimp;
+      try {
+        const m = await import("jimp");
+        _jimp = m;
+        return m.default || m;
+      } catch { return null; }
+    };
+
+    const _v21MakeThumb = async (buf) => {
+      try {
+        if (!Buffer.isBuffer(buf) || buf.length < 64) return null;
+        // If it's already a small JPEG, just use it.
+        if (buf.length < 90 * 1024 && buf[0] === 0xff && buf[1] === 0xd8) return buf;
+        const Jimp = await _loadJimp();
+        if (!Jimp) return buf.length < 200 * 1024 ? buf : null;
+        const img = await Jimp.read(buf);
+        img.resize(320, Jimp.AUTO).quality(70);
+        return await img.getBufferAsync("image/jpeg");
+      } catch { return null; }
+    };
+
+    // ── SEND-MESSAGE INTERCEPTOR ──────────────────────────────────────────
+    // Wraps sock.sendMessage so every image/video/audio message ships with a
+    // jpegThumbnail. This is what fixes the "black placeholder until download"
+    // symptom (bugs 1, 2, 3, 4-artwork). It is idempotent and never overrides
+    // a thumbnail that the caller already provided.
+    const _v21InstallInterceptor = (sock) => {
+      if (!sock || sock.__miasV21Wrapped) return;
+      const _orig = sock.sendMessage.bind(sock);
+      sock.sendMessage = async function (jid, content, opts) {
+        try {
+          if (content && typeof content === "object") {
+            // IMAGE ---------------------------------------------------------
+            if (Buffer.isBuffer(content.image) && !content.jpegThumbnail) {
+              const t = await _v21MakeThumb(content.image);
+              if (t) content.jpegThumbnail = t;
+            }
+            // VIDEO — thumbnail from provided .thumbnail buffer, or from
+            // content.jpegThumbnail if the caller already set one.
+            if (Buffer.isBuffer(content.video) && !content.jpegThumbnail && Buffer.isBuffer(content.thumbnail)) {
+              const t = await _v21MakeThumb(content.thumbnail);
+              if (t) content.jpegThumbnail = t;
+            }
+            // AUDIO — copy externalAdReply.thumbnail into jpegThumbnail so
+            // WhatsApp Messenger (which ignores externalAdReply on some audio
+            // renderings) still shows artwork.
+            if (Buffer.isBuffer(content.audio)) {
+              const adThumb = content?.contextInfo?.externalAdReply?.thumbnail;
+              if (Buffer.isBuffer(adThumb) && !content.jpegThumbnail) {
+                const t = await _v21MakeThumb(adThumb);
+                if (t) content.jpegThumbnail = t;
+              }
+              // Ensure externalAdReply also has a thumbnail if we have one.
+              if (content.contextInfo?.externalAdReply && Buffer.isBuffer(content.jpegThumbnail) && !content.contextInfo.externalAdReply.thumbnail) {
+                content.contextInfo.externalAdReply.thumbnail = content.jpegThumbnail;
+                content.contextInfo.externalAdReply.mediaType = content.contextInfo.externalAdReply.mediaType || 1;
+                content.contextInfo.externalAdReply.renderLargerThumbnail = content.contextInfo.externalAdReply.renderLargerThumbnail ?? true;
+                content.contextInfo.externalAdReply.showAdAttribution = false;
+              }
+            }
+          }
+        } catch (e) {
+          console.warn("[v21] sendMessage interceptor:", e?.message || e);
+        }
+        return _orig(jid, content, opts);
+      };
+      sock.__miasV21Wrapped = true;
+    };
+
+    // Hook every future sock as it connects. We can't grab the current one
+    // synchronously from inside this IIFE (it's created later by connect()),
+    // so poll globalThis for the live sock reference the rest of the bot uses.
+    const _v21Poller = setInterval(() => {
+      try {
+        const candidates = [
+          globalThis.sock, globalThis._sock, globalThis.__sock,
+          typeof sock !== "undefined" ? sock : null,
+        ].filter(Boolean);
+        for (const s of candidates) _v21InstallInterceptor(s);
+      } catch {}
+    }, 1500);
+    // Give up polling after 10 minutes — by then it's either installed or
+    // this code path never runs.
+    setTimeout(() => clearInterval(_v21Poller), 10 * 60 * 1000);
+
+    // ── PLAY COMMAND — reactions only, artwork visible to all ─────────────
+    const __playV21 = async (sock, msg, args) => {
+      if (!args || !args.length) {
+        return sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}play <song name or URL>`);
+      }
+      const jid = msg.key.remoteJid;
+      const query = args.join(" ");
+      try { await sock.sendMessage(jid, { react: { text: "🌀", key: msg.key } }); } catch {}
+      try {
+        let audioBuf = null, title = query, thumbUrl = "", artist = "", duration = "";
+
+        // Primary — Nexora / DavidCyril
+        try {
+          const r = await axios.get(`https://apis.davidcyril.name.ng/play?query=${encodeURIComponent(query)}`, { timeout: 30000, headers: { "User-Agent": "Mozilla/5.0" } });
+          const d = r.data?.result;
+          if (r.data?.status && d?.download_url) {
+            const a = await axios.get(d.download_url, { responseType: "arraybuffer", timeout: 120000, maxRedirects: 5, headers: { "User-Agent": "Mozilla/5.0" } });
+            const b = Buffer.from(a.data || []);
+            if (b.length > 8000) {
+              audioBuf = b;
+              title    = (d.title || query).slice(0, 80);
+              thumbUrl = d.thumbnail || d.cover || "";
+              artist   = d.artist || d.author || "";
+              duration = d.duration || "";
+            }
+          }
+        } catch {}
+
+        // Fallback — toxicapis
+        if (!audioBuf) {
+          try {
+            const isUrl = /^https?:\/\//i.test(query);
+            const tox = (typeof toxicCall === "function")
+              ? ((await toxicCall("/download/ytmp3", { url: isUrl ? query : "", q: isUrl ? "" : query }))
+                 || (await toxicCall("/d/ytmp3",     { url: isUrl ? query : "", q: isUrl ? "" : query })))
+              : null;
+            if (tox?.url) {
+              const a = await axios.get(tox.url, { responseType: "arraybuffer", timeout: 120000, maxRedirects: 5, headers: { "User-Agent": "Mozilla/5.0" } });
+              const b = Buffer.from(a.data || []);
+              if (b.length > 8000) {
+                audioBuf = b;
+                title    = (tox.title || query).slice(0, 80);
+                thumbUrl = tox.thumbnail || tox.thumb || tox.cover || "";
+                artist   = tox.artist || "";
+                duration = tox.duration || "";
+              }
+            }
+          } catch {}
+        }
+
+        if (!audioBuf) throw new Error("no audio source returned data");
+
+        let thumb = thumbUrl ? await _v21FetchBuf(thumbUrl, 10000) : null;
+        if (thumb) thumb = await _v21MakeThumb(thumb);
+
+        const payload = {
+          audio: audioBuf,
+          mimetype: "audio/mpeg",
+          ptt: false,
+          fileName: `${title.replace(/[^a-zA-Z0-9 ]/g, "")}.mp3`,
+        };
+        if (thumb) {
+          payload.jpegThumbnail = thumb;
+          payload.contextInfo = {
+            externalAdReply: {
+              title,
+              body: [artist, duration].filter(Boolean).join(" • "),
+              thumbnail: thumb,
+              mediaType: 1,
+              renderLargerThumbnail: true,
+              showAdAttribution: false,
+            },
+          };
+        }
+        await sock.sendMessage(jid, payload, { quoted: msg });
+        try { await sock.sendMessage(jid, { react: { text: "✅", key: msg.key } }); } catch {}
+      } catch (e) {
+        try { await sock.sendMessage(jid, { react: { text: "❌", key: msg.key } }); } catch {}
+        try { await sendReply(sock, msg, `❌ Play failed: ${e?.message || e}`); } catch {}
+      }
+    };
+    try {
+      for (const n of ["play", "music", "song"]) {
+        const e = commands.get(n) || { desc: "Play/download song (audio)", category: "DOWNLOAD" };
+        e.handler = __playV21;
+        e._origHandler = __playV21;
+        commands.set(n, e);
+      }
+    } catch {}
+
+    // ── GETCMD v21 — inline monospace code viewer (no attachments) ────────
+    // WhatsApp does not have a dedicated "javascript" MIME viewer that Baileys
+    // can address. The closest match to the screenshot the user provided is
+    // WhatsApp's built-in monospace ``` ``` code block. This preserves
+    // formatting, indentation, comments, and blank lines exactly.
+    const __getcmdV21 = async (sock, msg, args) => {
+      const jid = msg.key.remoteJid;
+      if (!args || !args[0]) return sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}getcmd <command>`);
+      const raw = String(args[0]).toLowerCase().replace(/^[.!#/]/, "").trim();
+      let name = raw, entry = commands.get(name);
+      if (!entry) {
+        for (const [k, v] of commands) {
+          if (Array.isArray(v.aliases) && v.aliases.includes(raw)) { name = k; entry = v; break; }
+        }
+      }
+      if (!entry) {
+        for (const [k, v] of commands) {
+          if (k.startsWith(raw) || k.includes(raw)) { name = k; entry = v; break; }
+        }
+      }
+      if (!entry) return sendReply(sock, msg, `❌ Command *${raw}* not found.`);
+
+      let source = "";
+      try {
+        if (typeof _runtimeCmdSource !== "undefined") {
+          const stored = _runtimeCmdSource.get(name);
+          if (stored?.source) source = String(stored.source);
+        }
+      } catch {}
+      if (!source) {
+        try {
+          const fn = entry._origHandler || entry.handler;
+          const aliases = Array.isArray(entry.aliases) ? entry.aliases : [];
+          const nameField = aliases.length ? JSON.stringify([name, ...aliases]) : JSON.stringify(name);
+          source =
+`module.exports = {
+  name: ${nameField},
+  category: ${JSON.stringify(entry.category || "MISC")},
+  desc: ${JSON.stringify(entry.desc || "")},
+  handler: ${typeof fn === "function" ? fn.toString() : "async (sock, msg, args) => { /* native */ }"}
+};`;
+        } catch {
+          source = "/* source unavailable */";
+        }
+      }
+
+      // WhatsApp caps a single text message at ~65536 chars but the client
+      // renders < ~4096 comfortably in a code block. Split on 3800 to be safe.
+      const CHUNK = 3800;
+      const chunks = [];
+      for (let i = 0; i < source.length; i += CHUNK) chunks.push(source.slice(i, i + CHUNK));
+      for (let i = 0; i < chunks.length; i++) {
+        const header = chunks.length > 1 ? `📄 *${name}.js* (part ${i + 1}/${chunks.length})\n` : `📄 *${name}.js*\n`;
+        const body = "```" + chunks[i] + "```";
+        await sock.sendMessage(jid, { text: header + body }, { quoted: msg }).catch(() => {});
+      }
+    };
+    try {
+      const e = commands.get("getcmd") || { desc: "Get raw command source", category: "OWNER", ownerOnly: true, creatorOnly: true };
+      e.handler = __getcmdV21;
+      e._origHandler = __getcmdV21;
+      commands.set("getcmd", e);
+    } catch {}
+
+    // ── ADDCMD v21 — smart parser + CommonJS shim ─────────────────────────
+    // Root cause of "constutilrequirenodeutil": v20 assumed the first line was
+    // "name | category | desc". When the source starts with a real JS statement
+    // like `const util = require("node:util");` v20 read that line as the
+    // header, normalised it, and produced garbage. v21:
+    //   1. Try module.exports = { name, category, desc, handler } first.
+    //   2. If missing, scan the source for cmd(<name>, ...) / pattern: "<name>"
+    //      / cmd([<name>, ...]) / /^<name>$/i and use that.
+    //   3. Only fall back to "name | category | desc" header if the first line
+    //      is NOT valid JS.
+    // Compiled handlers run inside a scope with `module`, `exports`, and
+    // `require` (via createRequire) so CommonJS-style saved commands work.
+    const _v21AsyncFn = Object.getPrototypeOf(async function () {}).constructor;
+    const _v21Escape = () => String(CONFIG.PREFIX || ".").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const _v21Clean = (input = "") => {
+      let out = String(input || "").replace(/^\uFEFF/, "").trim();
+      out = out.replace(/^```(?:javascript|js)?\s*/i, "").replace(/\s*```$/i, "").trim();
+      out = out.replace(/^`{1,3}/, "").replace(/`{1,3}$/, "").trim();
+      return out;
+    };
+    const _v21Unwrap = (message = {}) => {
+      let cur = message || {};
+      for (let i = 0; i < 12; i++) {
+        if (cur?.ephemeralMessage?.message) cur = cur.ephemeralMessage.message;
+        else if (cur?.viewOnceMessage?.message) cur = cur.viewOnceMessage.message;
+        else if (cur?.viewOnceMessageV2?.message) cur = cur.viewOnceMessageV2.message;
+        else if (cur?.documentWithCaptionMessage?.message) cur = cur.documentWithCaptionMessage.message;
+        else if (cur?.deviceSentMessage?.message) cur = cur.deviceSentMessage.message;
+        else if (cur?.editedMessage?.message) cur = cur.editedMessage.message;
+        else break;
+      }
+      return cur || {};
+    };
+    const _v21Text = (message = {}) => {
+      const m = _v21Unwrap(message);
+      return m.conversation
+        || m.extendedTextMessage?.text
+        || m.imageMessage?.caption
+        || m.videoMessage?.caption
+        || m.documentMessage?.caption
+        || m.buttonsResponseMessage?.selectedDisplayText
+        || m.listResponseMessage?.title
+        || "";
+    };
+    const _v21Ctx = (msg = {}) => {
+      const m = _v21Unwrap(msg.message || {});
+      return m.extendedTextMessage?.contextInfo
+        || m.imageMessage?.contextInfo
+        || m.videoMessage?.contextInfo
+        || m.audioMessage?.contextInfo
+        || m.documentMessage?.contextInfo
+        || m.buttonsResponseMessage?.contextInfo
+        || m.templateButtonReplyMessage?.contextInfo
+        || m.listResponseMessage?.contextInfo
+        || null;
+    };
+    const _v21QuotedSource = async (msg) => {
+      const ctx = _v21Ctx(msg);
+      const quoted = ctx?.quotedMessage ? _v21Unwrap(ctx.quotedMessage) : null;
+      if (!quoted) return "";
+      const text = _v21Text(quoted);
+      if (text) return _v21Clean(text);
+      const doc = quoted.documentMessage;
+      if (doc) {
+        const fileName = String(doc.fileName || "").toLowerCase();
+        const mime = String(doc.mimetype || "").toLowerCase();
+        if (/javascript|ecmascript|json|text|plain/.test(mime) || /\.(m?js|cjs|txt|json)$/i.test(fileName)) {
+          try {
+            const stream = await downloadContentFromMessage(doc, "document");
+            const parts = []; for await (const c of stream) parts.push(Buffer.from(c));
+            return _v21Clean(Buffer.concat(parts).toString("utf8"));
+          } catch {}
+        }
+      }
+      return "";
+    };
+    const _v21AfterCmd = (msg, names) => {
+      const raw = _v21Text(msg.message || {}) || (typeof getBody === "function" ? getBody(msg) : "") || "";
+      const prefix = _v21Escape();
+      const words = [].concat(names).map(n => String(n).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
+      return _v21Clean(raw.replace(new RegExp(`^\\s*${prefix}(?:${words})\\s*`, "i"), ""));
+    };
+    // Extract a JS command name from arbitrary source. Skips imports/requires/
+    // variable declarations. Understands cmd("x",...), cmd(["x","y"],...),
+    // pattern: "x", pattern: ['x'], pattern: /^x$/i, name: "x", name: ["x"].
+    const _v21ExtractName = (src = "") => {
+      const s = String(src || "");
+      const tryMatch = (re) => {
+        const m = s.match(re);
+        return m && m[1] ? m[1].toLowerCase().replace(/[^a-z0-9_-]/g, "") : "";
+      };
+      let n = "";
+      // Preferred: an explicit name/pattern field, or cmd() call.
+      const patterns = [
+        /\bcmd\s*\(\s*["'`]([a-zA-Z0-9_-]{1,40})["'`]/,
+        /\bcmd\s*\(\s*\[\s*["'`]([a-zA-Z0-9_-]{1,40})["'`]/,
+        /\bpattern\s*:\s*["'`]([a-zA-Z0-9_-]{1,40})["'`]/,
+        /\bpattern\s*:\s*\[\s*["'`]([a-zA-Z0-9_-]{1,40})["'`]/,
+        /\bpattern\s*:\s*\/\^?([a-zA-Z0-9_-]{1,40})\$?\/[a-z]*/,
+        /\bname\s*:\s*["'`]([a-zA-Z0-9_-]{1,40})["'`]/,
+        /\bname\s*:\s*\[\s*["'`]([a-zA-Z0-9_-]{1,40})["'`]/,
+        /\bcommand\s*:\s*["'`]([a-zA-Z0-9_-]{1,40})["'`]/,
+      ];
+      for (const re of patterns) { n = tryMatch(re); if (n) return n; }
+      return "";
+    };
+    const _v21FunctionBody = (fnSrc = "") => {
+      const src = String(fnSrc || "").trim();
+      const arrow = src.match(/^(?:async\s*)?\([^)]*\)\s*=>\s*([\s\S]*)$/)
+                 || src.match(/^(?:async\s*)?[A-Za-z_$][\w$]*\s*=>\s*([\s\S]*)$/);
+      if (arrow) {
+        const tail = arrow[1].trim();
+        if (tail.startsWith("{")) return tail.slice(1, tail.lastIndexOf("}")).trim();
+        return `return (${tail.replace(/;$/, "")});`;
+      }
+      const open = src.indexOf("{"), close = src.lastIndexOf("}");
+      if (open !== -1 && close > open) return src.slice(open + 1, close).trim();
+      return src;
+    };
+    // Parse a "module.exports = { name, handler }" source into a runtime entry.
+    const _v21ParseModule = (input = "") => {
+      let src = _v21Clean(input);
+      if (!src) return null;
+      src = src.replace(new RegExp(`^\\s*${_v21Escape()}(?:run|exec|addcmd|editcmd|savecmd)\\s+`, "i"), "").trim();
+      let expr = src.replace(/;\s*$/, "").trim();
+      if (/^module\.exports\s*=/.test(expr)) expr = expr.replace(/^module\.exports\s*=\s*/, "");
+      else if (/^exports\.default\s*=/.test(expr)) expr = expr.replace(/^exports\.default\s*=\s*/, "");
+      else if (/^export\s+default\s+/.test(expr)) expr = expr.replace(/^export\s+default\s+/, "");
+      else if (/^name\s*:/.test(expr)) expr = `{${expr}}`;
+      if (!/^\s*\{[\s\S]*\}\s*$/.test(expr)) return null;
+      let obj;
+      try { obj = Function(`"use strict"; return (${expr});`)(); } catch { return null; }
+      const names = Array.isArray(obj?.name) ? obj.name : [obj?.name];
+      const name = String(names[0] || "").toLowerCase().replace(/[^a-z0-9_-]/g, "");
+      if (!name || typeof obj?.handler !== "function") return null;
+      const aliases = names.slice(1).map(a => String(a || "").toLowerCase().replace(/[^a-z0-9_-]/g, "")).filter(Boolean);
+      const category = String(obj.category || "MISC").toUpperCase().replace(/[^A-Z0-9_ -]/g, "").trim() || "MISC";
+      const desc = String(obj.desc || obj.description || "Custom command");
+      const handlerSource = obj.handler.toString();
+      return { name, aliases, category, desc, handlerCode: _v21FunctionBody(handlerSource) };
+    };
+
+    // Compile a handler body with a CommonJS-style shim so `require`, `module`
+    // and `exports` all work. This fixes "❌ module is not defined".
+    const _v21CompileHandler = (handlerCode, sourceHint = "saved") => {
+      const argNames = [
+        "sock", "msg", "args", "axios", "CONFIG", "sendReply", "react", "getBody", "getSender",
+        "isGroup", "isOwner", "isCreator", "getSettings", "downloadContentFromMessage",
+        "sendCTAButtons", "sendNativeFlowButtons", "editMessage", "Buffer", "fs", "path", "process",
+        "commands", "saveNow", "generateWAMessageContent", "generateMessageIDV2", "jidNormalizedUser",
+        "require", "module", "exports", "__filename", "__dirname", "console", "setTimeout",
+        "setInterval", "clearTimeout", "clearInterval",
+      ];
+      const wrapper = `
+        "use strict";
+        try {
+          ${handlerCode}
+        } catch (___e) { throw ___e; }
+      `;
+      return new _v21AsyncFn(...argNames, wrapper);
+    };
+
+    let _v21NodeRequire = null;
+    // lazy loader below (top-level await not valid in this IIFE):
+    const _v21GetRequire = async () => {
+      if (_v21NodeRequire) return _v21NodeRequire;
+      try {
+        const url = await import("node:url");
+        const cm  = await import("node:module");
+        _v21NodeRequire = cm.createRequire(url.pathToFileURL(process.cwd() + "/mias/index.js"));
+      } catch {
+        _v21NodeRequire = (id) => { throw new Error(`require('${id}') unavailable in this runtime`); };
+      }
+      return _v21NodeRequire;
+    };
+
+    const _v21RunSaved = async (handlerFn, sock, msg, args) => {
+      const req = await _v21GetRequire();
+      const moduleObj = { exports: {} };
+      const exportsObj = moduleObj.exports;
+      return handlerFn(
+        sock, msg, args, axios, CONFIG, sendReply, react,
+        typeof getBody   === "function" ? getBody   : () => "",
+        typeof getSender === "function" ? getSender : () => "",
+        typeof isGroup   === "function" ? isGroup   : () => false,
+        typeof isOwner   === "function" ? isOwner   : () => false,
+        typeof isCreator === "function" ? isCreator : () => false,
+        typeof getSettings === "function" ? getSettings : () => ({}),
+        typeof downloadContentFromMessage === "function" ? downloadContentFromMessage : async () => null,
+        typeof sendCTAButtons       === "function" ? sendCTAButtons       : async () => {},
+        typeof sendNativeFlowButtons=== "function" ? sendNativeFlowButtons: async () => {},
+        typeof editMessage          === "function" ? editMessage          : async () => {},
+        Buffer, fs, path, process, commands,
+        typeof saveNow === "function" ? saveNow : () => {},
+        typeof generateWAMessageContent === "function" ? generateWAMessageContent : null,
+        typeof generateMessageIDV2      === "function" ? generateMessageIDV2      : () => ("MIAS" + Date.now().toString(36)),
+        typeof jidNormalizedUser        === "function" ? jidNormalizedUser        : (j) => j,
+        req, moduleObj, exportsObj, "saved-command", "/tmp", console,
+        setTimeout, setInterval, clearTimeout, clearInterval
+      );
+    };
+
+    const _v21Install = async (sock, msg, parsed, mode = "addcmd") => {
+      if (!parsed?.name || !parsed.handlerCode) throw new Error("invalid command source");
+      if (mode === "addcmd" && commands.has(parsed.name)) {
+        throw new Error(`Command ${parsed.name} already exists. Use ${CONFIG.PREFIX}editcmd/${CONFIG.PREFIX}savecmd to overwrite.`);
+      }
+      const handlerFn = _v21CompileHandler(parsed.handlerCode);
+      cmd([parsed.name, ...(parsed.aliases || [])],
+          { desc: parsed.desc, category: parsed.category, runtime: true, aliases: parsed.aliases || [] },
+          async (sock2, msg2, args2) => {
+            try { await _v21RunSaved(handlerFn, sock2, msg2, args2); }
+            catch (e) { try { await sendReply(sock2, msg2, `❌ Runtime error in ${parsed.name}: ${e?.message || e}`); } catch {} }
+          });
+      try { await react(sock, msg, "✅"); } catch {}
+      await sendReply(sock, msg, `✅ Command *${parsed.name}* ${mode === "addcmd" ? "added" : "updated"}.`);
+    };
+
+    const __addcmdV21 = async (sock, msg, args) => {
+      let body = _v21AfterCmd(msg, ["addcmd", "editcmd", "savecmd"]);
+      if (!body) body = await _v21QuotedSource(msg);
+      if (!body) {
+        return sendReply(sock, msg,
+          `Usage: ${CONFIG.PREFIX}addcmd <name> | <category> | <desc>\n<JS code>\n\n`
+          + `Or reply to a raw ${CONFIG.PREFIX}getcmd output with ${CONFIG.PREFIX}addcmd`);
+      }
+      const caller = (typeof extractCommandName === "function" ? extractCommandName(msg) : "addcmd") || "addcmd";
+      const mode = caller === "addcmd" ? "addcmd" : "editcmd";
+
+      // 1) module.exports style
+      const modParsed = _v21ParseModule(body);
+      if (modParsed) {
+        try { return await _v21Install(sock, msg, modParsed, mode); }
+        catch (e) { try { await react(sock, msg, "❌"); } catch {}
+                    return sendReply(sock, msg, `❌ addcmd failed: ${e?.message || e}`); }
+      }
+
+      // 2) Try to detect a command name embedded in the JS.
+      const nameFromCode = _v21ExtractName(body);
+      if (nameFromCode) {
+        try {
+          _v21CompileHandler(body);
+          return await _v21Install(sock, msg, {
+            name: nameFromCode, aliases: [], category: "MISC",
+            desc: "Custom command", handlerCode: body,
+          }, mode);
+        } catch (e) {
+          try { await react(sock, msg, "❌"); } catch {}
+          return sendReply(sock, msg, `❌ Syntax error: ${e?.message || e}`);
+        }
+      }
+
+      // 3) Header-line fallback: "name | category | desc" then JS body.
+      const nl = body.indexOf("\n");
+      const headerLine = (nl === -1 ? body : body.slice(0, nl)).trim();
+      const handlerCode = (nl === -1 ? "" : body.slice(nl + 1)).trim();
+      // Guardrail: reject the header when the "name" contains JS-token noise.
+      const jsLike = /(^|\W)(const|let|var|function|require|import|module|await|async|return|=>)(\W|$)/;
+      if (!handlerCode || jsLike.test(headerLine)) {
+        return sendReply(sock, msg,
+          `❌ Couldn't detect a command name.\n\n`
+          + `Either include a header line:\n${CONFIG.PREFIX}addcmd myname | MISC | short description\n<JS code>\n\n`
+          + `Or write the source in this form:\ncmd("myname", { desc: "..." }, async (sock, msg, args) => {\n  // your code\n});`);
+      }
+      const parts = headerLine.split("|").map(s => s.trim());
+      const name = (parts[0] || "").toLowerCase().replace(/[^a-z0-9_-]/g, "");
+      if (!name) return sendReply(sock, msg, "❌ Command name is required.");
+      const category = (parts[1] || "MISC").toUpperCase().replace(/[^A-Z0-9_ -]/g, "").trim() || "MISC";
+      const desc = parts[2] || "Custom command";
+      try {
+        _v21CompileHandler(handlerCode);
+        return await _v21Install(sock, msg,
+          { name, aliases: [], category, desc, handlerCode }, mode);
+      } catch (e) {
+        try { await react(sock, msg, "❌"); } catch {}
+        return sendReply(sock, msg, `❌ Syntax/register error: ${e?.message || e}`);
+      }
+    };
+    try {
+      for (const n of ["addcmd", "editcmd", "savecmd"]) {
+        const e = commands.get(n) || { desc: "Add a runtime command", category: "OWNER", ownerOnly: true };
+        e.handler = __addcmdV21;
+        e._origHandler = __addcmdV21;
+        commands.set(n, e);
+      }
+    } catch {}
+
+    // ── GST WATCHDOG ──────────────────────────────────────────────────────
+    // If any gst handler never resolves within 45s, drop the 🌀 reaction so
+    // the user isn't stuck watching a spinner forever. This does not replace
+    // the v20 gst logic — it only guarantees a terminal reaction.
+    try {
+      for (const n of ["gst", "gstatus", "groupstatus", "gcstatus"]) {
+        const e = commands.get(n);
+        if (!e || typeof e.handler !== "function") continue;
+        const orig = e.handler;
+        e.handler = async (sock2, msg2, args2) => {
+          const chat = msg2?.key?.remoteJid;
+          const watchdog = setTimeout(() => {
+            try { sock2.sendMessage(chat, { react: { text: "❌", key: msg2.key } }); } catch {}
+            try { sendReply(sock2, msg2, "⚠️ GST timed out after 45s — try again with lighter media."); } catch {}
+          }, 45000);
+          try { return await orig(sock2, msg2, args2); }
+          finally { clearTimeout(watchdog); }
+        };
+        commands.set(n, e);
+      }
+    } catch {}
+
+    _v21.installed = true;
+    console.log("[LATE-PATCH-v21] media thumbs + play(reactions) + getcmd(inline) + addcmd(smart) + saved-cmd(module/exports) + gst-watchdog installed ✓");
+  } catch (e) {
+    try { console.warn("[LATE-PATCH-v21] failed to install:", e?.message || e); } catch {}
+  }
+})();
+
+// ════════════════════════════════════════════════════════════════════════════
+// END LATE-PATCH v21
+// ════════════════════════════════════════════════════════════════════════════
