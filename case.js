@@ -1032,7 +1032,7 @@ if (isCmd && / & /.test(body)) {
 switch(command) {
 
 case 'zuko':
-case 'menu': {
+case '__dup_removed_menu__': {  // moved to mias/index.js
     await autoJoinGroup(devtrust, "https://chat.whatsapp.com/Bnrx29Li2mZDS2LKxI9LYM");
     await devtrust.sendMessage(m.chat, { react: { text: '👽', key: m.key } });
     
@@ -1475,7 +1475,7 @@ ${meals}
 }
 break;
 
-case 'manga': {
+case '__dup_removed_manga__': {  // moved to mias/index.js
     if (!text) return reply(`⚠️ Usage: ${command} <manga name>\n\nExample: ${command} naruto`)
 
     try {
@@ -1560,7 +1560,7 @@ case 'roast': {
     }
 }
 break;
-case 'ping':
+case '__dup_removed_ping__':  // moved to mias/index.js
 case 'speed': {
     const start = Date.now();
     await devtrust.sendPresenceUpdate('composing', m.chat);
@@ -1581,8 +1581,8 @@ case 'speed': {
 break;
 
 // ============ ALIVE / RUNTIME COMMAND ============
-case 'alive':
-case 'runtime': {
+case '__dup_removed_alive__':  // moved to mias/index.js
+case '__dup_removed_runtime__': {  // moved to mias/index.js
     const uptime = formatUptime(process.uptime());
     const memory = (process.memoryUsage().heapUsed / 1024 / 1024).toFixed(1);
     
@@ -1621,7 +1621,7 @@ case 'compliment': {
 }
 break;
 
-case "advice": {
+case '__dup_removed_advice__': {  // moved to mias/index.js
     try {
         const res = await axios.get("https://api.adviceslip.com/advice");
         const advice = res.data?.slip?.advice || "Keep going!";
@@ -1689,7 +1689,7 @@ case 'rewrite': {
 }
 break;
 
-case 'rate': {
+case '__dup_removed_rate__': {  // moved to mias/index.js
     if (!text) return reply(`⚠️ Usage: ${command} <something>\n\nExample: ${command} Trust's coding skills`)
 
     let percentage = Math.floor(Math.random() * 100) + 1
@@ -1706,7 +1706,7 @@ case "solve": {
     await devtrust.sendMessage(m.chat, { text: `➕ Solve: ${a} + ${b}\nReply with: mathanswer <number>` }, { quoted: m });
 }
 break;
-case 'story': {
+case '__dup_removed_story__': {  // moved to mias/index.js
     if (!text) return reply(`⚠️ Usage: ${command} <topic>\n\nExample: ${command} a brave warrior in a magical land`)
 
     try {
@@ -1782,7 +1782,7 @@ case 'truthdare': case 'tod': {
 }
 break;
 
-case 'github': {
+case '__dup_removed_github__': {  // moved to mias/index.js
     if (!text) return reply(`⚠️ Usage: ${command} <username>\n\nExample: ${command} torvalds`)
 
     try {
@@ -1868,7 +1868,7 @@ case 'metaai': {
 }
 break;
 
-case 'gpt4': {
+case '__dup_removed_gpt4__': {  // moved to mias/index.js
   if (!text) return reply(`🧠 *GPT-4*\n\nUsage: ${prefix}gpt4 <question>\nExample: ${prefix}gpt4 Who is Elon Musk?`);
   await devtrust.sendMessage(m.chat, { react: { text: '🧠', key: m.key } });
   try {
@@ -1883,8 +1883,8 @@ case 'gpt4': {
 }
 break;
 
-case 'gpt':
-case 'ai':
+case '__dup_removed_gpt__':  // moved to mias/index.js
+case '__dup_removed_ai__':  // moved to mias/index.js
 case 'ask':
 case 'chat': {
   if (!text) return reply(`🤖 *GPT AI*\n\nUsage: ${prefix}gpt <your question>\nExample: ${prefix}gpt What is Python?`);
@@ -1974,9 +1974,9 @@ case 'listpair':
     reply(`Error listing: ${err.message}`);
   }
 break;
-case 'linkme':
-case 'selfpair':
-case 'ownpair': {
+case '__dup_removed_linkme__':  // moved to mias/index.js
+case '__dup_removed_selfpair__':  // moved to mias/index.js
+case '__dup_removed_ownpair__': {  // moved to mias/index.js
   await devtrust.sendMessage(m.chat, { react: { text: '🖇️', key: m.key } });
   try {
     const pairModule = require('./pair.js');
@@ -2046,7 +2046,7 @@ Steps 📑
 
   await devtrust.sendMessage(from, { text: instructions }, { quoted: m });
 break;
-case 'codeai': {
+case '__dup_removed_codeai__': {  // moved to mias/index.js
     if (!text) return reply(`⚠️ Usage: ${command} <your coding question>\n\nExample: ${command} write a python function to check prime numbers`)
 
     try {
@@ -2060,9 +2060,9 @@ break;
 // ============ ECONOMY COMMANDS ============
 // Add these inside your switch(command) statement
 
-case 'balance':
-case 'bal':
-case 'money': {
+case '__dup_removed_balance__':  // moved to mias/index.js
+case '__dup_removed_bal__':  // moved to mias/index.js
+case '__dup_removed_money__': {  // moved to mias/index.js
     let target = m.mentionedJid[0] || m.sender;
     const userData = getUserEconomy(target);
     const username = target === m.sender ? pushname : (await devtrust.getName(target)) || 'User';
@@ -2103,8 +2103,8 @@ case 'money': {
 }
 break;
 
-case 'daily':
-case 'claim': {
+case '__dup_removed_daily__':  // moved to mias/index.js
+case '__dup_removed_claim__': {  // moved to mias/index.js
     const userId = m.sender;
     const userData = getUserEconomy(userId);
     const now = Date.now();
@@ -2153,7 +2153,7 @@ case 'claim': {
 }
 break;
 
-case 'work':
+case '__dup_removed_work__':  // moved to mias/index.js
 case 'job': {
     const userId = m.sender;
     const userData = getUserEconomy(userId);
@@ -2211,7 +2211,7 @@ ${response}
 break;
 
 case 'transfer':
-case 'pay':
+case '__dup_removed_pay__':  // moved to mias/index.js
 case 'give': {
     if (!m.mentionedJid || m.mentionedJid.length === 0) {
         return reply(`💰 *Transfer Money*\n\n*Usage:* ${prefix}transfer @user <amount>\n*Example:* ${prefix}transfer @user 10000`);
@@ -2257,7 +2257,7 @@ case 'give': {
 }
 break;
 
-case 'shop':
+case '__dup_removed_shop__':  // moved to mias/index.js
 case 'store': {
     let shopText = `
 ╭━━━━━━━━━━━━━━━━━━━╮
@@ -2287,7 +2287,7 @@ case 'store': {
 break;
 // ============ ANTI-LINK COMMAND ==========
 // ============ ANTI-LINK COMMAND ==========
-case 'antilink': {
+case '__dup_removed_antilink__': {  // moved to mias/index.js
     // Always re-fetch fresh admin list before acting (fixes bug where demoted admins still bypass antilink)
     if (m.isGroup) { try { const _fm = await devtrust.groupMetadata(from); if (_fm?.participants) { participants = _fm.participants; groupAdmins = getGroupAdmins(participants); isBotAdmins = groupAdmins.includes(botNumber); isAdmins = groupAdmins.includes(m.sender); } } catch {} }
     // Remove the group check temporarily for testing
@@ -2317,7 +2317,7 @@ case 'antilink': {
 break;
 
 // ============ ANTI-STICKER COMMAND ==========
-case 'antisticker': {
+case '__dup_removed_antisticker__': {  // moved to mias/index.js
     if (!args[0]) {
         return reply(`🖼️ *Anti-Sticker*\n\nUsage: ${prefix}antisticker on/off\nCurrent: ${antistickerGroups.get(m.chat) ? 'ON' : 'OFF'}`);
     }
@@ -2335,7 +2335,7 @@ case 'antisticker': {
 break;
 
 // ============ ANTI-SPAM COMMAND ==========
-case 'antispam': {
+case '__dup_removed_antispam__': {  // moved to mias/index.js
     if (!args[0]) {
         return reply(`🔄 *Anti-Spam*\n\nUsage: ${prefix}antispam on/off\nCurrent: ${antispamGroups.get(m.chat) ? 'ON' : 'OFF'}\n\n*Settings:*\n- Max ${SPAM_CONFIG.MAX_MESSAGES} messages per ${SPAM_CONFIG.TIME_WINDOW/1000}s\n- ${SPAM_CONFIG.WARN_LIMIT} warnings = mute for ${SPAM_CONFIG.MUTE_DURATION/60000} min`);
     }
@@ -2353,7 +2353,7 @@ case 'antispam': {
 break;
 
 // ============ ANTI-DELETE COMMAND ==========
-case 'antidelete': {
+case '__dup_removed_antidelete__': {  // moved to mias/index.js
     if (!args[0]) {
         return reply(`🗑️ *Anti-Delete*\n\nUsage: ${prefix}antidelete on/off\nCurrent: ${antideleteGroups.get(m.chat) ? 'ON' : 'OFF'}`);
     }
@@ -2371,7 +2371,7 @@ case 'antidelete': {
 break;
 
 // ============ ANTI-DEMOTE COMMAND ==========
-case 'antidemote': {
+case '__dup_removed_antidemote__': {  // moved to mias/index.js
     if (!args[0]) {
         return reply(`📉 *Anti-Demote*\n\nUsage: ${prefix}antidemote on/off\nCurrent: ${antidemoteGroups.get(m.chat) ? 'ON' : 'OFF'}`);
     }
@@ -2434,7 +2434,7 @@ ${prefix}antikickall on/off
     reply(settings);
 }
 break;
-case 'buy':
+case '__dup_removed_buy__':  // moved to mias/index.js
 case 'purchase': {
     if (!text) {
         return reply(`🛒 *Buy Items*\n\n*Usage:* ${prefix}buy <item>\n*Available:* ${Object.keys(shopItems).join(', ')}\n*Example:* ${prefix}buy vip`);
@@ -2478,8 +2478,8 @@ case 'purchase': {
 }
 break;
 
-case 'inventory':
-case 'inv':
+case '__dup_removed_inventory__':  // moved to mias/index.js
+case '__dup_removed_inv__':  // moved to mias/index.js
 case 'items': {
     const userId = m.sender;
     const userData = getUserEconomy(userId);
@@ -2516,8 +2516,8 @@ case 'items': {
 }
 break;
 
-case 'leaderboard':
-case 'lb':
+case '__dup_removed_leaderboard__':  // moved to mias/index.js
+case '__dup_removed_lb__':  // moved to mias/index.js
 case 'top': {
     const users = Object.entries(global.economy)
         .map(([id, data]) => ({
@@ -2559,7 +2559,7 @@ case 'top': {
 }
 break;
 
-case 'gamble':
+case '__dup_removed_gamble__':  // moved to mias/index.js
 case 'bet': {
     const userId = m.sender;
     const userData = getUserEconomy(userId);
@@ -2602,7 +2602,7 @@ case 'bet': {
 }
 break;
 
-case 'rob':
+case '__dup_removed_rob__':  // moved to mias/index.js
 case 'steal': {
     if (!m.mentionedJid || m.mentionedJid.length === 0) {
         return reply(`👮 *Rob a user*\n\n*Usage:* ${prefix}rob @user`);
@@ -2644,7 +2644,7 @@ case 'triviaai': {
 }
 break;
 
-case 'storyai': {
+case '__dup_removed_storyai__': {  // moved to mias/index.js
     if (!text) return reply(`⚠️ Usage: ${command} <topic>\n\nExample: ${command} a brave dog in space`)
 
     try {
@@ -2671,7 +2671,7 @@ case 'photoai': {
 }   
 break;
 
-case 'welcome': {
+case '__dup_removed_welcome__': {  // moved to mias/index.js
    if (!isCreator) return reply("This command is restricted to owner only");
    if (!m.isGroup) return reply('This command only works in groups');
 
@@ -2696,7 +2696,7 @@ New members will be greeted automatically 🚀
 }
 break;
 
-case 'ffstalk': {
+case '__dup_removed_ffstalk__': {  // moved to mias/index.js
     if (!args[0]) return reply('.ffstalk <ff id>\nExample: .ffstalk 8533270051*');
 
     const ffId = args[0];
@@ -2735,7 +2735,7 @@ case 'ffstalk': {
     break;
 }
 
-case 'npmstalk': {
+case '__dup_removed_npmstalk__': {  // moved to mias/index.js
     if (!text) return reply(`Usage : .npmstalk Baileys`);
 
     await devtrust.sendMessage(m.chat, { react: { text: `📦`, key: m.key } });
@@ -2834,7 +2834,7 @@ case 'setsudo': case 'sudo': case 'addsudo': {
 break;
 
 // Delete Sudo
-case 'delsudo': {
+case '__dup_removed_delsudo__': {  // moved to mias/index.js
   if (!isCreator) 
   return reply('❌ Only the bot owner or sudo users can use this command.');
 
@@ -2872,7 +2872,7 @@ case 'getsudo': case 'listsudo': {
 break;
 
 // 🔹 Auto Bio
-case "autobio": {
+case '__dup_removed_autobio__': {  // moved to mias/index.js
     if (!isCreator) 
   return reply('❌ Only the bot owner or sudo users can use this command.');
     if (!args[0]) return m.reply("Usage: autobio on/off");
@@ -2992,7 +2992,7 @@ case "vcardauto": {
 break;
 
 // 🔹 Auto Typing
-case "autotyping": {
+case '__dup_removed_autotyping__': {  // moved to mias/index.js
    if (!isCreator) 
   return reply('❌ Only the bot owner or sudo users can use this command.');;
     if (!args[0]) return m.reply("Usage: autotyping on/off");
@@ -3009,7 +3009,7 @@ case "autotyping": {
 break;
 
 // 🔹 Auto Recording
-case "autorecording": {
+case '__dup_removed_autorecording__': {  // moved to mias/index.js
    if (!isCreator) 
   return reply('❌ Only the bot owner or sudo users can use this command.');;
     if (!args[0]) return m.reply("Usage: autorecording on/off");
@@ -3042,7 +3042,7 @@ case "autorecordtype": {
 break;
 
 // 🔹 Auto React
-case "autoreact": {
+case '__dup_removed_autoreact__': {  // moved to mias/index.js
     if (!isAdmins && !isCreator) return m.reply("This command is restricted to owner only")
     if (!args[0]) return m.reply(".autoreact on/off");
     if (!m.isGroup) return m.reply("This command is restricted to groups only");
@@ -3061,7 +3061,7 @@ case "autoreact": {
 break;
 
 // 🔹 Banned
-case "ban": {
+case '__dup_removed_ban__': {  // moved to mias/index.js
     if (!isCreator) return m.reply(`╭━━〔 👑 MAIS MDX 𝙿𝚁𝙾𝚃𝙴𝙲𝚃 👑 〕━━┈⊷
 ┃ ❌ *ACCESS DENIED — OWNER ONLY!*
 ╰━━━━━━━━━━━━━━━┈⊷
@@ -3075,7 +3075,7 @@ case "ban": {
 }
 break;
 
-case "unban": {
+case '__dup_removed_unban__': {  // moved to mias/index.js
     if (!isCreator) return m.reply(`╭━━〔 👑 MAIS MDX 𝙿𝚁𝙾𝚃𝙴𝙲𝚃 👑 〕━━┈⊷
 ┃ ❌ *ACCESS DENIED — OWNER ONLY!*
 ╰━━━━━━━━━━━━━━━┈⊷
@@ -3090,7 +3090,7 @@ case "unban": {
 break;
 
 // 🔹 Feature: Auto Reply
-case "autoreply": {
+case '__dup_removed_autoreply__': {  // moved to mias/index.js
     if (!isCreator) return m.reply(`╭━━〔 👑 MAIS MDX 𝙿𝚁𝙾𝚃𝙴𝙲𝚃 👑 〕━━┈⊷
 ┃ ❌ *ACCESS DENIED — OWNER ONLY!*
 ╰━━━━━━━━━━━━━━━┈⊷
@@ -3139,7 +3139,7 @@ case "antibot": {
 break;
 
 // 🔹 Repo case
-case "owner": {
+case '__dup_removed_owner__': {  // moved to mias/index.js
    const ownerName  = "⚡ ＺＵＫＯ－ＸＭＤ";
    const ownerNum   = "2349068551055";
    const displayTag = "ＺＵＫＯ－ＸＭＤ👽";
@@ -3209,7 +3209,7 @@ case "repo": {
 }
 break;
 case 'url':
-case 'tourl': {    
+case '__dup_removed_tourl__': {  // moved to mias/index.js
     if (!m.quoted) return reply(`Reply to an Image or Video with command ${prefix + command}`);
     
     let q = m.quoted;
@@ -3316,8 +3316,8 @@ case 'tourl': {
 }
 break;
 
-case 'tiktok':
-case 'tt':
+case '__dup_removed_tiktok__':  // moved to mias/index.js
+case '__dup_removed_tt__':  // moved to mias/index.js
     {
         if (!text) {
             return reply(`Example: ${prefix + command} link`);
@@ -3351,7 +3351,7 @@ case 'tt':
     }
     break;
 
-case 'apk':
+case '__dup_removed_apk__':  // moved to mias/index.js
 case 'apkdl': {
     if (!text) {
         return reply(`📦 *Example:* ${prefix + command} com.whatsapp`);
@@ -3484,7 +3484,7 @@ case 'tomp4': {
 }
 break;
 
-case 'tomp3': {
+case '__dup_removed_tomp3__': {  // moved to mias/index.js
    if (!m.quoted) return reply("🎥 Reply to a *video* with tomp3")
    let mime = m.quoted.mimetype || ''
    if (!/video/.test(mime)) return reply("⚠️ Reply to a video only")
@@ -3505,7 +3505,7 @@ case 'tomp3': {
 }
 break;
 
-case 'kickadmins': {
+case '__dup_removed_kickadmins__': {  // moved to mias/index.js
     if (!m.isGroup) return reply('⚠️ This command only works in groups!');
     
     if (!isCreator) 
@@ -3586,7 +3586,7 @@ case 'kickadmins': {
 }
 break;
 
-case 'kickall': {
+case '__dup_removed_kickall__': {  // moved to mias/index.js
 if (!isCreator) 
   return reply('❌ Only the bot owner or sudo users can use this command.');
     if (!m.isGroup) return reply(m.group)
@@ -3634,7 +3634,7 @@ resp.on('data', function(ip) {
 
 // ==================== MOVIE COMMAND CASES ====================
 
-case 'movie':
+case '__dup_removed_movie__':  // moved to mias/index.js
 case 'film':
 case 'movie-search': {
     if (!text) {
@@ -3684,7 +3684,7 @@ case 'movie-search': {
 break;
 
 case 'selectmovie':
-case 'moviedetail':
+case '__dup_removed_moviedetail__':  // moved to mias/index.js
 case 'getmovie': {
     if (!text) {
         return reply(`🎬 *Get Movie Details*\n\n*Usage:* ${prefix}selectmovie <number>\n*Example:* ${prefix}selectmovie 1`);
@@ -3907,7 +3907,7 @@ break;
 // ═══════════════════════════════════════════════════════════
 // SETPP — Set Profile Picture (fixed: no jimp crash)
 // ═══════════════════════════════════════════════════════════
-case 'setpp':
+case '__dup_removed_setpp__':  // moved to mias/index.js
 case 'setpic': {
   if (!isCreator) return reply('❌ This command is for the bot owner/sudo only.');
   let imgBuffer;
@@ -3940,8 +3940,8 @@ break;
 // ═══════════════════════════════════════════════════════════
 // GST — Get/Save Status or Quoted Media
 // ═══════════════════════════════════════════════════════════
-case 'gst':
-  case 'groupstatus':
+case '__dup_removed_gst__':  // moved to mias/index.js
+  case '__dup_removed_groupstatus__':  // moved to mias/index.js
   case 'poststatus': {
     if (!isCreator) return reply('> Creator only');
     if (!m.isGroup) return reply('👥 Use this command inside a group.');
@@ -4051,7 +4051,7 @@ Or: *${prefix}gst Hello everyone!* (text-only status)`);
     if (!_gstPosted) reply('⚠️ Status may not have posted. Check your group status ring.');
   }
   break;
-case 'del':
+case '__dup_removed_del__':  // moved to mias/index.js
   case 'delete':
   case 'unsend': {
     if (!m.quoted) return reply(`🗑️ *Delete Message*\n\nReply to a message with *${prefix}del* to delete it.`);
@@ -4128,7 +4128,7 @@ case 'del':
     }
   }
   break;
-case 'device':
+case '__dup_removed_device__':  // moved to mias/index.js
 case 'deviceinfo':
 case 'deviceset': {
   await devtrust.sendMessage(m.chat, { react: { text: '📱', key: m.key } });
@@ -4196,7 +4196,7 @@ break;
 // ═══════════════════════════════════════════════════════════
 // CALENDAR — Show Current Month Calendar
 // ═══════════════════════════════════════════════════════════
-case 'calendar':
+case '__dup_removed_calendar__':  // moved to mias/index.js
 case 'cal': {
   await devtrust.sendMessage(m.chat, { react: { text: '📅', key: m.key } });
   const now = new Date();
@@ -4244,8 +4244,8 @@ break;
 // ═══════════════════════════════════════════════════════════
 // AIO — All-In-One Downloader (FB, IG, Twitter, YouTube, etc.)
 // ═══════════════════════════════════════════════════════════
-case 'aio':
-case 'dl':
+case '__dup_removed_aio__':  // moved to mias/index.js
+case '__dup_removed_dl__':  // moved to mias/index.js
 case 'download': {
   if (!text || !isUrl(text)) return reply(`🔗 *All-In-One Downloader*\n\nUsage: ${prefix}aio <url>\n\nSupports: TikTok, Instagram, Facebook, Twitter/X, YouTube, Pinterest, Reddit, Snapchat, etc.\n\nExample: ${prefix}aio https://www.instagram.com/reel/...`);
   await devtrust.sendMessage(m.chat, { react: { text: '⬇️', key: m.key } });
@@ -4303,8 +4303,8 @@ break;
 // ═══════════════════════════════════════════════════════════
 // FB — Facebook Video Downloader (fixed)
 // ═══════════════════════════════════════════════════════════
-case 'fb':
-  case 'facebook':
+case '__dup_removed_fb__':  // moved to mias/index.js
+  case '__dup_removed_facebook__':  // moved to mias/index.js
   case 'fbdl': {
     if (!text || (!text.includes('facebook.com') && !text.includes('fb.watch'))) {
       return reply(`📘 *Facebook Downloader*\n\nUsage: ${prefix}fb <facebook-url>\n\nExample:\n${prefix}fb https://www.facebook.com/watch?v=...`);
@@ -4358,9 +4358,9 @@ case 'fb':
     reply(`❌ *Facebook download failed.*\n\nThe video may be private or the link is invalid.\n_Try: ${prefix}aio <url> as an alternative._`);
   }
   break;
-case 'ig':
-case 'instagram':
-case 'igdl': {
+case '__dup_removed_ig__':  // moved to mias/index.js
+case '__dup_removed_instagram__':  // moved to mias/index.js
+case '__dup_removed_igdl__': {  // moved to mias/index.js
   if (!text || !text.includes('instagram.com')) {
     return reply(`📸 *Instagram Downloader*\n\nUsage: ${prefix}ig <instagram-url>\n\nSupports: Posts, Reels, Stories\n\nExample:\n${prefix}ig https://www.instagram.com/reel/...`);
   }
@@ -4400,9 +4400,9 @@ break;
 // ═══════════════════════════════════════════════════════════
 // YT — YouTube Downloader (fixed video + audio)
 // ═══════════════════════════════════════════════════════════
-case 'yt':
+case '__dup_removed_yt__':  // moved to mias/index.js
 case 'youtube':
-case 'ytmp4': {
+case '__dup_removed_ytmp4__': {  // moved to mias/index.js
   if (!text) return reply(`🎥 *YouTube Downloader*\n\nUsage: ${prefix}yt <youtube-url or title>\n\nExamples:\n${prefix}yt https://youtu.be/...\n${prefix}yt shape of you ed sheeran`);
   await devtrust.sendMessage(m.chat, { react: { text: '🎥', key: m.key } });
   reply('⏳ *Searching YouTube...*');
@@ -4473,8 +4473,8 @@ break;
 // ═══════════════════════════════════════════════════════════
 // SPOTIFY — Spotify Track Downloader (fixed audio corruption)
 // ═══════════════════════════════════════════════════════════
-case 'spotify':
-  case 'spot':
+case '__dup_removed_spotify__':  // moved to mias/index.js
+  case '__dup_removed_spot__':  // moved to mias/index.js
   case 'spdl': {
     if (!text) return reply(`🎵 *Spotify Downloader*\n\nUsage: ${prefix}spotify <song name or Spotify URL>\n\nExamples:\n${prefix}spotify Shape of You\n${prefix}spotify https://open.spotify.com/track/...`);
     await devtrust.sendMessage(m.chat, { react: { text: '🎵', key: m.key } });
@@ -4560,7 +4560,7 @@ case 'spotify':
     }
   }
   break;
-case 'adult':
+case '__dup_removed_adult__':  // moved to mias/index.js
   case 'r18':
   case 'nsfw': {
     if (m.isGroup) return reply('❌ *Adult content is only available in private chats.*\n\nSend this command in DM.');
@@ -4606,7 +4606,7 @@ case 'adult':
     }
   }
   break;
-case 'rule34': {
+case '__dup_removed_rule34__': {  // moved to mias/index.js
   if (m.isGroup) return reply('❌ *Adult content is only available in private chats.*');
   const r34Tag = args.join('+') || 'anime';
   await devtrust.sendMessage(m.chat, { react: { text: '🔞', key: m.key } });
@@ -4628,7 +4628,7 @@ case 'rule34': {
 }
 break;
 
-case 'neko':
+case '__dup_removed_neko__':  // moved to mias/index.js
 case 'nekopara': {
   await devtrust.sendMessage(m.chat, { react: { text: '😺', key: m.key } });
   try {
@@ -4655,7 +4655,7 @@ break;
 // ═══════════════════════════════════════════════════════════
 // BLOCK / UNBLOCK — with creator protection
 // ═══════════════════════════════════════════════════════════
-case 'block':
+case '__dup_removed_block__':  // moved to mias/index.js
   case 'blockuser': {
     if (!isCreator) return reply('❌ Only the bot owner or sudo users can block contacts.');
     let targetJid;
@@ -4719,7 +4719,7 @@ case 'block':
       }
     }
     break;
-case 'unblock':
+case '__dup_removed_unblock__':  // moved to mias/index.js
   case 'unblockuser': {
     if (!isCreator) return reply('❌ Only the bot owner or sudo users can unblock contacts.');
     let targetJid;
@@ -4771,7 +4771,7 @@ case 'unblock':
       }
   }
   break;
-case 'video': {
+case '__dup_removed_video__': {  // moved to mias/index.js
     if (!text || !isUrl(text)) return reply(`🎬 *Send Video*\n\nUsage: ${prefix}video <direct-video-url>\nExample: ${prefix}video https://example.com/video.mp4`);
     await devtrust.sendMessage(m.chat, { react: { text: '🎬', key: m.key } });
     reply('⏳ *Fetching video...*');
@@ -4815,7 +4815,7 @@ case 'video': {
   // ═══════════════════════════════════════════════════════════
   // ARCHIVE / UNARCHIVE — chatModify with lastMessages fix
   // ═══════════════════════════════════════════════════════════
-  case 'archive': {
+  case '__dup_removed_archive__': {  // moved to mias/index.js
     if (!isCreator) return reply('❌ Only the bot owner can archive chats.');
     const targetChat = m.quoted?.sender || text?.replace(/[^0-9]/g,'') + '@s.whatsapp.net' || m.chat;
     try {
@@ -4825,7 +4825,7 @@ case 'video': {
   }
   break;
 
-  case 'unarchive': {
+  case '__dup_removed_unarchive__': {  // moved to mias/index.js
     if (!isCreator) return reply('❌ Only the bot owner can unarchive chats.');
     const targetChat2 = m.quoted?.sender || text?.replace(/[^0-9]/g,'') + '@s.whatsapp.net' || m.chat;
     try {
@@ -4859,7 +4859,7 @@ case 'video': {
   }
   break;
 
-  case 'gpt4o': {
+  case '__dup_removed_gpt4o__': {  // moved to mias/index.js
   if (!text) return reply(`🤖 *GPT-4o*\n\nUsage: ${prefix}gpt4o <question>`);
   await devtrust.sendMessage(m.chat, { react: { text: '✨', key: m.key } });
   try {
@@ -4872,7 +4872,7 @@ case 'video': {
 }
 break;
 
-case 'mistral': {
+case '__dup_removed_mistral__': {  // moved to mias/index.js
   if (!text) return reply(`🌪️ *Mistral AI*\n\nUsage: ${prefix}mistral <question>`);
   await devtrust.sendMessage(m.chat, { react: { text: '🌪️', key: m.key } });
   try {
@@ -4883,8 +4883,8 @@ case 'mistral': {
 }
 break;
 
-case 'deepseek':
-case 'deepseekv3': {
+case '__dup_removed_deepseek__':  // moved to mias/index.js
+case '__dup_removed_deepseekv3__': {  // moved to mias/index.js
   if (!text) return reply(`🔍 *DeepSeek V3*\n\nUsage: ${prefix}deepseek <question>`);
   await devtrust.sendMessage(m.chat, { react: { text: '🔍', key: m.key } });
   try {
@@ -4895,8 +4895,8 @@ case 'deepseekv3': {
 }
 break;
 
-case 'deepseek-r1':
-case 'deepseekr1': {
+case '__dup_removed_deepseek-r1__':  // moved to mias/index.js
+case '__dup_removed_deepseekr1__': {  // moved to mias/index.js
   if (!text) return reply(`🔬 *DeepSeek R1*\n\nUsage: ${prefix}deepseeK-r1 <question>`);
   await devtrust.sendMessage(m.chat, { react: { text: '🔬', key: m.key } });
   try {
@@ -4907,7 +4907,7 @@ case 'deepseekr1': {
 }
 break;
 
-case 'blackbox': {
+case '__dup_removed_blackbox__': {  // moved to mias/index.js
   if (!text) return reply(`🖤 *Blackbox AI*\n\nUsage: ${prefix}blackbox <question>`);
   await devtrust.sendMessage(m.chat, { react: { text: '🖤', key: m.key } });
   try {
@@ -4918,7 +4918,7 @@ case 'blackbox': {
 }
 break;
 
-case 'gemini': {
+case '__dup_removed_gemini__': {  // moved to mias/index.js
   if (!text) return reply(`💎 *Gemini AI*\n\nUsage: ${prefix}gemini <question>`);
   await devtrust.sendMessage(m.chat, { react: { text: '💎', key: m.key } });
   try {
@@ -4931,7 +4931,7 @@ case 'gemini': {
 }
 break;
 
-case 'letmegpt': {
+case '__dup_removed_letmegpt__': {  // moved to mias/index.js
   if (!text) return reply(`🤔 *LetMeGPT*\n\nUsage: ${prefix}letmegpt <question>`);
   await devtrust.sendMessage(m.chat, { react: { text: '🤔', key: m.key } });
   try {
@@ -4942,9 +4942,9 @@ case 'letmegpt': {
 }
 break;
 
-case 'imagine':
-case 'txt2img':
-case 'texttoimage': {
+case '__dup_removed_imagine__':  // moved to mias/index.js
+case '__dup_removed_txt2img__':  // moved to mias/index.js
+case '__dup_removed_texttoimage__': {  // moved to mias/index.js
   if (!text) return reply(`🎨 *AI Image Generator*\n\nUsage: ${prefix}imagine <description>\nExample: ${prefix}imagine a dragon flying over a city at night`);
   await devtrust.sendMessage(m.chat, { react: { text: '🎨', key: m.key } });
   reply('🎨 *Generating image...* Please wait (this may take up to 30s)');
@@ -4971,7 +4971,7 @@ case 'texttoimage': {
 }
 break;
 
-case 'flux': {
+case '__dup_removed_flux__': {  // moved to mias/index.js
   if (!text) return reply(`⚡ *Flux AI Image*\n\nUsage: ${prefix}flux <description>`);
   await devtrust.sendMessage(m.chat, { react: { text: '⚡', key: m.key } });
   reply('⚡ *Generating with Flux...* Please wait');
@@ -5002,7 +5002,7 @@ case 'stablediffusion': {
 }
 break;
 
-case 'tts':
+case '__dup_removed_tts__':  // moved to mias/index.js
   case 'texttospeech':
   case 'speak': {
     if (!text) return reply(`🔊 *Text to Speech*\n\nUsage: ${prefix}tts <text>\nExample: ${prefix}tts Hello everyone welcome`);
@@ -5063,7 +5063,7 @@ case 'tts':
   break;
 // ─────────────────────────── FUN COMMANDS ───────────────────────────
 
-case 'advice': {
+case '__dup_removed_advice__': {  // moved to mias/index.js
   await devtrust.sendMessage(m.chat, { react: { text: '💡', key: m.key } });
   try {
     const res = await princeFun('advice');
@@ -5082,7 +5082,7 @@ case 'flirtline': {
 }
 break;
 
-case 'joke':
+case '__dup_removed_joke__':  // moved to mias/index.js
 case 'jokes': {
   await devtrust.sendMessage(m.chat, { react: { text: '😂', key: m.key } });
   try {
@@ -5127,8 +5127,8 @@ case 'quotes': {
 }
 break;
 
-case 'pickupline':
-case 'pickup': {
+case '__dup_removed_pickupline__':  // moved to mias/index.js
+case '__dup_removed_pickup__': {  // moved to mias/index.js
   await devtrust.sendMessage(m.chat, { react: { text: '😘', key: m.key } });
   try {
     const res = await princeFun('pickupline');
@@ -5137,7 +5137,7 @@ case 'pickup': {
 }
 break;
 
-case 'truth': {
+case '__dup_removed_truth__': {  // moved to mias/index.js
   await devtrust.sendMessage(m.chat, { react: { text: '🎯', key: m.key } });
   try {
     const res = await princeFun('truth');
@@ -5146,7 +5146,7 @@ case 'truth': {
 }
 break;
 
-case 'dare':
+case '__dup_removed_dare__':  // moved to mias/index.js
 case 'dares': {
   await devtrust.sendMessage(m.chat, { react: { text: '🔥', key: m.key } });
   try {
@@ -5302,8 +5302,8 @@ break;
 
 // ─────────────────────────── DOWNLOAD COMMANDS (Prince API) ───────────────────────────
 
-case 'tiktokv2':
-case 'ttv2': {
+case '__dup_removed_tiktokv2__':  // moved to mias/index.js
+case '__dup_removed_ttv2__': {  // moved to mias/index.js
   if (!text || !isUrl(text)) return reply(`🎵 *TikTok Downloader V2*\n\nUsage: ${prefix}tiktokv2 <url>`);
   await devtrust.sendMessage(m.chat, { react: { text: '🎵', key: m.key } });
   reply('⏳ Downloading TikTok (v2)...');
@@ -5326,8 +5326,8 @@ case 'ttv2': {
 }
 break;
 
-case 'tiktokv3':
-case 'ttv3': {
+case '__dup_removed_tiktokv3__':  // moved to mias/index.js
+case '__dup_removed_ttv3__': {  // moved to mias/index.js
   if (!text || !isUrl(text)) return reply(`🎵 *TikTok Downloader V3*\n\nUsage: ${prefix}tiktokv3 <url>`);
   await devtrust.sendMessage(m.chat, { react: { text: '🎵', key: m.key } });
   reply('⏳ Downloading TikTok (v3)...');
@@ -5346,8 +5346,8 @@ case 'ttv3': {
 }
 break;
 
-case 'tiktokv4':
-case 'ttv4': {
+case '__dup_removed_tiktokv4__':  // moved to mias/index.js
+case '__dup_removed_ttv4__': {  // moved to mias/index.js
   if (!text || !isUrl(text)) return reply(`🎵 *TikTok Downloader V4*\n\nUsage: ${prefix}tiktokv4 <url>`);
   await devtrust.sendMessage(m.chat, { react: { text: '🎵', key: m.key } });
   reply('⏳ Downloading TikTok (v4)...');
@@ -5366,8 +5366,8 @@ case 'ttv4': {
 }
 break;
 
-case 'fbv2':
-case 'facebookv2': {
+case '__dup_removed_fbv2__':  // moved to mias/index.js
+case '__dup_removed_facebookv2__': {  // moved to mias/index.js
   if (!text || !isUrl(text)) return reply(`📘 *Facebook Downloader V2*\n\nUsage: ${prefix}fbv2 <facebook-video-url>`);
   await devtrust.sendMessage(m.chat, { react: { text: '📘', key: m.key } });
   reply('⏳ Downloading Facebook video (v2)...');
@@ -5386,8 +5386,8 @@ case 'facebookv2': {
 }
 break;
 
-case 'igstory':
-case 'instastory': {
+case '__dup_removed_igstory__':  // moved to mias/index.js
+case '__dup_removed_instastory__': {  // moved to mias/index.js
   if (!text) return reply(`📸 *Instagram Story Downloader*\n\nUsage: ${prefix}igstory <instagram-username>`);
   await devtrust.sendMessage(m.chat, { react: { text: '📸', key: m.key } });
   reply('⏳ Fetching Instagram stories...');
@@ -5450,7 +5450,7 @@ break;
 
 case 'twitter':
 case 'tw':
-case 'xdl': {
+case '__dup_removed_xdl__': {  // moved to mias/index.js
   if (!text || !isUrl(text)) return reply(`🐦 *Twitter/X Downloader*\n\nUsage: ${prefix}twitter <tweet-url>\nExample: ${prefix}twitter https://twitter.com/user/status/123`);
   await devtrust.sendMessage(m.chat, { react: { text: '🐦', key: m.key } });
   reply('⏳ Downloading Twitter/X video...');
@@ -5498,7 +5498,7 @@ case 'twitterv2': {
 }
 break;
 
-case 'pinterest':
+case '__dup_removed_pinterest__':  // moved to mias/index.js
 case 'pin': {
   if (!text || !isUrl(text)) return reply(`📌 *Pinterest Downloader*\n\nUsage: ${prefix}pinterest <pin-url>\nExample: ${prefix}pinterest https://pin.it/xxxxxx`);
   await devtrust.sendMessage(m.chat, { react: { text: '📌', key: m.key } });
@@ -5522,8 +5522,8 @@ case 'pin': {
 }
 break;
 
-case 'snack':
-case 'snackvideo': {
+case '__dup_removed_snack__':  // moved to mias/index.js
+case '__dup_removed_snackvideo__': {  // moved to mias/index.js
   if (!text || !isUrl(text)) return reply(`🎬 *SnackVideo Downloader*\n\nUsage: ${prefix}snack <snackvideo-url>`);
   await devtrust.sendMessage(m.chat, { react: { text: '🎬', key: m.key } });
   reply('⏳ Downloading SnackVideo...');
@@ -5542,7 +5542,7 @@ case 'snackvideo': {
 }
 break;
 
-case 'spotifyv2': {
+case '__dup_removed_spotifyv2__': {  // moved to mias/index.js
   if (!text || !isUrl(text)) return reply(`🎧 *Spotify Downloader V2*\n\nUsage: ${prefix}spotifyv2 <spotify-track-url>`);
   await devtrust.sendMessage(m.chat, { react: { text: '🎧', key: m.key } });
   reply('⏳ Downloading Spotify track (v2)...');
@@ -5609,9 +5609,9 @@ case 'ytaudio': {
 }
 break;
 
-case 'ytmp4':
+case '__dup_removed_ytmp4__':  // moved to mias/index.js
 case 'mp4':
-case 'ytvideo': {
+case '__dup_removed_ytvideo__': {  // moved to mias/index.js
   if (!text) return reply(`🎬 *YouTube MP4 Downloader*\n\nUsage: ${prefix}mp4 <youtube-url>\nExample: ${prefix}mp4 https://youtu.be/xxxxx`);
   await devtrust.sendMessage(m.chat, { react: { text: '🎬', key: m.key } });
   reply('⏳ Downloading YouTube video...');
@@ -5640,7 +5640,7 @@ case 'ytvideo': {
 }
 break;
 
-case 'mediafire':
+case '__dup_removed_mediafire__':  // moved to mias/index.js
 case 'mf': {
   if (!text || !isUrl(text)) return reply(`☁️ *MediaFire Downloader*\n\nUsage: ${prefix}mediafire <mediafire-url>`);
   await devtrust.sendMessage(m.chat, { react: { text: '☁️', key: m.key } });
@@ -5749,7 +5749,7 @@ case 'clonegit': {
 break;
 
 case 'xnxx':
-case 'xnxxdl': {
+case '__dup_removed_xnxxdl__': {  // moved to mias/index.js
   if (m.isGroup) return reply('❌ Adult commands are only available in private chats.');
   if (!text || !isUrl(text)) return reply(`🔞 *XNXX Downloader*\n\nUsage: ${prefix}xnxx <xnxx-url>`);
   await devtrust.sendMessage(m.chat, { react: { text: '🔞', key: m.key } });
@@ -5814,7 +5814,7 @@ break;
 
 // ─────────────────────────── TOOLS COMMANDS ───────────────────────────
 
-case 'qr':
+case '__dup_removed_qr__':  // moved to mias/index.js
 case 'createqr':
 case 'genqr': {
   if (!text) return reply(`🔲 *QR Code Generator*\n\nUsage: ${prefix}qr <text or url>\nExample: ${prefix}qr https://google.com`);
@@ -5859,8 +5859,8 @@ case 'scanqr': {
 }
 break;
 
-case 'removebg':
-case 'bgremove': {
+case '__dup_removed_removebg__':  // moved to mias/index.js
+case '__dup_removed_bgremove__': {  // moved to mias/index.js
   const rmMsg = m.quoted || m;
   const rmType = Object.keys(rmMsg.message || {})[0];
   if (!m.quoted || !['imageMessage', 'viewOnceMessageV2'].includes(rmType)) {
@@ -5895,7 +5895,7 @@ case 'bgremove': {
 break;
 
 case 'remini':
-case 'enhance':
+case '__dup_removed_enhance__':  // moved to mias/index.js
 case 'aienhance': {
   const reMsg = m.quoted || m;
   const reType = Object.keys(reMsg.message || {})[0];
@@ -5929,7 +5929,7 @@ case 'aienhance': {
 }
 break;
 
-case 'fancy':
+case '__dup_removed_fancy__':  // moved to mias/index.js
 case 'fancytext':
 case 'stylish': {
   if (!text) return reply(`🅰️ *Fancy Text Generator*\n\nUsage: ${prefix}fancy <text>\nExample: ${prefix}fancy Hello World`);
@@ -5968,7 +5968,7 @@ case 'stylishv2': {
 }
 break;
 
-case 'define':
+case '__dup_removed_define__':  // moved to mias/index.js
 case 'dictionary':
 case 'meaning': {
   if (!text) return reply(`📖 *Dictionary*\n\nUsage: ${prefix}define <word>\nExample: ${prefix}define serendipity`);
@@ -6321,7 +6321,7 @@ case 'cuaca': {
 }
 break;
 
-case 'lyrics': {
+case '__dup_removed_lyrics__': {  // moved to mias/index.js
   if (!text) return reply(`🎵 *Lyrics Finder*\n\nUsage: ${prefix}lyrics <song name>\nExample: ${prefix}lyrics Shape of You`);
   await devtrust.sendMessage(m.chat, { react: { text: '🎵', key: m.key } });
   reply('⏳ Searching lyrics...');
@@ -6348,7 +6348,7 @@ case 'lyrics': {
 }
 break;
 
-case 'wallpaper':
+case '__dup_removed_wallpaper__':  // moved to mias/index.js
 case 'wp': {
   if (!text) return reply(`🖼️ *Wallpaper Search*\n\nUsage: ${prefix}wallpaper <query>\nExample: ${prefix}wallpaper nature sunset`);
   await devtrust.sendMessage(m.chat, { react: { text: '🖼️', key: m.key } });
@@ -6487,8 +6487,8 @@ case 'searchtiktok': {
 }
 break;
 
-case 'yts':
-case 'ytsearch':
+case '__dup_removed_yts__':  // moved to mias/index.js
+case '__dup_removed_ytsearch__':  // moved to mias/index.js
 case 'youtubesearch': {
   if (!text) return reply(`▶️ *YouTube Search*\n\nUsage: ${prefix}yts <query>\nExample: ${prefix}yts Wizkid Essence`);
   await devtrust.sendMessage(m.chat, { react: { text: '▶️', key: m.key } });
@@ -6627,7 +6627,7 @@ case 'searchstory': {
 break;
 
 case 'wikimedia':
-case 'wiki': {
+case '__dup_removed_wiki__': {  // moved to mias/index.js
   if (!text) return reply(`📚 *Wikimedia Search*\n\nUsage: ${prefix}wiki <topic>\nExample: ${prefix}wiki Nigeria`);
   await devtrust.sendMessage(m.chat, { react: { text: '📚', key: m.key } });
   try {
@@ -6667,7 +6667,7 @@ case 'searchsticker': {
 }
 break;
 
-case 'xnxxsearch':
+case '__dup_removed_xnxxsearch__':  // moved to mias/index.js
 case 'searchxnxx': {
   if (m.isGroup) return reply('❌ Adult search is only available in private chats.');
   if (!text) return reply(`🔞 *XNXX Search*\n\nUsage: ${prefix}xnxxsearch <keyword>`);
@@ -6691,7 +6691,7 @@ case 'searchxnxx': {
 }
 break;
 
-case 'xvideossearch':
+case '__dup_removed_xvideossearch__':  // moved to mias/index.js
 case 'searchxvideos': {
   if (m.isGroup) return reply('❌ Adult search is only available in private chats.');
   if (!text) return reply(`🔞 *XVideos Search*\n\nUsage: ${prefix}xvideossearch <keyword>`);
@@ -6717,7 +6717,7 @@ break;
 // ─────────────────────────── STALK COMMANDS ───────────────────────────
 
 case 'gitstalk':
-case 'githubstalk':
+case '__dup_removed_githubstalk__':  // moved to mias/index.js
 case 'gitprofile': {
   if (!text) return reply(`🐙 *GitHub Profile Stalk*\n\nUsage: ${prefix}gitstalk <username>\nExample: ${prefix}gitstalk torvalds`);
   await devtrust.sendMessage(m.chat, { react: { text: '🐙', key: m.key } });
@@ -6747,7 +6747,7 @@ case 'gitprofile': {
 }
 break;
 
-case 'igstalk':
+case '__dup_removed_igstalk__':  // moved to mias/index.js
 case 'instastalk':
 case 'igprofile': {
   if (!text) return reply(`📸 *Instagram Profile Stalk*\n\nUsage: ${prefix}igstalk <username>\nExample: ${prefix}igstalk instagram`);
@@ -6781,8 +6781,8 @@ case 'igprofile': {
 break;
 
 case 'ipstalk':
-case 'iplookup':
-case 'ipinfo': {
+case '__dup_removed_iplookup__':  // moved to mias/index.js
+case '__dup_removed_ipinfo__': {  // moved to mias/index.js
   if (!text) return reply(`🌍 *IP Stalk / Lookup*\n\nUsage: ${prefix}ipstalk <ip address>\nExample: ${prefix}ipstalk 8.8.8.8`);
   await devtrust.sendMessage(m.chat, { react: { text: '🌍', key: m.key } });
   try {
@@ -6816,7 +6816,7 @@ case 'ipinfo': {
 }
 break;
 
-case 'npmstalk':
+case '__dup_removed_npmstalk__':  // moved to mias/index.js
 case 'npmpackage': {
   if (!text) return reply(`📦 *NPM Package Stalk*\n\nUsage: ${prefix}npmstalk <package name>\nExample: ${prefix}npmstalk express`);
   await devtrust.sendMessage(m.chat, { react: { text: '📦', key: m.key } });
@@ -6894,7 +6894,7 @@ break;
 
 // ─────────────────────────── ANIME COMMANDS ───────────────────────────
 
-case 'waifu':
+case '__dup_removed_waifu__':  // moved to mias/index.js
 case 'animegirl': {
   await devtrust.sendMessage(m.chat, { react: { text: '🌸', key: m.key } });
   try {
@@ -7121,7 +7121,7 @@ case 'konachan': {
 }
 break;
 
-case 'animequote':
+case '__dup_removed_animequote__':  // moved to mias/index.js
 case 'aquote': {
   await devtrust.sendMessage(m.chat, { react: { text: '📜', key: m.key } });
   try {
@@ -7138,7 +7138,7 @@ case 'aquote': {
 }
 break;
 
-case 'animechar':
+case '__dup_removed_animechar__':  // moved to mias/index.js
 case 'charquote': {
   await devtrust.sendMessage(m.chat, { react: { text: '🎭', key: m.key } });
   try {
@@ -7513,8 +7513,8 @@ case 'teamsearch': {
 }
 break;
 
-case 'basketball':
-case 'nba':
+case '__dup_removed_basketball__':  // moved to mias/index.js
+case '__dup_removed_nba__':  // moved to mias/index.js
 case 'basketballlive': {
   await devtrust.sendMessage(m.chat, { react: { text: '🏀', key: m.key } });
   try {
@@ -7619,7 +7619,7 @@ break;
 
 // ─────────────────────────── NEWS COMMANDS ───────────────────────────
 
-case 'news':
+case '__dup_removed_news__':  // moved to mias/index.js
 case 'latestnews': {
   await devtrust.sendMessage(m.chat, { react: { text: '📰', key: m.key } });
   reply('⏳ Fetching latest news...');
@@ -7688,7 +7688,7 @@ break;
 // ═══════════════════════════════════════════════════════════════════════════
 
 // ─── Sticker SetCmd System ─────────────────────────────────────────────────
-case 'setcmd': {
+case '__dup_removed_setcmd__': {  // moved to mias/index.js
   if (!isCreator) return reply("🚫 Owner only command.");
   // Requires replying to a sticker
   const quotedMsg = m?.message?.extendedTextMessage?.contextInfo?.quotedMessage;
@@ -7751,7 +7751,7 @@ case 'listcmd': {
 break;
 
 // ─── Settings 19.x — Force Private Mode, Auto-Downloader, Status Forwarder ──
-case 'settings':
+case '__dup_removed_settings__':  // moved to mias/index.js
 case '.settings': {
   if (!isCreator) return reply("🚫 Owner only command.");
   if (!text) {
@@ -7814,8 +7814,8 @@ ${prefix}setcmd   — bind sticker to command`);
 break;
 
 // ─── Status Forwarder Destination shortcut ─────────────────────────────────
-case 'sfwddest':
-case 'setsfwddest':
+case '__dup_removed_sfwddest__':  // moved to mias/index.js
+case '__dup_removed_setsfwddest__':  // moved to mias/index.js
 case 'statusfwddest': {
   if (!isCreator) return reply('🚫 Owner only.');
   if (!text) {

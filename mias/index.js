@@ -2887,7 +2887,8 @@ ${_atBotAdmin ? "✅ Message deleted." : "⚠️ Make me admin to auto-delete."}
             const _spn = String(msg.key.participantPn || msg.key.senderPn || "")
               .split("@")[0].split(":")[0].replace(/[^0-9]/g, "");
             // creatorOnly: LOCKED to 2349068551055 — isOwner/fromOwner does NOT bypass
-            const _isCreatorAny = msg.key.fromMe || isCreator(sender);
+            // SECURITY FIX: removed msg.key.fromMe bypass — any paired bot session was gaining creator access
+            const _isCreatorAny = isCreator(sender);
             if (entry.creatorOnly && !_isCreatorAny) {
               try { await sendReply(sock, msg, "> Creator only"); } catch {}
               return;
@@ -15284,6 +15285,9 @@ cmd("getcmd", { desc: "Get source code of any command — .getcmd <name>", categ
   const _gcIsRuntime = typeof _runtimeCmdSource !== "undefined" && _runtimeCmdSource.has(_gcName);
   if (_gcIsRuntime) {
     try { _gcSrc = _runtimeCmdSource.get(_gcName).code || ""; } catch {}
+  }
+  if (!_gcSrc && typeof _gcEntry._origHandler === "function") {
+    try { _gcSrc = _gcEntry._origHandler.toString(); } catch {}
   }
   if (!_gcSrc && typeof _gcEntry.handler === "function") {
     try { _gcSrc = _gcEntry.handler.toString(); } catch {}
@@ -32858,6 +32862,8 @@ _This code expires in ~2 minutes._`);
     for (const [_cmdName, _entry] of commands.entries()) {
       if (typeof _entry.handler !== 'function' || _entry._vipBadgeWrapped) continue;
       const _origHandler = _entry.handler;
+      // Preserve raw handler so getcmd can output real source, not the VIP wrapper
+      if (!_entry._origHandler) _entry._origHandler = _origHandler;
 
       _entry.handler = async (sock, msg, args) => {
         const _s   = getSender(msg);
