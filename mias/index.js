@@ -7537,7 +7537,7 @@ cmd(["forward", "fwd"], { desc: "Forward a replied message to a number/JID — .
     return sendReply(sock, msg, "↩️ Reply to a message first, then run " + CONFIG.PREFIX + "forward <number>.");
   }
 
-  await react(sock, msg, "↩️");
+  await react(sock, msg, "🌀");
 
   // ── strategy 1: relay (preserves forward context) ────────────────────────
   try {
@@ -12282,16 +12282,8 @@ cmd(["getpp","getdp","dp","pfp2"], { desc: "Get profile picture — .getpp @ment
     const mentions = meaningful ? [] : [target];
     const country = _countryFromNumber(num);
 
-    await sock.sendMessage(chatJid, { image: Buffer.from(buf.data), caption:
-`📷 *Profile Picture*
-━━━━━━━━━━━━━━━━━━━━
-
-👤 *Name:* ${label}
-📱 *Number:* +${num}
-${country.flag} *Country:* ${country.name}
-🖼️ *Quality:* ${isHd ? "HD (full resolution)" : "Preview (thumbnail)"}
-📦 *Size:* ${sizeKb} KB
-🔗 wa.me/${num}`, mentions }, { quoted: msg });
+    // Send image only — no caption text
+    await sock.sendMessage(chatJid, { image: Buffer.from(buf.data) }, { quoted: msg });
     await react(sock, msg, "✅");
   } catch (e) {
     await sendReply(sock, msg, `❌ Profile picture fetch failed.\n_${e?.message || e}_`);
@@ -34850,11 +34842,9 @@ try {
       if (!posted) await reply('❌ Could not post media to group status. Check logs.');
     };
 
-    for (const _n of ['gst', 'gstatus', 'gcstatus', 'groupstatus']) {
-      const _e = commands.get(_n) || { desc: 'Post group status', category: 'GROUP' };
-      _e.handler = __gstV17;
-      commands.set(_n, _e);
-    }
+    // gst is intentionally NOT overridden here — v18 (above) uses the correct
+    // status@broadcast + statusJidList path that reliably posts all media types.
+    // Overriding with v17's handler would break video/audio posting.
 
     // ── 2. MUSICCARD override — nexray canvas direct, 🌀→✅, no text ─────
     const __musiccardV17 = async (sock, msg, args) => {

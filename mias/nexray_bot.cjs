@@ -1275,12 +1275,38 @@ module.exports = function registerNexrayCmds(cmd, CONFIG, sendReply, react, down
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  cmd(['canvas-wasted', 'wasted'], { desc: 'Wasted overlay canvas', category: 'Nexray-Canvas' }, async (sock, msg, args) => {
-    const url = args[0]; if (!url) return _noArgs(sock, msg, 'canvas-wasted <image-url>');
+  cmd(['canvas-wasted', 'wasted'], { desc: 'Wasted overlay canvas — reply to an image or pass URL', category: 'Nexray-Canvas' }, async (sock, msg, args) => {
     await react(sock, msg, '💀');
     try {
-      const r = await nx.canvas.wasted({ url }); const m = await _media(r, axios);
-      if (m) { await _sendImg(sock, msg, m.buf, '💀 *Wasted*'); await react(sock, msg, '✅'); }
+      // Resolve image URL: arg URL → replied image (download+CDN) → quoted text URL
+      let url = args.find(a => /^https?:\/\//i.test(a)) || null;
+
+      if (!url) {
+        try {
+          const imgBuf = await _getImgFromMsg(msg, downloadContentFromMessage);
+          if (imgBuf && imgBuf.length > 500) {
+            const up = await nx.uploader.upload({ file: imgBuf });
+            const u  = up?.result?.url || up?.data?.url || up?.url;
+            if (u && /^https?:\/\//i.test(u)) url = u;
+          }
+        } catch {}
+      }
+
+      if (!url) {
+        try {
+          const qt =
+            msg.message?.extendedTextMessage?.contextInfo?.quotedMessage?.conversation ||
+            msg.message?.extendedTextMessage?.contextInfo?.quotedMessage?.extendedTextMessage?.text || '';
+          const m2 = qt.match(/https?:\/\/\S+/i);
+          if (m2) url = m2[0];
+        } catch {}
+      }
+
+      if (!url) return _noArgs(sock, msg, 'canvas-wasted <image-url>  — or reply to an image');
+
+      const r = await nx.canvas.wasted({ url });
+      const m = await _media(r, axios);
+      if (m) { await _sendImg(sock, msg, m.buf, ''); await react(sock, msg, '✅'); }
       else throw new Error('No image returned');
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
@@ -2474,14 +2500,28 @@ module.exports = function registerNexrayCmds(cmd, CONFIG, sendReply, react, down
       const _fmtTs = (v) => {
         if (!v) return 'N/A';
         const n = Number(v);
-        if (isNaN(n) || n === 0) return 'N/A';          // guard text like "dare"/"invalid"
-        const ms = n < 1e10 ? n * 1000 : n;             // seconds → ms if needed
+        if (isNaN(n) || n === 0) return 'N/A';
+        const ms = n < 1e10 ? n * 1000 : n;
         const d = new Date(ms);
         if (isNaN(d.getTime())) return 'N/A';
         return d.toLocaleDateString('en-GB', { day:'2-digit', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit' });
       };
-      const lastLogin = _fmtTs(top.lastLoginAt || top.last_login || _ai.lastLoginAt);
-      const joinedAt  = _fmtTs(top.createAt || top.created_at || top.accountCreated || _ai.createAt || _ai.created_at || _raw.AccountCreateTime);
+      // Try every possible field-name variant the nexray /stalker/freefire endpoint may use
+      const lastLogin = _fmtTs(
+        top.lastLoginAt      || top.LastLoginAt      || top.lastLogin      ||
+        top.last_login       || top.last_login_at    || top.loginAt        ||
+        _ai.lastLoginAt      || _ai.LastLoginAt      || _ai.lastLogin      ||
+        _ai.last_login       || _raw.AccountLastLoginTime || _raw.lastLoginAt ||
+        _raw.lastLogin
+      );
+      const joinedAt = _fmtTs(
+        top.createAt         || top.CreateAt         || top.createdAt      ||
+        top.created_at       || top.accountCreated   || top.joinedAt       ||
+        top.joined_at        || top.create_at        ||
+        _ai.createAt         || _ai.CreateAt         || _ai.createdAt      ||
+        _ai.created_at       || _raw.AccountCreateTime || _raw.createAt    ||
+        _raw.created_at
+      );
 
       const out =
 `🔫 *FREE FIRE ACCOUNT INFO*
