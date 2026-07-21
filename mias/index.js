@@ -7507,25 +7507,9 @@ cmd(["alive", "runtime", "uptime"], { desc: "Bot alive status and uptime info", 
 // Usage: reply to any message then → .forward <number|jid|lid>
 //   number  e.g. 2348012345678  → appended with @s.whatsapp.net
 //   JID     e.g. 2348012345678@s.whatsapp.net or 120363...@g.us or ...@lid
-cmd(["forward", "fwd"], { desc: "Forward correction guide — .forward", category: "MISC" }, async (sock, msg, args) => {
-  // .forward only shows a correction guide — forwarding is done manually
+cmd(["forward", "fwd"], { desc: "Forward a quoted message — .forward <number or JID>", category: "MISC" }, async (sock, msg, args) => {
   await react(sock, msg, "↩️");
-  return sendReply(sock, msg, [
-    "↩️ *FORWARD — CORRECTION GUIDE*",
-    "",
-    `*Usage:* Reply to a message, then send:`,
-    `  *${CONFIG.PREFIX}forward <number>*`,
-    "",
-    "*Examples:*",
-    `  ${CONFIG.PREFIX}forward 2348012345678`,
-    `  ${CONFIG.PREFIX}forward 2348012345678@s.whatsapp.net`,
-    `  ${CONFIG.PREFIX}forward 120363xxxxxx@g.us`,
-    "",
-    "_Step 1: Reply to the message you want to forward._",
-    "_Step 2: Type_ `" + CONFIG.PREFIX + "forward <number>` _and send._",
-    "",
-    "_Note: You must reply to a message first before forwarding._",
-  ].join('\n'));
+  return sendReply(sock, msg, `*Usage:* ${CONFIG.PREFIX}forward <number or JID>`);
   // Placeholder — actual forward functionality moved here for correction guide only
   if (false) {
     const targetJid = null;
@@ -7656,7 +7640,10 @@ cmd(["wasted","drunk","gtawasted"], {
     if (r?.type === "media" && Buffer.isBuffer(r.buffer) && r.buffer.length > 500) {
       buf = r.buffer;
     } else {
-      const imgUrl = r?.result?.url || r?.data?.url || r?.url;
+      const imgUrl =
+        r?.result?.url || r?.result?.image ||
+        (typeof r?.result === 'string' && /^https?:\/\//i.test(r.result) ? r.result : null) ||
+        r?.data?.url || r?.url;
       if (imgUrl) {
         buf = Buffer.from(
           (await axios.get(imgUrl, { responseType: "arraybuffer", timeout: 30000 })).data
@@ -7664,7 +7651,7 @@ cmd(["wasted","drunk","gtawasted"], {
       }
     }
 
-    if (!buf || buf.length < 500) throw new Error("No image returned");
+    if (!buf || buf.length < 500) throw new Error("No image returned from NexRay — the API may be down or the image URL is invalid");
 
     await sock.sendMessage(
       msg.key.remoteJid,
