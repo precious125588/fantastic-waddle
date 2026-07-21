@@ -1,25 +1,25 @@
 {
     "name": "mais-mdx-web",
-    "version": "2.0.0",
+    "version": "2.0.1",
     "description": "MAIS MDX Web Pairing System with Admin Panel",
     "main": "server.js",
     "scripts": {
         "start": "node fix_all.cjs && node server.js",
         "dev": "node fix_all.cjs && node server.js",
-        "postinstall": "node fix_all.cjs ; cd mias && ([ ! -f node_modules/@kelvdra/baileys/package.json ] && npm install --no-audit --no-fund || npm install --no-audit --no-fund) || true",
+        "postinstall": "node fix_all.cjs ; cd mias && npm install --no-audit --no-fund || true",
         "setup": "cd mias && rm -rf node_modules package-lock.json && npm install --no-audit --no-fund"
     },
     "author": "MAIS",
     "license": "MIT",
     "engines": {
-        "node": ">=18.0.0"
+        "node": ">=22.12.0"
     },
     "dependencies": {
         "@adiwajshing/keyed-db": "^0.2.4",
         "@colors/colors": "^1.5.0",
         "@hapi/boom": "^10.0.0",
         "@vreden/youtube_scraper": "^1.0.6",
-        "@whiskeysockets/baileys": "^6.7.18",
+        "@whiskeysockets/baileys": "npm:@itsliaaa/baileys@latest",
         "awesome-phonenumber": "^2.64.0",
         "axios": "^1.7.7",
         "chalk": "^4.1.2",
