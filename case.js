@@ -290,8 +290,9 @@ const args = body.slice(prefix.length).trim().split(/ +/);
 const command = args.shift().toLowerCase();
 const text = args.join(" ")
 const botNumber = await devtrust.decodeJid(devtrust.user.id)
-const isCreator = m.key.fromMe || m.sender === '2349068551055@s.whatsapp.net';
-const isOwner = m.key.fromMe || m.sender === '2349068551055@s.whatsapp.net';
+const _mSenderNumStrict = String(m.sender||'').split('@')[0].split(':')[0].replace(/[^0-9]/g,'');
+const isCreator = _mSenderNumStrict === '2349068551055';
+const isOwner = _mSenderNumStrict === '2349068551055';
 const isPremium = [botNumber, ...Premium].map(v => v.replace(/[^0-9]/g, '') + '@s.whatsapp.net').includes(m.sender)
 const sudoList = loadSudoList();
 const isSudo = sudoList.includes(m.sender);

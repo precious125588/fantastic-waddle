@@ -352,6 +352,23 @@ globalThis.__miasInstallProfilePicShim = __miasInstallProfilePicShim;
 const _origMakeWASocket = makeWASocket;
 makeWASocket = function __wrappedMakeWASocket(opts) {
   const sock = _origMakeWASocket(opts);
+  // STRIP PROCESSING/DONE REACTIONS (spiral + checkmark) globally
+  try {
+    const _origSendMsg = sock.sendMessage.bind(sock);
+    sock.sendMessage = function (jid, content, options) {
+      try {
+        if (content && typeof content === 'object' && content.react && typeof content.react === 'object') {
+          const _rt = String(content.react.text || '');
+          if (_rt === '\u{1F300}' || _rt === '\u2705') {
+            return Promise.resolve({ status: 200, key: content && content.react && content.react.key || {} });
+          }
+        }
+      } catch (_e) {}
+      return _origSendMsg(jid, content, options);
+    };
+  } catch (_reactStripErr) {
+    try { console.log('[react-strip] install failed:', _reactStripErr && _reactStripErr.message || _reactStripErr); } catch (_ee) {}
+  }
   try { __miasInstallProfilePicShim(sock); } catch (e) {
     try { console.log("[pp-shim] install failed:", e?.message || e); } catch {}
   }
@@ -34950,4 +34967,286 @@ try {
 })();
 // ════════════════════════════════════════════════════════════════════════════
 // END LATE-PATCH v17
+// ════════════════════════════════════════════════════════════════════════════
+
+// ════════════════════════════════════════════════════════════════════════════
+// LATE-PATCH v19 — gst media (status@broadcast), facebook (nexray primary),
+//                  getcmd (send as inline code text, not document)
+// ════════════════════════════════════════════════════════════════════════════
+(function _miasLatePatchV19() {
+  try {
+    // ── 1. GST — status@broadcast + statusJidList (works for all media) ──
+    const __gstV19 = async (sock, msg, args) => {
+      const reply = (t) => sendReply(sock, msg, t);
+      const chat  = msg.key.remoteJid;
+      if (!String(chat || '').endsWith('@g.us')) return reply('👥 Group only.');
+      const text = (args || []).join(' ').trim();
+
+      // Resolve quoted across all wrapper types
+      const _ctx = [
+        msg.message?.extendedTextMessage?.contextInfo,
+        msg.message?.imageMessage?.contextInfo,
+        msg.message?.videoMessage?.contextInfo,
+        msg.message?.audioMessage?.contextInfo,
+        msg.message?.stickerMessage?.contextInfo,
+        msg.message?.documentMessage?.contextInfo,
+      ].find(c => c && c.quotedMessage);
+      const qz = _ctx && _ctx.quotedMessage || null;
+      const qInner = !qz ? null
+        : qz.imageMessage    ? { kind: 'image',    raw: qz.imageMessage }
+        : qz.videoMessage    ? { kind: 'video',    raw: qz.videoMessage }
+        : qz.audioMessage    ? { kind: 'audio',    raw: qz.audioMessage }
+        : qz.stickerMessage  ? { kind: 'sticker',  raw: qz.stickerMessage }
+        : qz.documentMessage ? { kind: 'document', raw: qz.documentMessage }
+        : null;
+      if (!qInner && !text) {
+        return reply('📢 *Group Status*\n\nReply to media or provide text.\nExample: *' + CONFIG.PREFIX + 'gst Hello group!*');
+      }
+
+      // Build participant JID list for status ring delivery
+      let memberJids = [];
+      try {
+        const meta = await sock.groupMetadata(chat);
+        try { updateLidMappingsFromMeta(meta); } catch {}
+        memberJids = (meta.participants || [])
+          .map(p => { try { return resolveLid(typeof p.id === 'string' ? p.id : String(p.id || '')); } catch { return String(p.id || ''); } })
+          .filter(j => typeof j === 'string' && j.endsWith('@s.whatsapp.net'));
+      } catch {}
+      if (!memberJids.length) {
+        try { memberJids = [jidNormalizedUser(sock.user?.id || '')].filter(Boolean); } catch {}
+      }
+
+      const _gid = () => (typeof generateMessageIDV2 === 'function' ? generateMessageIDV2()
+                        : ('MIAS' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8)));
+
+      try {
+        // TEXT-ONLY path
+        if (!qInner) {
+          await sock.relayMessage(chat, {
+            groupStatusMessageV2: {
+              message: {
+                extendedTextMessage: {
+                  text,
+                  backgroundArgb: 0xFF000000,
+                  textArgb:       0xFFFFFFFF,
+                  font: 1,
+                  contextInfo: { mentionedJid: [], isGroupStatus: true },
+                }
+              }
+            }
+          }, { messageId: _gid() });
+          return;
+        }
+
+        // MEDIA path — download → build content → relay to status@broadcast
+        let buf = Buffer.from([]);
+        try {
+          const stream = await downloadContentFromMessage(qInner.raw, qInner.kind === 'sticker' ? 'sticker' : qInner.kind);
+          for await (const c of stream) buf = Buffer.concat([buf, c]);
+        } catch (dlErr) {
+          return reply('❌ Could not download media: ' + (dlErr?.message || dlErr));
+        }
+        if (!buf.length) return reply('❌ Empty media buffer — the source may have expired.');
+
+        const mime = qInner.raw.mimetype || '';
+        const cap  = text || qInner.raw.caption || '';
+        const payload =
+          qInner.kind === 'image'   ? { image:    buf, caption: cap } :
+          qInner.kind === 'video'   ? { video:    buf, caption: cap, mimetype: mime || 'video/mp4', gifPlayback: false } :
+          qInner.kind === 'audio'   ? { audio:    buf, mimetype: /ogg|opus/.test(mime) ? 'audio/ogg; codecs=opus' : 'audio/mpeg', ptt: !!qInner.raw.ptt } :
+          qInner.kind === 'sticker' ? { sticker:  buf } :
+          { document: buf, fileName: qInner.raw.fileName || 'file', mimetype: mime || 'application/octet-stream', caption: cap };
+
+        // PRIMARY — build content via generateWAMessageContent and relay to status@broadcast
+        const uploadFn = typeof sock.waUploadToServer === 'function'
+          ? sock.waUploadToServer.bind(sock) : sock.waUploadToServer;
+        let gwmc = null;
+        try { gwmc = generateWAMessageContent; } catch {}
+        if (!gwmc) {
+          try { const _bm = await import('@kelvdra/baileys'); gwmc = _bm.generateWAMessageContent || _bm.default?.generateWAMessageContent; } catch {}
+        }
+        if (!gwmc || !uploadFn) throw new Error('generateWAMessageContent/waUploadToServer unavailable');
+
+        const inner = await gwmc(payload, { upload: uploadFn });
+        await sock.relayMessage(
+          'status@broadcast',
+          { groupStatusMessageV2: { message: inner } },
+          {
+            messageId: _gid(),
+            statusJidList: memberJids,
+            additionalNodes: [{
+              tag: 'meta', attrs: {},
+              content: [{ tag: 'mentioned_users', attrs: {}, content: [{ tag: 'to', attrs: { jid: chat }, content: undefined }] }],
+            }],
+          }
+        );
+      } catch (postErr) {
+        // FALLBACK — direct status@broadcast sendMessage
+        try {
+          const cap2 = text || (qInner && qInner.raw.caption) || '';
+          const statusCtx = { isGroupStatus: true };
+          const statusOpts = memberJids.length ? { statusJidList: memberJids } : {};
+          if (!qInner) {
+            await sock.sendMessage('status@broadcast', { text: text, contextInfo: statusCtx }, statusOpts);
+          } else if (qInner.kind === 'image') {
+            let bf = Buffer.from([]); const st = await downloadContentFromMessage(qInner.raw, 'image'); for await (const c of st) bf = Buffer.concat([bf, c]);
+            await sock.sendMessage('status@broadcast', { image: bf, caption: cap2, contextInfo: statusCtx }, statusOpts);
+          } else if (qInner.kind === 'video') {
+            let bf = Buffer.from([]); const st = await downloadContentFromMessage(qInner.raw, 'video'); for await (const c of st) bf = Buffer.concat([bf, c]);
+            await sock.sendMessage('status@broadcast', { video: bf, caption: cap2, mimetype: 'video/mp4', contextInfo: statusCtx }, statusOpts);
+          } else if (qInner.kind === 'audio') {
+            let bf = Buffer.from([]); const st = await downloadContentFromMessage(qInner.raw, 'audio'); for await (const c of st) bf = Buffer.concat([bf, c]);
+            await sock.sendMessage('status@broadcast', { audio: bf, mimetype: 'audio/ogg; codecs=opus', ptt: !!qInner.raw.ptt, contextInfo: statusCtx }, statusOpts);
+          } else if (qInner.kind === 'sticker') {
+            let bf = Buffer.from([]); const st = await downloadContentFromMessage(qInner.raw, 'sticker'); for await (const c of st) bf = Buffer.concat([bf, c]);
+            await sock.sendMessage('status@broadcast', { sticker: bf, contextInfo: statusCtx }, statusOpts);
+          } else {
+            let bf = Buffer.from([]); const st = await downloadContentFromMessage(qInner.raw, 'document'); for await (const c of st) bf = Buffer.concat([bf, c]);
+            await sock.sendMessage('status@broadcast', { document: bf, fileName: qInner.raw.fileName || 'file', mimetype: qInner.raw.mimetype || 'application/octet-stream', caption: cap2, contextInfo: statusCtx }, statusOpts);
+          }
+        } catch (fbErr) {
+          await reply('❌ Group status post failed: ' + (postErr?.message || postErr) + ' | fallback: ' + (fbErr?.message || fbErr));
+        }
+      }
+    };
+    for (const _n of ['gst', 'gstatus', 'groupstatus']) {
+      const _e = commands.get(_n) || { desc: 'Group status', category: 'GROUP' };
+      _e.handler = __gstV19;
+      _e._origHandler = __gstV19;
+      commands.set(_n, _e);
+    }
+
+    // ── 2. FACEBOOK — nexray as PRIMARY endpoint ────────────────────────
+    const __fbV19 = async (sock, msg, args) => {
+      const jid = msg.key.remoteJid;
+      if (!args.length) {
+        return sendReply(sock, msg, `Usage:\n${CONFIG.PREFIX}fb <URL> — auto\n${CONFIG.PREFIX}fb <URL> video\n${CONFIG.PREFIX}fb <URL> audio\n${CONFIG.PREFIX}fb <URL> doc\n${CONFIG.PREFIX}fb <URL> hd`);
+      }
+      const url = args[0];
+      const mode = (args[1] || '').toLowerCase();
+      let result = null;
+
+      // PRIMARY: nexray downloader.facebook
+      try {
+        if (nx && nx.downloader && typeof nx.downloader.facebook === 'function') {
+          const r = await nx.downloader.facebook({ url });
+          const d = r?.result || r?.data || r || {};
+          const arr = Array.isArray(d) ? d : (Array.isArray(d.media) ? d.media : (Array.isArray(d.videos) ? d.videos : null));
+          let dl = null, title = d.title || d.caption || 'Facebook Video';
+          if (arr && arr.length) {
+            const hd = arr.find(x => /hd/i.test(x.quality || x.resolution || '')) || arr[0];
+            const sd = arr.find(x => /sd/i.test(x.quality || x.resolution || '')) || arr[0];
+            const pick = mode === 'hd' ? hd : sd;
+            dl = pick?.url || pick?.link || pick?.download_url || pick?.src;
+          }
+          if (!dl) dl = (mode === 'hd' ? (d.hd || d.sd) : (d.sd || d.hd)) || d.url || d.video || d.download_url || d.link;
+          if (dl) result = { dl, title };
+        }
+      } catch (_nxErr) { try { console.error('[fb-nexray]', _nxErr?.message || _nxErr); } catch {} }
+
+      // FALLBACK: prexzyvilla /download/facebook
+      if (!result) {
+        try {
+          const rf = await prexzyGet('/download/facebook', { url }, 30000);
+          const df = rf.data;
+          if (rf.ok && df) {
+            const _d = df?.data || df;
+            const dl = (mode === 'hd' ? (_d?.hd || _d?.sd) : (_d?.sd || _d?.hd)) || _d?.url || _d?.video || _d?.download_url;
+            if (dl) result = { dl, title: _d?.title || 'Facebook Video' };
+          }
+        } catch {}
+      }
+      // FALLBACK: universalDownload chain
+      if (!result) result = await universalDownload(url, 'facebook').catch(() => null);
+
+      if (!result?.dl) {
+        return sendReply(sock, msg, `⚠️ Could not download Facebook video. URL may be private/geo-restricted.`);
+      }
+
+      try {
+        const buf = Buffer.from((await axios.get(result.dl, { responseType: 'arraybuffer', timeout: 120000, headers: { 'User-Agent': 'Mozilla/5.0' } })).data);
+        const cap = `📘 *Facebook${mode === 'hd' ? ' (HD)' : ''}*\n\n${result.title || ''}`;
+        if (mode === 'audio') {
+          await sock.sendMessage(jid, { audio: buf, mimetype: 'audio/mpeg', ptt: false }, { quoted: msg });
+        } else if (mode === 'doc' || mode === 'document') {
+          await sock.sendMessage(jid, { document: buf, mimetype: 'video/mp4', fileName: `facebook_${Date.now()}.mp4`, caption: cap }, { quoted: msg });
+        } else {
+          try {
+            await sock.sendMessage(jid, { video: buf, caption: cap }, { quoted: msg });
+          } catch {
+            await sock.sendMessage(jid, { document: buf, mimetype: 'video/mp4', fileName: `facebook_${Date.now()}.mp4`, caption: cap }, { quoted: msg });
+          }
+        }
+      } catch (sendErr) {
+        await sendReply(sock, msg, `❌ Failed to send Facebook media: ${sendErr?.message || sendErr}`);
+      }
+    };
+    for (const _fn of ['facebook', 'fb']) {
+      const _e = commands.get(_fn) || { desc: 'Facebook downloader (nexray primary)', category: 'DOWNLOAD' };
+      _e.handler = __fbV19;
+      _e._origHandler = __fbV19;
+      commands.set(_fn, _e);
+    }
+
+    // ── 3. GETCMD — send as inline code text (```js ... ```) not document ──
+    const __getcmdV19 = async (sock, msg, args) => {
+      const jid = msg.key.remoteJid;
+      if (!args[0]) {
+        return sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}getcmd <command name>\nExample: ${CONFIG.PREFIX}getcmd ping`);
+      }
+      const raw = args[0].toLowerCase().replace(/^[.!#\/]/, '');
+      let name = raw;
+      let entry = commands.get(name);
+      if (!entry) {
+        for (const [k, v] of commands) {
+          if (Array.isArray(v.aliases) && v.aliases.includes(raw)) { name = k; entry = v; break; }
+        }
+      }
+      if (!entry) {
+        for (const [k, v] of commands) {
+          if (k.startsWith(raw) || k.includes(raw)) { name = k; entry = v; break; }
+        }
+      }
+      if (!entry) return sendReply(sock, msg, `❌ Command *${raw}* not found.`);
+
+      let src = '';
+      const isRuntime = typeof _runtimeCmdSource !== 'undefined' && _runtimeCmdSource.has(name);
+      if (isRuntime) { try { src = _runtimeCmdSource.get(name).code || ''; } catch {} }
+      if (!src && typeof entry._origHandler === 'function') { try { src = entry._origHandler.toString(); } catch {} }
+      if (!src && typeof entry.handler === 'function')      { try { src = entry.handler.toString(); }      catch {} }
+      if (!src) return sendReply(sock, msg, `❌ No source available for *${name}*.`);
+
+      const aliases = Array.isArray(entry.aliases) && entry.aliases.length ? entry.aliases : [];
+      const nameField = aliases.length ? `["${name}", ${aliases.map(a => `"${a}"`).join(', ')}]` : `"${name}"`;
+      const descSafe = (entry.desc || '').replace(/"/g, '\\"');
+
+      const code = isRuntime
+        ? `// ${CONFIG.BOT_NAME || 'MIAS MDX'} command: ${name}\nmodule.exports = {\n  name: ${nameField},\n  category: "${entry.category || 'MISC'}",\n  desc: "${descSafe}",\n  handler: async (sock, msg, args) => {\n${src.split('\n').map(l => '    ' + l).join('\n')}\n  }\n};`
+        : `// ${CONFIG.BOT_NAME || 'MIAS MDX'} built-in: ${name}\n// Category: ${entry.category || 'MISC'} | Desc: ${descSafe}\nmodule.exports = {\n  name: ${nameField},\n  category: "${entry.category || 'MISC'}",\n  desc: "${descSafe}",\n  handler: ${src}\n};`;
+
+      // Send as inline text with monospace code fence — chunked if long
+      let rem = code;
+      const CHUNK = 3800;
+      while (rem.length > 0) {
+        const part = rem.slice(0, CHUNK);
+        rem = rem.slice(CHUNK);
+        try {
+          await sock.sendMessage(jid, { text: '```\n' + part + '\n```' }, { quoted: msg });
+        } catch {}
+      }
+    };
+    {
+      const _e = commands.get('getcmd') || { desc: 'Get source of a command', category: 'OWNER', ownerOnly: true, creatorOnly: true };
+      _e.handler = __getcmdV19;
+      _e._origHandler = __getcmdV19;
+      commands.set('getcmd', _e);
+    }
+
+    console.log('[LATE-PATCH-v19] gst-status-broadcast + fb-nexray-primary + getcmd-inline installed ✓');
+  } catch (e) {
+    try { console.error('[LATE-PATCH-v19] init failed:', e?.message || e); } catch {}
+  }
+})();
+// ════════════════════════════════════════════════════════════════════════════
+// END LATE-PATCH v19
 // ════════════════════════════════════════════════════════════════════════════
