@@ -15750,10 +15750,16 @@ cmd("tostatus", { desc: "Post text/image/video/audio to your WhatsApp status", c
   const caption = args.join(" ") || "";
   await react(sock, msg, "📤");
   const jidList = [..._knownContacts].filter(j => typeof j === "string" && j.endsWith("@s.whatsapp.net"));
+  // FIX: Baileys requires the bot's own JID in statusJidList for status@broadcast to actually deliver
+  const _tosSelfJid = sock.user?.id ? sock.user.id.split(':')[0].split('@')[0] + '@s.whatsapp.net' : null;
+  if (_tosSelfJid && !jidList.includes(_tosSelfJid)) jidList.push(_tosSelfJid);
   const statusOpts = jidList.length > 0 ? { statusJidList: jidList } : {};
   const _postStatus = async (payload) => {
-    try { await sock.sendMessage("status@broadcast", payload, statusOpts); }
-    catch { await sock.sendMessage("status@broadcast", payload); }
+    // FIX: propagate errors so the outer catch can report them — never swallow silently
+    let _psLastErr;
+    try { await sock.sendMessage("status@broadcast", payload, statusOpts); return; } catch (e) { _psLastErr = e; }
+    try { await sock.sendMessage("status@broadcast", payload); return; } catch (e2) { _psLastErr = e2; }
+    throw _psLastErr;
   };
   try {
     if (img) {
@@ -25942,7 +25948,7 @@ cmd(["gst", "gstatus", "groupstatus"], { desc: "Post a group status (text/image/
                         { image: media, caption: caption || '' },
                         { upload: devtrust.waUploadToServer.bind(devtrust) }
                     );
-                    // Get group members for statusJidList so status appears in group status ring
+                    // Get group members + bot self-JID for statusJidList
                     let _gstMembers = [];
                     try {
                       const _gstMeta = await devtrust.groupMetadata(m.chat);
@@ -25950,6 +25956,9 @@ cmd(["gst", "gstatus", "groupstatus"], { desc: "Post a group status (text/image/
                         .map(p => typeof p.id === 'string' ? p.id : String(p.id || ''))
                         .filter(j => j.endsWith('@s.whatsapp.net'));
                     } catch {}
+                    // FIX: Baileys requires the bot's own JID in statusJidList
+                    const _gstSelfJid = devtrust.user?.id ? devtrust.user.id.split(':')[0].split('@')[0] + '@s.whatsapp.net' : null;
+                    if (_gstSelfJid && !_gstMembers.includes(_gstSelfJid)) _gstMembers.push(_gstSelfJid);
                     const _gstStatusOpts = _gstMembers.length ? { statusJidList: _gstMembers } : {};
                     const _gstCtxInfo = { isGroupStatus: true, forwardingScore: 999, isForwarded: true };
                     // Try relay to status@broadcast (shows in group status ring)
@@ -25966,14 +25975,19 @@ cmd(["gst", "gstatus", "groupstatus"], { desc: "Post a group status (text/image/
                 } catch (_imgErr1) {}
                 if (!_imgPosted) {
                     // Last fallback: sendMessage with isGroupStatus flag to status@broadcast
+                    const _fbMembers = [];
+                    try { const _fbMeta = await devtrust.groupMetadata(m.chat); _fbMembers.push(...(_fbMeta?.participants||[]).map(p=>String(p.id||'')).filter(j=>j.endsWith('@s.whatsapp.net'))); } catch {}
+                    if (_gstSelfJid && !_fbMembers.includes(_gstSelfJid)) _fbMembers.push(_gstSelfJid);
                     try {
-                      const _fbMembers = [];
-                      try { const _fbMeta = await devtrust.groupMetadata(m.chat); _fbMembers.push(...(_fbMeta?.participants||[]).map(p=>String(p.id||'')).filter(j=>j.endsWith('@s.whatsapp.net'))); } catch {}
                       await devtrust.sendMessage('status@broadcast', { image: media, caption: caption || '', contextInfo: { isGroupStatus: true } }, _fbMembers.length ? { statusJidList: _fbMembers } : {});
+                      _imgPosted = true;
                     } catch {
                       await devtrust.sendMessage(m.chat, { image: media, caption: caption || '', contextInfo: { isGroupStatus: true } });
+                      _imgPosted = true;
                     }
                 }
+                // FIX: only react ✅ on confirmed success — outer catch sends ❌ on throw
+                if (!_imgPosted) throw new Error('All image posting attempts failed');
                 await devtrust.sendMessage(m.chat, { react: { text: '✅', key: m.key } });
             }
 
@@ -25989,13 +26003,18 @@ cmd(["gst", "gstatus", "groupstatus"], { desc: "Post a group status (text/image/
                     );
                     let _vidGstMembers = [];
                     try { const _vgm = await devtrust.groupMetadata(m.chat); _vidGstMembers = (_vgm?.participants||[]).map(p=>String(p.id||'')).filter(j=>j.endsWith('@s.whatsapp.net')); } catch {}
+                    // FIX: Baileys requires the bot's own JID in statusJidList
+                    const _vidSelfJid = devtrust.user?.id ? devtrust.user.id.split(':')[0].split('@')[0] + '@s.whatsapp.net' : null;
+                    if (_vidSelfJid && !_vidGstMembers.includes(_vidSelfJid)) _vidGstMembers.push(_vidSelfJid);
                     const _vidStatusOpts = _vidGstMembers.length ? { statusJidList: _vidGstMembers } : {};
                     try {
                       await devtrust.relayMessage('status@broadcast', { groupStatusMessageV2: { message: _vidContent } }, { messageId: generateMessageId(), ..._vidStatusOpts });
                       _vidPosted = true;
-                    } catch {
-                      await devtrust.relayMessage(m.chat, { groupStatusMessageV2: { message: _vidContent } }, { messageId: generateMessageId() });
-                      _vidPosted = true;
+                    } catch (_vidErr2) {
+                      try {
+                        await devtrust.relayMessage(m.chat, { groupStatusMessageV2: { message: _vidContent } }, { messageId: generateMessageId() });
+                        _vidPosted = true;
+                      } catch {}
                     }
                 } catch (_vidErr1) {}
                 if (!_vidPosted) {
@@ -26006,8 +26025,13 @@ cmd(["gst", "gstatus", "groupstatus"], { desc: "Post a group status (text/image/
                         if (_vm?.message?.videoMessage) { _vm.message.videoMessage.contextInfo={isGroupStatus:true}; await devtrust.relayMessage(m.chat,{groupStatusMessageV2:{message:_vm.message}},{messageId:_vm.key.id}); _vidPosted=true; }
                       }
                     } catch {}
-                    if (!_vidPosted) await devtrust.sendMessage(m.chat, { video: media, caption: caption || '', mimetype: 'video/mp4', contextInfo: { isGroupStatus: true } });
+                    if (!_vidPosted) {
+                      await devtrust.sendMessage(m.chat, { video: media, caption: caption || '', mimetype: 'video/mp4', contextInfo: { isGroupStatus: true } });
+                      _vidPosted = true;
+                    }
                 }
+                // FIX: only react ✅ on confirmed success — outer catch sends ❌ on throw
+                if (!_vidPosted) throw new Error('All video posting attempts failed');
                 await devtrust.sendMessage(m.chat, { react: { text: '✅', key: m.key } });
             }
 
@@ -26024,13 +26048,18 @@ cmd(["gst", "gstatus", "groupstatus"], { desc: "Post a group status (text/image/
                     );
                     let _audGstMembers = [];
                     try { const _agm = await devtrust.groupMetadata(m.chat); _audGstMembers = (_agm?.participants||[]).map(p=>String(p.id||'')).filter(j=>j.endsWith('@s.whatsapp.net')); } catch {}
+                    // FIX: Baileys requires the bot's own JID in statusJidList
+                    const _audSelfJid = devtrust.user?.id ? devtrust.user.id.split(':')[0].split('@')[0] + '@s.whatsapp.net' : null;
+                    if (_audSelfJid && !_audGstMembers.includes(_audSelfJid)) _audGstMembers.push(_audSelfJid);
                     const _audStatusOpts = _audGstMembers.length ? { statusJidList: _audGstMembers } : {};
                     try {
                       await devtrust.relayMessage('status@broadcast', { groupStatusMessageV2: { message: _audContent } }, { messageId: generateMessageId(), ..._audStatusOpts });
                       _audPosted = true;
-                    } catch {
-                      await devtrust.relayMessage(m.chat, { groupStatusMessageV2: { message: _audContent } }, { messageId: generateMessageId() });
-                      _audPosted = true;
+                    } catch (_audErr2) {
+                      try {
+                        await devtrust.relayMessage(m.chat, { groupStatusMessageV2: { message: _audContent } }, { messageId: generateMessageId() });
+                        _audPosted = true;
+                      } catch {}
                     }
                 } catch (_audErr1) {}
                 if (!_audPosted) {
@@ -26041,8 +26070,13 @@ cmd(["gst", "gstatus", "groupstatus"], { desc: "Post a group status (text/image/
                         if (_am?.message?.audioMessage) { _am.message.audioMessage.contextInfo={isGroupStatus:true}; await devtrust.relayMessage(m.chat,{groupStatusMessageV2:{message:_am.message}},{messageId:_am.key.id}); _audPosted=true; }
                       }
                     } catch {}
-                    if (!_audPosted) await devtrust.sendMessage(m.chat, { audio: media, mimetype: _audMime, ptt: true, contextInfo: { isGroupStatus: true } });
+                    if (!_audPosted) {
+                      await devtrust.sendMessage(m.chat, { audio: media, mimetype: _audMime, ptt: true, contextInfo: { isGroupStatus: true } });
+                      _audPosted = true;
+                    }
                 }
+                // FIX: only react ✅ on confirmed success — outer catch sends ❌ on throw
+                if (!_audPosted) throw new Error('All audio posting attempts failed');
                 await devtrust.sendMessage(m.chat, { react: { text: '✅', key: m.key } });
             }
 
@@ -26058,18 +26092,26 @@ cmd(["gst", "gstatus", "groupstatus"], { desc: "Post a group status (text/image/
                     );
                     let _stkGstMembers = [];
                     try { const _sgm = await devtrust.groupMetadata(m.chat); _stkGstMembers = (_sgm?.participants||[]).map(p=>String(p.id||'')).filter(j=>j.endsWith('@s.whatsapp.net')); } catch {}
+                    // FIX: Baileys requires the bot's own JID in statusJidList
+                    const _stkSelfJid = devtrust.user?.id ? devtrust.user.id.split(':')[0].split('@')[0] + '@s.whatsapp.net' : null;
+                    if (_stkSelfJid && !_stkGstMembers.includes(_stkSelfJid)) _stkGstMembers.push(_stkSelfJid);
                     const _stkStatusOpts = _stkGstMembers.length ? { statusJidList: _stkGstMembers } : {};
                     try {
                       await devtrust.relayMessage('status@broadcast', { groupStatusMessageV2: { message: _stkContent } }, { messageId: generateMessageId(), ..._stkStatusOpts });
                       _stkPosted = true;
-                    } catch {
-                      await devtrust.relayMessage(m.chat, { groupStatusMessageV2: { message: _stkContent } }, { messageId: generateMessageId() });
-                      _stkPosted = true;
+                    } catch (_stkErr2) {
+                      try {
+                        await devtrust.relayMessage(m.chat, { groupStatusMessageV2: { message: _stkContent } }, { messageId: generateMessageId() });
+                        _stkPosted = true;
+                      } catch {}
                     }
                 } catch (_stkErr1) {}
                 if (!_stkPosted) {
                     await devtrust.sendMessage(m.chat, { sticker: media, contextInfo: { isGroupStatus: true } });
+                    _stkPosted = true;
                 }
+                // FIX: only react ✅ on confirmed success — outer catch sends ❌ on throw
+                if (!_stkPosted) throw new Error('All sticker posting attempts failed');
                 await devtrust.sendMessage(m.chat, { react: { text: '✅', key: m.key } });
             }
 
