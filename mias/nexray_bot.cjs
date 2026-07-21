@@ -43,6 +43,7 @@ async function _media(r, ax) {
   if (r.type === 'media' && Buffer.isBuffer(r.buffer) && r.buffer.length > 500) return { buf: r.buffer, ct: r.contentType || 'image/jpeg' };
   const url =
     r?.result?.url   ?? r?.result?.image ?? r?.result?.media ??
+    (typeof r?.result === 'string' && /^https?:\/\//i.test(r.result) ? r.result : null) ??
     r?.data?.url     ?? r?.data?.image   ??
     r?.url           ?? r?.image         ?? r?.media          ?? null;
   if (url && typeof url === 'string' && url.startsWith('http')) {

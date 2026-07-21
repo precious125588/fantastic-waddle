@@ -34948,13 +34948,17 @@ try {
         }
 
         if (!cardBuf || cardBuf.length < 500) {
-          return sock.sendMessage(jid, { react: { text: '❌', key: msg.key } });
+          await sock.sendMessage(jid, { react: { text: '❌', key: msg.key } });
+          return sendReply(sock, msg, '❌ Music card generation failed. Make sure you reply to an image or provide an image URL.');
         }
 
         // Send image — no caption text
         await sock.sendMessage(jid, { image: cardBuf }, { quoted: msg });
         await sock.sendMessage(jid, { react: { text: '✅', key: msg.key } });
-      } catch { await sock.sendMessage(jid, { react: { text: '❌', key: msg.key } }); }
+      } catch (e) {
+        await sock.sendMessage(jid, { react: { text: '❌', key: msg.key } });
+        await sendReply(sock, msg, `❌ Music card error: ${e?.message || 'Unknown error'}`);
+      }
     };
 
     for (const _mc of ['musiccard', 'music-card']) {
