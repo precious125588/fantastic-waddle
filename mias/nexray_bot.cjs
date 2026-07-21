@@ -56,9 +56,22 @@ async function _media(r, ax) {
 }
 
 async function _getImgFromMsg(msg, dlFn) {
+  const m = msg.message || {};
+  // Check every known wrapper type's contextInfo so reply-to-image always works
+  const _ctx = (k) => m[k]?.contextInfo?.quotedMessage?.imageMessage ?? null;
   const imgMsg =
-    msg.message?.imageMessage ??
-    msg.message?.extendedTextMessage?.contextInfo?.quotedMessage?.imageMessage ?? null;
+    m.imageMessage                        ||  // current msg IS an image
+    _ctx('extendedTextMessage')           ||  // text reply to image  ← most common
+    _ctx('imageMessage')                  ||  // image reply to image
+    _ctx('videoMessage')                  ||
+    _ctx('audioMessage')                  ||
+    _ctx('stickerMessage')                ||
+    _ctx('documentMessage')               ||
+    _ctx('buttonsResponseMessage')        ||
+    _ctx('templateButtonReplyMessage')    ||
+    _ctx('ephemeralMessage')              ||
+    _ctx('viewOnceMessage')               ||
+    null;
   if (!imgMsg) return null;
   const stream = await dlFn(imgMsg, 'image');
   let buf = Buffer.from([]);
@@ -2460,8 +2473,12 @@ module.exports = function registerNexrayCmds(cmd, CONFIG, sendReply, react, down
       // Last login + joined date
       const _fmtTs = (v) => {
         if (!v) return 'N/A';
-        const ms = String(v).length < 13 ? Number(v) * 1000 : Number(v);
-        return new Date(ms).toLocaleDateString('en-GB', { day:'2-digit', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit' });
+        const n = Number(v);
+        if (isNaN(n) || n === 0) return 'N/A';          // guard text like "dare"/"invalid"
+        const ms = n < 1e10 ? n * 1000 : n;             // seconds → ms if needed
+        const d = new Date(ms);
+        if (isNaN(d.getTime())) return 'N/A';
+        return d.toLocaleDateString('en-GB', { day:'2-digit', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit' });
       };
       const lastLogin = _fmtTs(top.lastLoginAt || top.last_login || _ai.lastLoginAt);
       const joinedAt  = _fmtTs(top.createAt || top.created_at || top.accountCreated || _ai.createAt || _ai.created_at || _raw.AccountCreateTime);

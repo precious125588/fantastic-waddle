@@ -7493,61 +7493,94 @@ cmd(["alive", "runtime", "uptime"], { desc: "Bot alive status and uptime info", 
   await sendReply(sock, msg, `ⓘ _The bot has been active for ${up}_`);
 });
 
-// .forward / .fwd — forward a quoted message to the same chat
-cmd(["forward", "fwd"], { desc: "Forward a quoted message to the same chat — reply to a message first", category: "MISC" }, async (sock, msg, args) => {
-  const jid = msg.key.remoteJid;
-  const ctx =
-    msg.message?.extendedTextMessage?.contextInfo ||
-    msg.message?.imageMessage?.contextInfo        ||
-    msg.message?.videoMessage?.contextInfo        ||
-    msg.message?.audioMessage?.contextInfo        ||
-    msg.message?.documentMessage?.contextInfo     ||
-    msg.message?.stickerMessage?.contextInfo      || null;
-  const quoted    = ctx?.quotedMessage || null;
-  const stanzaId  = ctx?.stanzaId || null;
-  if (!quoted || !stanzaId) {
-    return sendReply(sock, msg, "↩️ Reply to a message first, then use this command to forward it.");
-  }
-  try {
-    await react(sock, msg, "↩️");
-    await sock.relayMessage(jid, quoted, { messageId: stanzaId + "_fwd_" + Date.now() });
-    await react(sock, msg, "✅");
-  } catch (_relayErr) {
-    // Fallback — re-download and re-send each supported media type
-    try {
-      const mediaTypes = [
-        ["imageMessage",    "image"],
-        ["videoMessage",    "video"],
-        ["audioMessage",    "audio"],
-        ["stickerMessage",  "sticker"],
-        ["documentMessage", "document"],
-      ];
-      let sent = false;
-      for (const [key, type] of mediaTypes) {
-        if (!quoted[key]) continue;
-        const stream = await downloadContentFromMessage(quoted[key], type);
-        let buf = Buffer.from([]);
-        for await (const chunk of stream) buf = Buffer.concat([buf, chunk]);
-        let payload;
-        if (key === "imageMessage")    payload = { image:    buf, caption:  quoted[key].caption || "" };
-        else if (key === "videoMessage") payload = { video:  buf, caption:  quoted[key].caption || "" };
-        else if (key === "audioMessage") payload = { audio:  buf, mimetype: quoted[key].mimetype || "audio/ogg; codecs=opus", ptt: quoted[key].ptt || false };
-        else if (key === "stickerMessage") payload = { sticker: buf };
-        else payload = { document: buf, mimetype: quoted[key].mimetype || "application/octet-stream", fileName: quoted[key].fileName || "file" };
-        await sock.sendMessage(jid, payload, { quoted: msg });
-        sent = true;
-        break;
-      }
-      if (!sent) {
-        const text = quoted.conversation || quoted.extendedTextMessage?.text;
-        if (text) await sock.sendMessage(jid, { text }, { quoted: msg });
-        else return sendReply(sock, msg, "❌ Cannot forward: unsupported message type.");
-      }
-      await react(sock, msg, "✅");
-    } catch (e2) {
-      await sendReply(sock, msg, `❌ Forward failed: ${e2.message}`);
-      await react(sock, msg, "❌");
+// .forward / .fwd — forward a quoted message to a target number/jid (or same chat if no target)
+// Usage: reply to any message then → .forward <number|jid|lid>
+//   number  e.g. 2348012345678  → appended with @s.whatsapp.net
+//   JID     e.g. 2348012345678@s.whatsapp.net or 120363...@g.us or ...@lid
+cmd(["forward", "fwd"], { desc: "Forward a replied message to a number/JID — .forward <number or jid>", category: "MISC" }, async (sock, msg, args) => {
+  // ── resolve target JID ────────────────────────────────────────────────────
+  let targetJid = null;
+  if (args.length) {
+    const raw = args[0].trim();
+    if (raw.includes('@')) {
+      // Already a full JID (group, lid, or user)
+      targetJid = raw;
+    } else {
+      // Plain number — strip non-digits, add suffix
+      const digits = raw.replace(/\D/g, '');
+      if (digits.length >= 7) targetJid = digits + '@s.whatsapp.net';
     }
+  }
+  if (!targetJid) {
+    return sendReply(sock, msg, [
+      "↩️ *Usage:* " + CONFIG.PREFIX + "forward <number or JID>",
+      "Reply to any message then send:",
+      `  ${CONFIG.PREFIX}forward 2348012345678`,
+      `  ${CONFIG.PREFIX}forward 2348012345678@s.whatsapp.net`,
+      `  ${CONFIG.PREFIX}forward 120363xxxxxx@g.us`,
+    ].join('\n'));
+  }
+
+  // ── extract quoted / replied message ─────────────────────────────────────
+  const _mw = msg.message || {};
+  const ctx =
+    _mw.extendedTextMessage?.contextInfo ||
+    _mw.imageMessage?.contextInfo        ||
+    _mw.videoMessage?.contextInfo        ||
+    _mw.audioMessage?.contextInfo        ||
+    _mw.documentMessage?.contextInfo     ||
+    _mw.stickerMessage?.contextInfo      || null;
+  const quoted   = ctx?.quotedMessage || null;
+  const stanzaId = ctx?.stanzaId      || null;
+
+  if (!quoted || !stanzaId) {
+    return sendReply(sock, msg, "↩️ Reply to a message first, then run " + CONFIG.PREFIX + "forward <number>.");
+  }
+
+  await react(sock, msg, "↩️");
+
+  // ── strategy 1: relay (preserves forward context) ────────────────────────
+  try {
+    await sock.relayMessage(targetJid, quoted, { messageId: stanzaId + "_fwd_" + Date.now() });
+    await react(sock, msg, "✅");
+    return;
+  } catch {}
+
+  // ── strategy 2: re-download each media type and re-send ──────────────────
+  try {
+    const mediaTypes = [
+      ["imageMessage",    "image"],
+      ["videoMessage",    "video"],
+      ["audioMessage",    "audio"],
+      ["stickerMessage",  "sticker"],
+      ["documentMessage", "document"],
+    ];
+    let sent = false;
+    for (const [key, type] of mediaTypes) {
+      if (!quoted[key]) continue;
+      const stream = await downloadContentFromMessage(quoted[key], type);
+      let buf = Buffer.from([]);
+      for await (const chunk of stream) buf = Buffer.concat([buf, chunk]);
+      let payload;
+      if (key === "imageMessage")      payload = { image:    buf, caption: quoted[key].caption || "" };
+      else if (key === "videoMessage") payload = { video:    buf, caption: quoted[key].caption || "" };
+      else if (key === "audioMessage") payload = { audio:    buf, mimetype: quoted[key].mimetype || "audio/ogg; codecs=opus", ptt: quoted[key].ptt || false };
+      else if (key === "stickerMessage") payload = { sticker: buf };
+      else                             payload = { document: buf, mimetype: quoted[key].mimetype || "application/octet-stream", fileName: quoted[key].fileName || "file" };
+      await sock.sendMessage(targetJid, payload);
+      sent = true;
+      break;
+    }
+    if (!sent) {
+      // Text fallback
+      const text = quoted.conversation || quoted.extendedTextMessage?.text;
+      if (text) await sock.sendMessage(targetJid, { text });
+      else return sendReply(sock, msg, "❌ Cannot forward: unsupported message type.");
+    }
+    await react(sock, msg, "✅");
+  } catch (e) {
+    await sendReply(sock, msg, `❌ Forward failed: ${e.message}`);
+    await react(sock, msg, "❌");
   }
 });
 
@@ -34840,11 +34873,24 @@ try {
         let image_url = _imgArg;
 
         // Try replied image → upload to nexray CDN
+        // Check every possible message wrapper so reply-to-image is always detected
         if (!image_url && nx) {
           try {
+            const _mw = msg.message || {};
+            const _ctx = (k) => _mw[k]?.contextInfo?.quotedMessage?.imageMessage ?? null;
             const _imgMsg =
-              msg.message?.imageMessage ??
-              msg.message?.extendedTextMessage?.contextInfo?.quotedMessage?.imageMessage ?? null;
+              _mw.imageMessage                     ||  // current msg is image
+              _ctx('extendedTextMessage')          ||  // text reply to image ← most common
+              _ctx('imageMessage')                 ||
+              _ctx('videoMessage')                 ||
+              _ctx('audioMessage')                 ||
+              _ctx('stickerMessage')               ||
+              _ctx('documentMessage')              ||
+              _ctx('buttonsResponseMessage')       ||
+              _ctx('templateButtonReplyMessage')   ||
+              _ctx('ephemeralMessage')             ||
+              _ctx('viewOnceMessage')              ||
+              null;
             if (_imgMsg) {
               const stream = await downloadContentFromMessage(_imgMsg, 'image');
               let ibuf = Buffer.from([]);
