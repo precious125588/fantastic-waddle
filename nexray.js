@@ -725,8 +725,8 @@ const search = {
 // STALKER  (15 endpoints)
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 const stalker = {
-  /** Stalk Free Fire | uid* */
-  freefire:    o => { _req(['uid'],      o); return _get('/stalker/freefire',    { uid: o.uid }); },
+  /** Stalk Free Fire | uid*, region? */
+  freefire:    o => { _req(['uid'],      o); return _get('/stalker/freefire',    { uid: o.uid, region: o.region }); },
   /** Stalk Genshin Impact | uid* */
   genshin:     o => { _req(['uid'],      o); return _get('/stalker/genshin',     { uid: o.uid }); },
   /** Stalk GitHub | username* */

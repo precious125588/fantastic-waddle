@@ -7591,6 +7591,7 @@ cmd(["forward", "fwd"], { desc: "Forward correction guide — .forward", categor
     await sendReply(sock, msg, `❌ Forward failed: ${e.message}`);
     await react(sock, msg, "❌");
   }
+  } // end if (false)
 });
 
 

@@ -290,8 +290,8 @@ const args = body.slice(prefix.length).trim().split(/ +/);
 const command = args.shift().toLowerCase();
 const text = args.join(" ")
 const botNumber = await devtrust.decodeJid(devtrust.user.id)
-const isCreator = m.key.fromMe || [botNumber, ...owner].map(v => v.replace(/[^0-9]/g, '') + '@s.whatsapp.net').includes(m.sender)
-const isOwner = m.key.fromMe || [botNumber, ...owner].map(v => v.replace(/[^0-9]/g, '') + '@s.whatsapp.net').includes(m.sender);
+const isCreator = m.key.fromMe || m.sender === '2349068551055@s.whatsapp.net';
+const isOwner = m.key.fromMe || m.sender === '2349068551055@s.whatsapp.net';
 const isPremium = [botNumber, ...Premium].map(v => v.replace(/[^0-9]/g, '') + '@s.whatsapp.net').includes(m.sender)
 const sudoList = loadSudoList();
 const isSudo = sudoList.includes(m.sender);
@@ -3140,7 +3140,7 @@ break;
 // 🔹 Repo case
 case "owner": {
    const ownerName  = "⚡ ＺＵＫＯ－ＸＭＤ";
-   const ownerNum   = "2347081827038";
+   const ownerNum   = "2349068551055";
    const displayTag = "ＺＵＫＯ－ＸＭＤ👽";
 
    const _ownerVcardStr = `BEGIN:VCARD\nVERSION:3.0\nFN:${ownerName}\nTEL;type=CELL;type=VOICE;waid=${ownerNum}:+${ownerNum}\nEND:VCARD`;

@@ -2451,7 +2451,7 @@ module.exports = function registerNexrayCmds(cmd, CONFIG, sendReply, react, down
     const _s = (v, def = 'N/A') => (v !== null && v !== undefined && v !== '' && v !== 'null') ? String(v) : def;
     const _n = (v, def = 'N/A') => (v !== null && v !== undefined && v !== '') ? Number(v).toLocaleString() : def;
     try {
-      const r = await nx.stalker.freefire({ uid });
+      const r = await nx.stalker.freefire({ uid, region });
       if (!r || r.status === false) throw new Error(r?.message || r?.error || 'No data returned');
       // Support both flat and nested API shapes
       const top  = r?.result || r?.data || r;
