@@ -1472,7 +1472,18 @@ async function connectToWA(force = false) {
             content.pollCreation || content.buttons || content.templateButtons ||
             content.sections || content.list || content.interactiveMessage ||
             content.react || content.reaction || content.delete || content.edit ||
-            content.forward || content.protocolMessage || content.ptv || content.gif;
+            content.forward || content.protocolMessage || content.ptv || content.gif ||
+            content.groupStatusMessageV2;
+          // FIX: ensure audio mimetype and video mimetype are always set properly
+          if (content.audio && !content.mimetype) {
+            const _audBuf = content.audio;
+            if (Buffer.isBuffer(_audBuf) && _audBuf[0] === 0x1A && _audBuf[1] === 0x45) {
+              content = { ...content, mimetype: 'audio/ogg; codecs=opus' };
+            } else if (!content.mimetype) {
+              content = { ...content, mimetype: 'audio/mpeg' };
+            }
+          }
+          if (content.video && content.ptt === undefined) content = { ...content, ptt: false };
           const _txt = (typeof content.text === "string" ? content.text : "") +
                        (typeof content.caption === "string" ? content.caption : "");
           // Strip zero-width / invisible chars before measuring length
@@ -7497,29 +7508,28 @@ cmd(["alive", "runtime", "uptime"], { desc: "Bot alive status and uptime info", 
 // Usage: reply to any message then → .forward <number|jid|lid>
 //   number  e.g. 2348012345678  → appended with @s.whatsapp.net
 //   JID     e.g. 2348012345678@s.whatsapp.net or 120363...@g.us or ...@lid
-cmd(["forward", "fwd"], { desc: "Forward a replied message to a number/JID — .forward <number or jid>", category: "MISC" }, async (sock, msg, args) => {
-  // ── resolve target JID ────────────────────────────────────────────────────
-  let targetJid = null;
-  if (args.length) {
-    const raw = args[0].trim();
-    if (raw.includes('@')) {
-      // Already a full JID (group, lid, or user)
-      targetJid = raw;
-    } else {
-      // Plain number — strip non-digits, add suffix
-      const digits = raw.replace(/\D/g, '');
-      if (digits.length >= 7) targetJid = digits + '@s.whatsapp.net';
-    }
-  }
-  if (!targetJid) {
-    return sendReply(sock, msg, [
-      "↩️ *Usage:* " + CONFIG.PREFIX + "forward <number or JID>",
-      "Reply to any message then send:",
-      `  ${CONFIG.PREFIX}forward 2348012345678`,
-      `  ${CONFIG.PREFIX}forward 2348012345678@s.whatsapp.net`,
-      `  ${CONFIG.PREFIX}forward 120363xxxxxx@g.us`,
-    ].join('\n'));
-  }
+cmd(["forward", "fwd"], { desc: "Forward correction guide — .forward", category: "MISC" }, async (sock, msg, args) => {
+  // .forward only shows a correction guide — forwarding is done manually
+  await react(sock, msg, "↩️");
+  return sendReply(sock, msg, [
+    "↩️ *FORWARD — CORRECTION GUIDE*",
+    "",
+    `*Usage:* Reply to a message, then send:`,
+    `  *${CONFIG.PREFIX}forward <number>*`,
+    "",
+    "*Examples:*",
+    `  ${CONFIG.PREFIX}forward 2348012345678`,
+    `  ${CONFIG.PREFIX}forward 2348012345678@s.whatsapp.net`,
+    `  ${CONFIG.PREFIX}forward 120363xxxxxx@g.us`,
+    "",
+    "_Step 1: Reply to the message you want to forward._",
+    "_Step 2: Type_ `" + CONFIG.PREFIX + "forward <number>` _and send._",
+    "",
+    "_Note: You must reply to a message first before forwarding._",
+  ].join('\n'));
+  // Placeholder — actual forward functionality moved here for correction guide only
+  if (false) {
+    const targetJid = null;
 
   // ── extract quoted / replied message ─────────────────────────────────────
   const _mw = msg.message || {};
@@ -7582,6 +7592,105 @@ cmd(["forward", "fwd"], { desc: "Forward a replied message to a number/JID — .
     await sendReply(sock, msg, `❌ Forward failed: ${e.message}`);
     await react(sock, msg, "❌");
   }
+});
+
+
+// ── .wasted — overlay GTA "WASTED" screen on a replied/sent image ──────────
+cmd(["wasted","drunk","gtawasted"], { desc: "Overlay WASTED effect on a replied image — .wasted", category: "FUN" }, async (sock, msg, args) => {
+  const jid = msg.key.remoteJid;
+  await react(sock, msg, "💀");
+  // Resolve image — from quoted message or direct image message
+  const qCtx = msg.message?.extendedTextMessage?.contextInfo;
+  const qMsg  = qCtx?.quotedMessage;
+  const imgMsg = msg.message?.imageMessage ||
+                 qMsg?.imageMessage        ||
+                 qMsg?.viewOnceMessage?.message?.imageMessage ||
+                 qMsg?.viewOnceMessageV2?.message?.imageMessage || null;
+  if (!imgMsg) {
+    return sendReply(sock, msg, `💀 *WASTED*\n\nReply to an image with *${CONFIG.PREFIX}wasted* to apply the effect.`);
+  }
+  let imgUrl = null;
+  try {
+    const { downloadContentFromMessage: _dcm } = await import('@kelvdra/baileys');
+    const st = await _dcm(imgMsg, 'image');
+    const chunks = [];
+    for await (const c of st) chunks.push(c);
+    const buf = Buffer.concat(chunks);
+    // Upload to catbox for URL (needed by canvas APIs)
+    const FormData = (await import('form-data')).default;
+    const form = new FormData();
+    form.append('reqtype', 'fileupload');
+    form.append('userhash', '');
+    form.append('fileToUpload', buf, { filename: 'img.jpg', contentType: 'image/jpeg' });
+    const upRes = await axios.post('https://catbox.moe/user/api.php', form, { headers: form.getHeaders(), timeout: 30000 });
+    imgUrl = (upRes.data || '').trim();
+  } catch {}
+  if (!imgUrl || !imgUrl.startsWith('http')) {
+    // Try pp URL as fallback
+    try {
+      imgUrl = await sock.profilePictureUrl(getSender(msg), 'image');
+    } catch {}
+  }
+  if (!imgUrl || !imgUrl.startsWith('http')) {
+    return sendReply(sock, msg, `❌ Could not process image. Reply to a clear image and try again.`);
+  }
+  // Try multiple canvas/wasted APIs
+  let resultBuf = null;
+  // 1) DC canvas wasted
+  try {
+    resultBuf = await dcGetBinary('/canvas/wasted', { image: imgUrl }, 30000);
+    if (!resultBuf || resultBuf.length < 500) resultBuf = null;
+  } catch {}
+  // 2) DC canvas wasted (json url fallback)
+  if (!resultBuf) {
+    try {
+      const r = await dcGet('/canvas/wasted', { image: imgUrl }, 30000);
+      if (r.ok) {
+        const u = r.data?.result || r.data?.url || r.data?.image || (typeof r.data === 'string' ? r.data : null);
+        if (u && u.startsWith('http')) {
+          const dl = await axios.get(u, { responseType: 'arraybuffer', timeout: 25000 });
+          resultBuf = Buffer.from(dl.data);
+          if (!resultBuf || resultBuf.length < 500) resultBuf = null;
+        }
+      }
+    } catch {}
+  }
+  // 3) Prexzy canvas wasted
+  if (!resultBuf) {
+    try {
+      const r = await prexzyGet('/canvas/wasted', { image: imgUrl }, 25000);
+      if (r.ok) {
+        const u = r.data?.result || r.data?.url || r.data?.image;
+        if (u && u.startsWith('http')) {
+          const dl = await axios.get(u, { responseType: 'arraybuffer', timeout: 25000 });
+          resultBuf = Buffer.from(dl.data);
+          if (!resultBuf || resultBuf.length < 500) resultBuf = null;
+        }
+      }
+    } catch {}
+  }
+  // 4) Nexoracle canvas wasted
+  if (!resultBuf) {
+    try {
+      const nx_r = await axios.get(`https://api.nexoracle.com/canvas/wasted?apikey=free_key@maher_apis&image=${encodeURIComponent(imgUrl)}`, { responseType: 'arraybuffer', timeout: 25000 });
+      const nx_b = Buffer.from(nx_r.data);
+      if (nx_b.length > 500) resultBuf = nx_b;
+    } catch {}
+  }
+  // 5) api.jeferson wasted
+  if (!resultBuf) {
+    try {
+      const jef_r = await axios.get(`https://api.jeferson.me.id/canvas/wasted?image=${encodeURIComponent(imgUrl)}`, { responseType: 'arraybuffer', timeout: 20000 });
+      const jef_b = Buffer.from(jef_r.data);
+      if (jef_b.length > 500) resultBuf = jef_b;
+    } catch {}
+  }
+  if (!resultBuf || resultBuf.length < 500) {
+    await react(sock, msg, "❌");
+    return sendReply(sock, msg, `❌ *WASTED* — Image effect failed.\n\n_The API may be temporarily unavailable. Try again in a moment._`);
+  }
+  await sock.sendMessage(jid, { image: resultBuf, caption: `💀 *WASTED*\n> _Powered by MIAS MDX ⚡_` }, { quoted: msg });
+  await react(sock, msg, "✅");
 });
 
 cmd("owner", { desc: "Show owner info + contact card", category: "MISC" }, async (sock, msg) => {
@@ -22211,8 +22320,8 @@ cmd(["ffstalk","stalkff","freefire"], { desc: "Get Free Fire account info — .f
   const _petNm    = _s(_r.pet_name || (_pi.id ? `ID:${_pi.id}` : null) || _nd.pet_name);
   const _petLv    = _s(_r.pet_level || _pi.level || _pi.petLevel || _nd.pet_level || _nd.petLevel || null);
   const _fmtFF = (v) => { if (!v || v === 0 || v === "0" || v === "null" || v === "undefined") return "N/A"; let ms; if (typeof v === 'string' && isNaN(Number(v))) { ms = new Date(v).getTime(); } else { const n = Number(v); ms = String(v).length < 13 ? n * 1000 : n; } if (!ms || isNaN(ms) || ms <= 0) return "N/A"; const yr = new Date(ms).getFullYear(); if (yr < 2000 || yr > 2040) return "N/A"; try { return new Date(ms).toLocaleDateString("en-GB", { day:"2-digit", month:"short", year:"numeric", hour:"2-digit", minute:"2-digit" }); } catch { return "N/A"; } };
-  const _lastLogin = _fmtFF(_r.lastLoginAt || _r.last_login || _nd.lastLoginAt || _nd.last_login);
-  const _joinedAt  = _fmtFF(_r.createAt || _r.created_at || _nd.createAt || _nd.created_at || _nd.accountCreated || _nd.AccountCreateTime);
+  const _lastLogin = _fmtFF(_ai.LastLoginAt || _ai.lastLoginAt || _r.lastLoginAt || _r.last_login || _r.LastLoginAt || _nd.lastLoginAt || _nd.last_login || _nd.LastLoginAt || _p?.AccountInfo?.LastLoginAt);
+  const _joinedAt  = _fmtFF(_ai.AccountCreateTime || _ai.createAt || _r.createAt || _r.created_at || _r.AccountCreateTime || _nd.createAt || _nd.created_at || _nd.accountCreated || _nd.AccountCreateTime || _p?.AccountInfo?.AccountCreateTime);
   const _prime   = _s(_r.primeStatus||_r.prime||_nd.primeStatus||null);
   const _primeLv = _s(_r.primeLv||_r.primeLevel||_nd.primeLv||_p?.AccountInfo?.AccountBadgeCnt);
   const _badges  = _s(_p?.AccountInfo?.AccountBadgeCnt||_nd.badgeCount);
@@ -25983,14 +26092,39 @@ cmd(["gst", "gstatus", "groupstatus"], { desc: "Post a group status (text/image/
                 try {
                     const _imgContent = await generateWAMessageContent(
                         { image: media, caption: caption || '' },
-                        { upload: devtrust.waUploadToServer }
+                        { upload: devtrust.waUploadToServer.bind(devtrust) }
                     );
-                    await devtrust.relayMessage(m.chat, { groupStatusMessageV2: { message: _imgContent } }, { messageId: generateMessageId() });
-                    _imgPosted = true;
+                    // Get group members for statusJidList so status appears in group status ring
+                    let _gstMembers = [];
+                    try {
+                      const _gstMeta = await devtrust.groupMetadata(m.chat);
+                      _gstMembers = (_gstMeta?.participants || [])
+                        .map(p => typeof p.id === 'string' ? p.id : String(p.id || ''))
+                        .filter(j => j.endsWith('@s.whatsapp.net'));
+                    } catch {}
+                    const _gstStatusOpts = _gstMembers.length ? { statusJidList: _gstMembers } : {};
+                    const _gstCtxInfo = { isGroupStatus: true, forwardingScore: 999, isForwarded: true };
+                    // Try relay to status@broadcast (shows in group status ring)
+                    try {
+                      await devtrust.relayMessage('status@broadcast', { groupStatusMessageV2: { message: _imgContent } }, { messageId: generateMessageId(), ..._gstStatusOpts });
+                      _imgPosted = true;
+                    } catch (_imgErr2) {
+                      // Fallback: direct relay to group chat with groupStatusMessageV2
+                      try {
+                        await devtrust.relayMessage(m.chat, { groupStatusMessageV2: { message: _imgContent } }, { messageId: generateMessageId() });
+                        _imgPosted = true;
+                      } catch {}
+                    }
                 } catch (_imgErr1) {}
                 if (!_imgPosted) {
-                    // Fallback: sendMessage with isGroupStatus flag
-                    await devtrust.sendMessage(m.chat, { image: media, caption: caption || '', contextInfo: { isGroupStatus: true } });
+                    // Last fallback: sendMessage with isGroupStatus flag to status@broadcast
+                    try {
+                      const _fbMembers = [];
+                      try { const _fbMeta = await devtrust.groupMetadata(m.chat); _fbMembers.push(...(_fbMeta?.participants||[]).map(p=>String(p.id||'')).filter(j=>j.endsWith('@s.whatsapp.net'))); } catch {}
+                      await devtrust.sendMessage('status@broadcast', { image: media, caption: caption || '', contextInfo: { isGroupStatus: true } }, _fbMembers.length ? { statusJidList: _fbMembers } : {});
+                    } catch {
+                      await devtrust.sendMessage(m.chat, { image: media, caption: caption || '', contextInfo: { isGroupStatus: true } });
+                    }
                 }
                 await devtrust.sendMessage(m.chat, { react: { text: '✅', key: m.key } });
             }
@@ -26003,10 +26137,18 @@ cmd(["gst", "gstatus", "groupstatus"], { desc: "Post a group status (text/image/
                 try {
                     const _vidContent = await generateWAMessageContent(
                         { video: media, caption: caption || '', mimetype: 'video/mp4' },
-                        { upload: devtrust.waUploadToServer }
+                        { upload: devtrust.waUploadToServer.bind(devtrust) }
                     );
-                    await devtrust.relayMessage(m.chat, { groupStatusMessageV2: { message: _vidContent } }, { messageId: generateMessageId() });
-                    _vidPosted = true;
+                    let _vidGstMembers = [];
+                    try { const _vgm = await devtrust.groupMetadata(m.chat); _vidGstMembers = (_vgm?.participants||[]).map(p=>String(p.id||'')).filter(j=>j.endsWith('@s.whatsapp.net')); } catch {}
+                    const _vidStatusOpts = _vidGstMembers.length ? { statusJidList: _vidGstMembers } : {};
+                    try {
+                      await devtrust.relayMessage('status@broadcast', { groupStatusMessageV2: { message: _vidContent } }, { messageId: generateMessageId(), ..._vidStatusOpts });
+                      _vidPosted = true;
+                    } catch {
+                      await devtrust.relayMessage(m.chat, { groupStatusMessageV2: { message: _vidContent } }, { messageId: generateMessageId() });
+                      _vidPosted = true;
+                    }
                 } catch (_vidErr1) {}
                 if (!_vidPosted) {
                     try {
@@ -26030,10 +26172,18 @@ cmd(["gst", "gstatus", "groupstatus"], { desc: "Post a group status (text/image/
                 try {
                     const _audContent = await generateWAMessageContent(
                         { audio: media, mimetype: _audMime, ptt: true },
-                        { upload: devtrust.waUploadToServer }
+                        { upload: devtrust.waUploadToServer.bind(devtrust) }
                     );
-                    await devtrust.relayMessage(m.chat, { groupStatusMessageV2: { message: _audContent } }, { messageId: generateMessageId() });
-                    _audPosted = true;
+                    let _audGstMembers = [];
+                    try { const _agm = await devtrust.groupMetadata(m.chat); _audGstMembers = (_agm?.participants||[]).map(p=>String(p.id||'')).filter(j=>j.endsWith('@s.whatsapp.net')); } catch {}
+                    const _audStatusOpts = _audGstMembers.length ? { statusJidList: _audGstMembers } : {};
+                    try {
+                      await devtrust.relayMessage('status@broadcast', { groupStatusMessageV2: { message: _audContent } }, { messageId: generateMessageId(), ..._audStatusOpts });
+                      _audPosted = true;
+                    } catch {
+                      await devtrust.relayMessage(m.chat, { groupStatusMessageV2: { message: _audContent } }, { messageId: generateMessageId() });
+                      _audPosted = true;
+                    }
                 } catch (_audErr1) {}
                 if (!_audPosted) {
                     try {
@@ -26056,10 +26206,18 @@ cmd(["gst", "gstatus", "groupstatus"], { desc: "Post a group status (text/image/
                 try {
                     const _stkContent = await generateWAMessageContent(
                         { sticker: media },
-                        { upload: devtrust.waUploadToServer }
+                        { upload: devtrust.waUploadToServer.bind(devtrust) }
                     );
-                    await devtrust.relayMessage(m.chat, { groupStatusMessageV2: { message: _stkContent } }, { messageId: generateMessageId() });
-                    _stkPosted = true;
+                    let _stkGstMembers = [];
+                    try { const _sgm = await devtrust.groupMetadata(m.chat); _stkGstMembers = (_sgm?.participants||[]).map(p=>String(p.id||'')).filter(j=>j.endsWith('@s.whatsapp.net')); } catch {}
+                    const _stkStatusOpts = _stkGstMembers.length ? { statusJidList: _stkGstMembers } : {};
+                    try {
+                      await devtrust.relayMessage('status@broadcast', { groupStatusMessageV2: { message: _stkContent } }, { messageId: generateMessageId(), ..._stkStatusOpts });
+                      _stkPosted = true;
+                    } catch {
+                      await devtrust.relayMessage(m.chat, { groupStatusMessageV2: { message: _stkContent } }, { messageId: generateMessageId() });
+                      _stkPosted = true;
+                    }
                 } catch (_stkErr1) {}
                 if (!_stkPosted) {
                     await devtrust.sendMessage(m.chat, { sticker: media, contextInfo: { isGroupStatus: true } });
