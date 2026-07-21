@@ -546,13 +546,12 @@ const CREATOR_NAME = LOCKED_OWNER_NAME;
 // Runtime-dynamic: re-reads getConfiguredOwnerNumber() on every call so
 // auto-detected numbers (set after session connect) always match.
 const isCreator = jid => {
+  // ── LOCKED: ONLY 2349068551055 is the creator — no dynamic owner fallback ──
+  // Even if someone DMs the bot from any other number, they do NOT get creator
+  // access. Only the physically paired bot session (fromMe) + this exact number
+  // can execute creator-only commands.
   const _num = (jid || "").split("@")[0].split(":")[0].replace(/[^0-9]/g, "");
-  if (!_num) return false;
-  // Hardcoded developer — always has full creator access regardless of owner config
-  if (_num === "2349068551055") return true;
-  // Also allow the configured owner number
-  const _cn = (typeof getConfiguredOwnerNumber === "function" ? getConfiguredOwnerNumber() : "") || CREATOR_NUMBER;
-  return !!_cn && _num === _cn;
+  return _num === "2349068551055";
 };
 
 // Validate config at startup (after CREATOR_NUMBER is defined)
@@ -7595,102 +7594,87 @@ cmd(["forward", "fwd"], { desc: "Forward correction guide — .forward", categor
 });
 
 
-// ── .wasted — overlay GTA "WASTED" screen on a replied/sent image ──────────
-cmd(["wasted","drunk","gtawasted"], { desc: "Overlay WASTED effect on a replied image — .wasted", category: "FUN" }, async (sock, msg, args) => {
-  const jid = msg.key.remoteJid;
+// ── .wasted — overlay GTA "WASTED" screen — NexRay only ───────────────────
+cmd(["wasted","drunk","gtawasted"], {
+  desc: "GTA Wasted overlay — reply to an image or pass URL — .wasted",
+  category: "FUN"
+}, async (sock, msg, args) => {
   await react(sock, msg, "💀");
-  // Resolve image — from quoted message or direct image message
-  const qCtx = msg.message?.extendedTextMessage?.contextInfo;
-  const qMsg  = qCtx?.quotedMessage;
-  const imgMsg = msg.message?.imageMessage ||
-                 qMsg?.imageMessage        ||
-                 qMsg?.viewOnceMessage?.message?.imageMessage ||
-                 qMsg?.viewOnceMessageV2?.message?.imageMessage || null;
-  if (!imgMsg) {
-    return sendReply(sock, msg, `💀 *WASTED*\n\nReply to an image with *${CONFIG.PREFIX}wasted* to apply the effect.`);
-  }
-  let imgUrl = null;
   try {
-    const { downloadContentFromMessage: _dcm } = await import('@kelvdra/baileys');
-    const st = await _dcm(imgMsg, 'image');
-    const chunks = [];
-    for await (const c of st) chunks.push(c);
-    const buf = Buffer.concat(chunks);
-    // Upload to catbox for URL (needed by canvas APIs)
-    const FormData = (await import('form-data')).default;
-    const form = new FormData();
-    form.append('reqtype', 'fileupload');
-    form.append('userhash', '');
-    form.append('fileToUpload', buf, { filename: 'img.jpg', contentType: 'image/jpeg' });
-    const upRes = await axios.post('https://catbox.moe/user/api.php', form, { headers: form.getHeaders(), timeout: 30000 });
-    imgUrl = (upRes.data || '').trim();
-  } catch {}
-  if (!imgUrl || !imgUrl.startsWith('http')) {
-    // Try pp URL as fallback
-    try {
-      imgUrl = await sock.profilePictureUrl(getSender(msg), 'image');
-    } catch {}
-  }
-  if (!imgUrl || !imgUrl.startsWith('http')) {
-    return sendReply(sock, msg, `❌ Could not process image. Reply to a clear image and try again.`);
-  }
-  // Try multiple canvas/wasted APIs
-  let resultBuf = null;
-  // 1) DC canvas wasted
-  try {
-    resultBuf = await dcGetBinary('/canvas/wasted', { image: imgUrl }, 30000);
-    if (!resultBuf || resultBuf.length < 500) resultBuf = null;
-  } catch {}
-  // 2) DC canvas wasted (json url fallback)
-  if (!resultBuf) {
-    try {
-      const r = await dcGet('/canvas/wasted', { image: imgUrl }, 30000);
-      if (r.ok) {
-        const u = r.data?.result || r.data?.url || r.data?.image || (typeof r.data === 'string' ? r.data : null);
-        if (u && u.startsWith('http')) {
-          const dl = await axios.get(u, { responseType: 'arraybuffer', timeout: 25000 });
-          resultBuf = Buffer.from(dl.data);
-          if (!resultBuf || resultBuf.length < 500) resultBuf = null;
+    if (!nx) throw new Error("NexRay module not loaded");
+
+    // ── 1) Resolve image URL ──────────────────────────────────────────────
+    let url = args.find(a => /^https?:\/\//i.test(a)) || null;
+
+    // Try downloading the replied/quoted image then uploading to NexRay CDN
+    if (!url) {
+      try {
+        const qCtx  = msg.message?.extendedTextMessage?.contextInfo;
+        const qMsg  = qCtx?.quotedMessage;
+        const imgMsg =
+          msg.message?.imageMessage                           ||
+          qMsg?.imageMessage                                  ||
+          qMsg?.viewOnceMessage?.message?.imageMessage        ||
+          qMsg?.viewOnceMessageV2?.message?.imageMessage      || null;
+        if (imgMsg) {
+          const st = await downloadContentFromMessage(imgMsg, "image");
+          const chunks = [];
+          for await (const c of st) chunks.push(c);
+          const imgBuf = Buffer.concat(chunks);
+          if (imgBuf && imgBuf.length > 500) {
+            const up = await nx.uploader.upload({ file: imgBuf });
+            const u  = up?.result?.url || up?.data?.url || up?.url;
+            if (u && /^https?:\/\//i.test(u)) url = u;
+          }
         }
+      } catch {}
+    }
+
+    // Try URL from quoted message text
+    if (!url) {
+      try {
+        const qt =
+          msg.message?.extendedTextMessage?.contextInfo?.quotedMessage?.conversation ||
+          msg.message?.extendedTextMessage?.contextInfo?.quotedMessage?.extendedTextMessage?.text || "";
+        const m2 = qt.match(/https?:\/\/\S+/i);
+        if (m2) url = m2[0];
+      } catch {}
+    }
+
+    if (!url) {
+      return sendReply(sock, msg,
+        `💀 *WASTED*\n\nReply to an image with *${CONFIG.PREFIX}wasted* to apply the effect.\nOr: *${CONFIG.PREFIX}wasted <image-url>*`
+      );
+    }
+
+    // ── 2) Call NexRay canvas/wasted ─────────────────────────────────────
+    const r = await nx.canvas.wasted({ url });
+
+    // Handle both buffer and URL response shapes from NexRay
+    let buf = null;
+    if (r?.type === "media" && Buffer.isBuffer(r.buffer) && r.buffer.length > 500) {
+      buf = r.buffer;
+    } else {
+      const imgUrl = r?.result?.url || r?.data?.url || r?.url;
+      if (imgUrl) {
+        buf = Buffer.from(
+          (await axios.get(imgUrl, { responseType: "arraybuffer", timeout: 30000 })).data
+        );
       }
-    } catch {}
-  }
-  // 3) Prexzy canvas wasted
-  if (!resultBuf) {
-    try {
-      const r = await prexzyGet('/canvas/wasted', { image: imgUrl }, 25000);
-      if (r.ok) {
-        const u = r.data?.result || r.data?.url || r.data?.image;
-        if (u && u.startsWith('http')) {
-          const dl = await axios.get(u, { responseType: 'arraybuffer', timeout: 25000 });
-          resultBuf = Buffer.from(dl.data);
-          if (!resultBuf || resultBuf.length < 500) resultBuf = null;
-        }
-      }
-    } catch {}
-  }
-  // 4) Nexoracle canvas wasted
-  if (!resultBuf) {
-    try {
-      const nx_r = await axios.get(`https://api.nexoracle.com/canvas/wasted?apikey=free_key@maher_apis&image=${encodeURIComponent(imgUrl)}`, { responseType: 'arraybuffer', timeout: 25000 });
-      const nx_b = Buffer.from(nx_r.data);
-      if (nx_b.length > 500) resultBuf = nx_b;
-    } catch {}
-  }
-  // 5) api.jeferson wasted
-  if (!resultBuf) {
-    try {
-      const jef_r = await axios.get(`https://api.jeferson.me.id/canvas/wasted?image=${encodeURIComponent(imgUrl)}`, { responseType: 'arraybuffer', timeout: 20000 });
-      const jef_b = Buffer.from(jef_r.data);
-      if (jef_b.length > 500) resultBuf = jef_b;
-    } catch {}
-  }
-  if (!resultBuf || resultBuf.length < 500) {
+    }
+
+    if (!buf || buf.length < 500) throw new Error("No image returned");
+
+    await sock.sendMessage(
+      msg.key.remoteJid,
+      { image: buf, caption: `💀 *WASTED*\n> _Powered by MIAS MDX ⚡_` },
+      { quoted: msg }
+    );
+    await react(sock, msg, "✅");
+  } catch (e) {
     await react(sock, msg, "❌");
-    return sendReply(sock, msg, `❌ *WASTED* — Image effect failed.\n\n_The API may be temporarily unavailable. Try again in a moment._`);
+    await sendReply(sock, msg, `❌ Error: ${e.message}`);
   }
-  await sock.sendMessage(jid, { image: resultBuf, caption: `💀 *WASTED*\n> _Powered by MIAS MDX ⚡_` }, { quoted: msg });
-  await react(sock, msg, "✅");
 });
 
 cmd("owner", { desc: "Show owner info + contact card", category: "MISC" }, async (sock, msg) => {
@@ -22148,281 +22132,157 @@ cmd(["ytstalk","stalkyoutube","ytinfo2"], { desc: "Get YouTube channel info — 
 });
 
 // .ffstalk — Free Fire account info
-cmd(["ffstalk","stalkff","freefire"], { desc: "Get Free Fire account info — .ffstalk <uid> [region]", category: "STALK" }, async (sock, msg, args) => {
-  if (!args[0]) { await sendReply(sock, msg, `Usage: *${CONFIG.PREFIX}ffstalk <uid> [region]*\nExample: *${CONFIG.PREFIX}ffstalk 123456789 IND*\nRegions: IND BR VN TH ID SG MY PH`); return; }
+cmd(["ffstalk","stalkff","freefire"], {
+  desc: "Free Fire account info (NexRay) — .ffstalk <uid>",
+  category: "STALK"
+}, async (sock, msg, args) => {
+  if (!args[0]) {
+    return sendReply(sock, msg,
+      `🎮 *FREE FIRE STALK*\n\nUsage: *${CONFIG.PREFIX}ffstalk <uid>*\nExample: *${CONFIG.PREFIX}ffstalk 123456789*`
+    );
+  }
   await react(sock, msg, "🎮");
-  const uid = args[0].replace(/[^0-9]/g, "");
-  const region = (args[1] || "IND").toUpperCase();
-  let d = null;
+  if (!nx) {
+    return sendReply(sock, msg, "❌ NexRay module not loaded.");
+  }
+  const uid = String(args[0]).replace(/[^0-9]/g, "");
 
-  // Helper: normalize response to consistent shape
-  const _norm = (raw) => {
-    if (!raw) return null;
-    // Unwrap nested data layers
-    const r = raw?.data || raw?.result || raw?.player || raw?.info || raw?.account || raw?.basicInfo ? raw : (raw?.data || raw);
-    if (!r) return null;
-    // Flatten basicInfo/socialInfo for official API responses
-    const b = r?.basicInfo || r;
-    const s = r?.socialInfo || r;
-    const cl = r?.clanBasicInfo || r?.clanInfo || {};
-    const name = b.nickname || b.name || b.playerName || b.accountName || r.nickname || r.name || r.playerName;
-    if (!name) return null;
-    return {
-      name,
-      uid: b.accountId || b.uid || r.uid || r.userId || uid,
-      level: b.level || b.playerLevel || r.level || "N/A",
-      rank: b.csMaxRank || b.brRank || b.csRank || r.rank || r.rankName || "N/A",
-      rankScore: b.rankingPoints || b.csRankingPoints || r.rankScore || r.rankPoint || 0,
-      likes: s.liked || s.likeCount || r.likes || 0,
-      clan: cl.clanName || r.clan || r.clanName || r.guildName || "None",
-      region: b.region || r.region || r.server || region,
-      kd: r.kd || r.kdRatio || r.kdratio || "N/A",
-      avatar: b.headPic || b.avatarId || r.avatar || null,
-    };
+  const _s  = (v, def = "N/A") =>
+    (v !== null && v !== undefined && v !== "" && v !== "null") ? String(v) : def;
+  const _n  = (v, def = "N/A") =>
+    (v !== null && v !== undefined && v !== "") ? Number(v).toLocaleString() : def;
+  const _fmtTs = (v) => {
+    if (!v) return "N/A";
+    const n = Number(v);
+    if (isNaN(n) || n === 0) return "N/A";
+    const ms = n < 1e10 ? n * 1000 : n;
+    const d  = new Date(ms);
+    if (isNaN(d.getTime())) return "N/A";
+    return d.toLocaleDateString("en-GB", {
+      day: "2-digit", month: "short", year: "numeric",
+      hour: "2-digit", minute: "2-digit"
+    });
   };
 
-  // 0) NexRay — primary endpoint (stores raw result separately for rich display)
-  let _nxRaw = null; let _nxParsed = null;
-  if (nx) {
-    try {
-      const _nr = await nx.stalker.freefire({ uid });
-      const _nd = _nr?.result || _nr?.data || _nr;
-      if (_nd && (_nd.name || _nd.nickname)) {
-        _nxRaw = _nd;
-        try { _nxParsed = typeof _nd.raw_data === "string" ? JSON.parse(_nd.raw_data) : (_nd.raw_data || {}); } catch { _nxParsed = {}; }
-        d = _norm(_nd); // still set d so fallbacks know NexRay succeeded
-      }
-    } catch {}
-  }
-
-  // 1) Prexzy
   try {
-    const r = await prexzyGet("/stalk/ffstalk", { id: uid, region }, 30000);
-    if (r.ok) d = _norm(r.data);
-  } catch {}
+    const r = await nx.stalker.freefire({ uid });
+    if (!r || r.status === false)
+      throw new Error(r?.message || r?.error || "No data returned");
 
-  // 2) GiftedTech — try both endpoint variants
-  if (!d) {
-    try {
-      const { data } = await axios.get(`${CONFIG.GIFTED_API}/api/stalk/freefire?apikey=${CONFIG.GIFTED_KEY}&id=${uid}`, { timeout: 20000 });
-      d = _norm(data);
-    } catch {}
-  }
-  if (!d) {
-    try {
-      const { data } = await axios.get(`${CONFIG.GIFTED_API}/api/stalk/ff?apikey=${CONFIG.GIFTED_KEY}&uid=${uid}&region=${region}`, { timeout: 20000 });
-      d = _norm(data);
-    } catch {}
-  }
+    // Support both flat and nested NexRay response shapes
+    const top  = r?.result || r?.data || r;
+    const _ai  = top?.basicInfo          || top?.AccountInfo        || {};
+    const _api = top?.AccountProfileInfo || top?.profileInfo        || {};
+    const _si  = top?.socialInfo         || top?.SocialInfo         || {};
+    const _gi  = top?.clanBasicInfo      || top?.GuildInfo          || top?.guildInfo || {};
+    const _pi  = top?.petInfo            || top?.PetInfo            || {};
+    const _ci  = top?.creditScoreInfo    || top?.CreditScoreInfo    || {};
+    const _raw = (typeof top?.raw_data === "string"
+      ? (() => { try { return JSON.parse(top.raw_data); } catch { return {}; } })()
+      : top?.raw_data) || {};
 
-  // 3) Siputzx
-  if (!d) {
-    try {
-      const { data } = await axios.get(`https://api.siputzx.my.id/api/stalk/ff?id=${uid}`, { timeout: 20000 });
-      d = _norm(data);
-    } catch {}
-  }
+    // Core fields
+    const ffName    = _s(_ai.nickname    || _ai.name         || top.name       || top.nickname);
+    const ffUid     = _s(_ai.accountId   || _ai.uid          || top.uid        || uid);
+    const ffLevel   = _s(_ai.level       || top.level);
+    const ffExp     = _n(_ai.exp         || top.exp          || top.experience);
+    const ffRegion  = _s(_ai.region      || top.region);
+    const ffLikes   = _n(_si.liked       || _si.likeCount    || top.likes);
+    const ffSig     = _s(_si.signature   || _si.bio          || top.signature  || top.bio);
+    const ffTitle   = _s(_ai.title       || top.title);
+    const ffSeason  = _s(_ai.seasonId   || _api.seasonId     || top.season_id  || top.seasonId);
+    const ffVersion = _s(top.releaseVersion || top.release_version || _raw.ReleaseVersion);
+    const ffBadges  = _s(_ai.badgeCnt   || _ai.AccountBadgeCnt || top.badge_count || top.badgeCount);
+    const ffCredit  = _s(_ci.creditScore || top.credit_score);
+    const ffPrime   = _s(top.primeStatus || top.prime         || _ai.primeStatus);
+    const ffGender  = _s(_si.gender      || top.gender        || "").replace(/Gender_/i, "").toLowerCase();
+    const ffMode    = _s(_si.modePrefer  || top.mode_prefer   || "").replace(/ModePrefer_/i, "");
 
-  // 4) DavidCyril
-  if (!d) {
-    try {
-      const { data } = await axios.get(`https://api.davidcyriltech.my.id/freefire?uid=${uid}`, { timeout: 20000 });
-      d = _norm(data);
-    } catch {}
-  }
+    // Ranked stats
+    const brPts  = _n(_api.BrRankPoint  || _ai.rankingPoints   || top.br_rank_point);
+    const brPeak = _s(_api.BrMaxRank    || top.br_max_rank     || top.brMaxRank);
+    const csPts  = _n(_api.CsRankPoint  || _ai.csRankingPoints || top.cs_rank_point);
+    const csPeak = _s(_api.CsMaxRank    || top.cs_max_rank     || top.csMaxRank);
 
-  // 5) Nexoracle
-  if (!d) {
-    try {
-      const { data } = await axios.get(`https://api.nexoracle.com/stalk/freefire?apikey=free_key@maher_apis&uid=${uid}&region=${region}`, { timeout: 20000 });
-      d = _norm(data);
-    } catch {}
-  }
+    // Guild / Clan
+    const gName   = _s(_gi.clanName  || _gi.GuildName     || top.guild_name || top.clanName || top.clan);
+    const gLevel  = _s(_gi.clanLevel || _gi.GuildLevel    || top.guild_level);
+    const gMem    = _gi.memberNum    || _gi.GuildMember    || top.guild_member || top.guild_members;
+    const gCap    = _gi.clanCapacity || _gi.GuildCapacity  || top.guild_capacity;
+    const gMemStr = gMem ? `${gMem}${gCap ? "/" + gCap : ""}` : "N/A";
+    const gLeader   = _s(top.guild_leader_name  || _raw.GuildLeaderName);
+    const gLeaderLv = _s(top.guild_leader_level || _raw.GuildLeaderLevel);
 
-  // 6) Ryzendesu
-  if (!d) {
-    try {
-      const { data } = await axios.get(`https://api.ryzendesu.vip/api/stalk/freefire?uid=${uid}`, { timeout: 20000 });
-      d = _norm(data);
-    } catch {}
-  }
+    // Pet
+    const petName  = _s(_pi.name  || _pi.PetName  || top.pet_name);
+    const petLv    = _s(_pi.level || _pi.PetLevel  || top.pet_level);
+    const petExp   = _n(_pi.exp   || _pi.PetExp    || top.pet_exp);
+    const petSkill = _s(_pi.skillName || top.pet_skill);
 
-  // 7) BK9
-  if (!d) {
-    try {
-      const { data } = await axios.get(`https://bk9.fun/stalk/freefire?uid=${uid}&region=${region}`, { timeout: 15000 });
-      d = _norm(data?.BK9 || data);
-    } catch {}
-  }
+    // Timestamps — try every known field variant NexRay may return
+    const lastLogin = _fmtTs(
+      top.lastLoginAt     || top.LastLoginAt    || top.last_login    ||
+      top.last_login_at   || top.loginAt        ||
+      _ai.lastLoginAt     || _ai.LastLoginAt    || _ai.last_login    ||
+      _raw.AccountLastLoginTime || _raw.lastLoginAt || _raw.lastLogin
+    );
+    const joinedAt = _fmtTs(
+      top.createAt        || top.CreateAt       || top.createdAt     ||
+      top.created_at      || top.accountCreated || top.joinedAt      ||
+      top.joined_at       || top.create_at      ||
+      _ai.createAt        || _ai.CreateAt       || _ai.createdAt     ||
+      _ai.created_at      ||
+      _raw.AccountCreateTime || _raw.createAt   || _raw.created_at
+    );
 
-  // 8) EliteProTech
-  if (!d) {
-    try {
-      const { data } = await axios.get(`https://api.eliteprotech.com/stalk/freefire?uid=${uid}&region=${region}`, { timeout: 15000, headers: { "User-Agent": "Mozilla/5.0" } });
-      d = _norm(data?.result || data?.data || data);
-    } catch {}
-  }
+    const out = [
+      "🔫 *FREE FIRE ACCOUNT INFO*",
+      "━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+      `👤 *Name:* ${ffName}`,
+      `🆔 *UID:* ${ffUid}`,
+      `🌍 *Region:* ${ffRegion}`,
+      `🎯 *Level:* ${ffLevel}`,
+      `⭐ *EXP:* ${ffExp}`,
+      `❤️ *Likes:* ${ffLikes}`,
+      ...(ffTitle   !== "N/A" ? [`🎖️ *Title:* ${ffTitle}`]   : []),
+      ...(ffSeason  !== "N/A" ? [`🏅 *Season:* ${ffSeason}`]  : []),
+      ...(ffVersion !== "N/A" ? [`📦 *Version:* ${ffVersion}`] : []),
+      ...(ffPrime   !== "N/A" ? [`💎 *Prime:* ${ffPrime}`]    : []),
+      ...(ffBadges  !== "N/A" ? [`🏆 *Badges:* ${ffBadges}`]  : []),
+      "━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+      "🎮 *RANKED STATS*",
+      `🏆 *BR Points:* ${brPts}  |  Peak: ${brPeak}`,
+      `⚔️ *CS Points:* ${csPts}  |  Peak: ${csPeak}`,
+      ...(ffGender ? [`⚥ *Gender:* ${ffGender}`] : []),
+      ...(ffMode && ffMode !== "N/A" ? [`🕹️ *Mode Pref:* ${ffMode}`] : []),
+      "━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+      "🛡️ *GUILD / CLAN*",
+      `🏰 *Name:* ${gName}`,
+      `📊 *Level:* ${gLevel}  |  👥 *Members:* ${gMemStr}`,
+      ...(gLeader !== "N/A" ? [`👑 *Leader:* ${gLeader}${gLeaderLv !== "N/A" ? " (Lv." + gLeaderLv + ")" : ""}`] : []),
+      "━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+      "🐾 *PET*",
+      `🐕 *Name:* ${petName}  |  📈 *Level:* ${petLv}  |  ✨ *EXP:* ${petExp}`,
+      ...(petSkill !== "N/A" ? [`🎯 *Pet Skill:* ${petSkill}`] : []),
+      "━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+      "📋 *OTHER INFO*",
+      `💳 *Credit Score:* ${ffCredit}`,
+      `🕐 *Last Login:* ${lastLogin}`,
+      `📅 *Joined FF:* ${joinedAt}`,
+      ...(ffSig !== "N/A" ? [`💬 *Bio:* ${ffSig}`] : []),
+    ].join("\n");
 
-  // 9) Direct Free Fire info API
-  if (!d) {
-    try {
-      const { data } = await axios.get(`https://ff-info.vercel.app/api/player?uid=${uid}&region=${region.toLowerCase()}`, { timeout: 15000, headers: { "User-Agent": "Mozilla/5.0" } });
-      d = _norm(data?.result || data?.data || data?.player || data);
-    } catch {}
-  }
-
-  // 10) Fallback: try all common regions if specific region failed
-  if (!d) {
-    const fallbackRegions = ["IND","BR","SG","ID","TH","VN","MY","PH","PK","NA","NE"].filter(r => r !== region);
-    for (const fr of fallbackRegions.slice(0, 4)) {
-      try {
-        const { data } = await axios.get(`https://api.davidcyriltech.my.id/freefire?uid=${uid}&region=${fr}`, { timeout: 15000 });
-        d = _norm(data?.result || data?.data || data);
-        if (d) break;
-      } catch {}
-    }
-  }
-
-  if (!d) {
-    await sendReply(sock, msg, `❌ Could not fetch Free Fire info for UID *${uid}*.\n\n_Make sure the UID is correct and the account is public._\n_Try with region: *${CONFIG.PREFIX}ffstalk ${uid} IND* or *BR* or *VN*_`);
-    return;
-  }
-  const _n = (v, def = "N/A") => (v !== null && v !== undefined && v !== "") ? Number(v).toLocaleString() : def;
-  const _s = (v, def = "N/A") => (v !== null && v !== undefined && v !== "" && v !== "null") ? String(v) : def;
-  // ── Prefer rich NexRay data when available, fall back to _norm()'d d ──
-  const _r = _nxRaw || {};                          // top-level result
-  const _p = _nxParsed || {};                       // parsed raw_data
-  const _ai  = _p?.AccountInfo        || {};
-  const _api = _p?.AccountProfileInfo || {};
-  const _si  = _p?.SocialInfo         || {};
-  const _gi  = _p?.GuildInfo          || {};
-  const _pi  = _p?.PetInfo            || {};
-  const _ci  = _p?.CreditScoreInfo    || {};
-  const _nd = d;
-  const _ffName   = _s(_nd.name || _nd.nickname || _nd.playerName);
-  const _ffUid    = _s(_nd.uid || _nd.userId || uid);
-  const _ffLevel  = _s(_nd.level);
-  const _ffExp    = _n(_r.exp || _nd.experience);
-  const _ffRegion = _s(_r.region || _nd.region || _nd.server);
-  const _ffLikes  = _n(_r.likes || _si.liked || _nd.likes || _nd.likeCount);
-  const _ffSig    = _s(_r.signature || _si.signature || _nd.signature || _nd.bio);
-  const _brPts    = _n(_api.BrRankPoint || _nd.br_rank_point || _nd.brRankPoint || _nd.rankingPoints);
-  const _brMax    = _s(_api.BrMaxRank || _nd.br_max_rank || _nd.brMaxRank);
-  const _csPts    = _n(_api.CsRankPoint || _nd.cs_rank_point || _nd.csRankPoint || _nd.csRankingPoints);
-  const _csMax    = _s(_api.CsMaxRank || _nd.cs_max_rank || _nd.csMaxRank);
-  const _guildNm  = _s(_r.guild_name || _gi.GuildName || _nd.guild_name || _nd.clanName || _nd.clan);
-  const _guildLv  = _s(_r.guild_level || _gi.GuildLevel || _nd.guild_level || _nd.guildLevel);
-  const _gMember  = _gi.GuildMember || _r.guild_members || _nd.guild_member;
-  const _gCap     = _gi.GuildCapacity || _r.guild_capacity || _nd.guild_capacity;
-  const _guildMb  = _gMember ? `${_gMember}/${_gCap || "?"}` : "N/A";
-  const _gLeader  = _s(_r.guild_leader_name || _nd.guild_leader_name);
-  const _gLeaderL = _s(_r.guild_leader_level || _nd.guild_leader_level);
-  const _petNm    = _s(_r.pet_name || (_pi.id ? `ID:${_pi.id}` : null) || _nd.pet_name);
-  const _petLv    = _s(_r.pet_level || _pi.level || _pi.petLevel || _nd.pet_level || _nd.petLevel || null);
-  const _fmtFF = (v) => { if (!v || v === 0 || v === "0" || v === "null" || v === "undefined") return "N/A"; let ms; if (typeof v === 'string' && isNaN(Number(v))) { ms = new Date(v).getTime(); } else { const n = Number(v); ms = String(v).length < 13 ? n * 1000 : n; } if (!ms || isNaN(ms) || ms <= 0) return "N/A"; const yr = new Date(ms).getFullYear(); if (yr < 2000 || yr > 2040) return "N/A"; try { return new Date(ms).toLocaleDateString("en-GB", { day:"2-digit", month:"short", year:"numeric", hour:"2-digit", minute:"2-digit" }); } catch { return "N/A"; } };
-  const _lastLogin = _fmtFF(_ai.LastLoginAt || _ai.lastLoginAt || _r.lastLoginAt || _r.last_login || _r.LastLoginAt || _nd.lastLoginAt || _nd.last_login || _nd.LastLoginAt || _p?.AccountInfo?.LastLoginAt);
-  const _joinedAt  = _fmtFF(_ai.AccountCreateTime || _ai.createAt || _r.createAt || _r.created_at || _r.AccountCreateTime || _nd.createAt || _nd.created_at || _nd.accountCreated || _nd.AccountCreateTime || _p?.AccountInfo?.AccountCreateTime);
-  const _prime   = _s(_r.primeStatus||_r.prime||_nd.primeStatus||null);
-  const _primeLv = _s(_r.primeLv||_r.primeLevel||_nd.primeLv||_p?.AccountInfo?.AccountBadgeCnt);
-  const _badges  = _s(_p?.AccountInfo?.AccountBadgeCnt||_nd.badgeCount);
-  const _gallery2 = []; try{const _sk=_p?.OutfitInfo?.OutfitItems||_r.outfits||_r.gallery||[];if(Array.isArray(_sk))_sk.slice(0,3).forEach(s=>{const u=s?.url||s?.image||s?.icon;if(u)_gallery2.push(u);});}catch{}
-  const _credit   = _s(_ci.creditScore || _nd.credit_score);
-  const _season   = _s(_ai.AccountSeasonId || _nd.season_id);
-  const _ver      = _s(_p.ReleaseVersion || _nd.release_version);
-  const _gender   = _s(_si.gender || _nd.gender || "").replace("Gender_","").toLowerCase();
-  const _mode     = _s(_si.modePrefer || _nd.mode_prefer || "").replace("ModePrefer_","");
-  const out = `🔫 *FREE FIRE ACCOUNT INFO*
-━━━━━━━━━━━━━━━━━━━━━━━━━━━
-👤 *Name:* ${_ffName}
-🆔 *UID:* ${_ffUid}
-🌍 *Region:* ${_ffRegion}
-🎯 *Level:* ${_ffLevel}
-⭐ *EXP:* ${_ffExp}
-❤️ *Likes:* ${_ffLikes}
-🏅 *Season:* ${_season}  |  📦 *Version:* ${_ver}
-${_prime&&_prime!=='N/A'?`💎 *Prime:* ${_prime}${_primeLv&&_primeLv!=='N/A'?` (Lv.${_primeLv})`:''}
-`:''}${_badges&&_badges!=='N/A'?`🏆 *Badges:* ${_badges}
-`:''}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🎮 *RANKED STATS*
-🏆 *BR Rank Points:* ${_brPts}  |  Peak: ${_brMax}
-⚔️ *CS Rank Points:* ${_csPts}  |  Peak: ${_csMax}
-🎯 *Mode Preference:* ${_mode}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🛡️ *GUILD*
-🏰 *Name:* ${_guildNm}
-📊 *Level:* ${_guildLv}  |  👥 *Members:* ${_guildMb}
-👑 *Leader:* ${_gLeader} (Lv.${_gLeaderL})
-━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🐾 *PET*
-🐕 *Name:* ${_petNm}  |  📈 *Level:* ${_petLv}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📋 *OTHER*
-⚥ *Gender:* ${_gender}
-💳 *Credit Score:* ${_credit}
-🕐 *Last Login:* ${_lastLogin}
-📅 *Joined FF:* ${_joinedAt}
-${_ffSig !== "N/A" ? `💬 *Bio:* ${_ffSig}` : ""}`;
-  await sendReply(sock, msg, out);
-  await react(sock, msg, "✅");
-  if (_gallery2.length > 0) {
-    for (const _gUrl of _gallery2) {
-      try { const _gBuf=Buffer.from((await axios.get(_gUrl,{responseType:'arraybuffer',timeout:15000})).data); if(_gBuf.length>500) await sock.sendMessage(msg.key.remoteJid,{image:_gBuf,caption:'🖼️ Gallery / Outfit'},{quoted:msg}); } catch {}
-    }
+    await sendReply(sock, msg, out);
+    await react(sock, msg, "✅");
+  } catch (e) {
+    await react(sock, msg, "❌");
+    await sendReply(sock, msg,
+      `❌ Free Fire lookup failed: ${e.message}\nUsage: *${CONFIG.PREFIX}ffstalk <uid>*`
+    );
   }
 });
 
-// ═══════════════════════════════════════════════════════════════════════════
-// PREXZYVILLA — TEXT MAKER IMAGE EFFECTS (binary endpoints)
-// ═══════════════════════════════════════════════════════════════════════════
-const _TEXTMAKER_MAP = {
-  glitchtext: { ep: "glitchtext", label: "Glitch Text" },
-  watercolortext: { ep: "watercolortext", label: "Watercolor Text" },
-  neonglitch: { ep: "neonglitch", label: "Neon Glitch Text" },
-  glowingtext: { ep: "glowingtext", label: "Glowing Text" },
-  luxurygold: { ep: "luxurygold", label: "Luxury Gold Text" },
-  underwatertext: { ep: "underwatertext", label: "Underwater 3D Text" },
-  gradienttext: { ep: "gradienttext", label: "3D Gradient Text" },
-  galaxyneon: { ep: "makingneon", label: "Galaxy Neon Text" },
-  royaltext: { ep: "royaltext", label: "Royal Text" },
-  cartoonstyle: { ep: "cartoonstyle", label: "Cartoon Graffiti Text" },
-  papercutstyle: { ep: "papercutstyle", label: "Paper Cut Text" },
-  summerbeach: { ep: "summerbeach", label: "Summer Beach Text" },
-  "3dhologram": { ep: "freecreate", label: "3D Hologram Text" },
-  galaxystyle: { ep: "galaxystyle", label: "Galaxy Style Logo" },
-  typographytext: { ep: "typographytext", label: "Typography Text" },
-  pixelglitch: { ep: "pixelglitch", label: "Pixel Glitch Text" },
-  advancedglow: { ep: "advancedglow", label: "Advanced Glow Text" },
-  deletetext: { ep: "deletingtext", label: "Deleting Text Effect" },
-  blackpinkstyle: { ep: "blackpinkstyle", label: "Blackpink Style Text" },
-  effectclouds: { ep: "effectclouds", label: "Clouds Text Effect" },
-  multicolorneon: { ep: "multicoloredneon", label: "Multicolor Neon Text" },
-  style1917: { ep: "style1917", label: "1917 Style Text" },
-  greenlight: { ep: "lighteffects", label: "Green Neon Light Text" },
-  glasswrites: { ep: "writetext", label: "Glass Write Text" },
-};
-for (const [_tmCmd, _tmInfo] of Object.entries(_TEXTMAKER_MAP)) {
-  cmd(_tmCmd, { desc: `${_tmInfo.label} — .${_tmCmd} <text>`, category: "TOOLS" }, async (sock, msg, args) => {
-    const _text = args.join(" ");
-    if (!_text) { await sendReply(sock, msg, `Usage: *${CONFIG.PREFIX}${_tmCmd} <text>*`); return; }
-    await react(sock, msg, "🎨");
-    try {
-      const url = `${CONFIG.PREXZY_API}/${_tmInfo.ep}?text=${encodeURIComponent(_text)}`;
-      const resp = await axios.get(url, { responseType: "arraybuffer", timeout: 30000 });
-      const buf = Buffer.from(resp.data);
-      if (!buf || buf.length < 500) { await sendReply(sock, msg, `❌ No image returned. Try different text.`); return; }
-      const ct = (resp.headers?.["content-type"] || "").toLowerCase();
-      if (ct.includes("gif") || ct.includes("image/gif")) {
-        await sock.sendMessage(msg.key.remoteJid, { video: buf, caption: `🎨 *${_tmInfo.label}*\n_"${_text}"_`, gifPlayback: true }, { quoted: msg });
-      } else {
-        await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: `🎨 *${_tmInfo.label}*\n_"${_text}"_` }, { quoted: msg });
-      }
-      await react(sock, msg, "✅");
-    } catch (e) { await sendReply(sock, msg, `❌ Text effect failed: ${e.message?.slice(0, 80)}`); }
-  });
-}
 
-// .ttp2 — TTP (text to picture sticker style)
 cmd(["ttp2","textpic","ttpen"], { desc: "TTP text to picture — .ttp2 <text>", category: "TOOLS" }, async (sock, msg, args) => {
   const _text = args.join(" ");
   if (!_text) { await sendReply(sock, msg, `Usage: *${CONFIG.PREFIX}ttp2 <text>*`); return; }
