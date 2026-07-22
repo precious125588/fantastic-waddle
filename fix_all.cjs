@@ -396,6 +396,84 @@ bot.on('polling_error', function (err) {
   console.log('[fix_all] FIX-4: restored ' + restored + '/' + FILES.length + ' nexstore module files. ✓');
 })();
 
+// ─────────────────────────────────────────────────────────────────────────────
+// FIX 5 — ESM/CJS Interop: ensure mias/handlers/bridge.cjs is executable
+//
+// The bridge file is what lets case.js and nexray_bot.cjs (CommonJS) access
+// the ESM handler system via globalThis.__MIAS__.
+// This fix verifies it exists and is not corrupted.
+// ─────────────────────────────────────────────────────────────────────────────
+(function ensureHandlerBridge() {
+  const bridgePath = path.join(__dirname, 'mias', 'handlers', 'bridge.cjs');
+  if (!fs.existsSync(bridgePath)) {
+    console.warn('[fix_all] FIX-5: mias/handlers/bridge.cjs not found — skipping bridge check.');
+    return;
+  }
+  try {
+    const content = fs.readFileSync(bridgePath, 'utf8');
+    if (!content.includes('__MIAS__') || !content.includes('module.exports')) {
+      console.warn('[fix_all] FIX-5: bridge.cjs appears corrupted or missing key exports.');
+    } else {
+      console.log('[fix_all] FIX-5: handler bridge.cjs OK ✓');
+    }
+  } catch (e) {
+    console.warn('[fix_all] FIX-5: could not read bridge.cjs:', e.message);
+  }
+})();
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FIX 6 — ESM/CJS: ensure mias/package.json has "type":"module"
+//
+// If the mias sub-package's package.json is missing or has the wrong type,
+// Node will try to execute ESM files as CommonJS and crash.
+// ─────────────────────────────────────────────────────────────────────────────
+(function ensureMiasPackageType() {
+  const pkgPath = path.join(__dirname, 'mias', 'package.json');
+  if (!fs.existsSync(pkgPath)) {
+    console.warn('[fix_all] FIX-6: mias/package.json not found — skip.');
+    return;
+  }
+  try {
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+    if (pkg.type !== 'module') {
+      pkg.type = 'module';
+      fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2), 'utf8');
+      console.log('[fix_all] FIX-6: mias/package.json — added "type":"module" ✓');
+    } else {
+      console.log('[fix_all] FIX-6: mias/package.json type=module already set ✓');
+    }
+  } catch (e) {
+    console.warn('[fix_all] FIX-6:', e.message);
+  }
+})();
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FIX 7 — ESM handler guard: gktwAdapter.js safe import of @itsreimau/gktw
+//
+// If gktw isn't installed, the adapter gracefully falls back to Baileys.
+// This fix just logs a notice so the admin knows which layer is active.
+// ─────────────────────────────────────────────────────────────────────────────
+(function logGktwStatus() {
+  const gktwAdapterPath = path.join(__dirname, 'mias', 'handlers', 'gktwAdapter.js');
+  if (!fs.existsSync(gktwAdapterPath)) {
+    console.warn('[fix_all] FIX-7: gktwAdapter.js not found.');
+    return;
+  }
+  try {
+    // Check if gktw is in node_modules
+    const miasNodeModules = path.join(__dirname, 'mias', 'node_modules', '@itsreimau', 'gktw');
+    const rootNodeModules = path.join(__dirname, 'node_modules', '@itsreimau', 'gktw');
+    const gktwInstalled = fs.existsSync(miasNodeModules) || fs.existsSync(rootNodeModules);
+    if (gktwInstalled) {
+      console.log('[fix_all] FIX-7: @itsreimau/gktw detected — GKTW layer ACTIVE ✓');
+    } else {
+      console.log('[fix_all] FIX-7: @itsreimau/gktw not installed — using Baileys fallback (normal operation)');
+    }
+  } catch (e) {
+    console.warn('[fix_all] FIX-7:', e.message);
+  }
+})();
+
 console.log('[fix_all] All done.\n');
 
 } catch (_outerErr) {

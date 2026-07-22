@@ -71,10 +71,11 @@ export async function viewOnce(sock, msg) {
       return;
     }
     await reactNix(sock, msg, '👁️');
-    const { downloadContentFromMessage } = await import('@whiskeysockets/baileys');
+    // Route through MIAS handler — no direct Baileys import
+    const { downloadContentFromMessage: _dlContent } = await import('../../handlers/gktwAdapter.js');
     const mediaMsg = imageMsg || videoMsg;
     const type = imageMsg ? 'image' : 'video';
-    const stream = await downloadContentFromMessage(mediaMsg, type);
+    const stream = await _dlContent(mediaMsg, type);
     const chunks = [];
     for await (const chunk of stream) chunks.push(chunk);
     const buf = Buffer.concat(chunks);

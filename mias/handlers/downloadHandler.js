@@ -1,95 +1,164 @@
 /**
  * MIAS — Download Handler
- * Centralized media download abstraction using @itsliaaa/baileys.
- * Commands should call these instead of using downloadContentFromMessage directly.
+ *
+ * Centralized media download abstraction.
+ * Commands must never call downloadContentFromMessage directly.
+ *
+ * Architecture:  Commands → Handlers → Baileys Adapter → WhatsApp
  */
+
+import { downloadContentFromMessage as _dlContent, getContentType } from "./gktwAdapter.js";
+import { fetchBuffer } from "./uploadHandler.js";
+
+// ─── Internal helpers ─────────────────────────────────────────────────────────
+
+const TYPE_MAP = {
+  imageMessage:    "image",
+  videoMessage:    "video",
+  audioMessage:    "audio",
+  documentMessage: "document",
+  stickerMessage:  "sticker",
+};
+
+async function _streamToBuffer(stream) {
+  const chunks = [];
+  for await (const chunk of stream) {
+    chunks.push(chunk instanceof Uint8Array ? chunk : Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks);
+}
+
+// ─── Public API ───────────────────────────────────────────────────────────────
 
 /**
- * Download media from a Baileys message object into a Buffer.
- * Supports: image, video, audio, document, sticker, viewOnce
+ * Download media from a WAMessage object.
  *
- * @param {object} msg - The Baileys message object
- * @returns {Promise<{buffer: Buffer, mimetype: string, type: string} | null>}
+ * @param {object} msg              - WAMessage
+ * @param {string} [mediaType]      - "image"|"video"|"audio"|"document"|"sticker"
+ *                                    (auto-detected if omitted)
+ * @returns {Promise<Buffer|null>}
  */
-export async function downloadMedia(msg) {
-  const { downloadContentFromMessage } = await import("@whiskeysockets/baileys");
-  const m = msg?.message;
-  if (!m) return null;
-
-  const unwrap = (obj) =>
-    obj?.viewOnceMessage?.message ||
-    obj?.viewOnceMessageV2?.message ||
-    obj?.ephemeralMessage?.message ||
-    obj;
-
-  const inner = unwrap(m);
-
-  const typeMap = [
-    ["imageMessage",    "image"],
-    ["videoMessage",    "video"],
-    ["audioMessage",    "audio"],
-    ["stickerMessage",  "sticker"],
-    ["documentMessage", "document"],
-    ["ptvMessage",      "video"],
-  ];
-
-  let mediaMsg = null;
-  let type = "";
-
-  for (const [key, t] of typeMap) {
-    if (inner[key]) { mediaMsg = inner[key]; type = t; break; }
-  }
-
-  if (!mediaMsg) return null;
-
+export async function downloadMedia(msg, mediaType) {
   try {
-    const stream = await downloadContentFromMessage(mediaMsg, type);
-    const chunks = [];
-    for await (const chunk of stream) chunks.push(chunk);
-    const buffer = Buffer.concat(chunks);
-    const mimetype = mediaMsg.mimetype || _defaultMime(type);
-    return { buffer, mimetype, type };
-  } catch {
+    const m = msg?.message;
+    if (!m) return null;
+
+    // Auto-detect content type
+    const type = mediaType || (await getContentType(m)) || Object.keys(m)[0];
+    const baileysType = TYPE_MAP[type] || type.replace("Message", "");
+
+    const msgContent = m[type] || m;
+
+    // If message has directPath or url, try direct download
+    if (msgContent?.url || msgContent?.directPath) {
+      const stream = await _dlContent(msgContent, baileysType);
+      return _streamToBuffer(stream);
+    }
+
+    // Try every known key
+    for (const [key, val] of Object.entries(m)) {
+      if (TYPE_MAP[key] && val?.directPath) {
+        const stream = await _dlContent(val, TYPE_MAP[key]);
+        return _streamToBuffer(stream);
+      }
+    }
+
+    return null;
+  } catch (err) {
+    console.error("[downloadMedia] Error:", err?.message);
     return null;
   }
 }
 
 /**
- * Download media from a quoted/replied message.
+ * Download media from a quoted (replied-to) message.
+ *
+ * @param {object} msg   - WAMessage that quotes another
+ * @returns {Promise<{buffer: Buffer, type: string}|null>}
  */
 export async function downloadQuotedMedia(msg) {
-  const ctx = msg?.message?.extendedTextMessage?.contextInfo;
-  if (!ctx?.quotedMessage) return null;
+  try {
+    const m = msg?.message;
+    if (!m) return null;
 
-  // Reconstruct a fake message object for the quoted content
-  const fakeMsg = {
-    key: { remoteJid: msg.key.remoteJid, id: ctx.stanzaId, participant: ctx.participant },
-    message: ctx.quotedMessage,
-  };
-  return downloadMedia(fakeMsg);
+    // Find contextInfo in any message type
+    const inner = (
+      m.extendedTextMessage ||
+      m.imageMessage ||
+      m.videoMessage ||
+      m.documentMessage ||
+      m.audioMessage ||
+      m.stickerMessage ||
+      {}
+    );
+
+    const quotedMsg = inner?.contextInfo?.quotedMessage;
+    if (!quotedMsg) return null;
+
+    const type = Object.keys(quotedMsg)[0];
+    const baileysType = TYPE_MAP[type] || type.replace("Message", "");
+    const content = quotedMsg[type];
+
+    if (!content) return null;
+
+    const stream = await _dlContent(content, baileysType);
+    const buffer = await _streamToBuffer(stream);
+    return { buffer, type: baileysType };
+  } catch (err) {
+    console.error("[downloadQuotedMedia] Error:", err?.message);
+    return null;
+  }
 }
 
 /**
- * Fetch a URL as a Buffer.
+ * Download a view-once message (automatically bypasses the restriction).
+ *
+ * @param {object} msg   - WAMessage containing a view-once media message
+ * @returns {Promise<{buffer: Buffer, type: string}|null>}
  */
-export async function fetchBuffer(url, timeout = 60000) {
-  const axios = (await import("axios")).default;
-  const resp = await axios.get(url, {
-    responseType: "arraybuffer",
-    timeout,
-    maxRedirects: 5,
-    headers: { "User-Agent": "Mozilla/5.0" },
-  });
-  return Buffer.from(resp.data);
+export async function downloadViewOnce(msg) {
+  try {
+    const m = msg?.message;
+    if (!m) return null;
+
+    // View-once messages are wrapped in viewOnceMessage or viewOnceMessageV2
+    const wrapper = m.viewOnceMessage || m.viewOnceMessageV2 || m.viewOnceMessageV2Extension;
+    const inner = wrapper?.message || m;
+
+    const type = Object.keys(inner)[0];
+    const baileysType = TYPE_MAP[type] || type.replace("Message", "");
+    const content = inner[type];
+
+    if (!content) return null;
+
+    const stream = await _dlContent(content, baileysType);
+    const buffer = await _streamToBuffer(stream);
+    return { buffer, type: baileysType };
+  } catch (err) {
+    console.error("[downloadViewOnce] Error:", err?.message);
+    return null;
+  }
 }
 
-function _defaultMime(type) {
-  const map = {
-    image: "image/jpeg",
-    video: "video/mp4",
-    audio: "audio/ogg; codecs=opus",
-    sticker: "image/webp",
-    document: "application/octet-stream",
-  };
-  return map[type] || "application/octet-stream";
+/**
+ * Fetch a remote URL into a Buffer (re-export for convenience).
+ * @param {string} url
+ * @param {object} [opts]
+ * @returns {Promise<Buffer>}
+ */
+export { fetchBuffer };
+
+/**
+ * Get the content type string of a message.
+ * @param {object} msg  - WAMessage
+ * @returns {Promise<string|null>}
+ */
+export async function getMessageType(msg) {
+  try {
+    const m = msg?.message;
+    if (!m) return null;
+    return (await getContentType(m)) || Object.keys(m)[0] || null;
+  } catch {
+    return null;
+  }
 }

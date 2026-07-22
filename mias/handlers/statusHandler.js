@@ -1,118 +1,184 @@
 /**
  * MIAS — Status Handler
- * Post WhatsApp statuses (stories) using @itsliaaa/baileys.
- * Status messages go to "status@broadcast" with statusJidList.
+ *
+ * Centralized WhatsApp Status (Story) posting abstraction.
+ * Commands must never post statuses directly via sock.sendMessage.
+ *
+ * Architecture:  Commands → Handlers → Baileys Adapter → WhatsApp
  */
 
-import { jidNormalizedUser } from "@whiskeysockets/baileys";
+// ─── Constants ────────────────────────────────────────────────────────────────
+const STATUS_JID = "status@broadcast";
+
+// ─── Internal helper ──────────────────────────────────────────────────────────
+
+async function _normalizeJid(jid) {
+  try {
+    const B = await import("@whiskeysockets/baileys");
+    if (typeof B.jidNormalizedUser === "function") return B.jidNormalizedUser(jid);
+  } catch {}
+  return jid?.split(":")[0] + "@s.whatsapp.net";
+}
+
+// ─── Public API ───────────────────────────────────────────────────────────────
 
 /**
- * Get member JIDs for status broadcast.
- * @param {object} sock
- * @param {string} groupJid - Optional group JID to get members from
+ * Get audience JIDs for a status post (normalises a contact list).
+ *
+ * @param {string[]} jids   - JID list of status viewers
  * @returns {Promise<string[]>}
  */
-export async function getStatusAudience(sock, groupJid = null) {
-  let jids = [];
-
-  if (groupJid) {
+export async function getStatusAudience(jids = []) {
+  const normalized = [];
+  for (const jid of jids) {
     try {
-      const meta = await sock.groupMetadata(groupJid);
-      jids = (meta.participants || [])
-        .map(p => String(p.id || ""))
-        .filter(j => j.endsWith("@s.whatsapp.net"));
-    } catch {}
+      normalized.push(await _normalizeJid(jid));
+    } catch {
+      normalized.push(jid);
+    }
   }
+  return normalized;
+}
 
-  if (!jids.length && sock._knownContacts) {
-    try {
-      jids = [...sock._knownContacts].filter(j => String(j).endsWith("@s.whatsapp.net"));
-    } catch {}
+/**
+ * Post a text status (story).
+ *
+ * @param {object}   sock
+ * @param {string}   text
+ * @param {object}   [opts]
+ * @param {string}   [opts.backgroundColor]  - hex color e.g. "#075E54"
+ * @param {number}   [opts.font]             - Font index 0-9
+ * @param {string[]} [opts.audience]         - JIDs who can see the status
+ * @returns {Promise<object|null>}
+ */
+export async function postTextStatus(sock, text, opts = {}) {
+  try {
+    const content = {
+      text: String(text || ""),
+      backgroundColor: opts.backgroundColor || "#075E54",
+      font: opts.font ?? 0,
+    };
+    const sendOpts = {};
+    if (opts.audience?.length) {
+      sendOpts.statusJidList = await getStatusAudience(opts.audience);
+    }
+    return await sock.sendMessage(STATUS_JID, content, sendOpts);
+  } catch (err) {
+    console.error("[postTextStatus] Error:", err?.message);
+    return null;
   }
+}
 
-  if (!jids.length && sock.user?.id) {
-    try { jids = [jidNormalizedUser(sock.user.id)].filter(Boolean); } catch {}
+/**
+ * Post an image status (story).
+ *
+ * @param {object}        sock
+ * @param {Buffer|string} image       - Buffer or URL
+ * @param {object}        [opts]
+ * @param {string}        [opts.caption]
+ * @param {string[]}      [opts.audience]
+ * @returns {Promise<object|null>}
+ */
+export async function postImageStatus(sock, image, opts = {}) {
+  try {
+    let buf;
+    if (Buffer.isBuffer(image)) {
+      buf = image;
+    } else if (typeof image === "string") {
+      const { fetchBuffer } = await import("./uploadHandler.js");
+      buf = await fetchBuffer(image);
+    } else {
+      throw new Error("Invalid image source");
+    }
+
+    const content = {
+      image: buf,
+      caption: opts.caption || "",
+      mimetype: opts.mimetype || "image/jpeg",
+    };
+
+    const sendOpts = {};
+    if (opts.audience?.length) {
+      sendOpts.statusJidList = await getStatusAudience(opts.audience);
+    }
+    return await sock.sendMessage(STATUS_JID, content, sendOpts);
+  } catch (err) {
+    console.error("[postImageStatus] Error:", err?.message);
+    return null;
   }
-
-  return jids;
 }
 
 /**
- * Post a text status.
- * @param {object} sock
- * @param {string} text
- * @param {string[]} [audienceJids]
+ * Post a video status (story).
+ *
+ * @param {object}        sock
+ * @param {Buffer|string} video
+ * @param {object}        [opts]
+ * @param {string}        [opts.caption]
+ * @param {string}        [opts.mimetype]
+ * @param {string[]}      [opts.audience]
+ * @returns {Promise<object|null>}
  */
-export async function postTextStatus(sock, text, audienceJids = []) {
-  const jids = audienceJids.length ? audienceJids : await getStatusAudience(sock);
-  await sock.sendMessage("status@broadcast", {
-    text,
-    contextInfo: { isGroupStatus: true, mentionedJid: [] },
-  }, {
-    statusJidList: jids,
-    messageId: _genId(),
-  });
+export async function postVideoStatus(sock, video, opts = {}) {
+  try {
+    let buf;
+    if (Buffer.isBuffer(video)) {
+      buf = video;
+    } else {
+      const { fetchBuffer } = await import("./uploadHandler.js");
+      buf = await fetchBuffer(video);
+    }
+
+    const content = {
+      video: buf,
+      caption: opts.caption || "",
+      mimetype: opts.mimetype || "video/mp4",
+    };
+
+    const sendOpts = {};
+    if (opts.audience?.length) {
+      sendOpts.statusJidList = await getStatusAudience(opts.audience);
+    }
+    return await sock.sendMessage(STATUS_JID, content, sendOpts);
+  } catch (err) {
+    console.error("[postVideoStatus] Error:", err?.message);
+    return null;
+  }
 }
 
 /**
- * Post an image status.
- * @param {object} sock
- * @param {Buffer} imageBuffer
- * @param {string} [caption]
- * @param {string[]} [audienceJids]
+ * Post an audio status (story).
+ *
+ * @param {object}        sock
+ * @param {Buffer|string} audio
+ * @param {object}        [opts]
+ * @param {string}        [opts.mimetype]
+ * @param {string[]}      [opts.audience]
+ * @returns {Promise<object|null>}
  */
-export async function postImageStatus(sock, imageBuffer, caption = "", audienceJids = []) {
-  const jids = audienceJids.length ? audienceJids : await getStatusAudience(sock);
-  await sock.sendMessage("status@broadcast", {
-    image: imageBuffer,
-    caption,
-  }, {
-    statusJidList: jids,
-    messageId: _genId(),
-  });
-}
+export async function postAudioStatus(sock, audio, opts = {}) {
+  try {
+    let buf;
+    if (Buffer.isBuffer(audio)) {
+      buf = audio;
+    } else {
+      const { fetchBuffer } = await import("./uploadHandler.js");
+      buf = await fetchBuffer(audio);
+    }
 
-/**
- * Post a video status.
- * @param {object} sock
- * @param {Buffer} videoBuffer
- * @param {string} [caption]
- * @param {string} [mimetype="video/mp4"]
- * @param {string[]} [audienceJids]
- */
-export async function postVideoStatus(sock, videoBuffer, caption = "", mimetype = "video/mp4", audienceJids = []) {
-  const jids = audienceJids.length ? audienceJids : await getStatusAudience(sock);
-  await sock.sendMessage("status@broadcast", {
-    video: videoBuffer,
-    caption,
-    mimetype,
-    gifPlayback: false,
-  }, {
-    statusJidList: jids,
-    messageId: _genId(),
-  });
-}
+    const content = {
+      audio: buf,
+      mimetype: opts.mimetype || "audio/mpeg",
+      ptt: false,
+    };
 
-/**
- * Post an audio status.
- * @param {object} sock
- * @param {Buffer} audioBuffer
- * @param {string} [mimetype]
- * @param {boolean} [ptt=false]
- * @param {string[]} [audienceJids]
- */
-export async function postAudioStatus(sock, audioBuffer, mimetype = "audio/mpeg", ptt = false, audienceJids = []) {
-  const jids = audienceJids.length ? audienceJids : await getStatusAudience(sock);
-  await sock.sendMessage("status@broadcast", {
-    audio: audioBuffer,
-    mimetype,
-    ptt,
-  }, {
-    statusJidList: jids,
-    messageId: _genId(),
-  });
-}
-
-function _genId() {
-  return "MIAS" + Date.now().toString(36).toUpperCase() + Math.random().toString(36).slice(2, 8).toUpperCase();
+    const sendOpts = {};
+    if (opts.audience?.length) {
+      sendOpts.statusJidList = await getStatusAudience(opts.audience);
+    }
+    return await sock.sendMessage(STATUS_JID, content, sendOpts);
+  } catch (err) {
+    console.error("[postAudioStatus] Error:", err?.message);
+    return null;
+  }
 }

@@ -1,66 +1,145 @@
 /**
  * MIAS — Reaction Handler
- * Centralized reaction abstraction. Every command should use these instead
- * of calling sock.sendMessage({ react: ... }) directly.
  *
- * Reactions:
- *   processing:  🌀  (generic) or ⌛ (time-based)
- *   success:     ✅
- *   failure:     ❌
+ * Centralized emoji-reaction abstraction.
+ * Commands must never send reactions directly through Baileys.
+ *
+ * Architecture:  Commands → Handlers → Baileys Adapter → WhatsApp
  */
+
+// ─── Standard reaction emojis ─────────────────────────────────────────────────
+export const REACTIONS = {
+  PROCESSING: "🌀",
+  WAITING:    "⌛",
+  SUCCESS:    "✅",
+  FAIL:       "❌",
+  ERROR:      "⚠️",
+  LOADING:    "⏳",
+  DONE:       "🎉",
+  LIKE:       "👍",
+  DISLIKE:    "👎",
+  LOVE:       "❤️",
+  FIRE:       "🔥",
+  INFO:       "ℹ️",
+  WARN:       "⚠️",
+  STOP:       "🛑",
+  BOT:        "🤖",
+};
+
+// ─── Internal helper ──────────────────────────────────────────────────────────
+
+async function _react(sock, msg, emoji) {
+  try {
+    if (!sock || !msg?.key) return null;
+    return await sock.sendMessage(msg.key.remoteJid, {
+      react: { text: String(emoji), key: msg.key },
+    });
+  } catch {
+    return null;
+  }
+}
+
+// ─── Public API ───────────────────────────────────────────────────────────────
 
 /**
  * Send a reaction emoji to a message.
- * @param {object} sock   - Baileys socket
- * @param {object} msg    - Original message object
- * @param {string} emoji  - Emoji to react with
+ *
+ * @param {object} sock
+ * @param {object} msg   - WAMessage object
+ * @param {string} emoji - Any emoji string
+ * @returns {Promise<object|null>}
  */
 export async function sendReaction(sock, msg, emoji) {
-  try {
-    await sock.sendMessage(msg.key.remoteJid, {
-      react: { text: emoji, key: msg.key },
-    });
-  } catch {}
-}
-
-/** 🌀 — Processing / working */
-export async function reactProcessing(sock, msg) {
-  return sendReaction(sock, msg, "🌀");
-}
-
-/** ⌛ — Waiting / queued */
-export async function reactWaiting(sock, msg) {
-  return sendReaction(sock, msg, "⌛");
-}
-
-/** ✅ — Success */
-export async function reactSuccess(sock, msg) {
-  return sendReaction(sock, msg, "✅");
-}
-
-/** ❌ — Failure */
-export async function reactFail(sock, msg) {
-  return sendReaction(sock, msg, "❌");
+  return _react(sock, msg, emoji);
 }
 
 /**
- * React with processing, run fn(), react with ✅ or ❌.
- * This is the canonical pattern for ALL commands.
- *
- * @param {object}   sock - Baileys socket
- * @param {object}   msg  - Message
- * @param {Function} fn   - Async function to execute
- * @param {string}   [processingEmoji="🌀"] - Emoji shown while working
- * @returns {*} Return value of fn()
+ * Remove (clear) a reaction from a message.
+ * @param {object} sock
+ * @param {object} msg
  */
-export async function withReactions(sock, msg, fn, processingEmoji = "🌀") {
-  await sendReaction(sock, msg, processingEmoji);
+export async function clearReaction(sock, msg) {
+  return _react(sock, msg, "");
+}
+
+/** React with 🌀 (processing / in-progress) */
+export async function reactProcessing(sock, msg) {
+  return _react(sock, msg, REACTIONS.PROCESSING);
+}
+
+/** React with ⌛ (waiting / queued) */
+export async function reactWaiting(sock, msg) {
+  return _react(sock, msg, REACTIONS.WAITING);
+}
+
+/** React with ✅ (success) */
+export async function reactSuccess(sock, msg) {
+  return _react(sock, msg, REACTIONS.SUCCESS);
+}
+
+/** React with ❌ (failure) */
+export async function reactFail(sock, msg) {
+  return _react(sock, msg, REACTIONS.FAIL);
+}
+
+/** React with ⚠️ (error / warning) */
+export async function reactError(sock, msg) {
+  return _react(sock, msg, REACTIONS.ERROR);
+}
+
+/** React with ⏳ (loading) */
+export async function reactLoading(sock, msg) {
+  return _react(sock, msg, REACTIONS.LOADING);
+}
+
+/**
+ * Wrap an async operation with automatic reactions.
+ * - Reacts with 🌀 before running.
+ * - Reacts with ✅ on success.
+ * - Reacts with ❌ on failure.
+ * - Re-throws on failure.
+ *
+ * @param {object}   sock
+ * @param {object}   msg
+ * @param {Function} fn         - Async function to execute
+ * @param {object}   [opts]
+ * @param {string}   [opts.startEmoji]   - Override start emoji
+ * @param {string}   [opts.successEmoji] - Override success emoji
+ * @param {string}   [opts.failEmoji]    - Override fail emoji
+ * @param {boolean}  [opts.rethrow=true] - Whether to re-throw errors
+ * @returns {Promise<any>}
+ */
+export async function withReactions(sock, msg, fn, opts = {}) {
+  const startEmoji   = opts.startEmoji   ?? REACTIONS.PROCESSING;
+  const successEmoji = opts.successEmoji ?? REACTIONS.SUCCESS;
+  const failEmoji    = opts.failEmoji    ?? REACTIONS.FAIL;
+  const rethrow      = opts.rethrow      !== false;
+
+  await _react(sock, msg, startEmoji);
+
   try {
     const result = await fn();
-    await sendReaction(sock, msg, "✅");
+    await _react(sock, msg, successEmoji);
     return result;
-  } catch (e) {
-    await sendReaction(sock, msg, "❌");
-    throw e;
+  } catch (err) {
+    await _react(sock, msg, failEmoji);
+    if (rethrow) throw err;
+    return null;
+  }
+}
+
+/**
+ * React with a custom sequence of emojis, with delays between each.
+ *
+ * @param {object}   sock
+ * @param {object}   msg
+ * @param {string[]} emojis   - Sequence of emojis to react in order
+ * @param {number}   [delayMs=1000]
+ * @returns {Promise<void>}
+ */
+export async function reactSequence(sock, msg, emojis, delayMs = 1000) {
+  for (const emoji of emojis) {
+    await _react(sock, msg, emoji);
+    if (delayMs > 0) await new Promise(r => setTimeout(r, delayMs));
   }
 }

@@ -44,6 +44,8 @@ import {
   stickerCmdCount,
   getStickerHash,
 } from "./lib/kevdraPatches.js";
+// ── MIAS HANDLER SYSTEM — universal messaging abstraction ─────────────────────
+import { installHandlerGlobals, updateHandlerSock } from "./handlers/globals.js";
 // ─────────────────────────────────────────────────────────────────────────────
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -376,6 +378,13 @@ makeWASocket = function __wrappedMakeWASocket(opts) {
     if (typeof globalThis.__miasInstallRichModeInterceptor === "function") globalThis.__miasInstallRichModeInterceptor(sock);
   } catch (e) {
     try { console.log("[richmode-shim] install failed:", e?.message || e); } catch {}
+  }
+  // ── MIAS Handler Globals — install universal messaging API ──────────────────
+  try {
+    installHandlerGlobals(sock, globalThis.__MIAS_CONFIG__ || {});
+    console.log("[MIAS] Handler globals installed ✓");
+  } catch (_hgErr) {
+    console.error("[MIAS] Handler globals install failed:", _hgErr?.message || _hgErr);
   }
   return sock;
 };
