@@ -46,6 +46,8 @@ import {
 } from "./lib/kevdraPatches.js";
 // ── MIAS HANDLER SYSTEM — universal messaging abstraction ─────────────────────
 import { installHandlerGlobals, updateHandlerSock } from "./handlers/globals.js";
+import { setButtonMode, isButtonMode } from "./handlers/buttonHandler.js";
+import { isGktwAvailable } from "./handlers/gktwAdapter.js";
 // ─────────────────────────────────────────────────────────────────────────────
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -998,6 +1000,34 @@ _mergeMap(groupRules, _dbData.grouprules);
 for (const u of _dbData.sudo) sudoUsers.add(u);
 for (const [k, v] of _dbData.badwords) badWords.set(k, v instanceof Set ? v : new Set(v));
 console.log("✅ Persistent data merged into memory stores");
+
+// ── GKTW availability check — logged once at startup ─────────────────────────
+isGktwAvailable().then(available => {
+  if (available) {
+    console.log("[MIAS] GKTW (@itsreimau/gktw) — INSTALLED and ACTIVE ✅");
+  } else {
+    console.log("[MIAS] GKTW (@itsreimau/gktw) — Not installed. Baileys native-flow fallback ACTIVE ✅");
+  }
+}).catch(() => {
+  console.log("[MIAS] GKTW check failed — Baileys native-flow fallback ACTIVE ✅");
+});
+
+// ── Restore Button Mode from saved owner settings ─────────────────────────────
+try {
+  const _ownerNum = (CONFIG.OWNER_NUMBER || CONFIG.OWNER_JID || "").replace(/[^0-9]/g, "");
+  const _ownerJid = _ownerNum ? `${_ownerNum}@s.whatsapp.net` : null;
+  if (_ownerJid) {
+    const _ownerS = settings.get(_ownerJid) || null;
+    if (_ownerS?.buttonsMode) {
+      setButtonMode(true);
+      console.log("[MIAS] Button Mode restored from saved settings: ON ✅");
+    } else {
+      console.log("[MIAS] Button Mode: OFF (plain text replies)");
+    }
+  }
+} catch (_bmErr) {
+  console.log("[MIAS] Button Mode sync skipped:", _bmErr?.message || _bmErr);
+}
 
 // Advanced settings per-chat
 function defaultSettings() {
@@ -4248,24 +4278,27 @@ END:VCARD`;
 async function sendButtonsReply(sock, msg, text, mentions = []) {
   const jid = msg.key.remoteJid;
   const finalText = _beautifyMentions(normalizeOutgoingText(String(text ?? ""), msg), mentions);
-  const payload = {
-    text: finalText,
-    mentions,
-    footer: `${CONFIG.BOT_NAME} • ${CONFIG.VERSION}`,
-    buttons: _menuButtonsPayload(),
-    headerType: 1,
-  };
+  const footer = `${CONFIG.BOT_NAME} v${CONFIG.VERSION}`;
+
+  // ── New clean buttons (no emojis, proper types, routed through handler system)
+  // Handler chain: GKTW (if installed) → Baileys native-flow proto → plain text
+  const actionButtons = [
+    { text: "MENU",    id: `${CONFIG.PREFIX}menu`,    type: "quick_reply" },
+    { text: "PING",    id: `${CONFIG.PREFIX}ping`,    type: "quick_reply" },
+    { text: "RUNTIME", id: `${CONFIG.PREFIX}runtime`, type: "quick_reply" },
+  ];
+
   try {
-    return await sendNativeFlowButtons(sock, jid, msg, finalText, [{ id: `${CONFIG.PREFIX}menu`, text: "🗂️ MENU" }, { id: `${CONFIG.PREFIX}ping`, text: "🏓 PING" }, { id: `${CONFIG.PREFIX}runtime`, text: "⏱️ RUNTIME" }]);
-  } catch (nativeErr) {}
-  try {
-    return await sock.sendMessage(jid, payload, { quoted: msg });
-  } catch (e1) {
-    console.log("[BUTTON-REPLY] quoted send failed:", e1?.message || e1);
+    // Route through the new handler — covers GKTW + Baileys proto + text fallback
+    const { sendButtons: _hSendButtons } = await import("./handlers/interactiveHandler.js");
+    return await _hSendButtons(sock, jid, finalText, actionButtons, { footer, quoted: msg });
+  } catch (handlerErr) {
+    console.log("[BUTTON-REPLY] handler failed, using inline native-flow:", handlerErr?.message || handlerErr);
+    // Inline Baileys native-flow fallback
     try {
-      return await sock.sendMessage(jid, payload);
-    } catch (e2) {
-      console.error("[BUTTON-REPLY] plain send failed:", e2?.message || e2);
+      return await sendNativeFlowButtons(sock, jid, msg, finalText,
+        actionButtons.map(b => ({ id: b.id, text: b.text })), footer);
+    } catch {
       return await _sendPlainReply(sock, msg, text, mentions);
     }
   }
@@ -7307,22 +7340,33 @@ cmd(["buttonsmode", "buttons", "btnmode", "button"], { desc: "Toggle button mode
   const ownerS = getSettings(ownerJid);
   const v = (args[0] || "").toLowerCase();
   if (["on", "1", "enable", "true"].includes(v)) {
-    if (ownerS.buttonsMode === true) { await sendReply(sock, msg, `🔘 Buttons Mode is *already ON* ✅`); return; }
+    if (ownerS.buttonsMode === true) {
+      await _sendPlainReply(sock, msg, `Button Mode is already ON.`);
+      return;
+    }
     ownerS.buttonsMode = true;
   } else if (["off", "0", "disable", "false"].includes(v)) {
-    if (ownerS.buttonsMode === false) { await sendReply(sock, msg, `🔘 Buttons Mode is *already OFF* ❌`); return; }
+    if (ownerS.buttonsMode === false) {
+      await _sendPlainReply(sock, msg, `Button Mode is already OFF.`);
+      return;
+    }
     ownerS.buttonsMode = false;
-  } else ownerS.buttonsMode = !ownerS.buttonsMode;
+  } else {
+    ownerS.buttonsMode = !ownerS.buttonsMode;
+  }
   getSettings(msg.key.remoteJid).buttonsMode = ownerS.buttonsMode;
+  // ── Sync the new handler system so sendButtons/autoButton routes correctly ──
+  setButtonMode(ownerS.buttonsMode);
   saveNow();
-  await _sendPlainReply(sock, msg, `🔘 Buttons Mode: *${ownerS.buttonsMode ? "ON ✅" : "OFF ❌"}*
+  const _bStatus = ownerS.buttonsMode ? "ON" : "OFF";
+  await _sendPlainReply(sock, msg, `*Button Mode: ${_bStatus}*
 
-When ON: Menu shows as interactive WhatsApp list + tappable action buttons.
-When OFF: Menu shows as plain text (compatible with all WA clients).
+When ON  — replies include interactive WhatsApp buttons (quick-reply, URL, copy-code, call). Uses GKTW if installed, Baileys native-flow otherwise.
+When OFF — plain text replies only (compatible with all WA clients).
 
 Usage:
-• ${CONFIG.PREFIX}buttonsmode on  → interactive list menu
-• ${CONFIG.PREFIX}buttonsmode off → plain text menu`);
+${CONFIG.PREFIX}button on
+${CONFIG.PREFIX}button off`);
 });
 
 cmd(["richmode", "richui", "cardmode"], { desc: "Toggle Rich Mode (button/card replies) for THIS chat only", category: "GENERAL" }, async (sock, msg, args) => {
@@ -20319,14 +20363,13 @@ Cycle order: text → button → list → flow
 Session is preserved. Existing text menu is untouched.`);
 });
 
-// ── .btnmenu : quick-reply BUTTONS UI (fixed) ──
+// ── .btnmenu : quick-reply BUTTONS UI ─────────────────────────────────────────
 cmd(["btnmenu", "buttonmenu", "buttonsui"], { desc: "Send menu as quick-reply buttons", category: "OWNER", ownerOnly: true }, async (sock, msg) => {
   const jid = msg.key.remoteJid;
-  const ppUrl = await __getBotPp(sock).catch(() => null);
   const coverBuf = await getBotPic().catch(() => null);
-  const bodyText = `⚡ *${CONFIG.BOT_NAME}*\nChoose an action below.`;
+  const bodyText = `*${CONFIG.BOT_NAME}*\nChoose an action below.`;
 
-  // 1) Send cover image as its own bubble first (so the pic always renders)
+  // 1) Send cover image as its own bubble first (always renders the pic)
   let imgSent = false;
   if (coverBuf && !isNewsletterJid(jid)) {
     try {
@@ -20335,34 +20378,31 @@ cmd(["btnmenu", "buttonmenu", "buttonsui"], { desc: "Send menu as quick-reply bu
     } catch (eImg) { console.log("[btnmenu cover]", eImg?.message); }
   }
 
-  // 2) Then send the buttons / native flow message right under it
+  // 2) Send interactive buttons via the new handler system
+  //    (GKTW if installed, Baileys native-flow otherwise, plain text last resort)
+  const actionButtons = [
+    { text: "MENU",    id: `${CONFIG.PREFIX}menu`,    type: "quick_reply" },
+    { text: "HELP",    id: `${CONFIG.PREFIX}help`,    type: "quick_reply" },
+    { text: "PING",    id: `${CONFIG.PREFIX}ping`,    type: "quick_reply" },
+    { text: "RUNTIME", id: `${CONFIG.PREFIX}runtime`, type: "quick_reply" },
+  ];
+  const footer = `${CONFIG.BOT_NAME} v${CONFIG.VERSION}`;
+  const quotedRef = imgSent ? undefined : msg;
+
   try {
-    if (typeof sendNativeFlowButtons === "function") {
-      await sendNativeFlowButtons(sock, jid, imgSent ? undefined : msg, imgSent ? "Tap any button below" : bodyText, [
-        { id: `${CONFIG.PREFIX}menu`,    text: "🗂️ MENU" },
-        { id: `${CONFIG.PREFIX}help`,    text: "🆘 HELP" },
-        { id: `${CONFIG.PREFIX}ping`,    text: "🏓 PING" },
-        { id: `${CONFIG.PREFIX}runtime`, text: "⏱️ RUNTIME" },
-      ]);
-    } else {
-      const buttons = [
-        { buttonId: `${CONFIG.PREFIX}help`, buttonText: { displayText: "🆘 HELP" }, type: 1 },
-        { buttonId: `${CONFIG.PREFIX}menu`, buttonText: { displayText: "🗂️ MENU" }, type: 1 },
-        { buttonId: `${CONFIG.PREFIX}ping`, buttonText: { displayText: "🏓 PING" }, type: 1 },
-      ];
-      await sock.sendMessage(jid, {
-        text: imgSent ? "Tap any button below" : bodyText,
-        footer: `v${CONFIG.VERSION || ""} • Powered by 𝑷𝑹𝑬𝑪𝑰𝑶𝑼𝑺 x`,
-        buttons,
-        headerType: 1,
-        viewOnce: true,
-        contextInfo: __ppContext(ppUrl, "Tap any button below"),
-      }, { quoted: imgSent ? undefined : msg });
-    }
+    const { sendButtons: _hSendButtons } = await import("./handlers/interactiveHandler.js");
+    await _hSendButtons(sock, jid, imgSent ? "Tap a button below:" : bodyText, actionButtons, { footer, quoted: quotedRef });
     await sendMenuSong(sock, jid, msg);
   } catch (e) {
     console.log("[btnmenu]", e?.message);
-    if (!imgSent) await _sendPlainReply(sock, msg, "❌ Buttons UI not supported on this WhatsApp client. Try `.togglemenu list` or `.togglemenu text`.");
+    // Final fallback: inline native-flow
+    try {
+      await sendNativeFlowButtons(sock, jid, quotedRef, imgSent ? "Tap a button below:" : bodyText,
+        actionButtons.map(b => ({ id: b.id, text: b.text })), footer);
+      await sendMenuSong(sock, jid, msg);
+    } catch {
+      if (!imgSent) await _sendPlainReply(sock, msg, `Buttons UI not supported on this WhatsApp client.\nTry: ${CONFIG.PREFIX}togglemenu list`);
+    }
   }
 });
 
