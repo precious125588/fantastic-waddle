@@ -1,25 +1,29 @@
 /**
- * MIAS — GKTW Adapter Layer
+ * MIAS — GKTW Adapter Layer  v2
  *
  * ════════════════════════════════════════════════════════════════
  *  Architecture:
  *
  *  Commands → Handlers → Baileys Adapter → GKTW Helper → WhatsApp
  *
- *  This file is the GKTW integration point.
- *  - Tries @itsreimau/gktw if installed.
+ *  Single integration point for @itsreimau/gktw.
+ *  - Auto-detects @itsreimau/gktw if installed.
  *  - Falls back to raw @whiskeysockets/baileys for every feature.
- *  - Provides a unified interface so Handlers never care which layer is used.
+ *  - Handlers never care which layer is active.
+ *
+ *  @itsreimau/gktw is not on npm yet — adapter falls back gracefully.
+ *  When it becomes available: cd mias && npm install @itsreimau/gktw
+ *  Zero code changes needed — adapter auto-routes everything.
  * ════════════════════════════════════════════════════════════════
  *
- * ONLY the Baileys Adapter / Handlers may import this file.
+ * ONLY Handlers/Adapters may import this file.
  * Commands must NEVER import this directly.
  */
 
 // ─── Lazy singletons ──────────────────────────────────────────────────────────
 let _baileys = null;
 let _gktw = null;
-let _gktwAvailable = null; // null = unchecked, true/false = result
+let _gktwAvailable = null; // null = unchecked, true/false = final result
 
 // ─── Internal loader helpers ──────────────────────────────────────────────────
 
@@ -34,7 +38,12 @@ async function getGktw() {
   if (_gktwAvailable === null) {
     try {
       _gktw = await import("@itsreimau/gktw");
-      _gktwAvailable = true;
+      _gktwAvailable = typeof _gktw?.sendInteractive === "function" || typeof _gktw?.default?.sendInteractive === "function";
+      if (!_gktwAvailable) {
+        // Package loaded but doesn't expose expected API — treat as absent
+        _gktw = null;
+        _gktwAvailable = false;
+      }
     } catch {
       _gktwAvailable = false;
       _gktw = null;
@@ -45,7 +54,7 @@ async function getGktw() {
 
 // ─── Public: capability detection ─────────────────────────────────────────────
 
-/** Returns true if @itsreimau/gktw is installed and loaded. */
+/** Returns true if @itsreimau/gktw is installed, loaded, and functional. */
 export async function isGktwAvailable() {
   await getGktw();
   return _gktwAvailable === true;
@@ -113,7 +122,7 @@ export async function getContentType(message) {
 // ─── Smart sendMessage — tries GKTW first, falls back to Baileys ──────────────
 
 /**
- * Smart send: automatically picks GKTW or Baileys based on message type support.
+ * Smart send: automatically picks GKTW or Baileys based on message type.
  *
  * @param {object} sock
  * @param {string} jid
@@ -123,45 +132,60 @@ export async function getContentType(message) {
  */
 export async function smartSend(sock, jid, content, opts = {}) {
   const gktw = await getGktw();
-
-  // Determine message type for feature detection
   const msgType = Object.keys(content)[0];
 
-  // Types that GKTW may handle differently
-  const gktwPreferred = ["interactive", "nativeFlowMessage", "buttonsMessage", "listMessage"];
-
-  if (gktw && _gktwAvailable && gktwPreferred.includes(msgType)) {
-    try {
-      // Attempt GKTW send
-      if (typeof gktw.sendMessage === "function") {
-        return await gktw.sendMessage(sock, jid, content, opts);
+  // GKTW handles interactive types
+  if (gktw && _gktwAvailable) {
+    const interactiveTypes = ["interactiveMessage", "buttonsMessage", "listMessage", "templateMessage"];
+    if (interactiveTypes.includes(msgType)) {
+      try {
+        const g = gktw.default || gktw;
+        if (typeof g.send === "function") {
+          return await g.send(sock, jid, content, opts);
+        }
+      } catch (err) {
+        // Fall through to Baileys
       }
-    } catch (err) {
-      // Fall through to Baileys
     }
   }
 
-  // Default: Baileys
-  return sock.sendMessage(jid, content, opts);
+  // Baileys default path
+  try {
+    return await sock.sendMessage(jid, content, opts);
+  } catch (err) {
+    console.error("[smartSend] Baileys error:", err?.message);
+    return null;
+  }
 }
 
-// ─── Interactive message builder — GKTW or Baileys native flow ────────────────
+// ─── sendInteractiveMessage ───────────────────────────────────────────────────
 
 /**
- * Build and send a native-flow interactive message.
- * Automatically uses GKTW if available, otherwise raw Baileys proto.
+ * Unified interactive message sender.
+ * Tries GKTW first, falls back to Baileys native proto, falls back to plain text.
  *
- * @param {object} sock
- * @param {string} jid
- * @param {object} params
- * @param {string} params.body
- * @param {string} [params.footer]
- * @param {string} [params.header]
- * @param {object[]} [params.buttons]    - [{text, id}]
- * @param {object[]} [params.sections]   - list sections [{title, rows:[{id,title,description}]}]
+ * Supported button types per button object:
+ *   { text, id }             → quick_reply
+ *   { text, url }            → cta_url (URL button)
+ *   { text, copyCode }       → cta_copy (copy-to-clipboard)
+ *   { text, phone }          → cta_call (call button)
+ *   { text, id, type:"copy"} → cta_copy
+ *   { text, id, type:"call"} → cta_call
+ *
+ * @param {object}   sock
+ * @param {string}   jid
+ * @param {object}   params
+ * @param {string}   params.body
+ * @param {string}   [params.footer]
+ * @param {string}   [params.header]
+ * @param {object[]} [params.buttons]
+ * @param {object[]} [params.sections]      - For list messages
+ * @param {string}   [params.listButtonText]
  * @param {object}   [params.contextInfo]
  * @param {object}   [params.quoted]
- * @returns {Promise<object|null>}
+ * @param {Buffer}   [params.headerImage]   - Image for image-header interactive
+ * @param {Buffer}   [params.headerVideo]   - Video for video-header interactive
+ * @param {string}   [params.headerDoc]     - Document title for doc-header interactive
  */
 export async function sendInteractiveMessage(sock, jid, params) {
   const {
@@ -172,69 +196,110 @@ export async function sendInteractiveMessage(sock, jid, params) {
     sections = [],
     contextInfo = {},
     quoted = null,
+    listButtonText = "Open Menu",
+    headerImage = null,
+    headerVideo = null,
   } = params;
 
+  // ── 1. Try GKTW ──────────────────────────────────────────────────────────
   const gktw = await getGktw();
-
-  // Try GKTW interactive send
   if (gktw && _gktwAvailable) {
     try {
-      if (typeof gktw.sendInteractive === "function") {
-        return await gktw.sendInteractive(sock, jid, params);
+      const g = gktw.default || gktw;
+      if (typeof g.sendInteractive === "function") {
+        return await g.sendInteractive(sock, jid, params);
       }
-    } catch {}
+    } catch {
+      // Fall through to Baileys
+    }
   }
 
-  // Build native flow via Baileys proto
+  // ── 2. Baileys proto: list message ────────────────────────────────────────
+  if (sections.length > 0 && buttons.length === 0) {
+    try {
+      const sendOpts = {};
+      if (quoted) sendOpts.quoted = quoted;
+      return await sock.sendMessage(jid, {
+        text: body,
+        footer,
+        title: header,
+        buttonText: listButtonText,
+        sections,
+        ...(Object.keys(contextInfo).length ? { contextInfo } : {}),
+      }, sendOpts);
+    } catch (listErr) {
+      // Fall through to text
+    }
+  }
+
+  // ── 3. Baileys proto: native-flow interactive ─────────────────────────────
   try {
     const B = await getBaileys();
     const proto = B.proto;
 
-    // Build button components
-    const flowButtons = buttons.map((btn, i) => {
-      if (btn.url) {
-        // URL button
+    // Build buttons
+    const flowButtons = (buttons || []).map((btn, i) => {
+      // URL button
+      if (btn.url || btn.type === "url") {
         return proto.Message.InteractiveMessage.NativeFlowMessage.NativeFlowButton.create({
           name: "cta_url",
           buttonParamsJson: JSON.stringify({
-            display_text: btn.text || `Button ${i + 1}`,
-            url: btn.url,
-            merchant_url: btn.url,
+            display_text: btn.text || `Link ${i + 1}`,
+            url: btn.url || "",
+            merchant_url: btn.url || "",
           }),
         });
       }
-      // Quick reply button
+      // Copy-to-clipboard button
+      if (btn.copyCode || btn.type === "copy") {
+        return proto.Message.InteractiveMessage.NativeFlowMessage.NativeFlowButton.create({
+          name: "cta_copy",
+          buttonParamsJson: JSON.stringify({
+            display_text: btn.text || "Copy",
+            copy_code: btn.copyCode || btn.id || "",
+          }),
+        });
+      }
+      // Call button
+      if (btn.phone || btn.type === "call") {
+        return proto.Message.InteractiveMessage.NativeFlowMessage.NativeFlowButton.create({
+          name: "cta_call",
+          buttonParamsJson: JSON.stringify({
+            display_text: btn.text || "Call",
+            phone_number: btn.phone || "",
+          }),
+        });
+      }
+      // Default: quick_reply
       return proto.Message.InteractiveMessage.NativeFlowMessage.NativeFlowButton.create({
         name: "quick_reply",
         buttonParamsJson: JSON.stringify({
-          display_text: btn.text || `Button ${i + 1}`,
+          display_text: btn.text || `Option ${i + 1}`,
           id: btn.id || String(i),
         }),
       });
     });
 
-    // Build list if sections provided
-    if (sections.length > 0 && buttons.length === 0) {
-      // Use list message
-      const listMsg = {
-        text: body,
-        footer: footer,
-        title: header,
-        buttonText: params.listButtonText || "Select Option",
-        sections,
-      };
-      if (quoted) listMsg.quoted = quoted;
-      if (Object.keys(contextInfo).length) listMsg.contextInfo = contextInfo;
-      return await sock.sendMessage(jid, listMsg);
+    // Build header
+    let headerProto;
+    if (headerImage) {
+      const mediaMsg = await B.prepareWAMessageMedia({ image: headerImage }, { upload: sock.waUploadToServer });
+      headerProto = proto.Message.InteractiveMessage.Header.create({
+        ...mediaMsg,
+        hasMediaAttachment: true,
+      });
+    } else if (headerVideo) {
+      const mediaMsg = await B.prepareWAMessageMedia({ video: headerVideo }, { upload: sock.waUploadToServer });
+      headerProto = proto.Message.InteractiveMessage.Header.create({
+        ...mediaMsg,
+        hasMediaAttachment: true,
+      });
+    } else {
+      headerProto = proto.Message.InteractiveMessage.Header.create({
+        title: header || "",
+        hasMediaAttachment: false,
+      });
     }
-
-    // Build interactive message
-    const headerContent = header
-      ? proto.Message.InteractiveMessage.Header.create({
-          title: header,
-          hasMediaAttachment: false,
-        })
-      : proto.Message.InteractiveMessage.Header.create({ hasMediaAttachment: false });
 
     const nativeFlow = proto.Message.InteractiveMessage.NativeFlowMessage.create({
       buttons: flowButtons,
@@ -242,16 +307,18 @@ export async function sendInteractiveMessage(sock, jid, params) {
       messageVersion: 1,
     });
 
+    const ctxProto = proto.ContextInfo.create({
+      ...contextInfo,
+      forwardingScore: contextInfo.forwardingScore ?? 0,
+      isForwarded: contextInfo.isForwarded ?? false,
+    });
+
     const interactiveMsg = proto.Message.InteractiveMessage.create({
       body: proto.Message.InteractiveMessage.Body.create({ text: body }),
       footer: proto.Message.InteractiveMessage.Footer.create({ text: footer }),
-      header: headerContent,
+      header: headerProto,
       nativeFlowMessage: nativeFlow,
-      contextInfo: proto.ContextInfo.create({
-        ...contextInfo,
-        forwardingScore: contextInfo.forwardingScore ?? 0,
-        isForwarded: contextInfo.isForwarded ?? false,
-      }),
+      contextInfo: ctxProto,
     });
 
     const fullMsg = proto.Message.create({ interactiveMessage: interactiveMsg });
@@ -260,14 +327,20 @@ export async function sendInteractiveMessage(sock, jid, params) {
       userJid: sock.user?.id,
       quoted: quoted || undefined,
     });
-
     await sock.relayMessage(jid, wam.message, { messageId: wam.key.id });
     return wam;
-  } catch (err) {
-    // Final fallback: plain text
-    const optsSend = {};
-    if (quoted) optsSend.quoted = quoted;
-    return sock.sendMessage(jid, { text: `${header ? header + "\n\n" : ""}${body}${footer ? "\n\n" + footer : ""}` }, optsSend);
+  } catch (protoErr) {
+    // ── 4. Final fallback: plain text ─────────────────────────────────────
+    const btnLines = (buttons || []).map((b, i) => `[${i + 1}] ${b.text}`).join("\n");
+    const text = [
+      header ? `*${header}*` : null,
+      body,
+      btnLines || null,
+      footer ? `_${footer}_` : null,
+    ].filter(Boolean).join("\n\n");
+    const sendOpts = {};
+    if (quoted) sendOpts.quoted = quoted;
+    return sock.sendMessage(jid, { text }, sendOpts);
   }
 }
 

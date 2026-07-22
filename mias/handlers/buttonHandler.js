@@ -1,280 +1,107 @@
 /**
- * MIAS — Button Handler
+ * MIAS — Button Handler  v2
  *
- * Unified button/interactive message system.
- * Automatically detects Button Mode and wraps plain messages into
- * interactive formats when enabled.
+ * Extends the interactive handler with:
+ *  - Global Button Mode flag (setButtonMode / isButtonMode)
+ *  - Copy-to-clipboard button helper
+ *  - Call / phone button helper
+ *  - Raw native-flow shortcut
+ *  - Bot contact + buttons combo (vCard with profile pic, then buttons)
+ *  - Auto-wrap (Button Mode respects the flag)
  *
- * Supported types:
- *  - Quick-reply buttons (native flow)
- *  - URL buttons
- *  - List messages (single-select)
- *  - Hero cards (image/video header)
- *  - Carousels
- *  - Copy buttons (via native flow)
- *  - Call buttons (via native flow)
- *  - Footer / Header / ContextInfo / ExternalAdReply
+ * Core interactive functions (sendButtons, sendList, sendHeroCard,
+ * sendCarousel, sendUrlButtons) live in interactiveHandler.js.
+ * This file only exports what is NOT already in interactiveHandler.js.
  *
  * Architecture:  Commands → Handlers → Baileys Adapter → WhatsApp
  */
 
+import { sendButtons, sendList } from "./interactiveHandler.js";
+import { sendBotVCard } from "./contactHandler.js";
 import { sendInteractiveMessage } from "./gktwAdapter.js";
-import { sendText, sendReply } from "./messageHandler.js";
-import { sendImage, sendVideo } from "./mediaHandler.js";
-import { prepareExternalAdReply, prepareContextInfo } from "./baileysHandler.js";
-import { getProto, getBaileys } from "./gktwAdapter.js";
+import { sendText } from "./messageHandler.js";
 
 // ─── Button Mode state ─────────────────────────────────────────────────────────
-// Other modules may call setButtonMode(true/false) to control the global flag.
 
 let _buttonMode = false;
 
+/**
+ * Enable or disable global Button Mode.
+ * When ON, autoButton() wraps plain replies in interactive buttons.
+ * @param {boolean} enabled
+ */
 export function setButtonMode(enabled) {
   _buttonMode = !!enabled;
 }
+
+/**
+ * Returns true when Button Mode is currently enabled.
+ * @returns {boolean}
+ */
 export function isButtonMode() {
   return _buttonMode;
 }
 
-// ─── Internal proto builder ────────────────────────────────────────────────────
-
-async function _buildNativeFlow(sock, jid, { body, footer = "", header = "", buttons = [], contextInfo = {}, quoted = null }) {
-  return sendInteractiveMessage(sock, jid, { body, footer, header, buttons, contextInfo, quoted });
-}
-
-// ─── Public API ───────────────────────────────────────────────────────────────
+// ─── Extra button types ───────────────────────────────────────────────────────
 
 /**
- * Send quick-reply buttons.
+ * Send a copy-to-clipboard button.
+ * When tapped, the given text is copied to the user's clipboard.
  *
- * @param {object}   sock
- * @param {string}   jid
- * @param {string}   body        - Message body
- * @param {object[]} buttons     - [{text, id}]
- * @param {object}   [opts]
- * @param {string}   [opts.footer]
- * @param {string}   [opts.header]
- * @param {object}   [opts.quoted]
- * @param {object}   [opts.contextInfo]
- * @returns {Promise<object|null>}
+ * @param {object} sock
+ * @param {string} jid
+ * @param {string} body          - Message body
+ * @param {string} copyText      - Text that gets copied on tap
+ * @param {string} [buttonLabel] - Label on the button (default: "Copy")
+ * @param {object} [opts]
+ * @param {string} [opts.header]
+ * @param {string} [opts.footer]
+ * @param {object} [opts.quoted]
  */
-export async function sendButtons(sock, jid, body, buttons, opts = {}) {
-  try {
-    return await _buildNativeFlow(sock, jid, {
-      body,
-      footer: opts.footer || "",
-      header: opts.header || "",
-      buttons,
-      contextInfo: opts.contextInfo || {},
-      quoted: opts.quoted || null,
-    });
-  } catch (err) {
-    // Fallback: plain text with options listed
-    const btnList = buttons.map((b, i) => `${i + 1}. ${b.text}`).join("\n");
-    const text = `${opts.header ? opts.header + "\n\n" : ""}${body}\n\n${btnList}${opts.footer ? "\n\n" + opts.footer : ""}`;
-    return sendText(sock, jid, text, { quoted: opts.quoted });
-  }
+export async function sendCopyButton(sock, jid, body, copyText, buttonLabel = "Copy", opts = {}) {
+  return sendButtons(sock, jid, body, [{
+    text: buttonLabel,
+    copyCode: copyText,
+    type: "copy",
+  }], opts);
 }
 
 /**
- * Send a list message (single-select menu).
+ * Send a call / phone button.
+ * Tapping the button opens the phone dialler with the given number.
  *
- * @param {object}   sock
- * @param {string}   jid
- * @param {string}   body
- * @param {object[]} sections    - [{title, rows:[{id,title,description}]}]
- * @param {object}   [opts]
- * @param {string}   [opts.buttonText]   - Button label (default "Select")
- * @param {string}   [opts.footer]
- * @param {string}   [opts.title]
- * @param {object}   [opts.quoted]
- * @returns {Promise<object|null>}
+ * @param {object} sock
+ * @param {string} jid
+ * @param {string} body
+ * @param {string} phone          - Phone number with country code, digits only
+ * @param {string} [buttonLabel]  - Label on the button (default: "Call")
+ * @param {object} [opts]
  */
-export async function sendList(sock, jid, body, sections, opts = {}) {
-  try {
-    const content = {
-      text: body,
-      footer: opts.footer || "",
-      title: opts.title || "",
-      buttonText: opts.buttonText || "Select",
-      sections,
-    };
-    const sendOpts = {};
-    if (opts.quoted) sendOpts.quoted = opts.quoted;
-    return await sock.sendMessage(jid, content, sendOpts);
-  } catch (err) {
-    // Fallback: plain text
-    const lines = sections.flatMap(s => [
-      `*${s.title}*`,
-      ...(s.rows || []).map((r, i) => `${i + 1}. ${r.title}${r.description ? " — " + r.description : ""}`),
-    ]);
-    const text = `${opts.title ? opts.title + "\n\n" : ""}${body}\n\n${lines.join("\n")}${opts.footer ? "\n\n" + opts.footer : ""}`;
-    return sendText(sock, jid, text, { quoted: opts.quoted });
-  }
+export async function sendCallButton(sock, jid, body, phone, buttonLabel = "Call", opts = {}) {
+  return sendButtons(sock, jid, body, [{
+    text: buttonLabel,
+    phone: String(phone).replace(/\D/g, ""),
+    type: "call",
+  }], opts);
 }
 
 /**
- * Send a hero card (text + image/video header + buttons).
+ * Send a raw native-flow message — full control over the button array.
+ * Use when you need to mix button types in a single message.
  *
  * @param {object}   sock
  * @param {string}   jid
- * @param {object}   opts
- * @param {string}   opts.body
- * @param {Buffer|string} [opts.image]        - Image buffer or URL
- * @param {Buffer|string} [opts.video]        - Video buffer or URL
- * @param {string}   [opts.header]
- * @param {string}   [opts.footer]
- * @param {object[]} [opts.buttons]           - [{text, id}]
- * @param {object}   [opts.quoted]
- * @param {object}   [opts.contextInfo]
- * @param {object}   [opts.externalAdReply]
- * @returns {Promise<object|null>}
- */
-export async function sendHeroCard(sock, jid, opts = {}) {
-  const { body, image, video, header, footer, buttons = [], quoted, contextInfo = {}, externalAdReply } = opts;
-
-  const ctx = { ...contextInfo };
-  if (externalAdReply) ctx.externalAdReply = externalAdReply;
-
-  try {
-    if (image || video) {
-      // Send media with caption + buttons
-      if (image) {
-        return await sendImage(sock, jid, image, {
-          caption: body,
-          quoted,
-          contextInfo: ctx,
-        });
-      }
-      if (video) {
-        return await sendVideo(sock, jid, video, {
-          caption: body,
-          quoted,
-          contextInfo: ctx,
-        });
-      }
-    }
-
-    // No media: interactive text hero
-    return await _buildNativeFlow(sock, jid, {
-      body, footer: footer || "", header: header || "", buttons, contextInfo: ctx, quoted,
-    });
-  } catch {
-    return sendText(sock, jid, `${header ? header + "\n\n" : ""}${body}${footer ? "\n\n" + footer : ""}`, { quoted });
-  }
-}
-
-/**
- * Send a URL button message.
- *
- * @param {object}   sock
- * @param {string}   jid
- * @param {string}   body
- * @param {object[]} urlButtons  - [{text, url}]
- * @param {object}   [opts]
- * @returns {Promise<object|null>}
- */
-export async function sendUrlButtons(sock, jid, body, urlButtons, opts = {}) {
-  const buttons = urlButtons.map(b => ({ text: b.text, url: b.url, id: b.text }));
-  return sendButtons(sock, jid, body, buttons, opts);
-}
-
-/**
- * Send a carousel message (multiple hero cards).
- *
- * @param {object}   sock
- * @param {string}   jid
- * @param {object[]} cards     - [{title, body, image, footer, buttons:[{text,id}]}]
- * @param {object}   [opts]
- * @param {object}   [opts.quoted]
- * @returns {Promise<object|null>}
- */
-export async function sendCarousel(sock, jid, cards, opts = {}) {
-  try {
-    const B = await getBaileys();
-    const proto = B.proto;
-
-    const carouselCards = cards.map(card => {
-      const cardButtons = (card.buttons || []).map(btn => {
-        if (btn.url) {
-          return proto.Message.InteractiveMessage.NativeFlowMessage.NativeFlowButton.create({
-            name: "cta_url",
-            buttonParamsJson: JSON.stringify({ display_text: btn.text, url: btn.url, merchant_url: btn.url }),
-          });
-        }
-        return proto.Message.InteractiveMessage.NativeFlowMessage.NativeFlowButton.create({
-          name: "quick_reply",
-          buttonParamsJson: JSON.stringify({ display_text: btn.text, id: btn.id || btn.text }),
-        });
-      });
-
-      return proto.Message.InteractiveMessage.create({
-        body: proto.Message.InteractiveMessage.Body.create({ text: card.body || "" }),
-        footer: proto.Message.InteractiveMessage.Footer.create({ text: card.footer || "" }),
-        header: proto.Message.InteractiveMessage.Header.create({
-          title: card.title || "",
-          hasMediaAttachment: false,
-        }),
-        nativeFlowMessage: proto.Message.InteractiveMessage.NativeFlowMessage.create({
-          buttons: cardButtons,
-          messageParamsJson: "{}",
-          messageVersion: 1,
-        }),
-      });
-    });
-
-    // Build carousel container
-    const carouselMsg = proto.Message.create({
-      requestPaymentMessage: undefined, // unused; placeholder
-      interactiveMessage: proto.Message.InteractiveMessage.create({
-        body: proto.Message.InteractiveMessage.Body.create({ text: opts.body || "" }),
-        footer: proto.Message.InteractiveMessage.Footer.create({ text: opts.footer || "" }),
-        header: proto.Message.InteractiveMessage.Header.create({ hasMediaAttachment: false }),
-        nativeFlowMessage: proto.Message.InteractiveMessage.NativeFlowMessage.create({
-          buttons: [],
-          messageParamsJson: JSON.stringify({ carousel: carouselCards }),
-          messageVersion: 1,
-        }),
-      }),
-    });
-
-    const wam = await B.generateWAMessageFromContent(jid, carouselMsg, {
-      userJid: sock.user?.id,
-      quoted: opts.quoted,
-    });
-    await sock.relayMessage(jid, wam.message, { messageId: wam.key.id });
-    return wam;
-  } catch {
-    // Fallback: send each card individually
-    for (const card of cards) {
-      await sendHeroCard(sock, jid, {
-        body: card.body || card.title,
-        header: card.title,
-        footer: card.footer,
-        buttons: card.buttons,
-        quoted: opts.quoted,
-      });
-    }
-    return null;
-  }
-}
-
-/**
- * Send a native-flow message (most advanced interactive type).
- *
- * @param {object}   sock
- * @param {string}   jid
- * @param {object}   flow        - Native flow params
+ * @param {object}   flow
  * @param {string}   flow.body
  * @param {string}   [flow.footer]
  * @param {string}   [flow.header]
- * @param {object[]} [flow.buttons]       - [{text, id, url?}]
+ * @param {object[]} [flow.buttons]    - Any mix of quick_reply / url / copy / call
+ * @param {object}   [flow.contextInfo]
  * @param {object}   [opts]
  * @param {object}   [opts.quoted]
- * @returns {Promise<object|null>}
  */
 export async function sendNativeFlow(sock, jid, flow, opts = {}) {
-  return _buildNativeFlow(sock, jid, {
+  return sendInteractiveMessage(sock, jid, {
     body: flow.body || "",
     footer: flow.footer || "",
     header: flow.header || "",
@@ -285,25 +112,66 @@ export async function sendNativeFlow(sock, jid, flow, opts = {}) {
 }
 
 /**
- * Auto-wrap a plain text reply with buttons if Button Mode is ON.
- * If Button Mode is OFF, sends a plain text reply.
+ * Send the bot vCard (with profile picture) then interactive buttons.
+ * This is the signature "contact + buttons" experience:
+ *  1. WhatsApp renders the bot contact card (with bot pic)
+ *  2. Followed immediately by tappable action buttons
+ *
+ * @param {object}   sock
+ * @param {string}   jid
+ * @param {string}   body        - Button message body text
+ * @param {object[]} buttons     - Any mix: [{text,id}] [{text,url}] [{text,copyCode}] etc.
+ * @param {object}   [opts]
+ * @param {string}   [opts.footer]
+ * @param {string}   [opts.header]
+ * @param {object}   [opts.quoted]
+ * @param {string}   [opts.botOrg]     - Organization line in vCard
+ * @param {string}   [opts.botNote]    - Note field in vCard
+ * @param {boolean}  [opts.withPic]    - Embed profile pic (default: true)
+ * @param {object}   [opts.contextInfo]
+ */
+export async function sendContactWithButtons(sock, jid, body, buttons, opts = {}) {
+  // 1. Send bot vCard
+  await sendBotVCard(sock, jid, {
+    org: opts.botOrg || null,
+    note: opts.botNote || null,
+    withPic: opts.withPic !== false,
+    quoted: opts.quoted || null,
+  });
+
+  // 2. Let WhatsApp render the card before the buttons arrive
+  await new Promise(r => setTimeout(r, 500));
+
+  // 3. Send interactive buttons
+  return sendButtons(sock, jid, body, buttons || [], {
+    footer: opts.footer || "",
+    header: opts.header || "",
+    quoted: opts.quoted || null,
+    contextInfo: opts.contextInfo || {},
+  });
+}
+
+/**
+ * Auto-wrap a reply with buttons when Button Mode is ON.
+ * When Button Mode is OFF, falls back to plain sendText.
  *
  * @param {object}   sock
  * @param {string}   jid
  * @param {string}   text
  * @param {object}   [opts]
- * @param {object[]} [opts.buttons]
+ * @param {object[]} [opts.buttons]      - Required for button wrap to trigger
  * @param {object}   [opts.quoted]
  * @param {string}   [opts.footer]
  * @param {string}   [opts.header]
- * @returns {Promise<object|null>}
+ * @param {object}   [opts.contextInfo]
  */
 export async function autoButton(sock, jid, text, opts = {}) {
-  if (_buttonMode && opts.buttons?.length) {
+  if (_buttonMode && Array.isArray(opts.buttons) && opts.buttons.length) {
     return sendButtons(sock, jid, text, opts.buttons, {
-      footer: opts.footer,
-      header: opts.header,
-      quoted: opts.quoted,
+      footer: opts.footer || "",
+      header: opts.header || "",
+      quoted: opts.quoted || null,
+      contextInfo: opts.contextInfo || {},
     });
   }
   return sendText(sock, jid, text, { quoted: opts.quoted });
