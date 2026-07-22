@@ -4179,32 +4179,61 @@ async function sendInteractiveListMenu(sock, msg, menuText, coverBuf) {
     }
   }
 
-  // ── 2) Then send the native interactive list/buttons message right below.
+  // ── 2) Send the interactive list/buttons through the new handler system.
+  //    Routes: GKTW → Baileys list → plain text (interactiveHandler.js).
+  //    Falls back to sendNativeFlowListMenu if the handler throws.
   if (!isNewsletterJid(jid)) {
+    const _menuSections = [{
+      title: CONFIG.BOT_NAME + ' Categories',
+      rows: catRows.map(row => ({ id: row.rowId, title: row.title, description: row.description }))
+    }];
+    const _menuFooter = `⚡ ${CONFIG.BOT_NAME} • buttons only menu`;
+    const _menuQuoted  = imgSent ? undefined : msg;
+    const _quickBtns   = [
+      { text: "📋 ALL CMDS",   id: `${CONFIG.PREFIX}allmenu`,       type: "quick_reply" },
+      { text: "📥 DOWNLOAD",   id: `${CONFIG.PREFIX}menu download`, type: "quick_reply" },
+      { text: "👥 GROUP",      id: `${CONFIG.PREFIX}menu group`,    type: "quick_reply" },
+      { text: "🏓 PING",       id: `${CONFIG.PREFIX}ping`,          type: "quick_reply" },
+    ];
     try {
-      await sendNativeFlowListMenu(sock, jid, imgSent ? undefined : msg, compactBody, [{
-        title: CONFIG.BOT_NAME + ' Categories',
-        highlight_label: 'Tap to open',
-        rows: catRows.map(row => ({ title: row.title, description: row.description, id: row.rowId }))
-      }], [
-        { id: `${CONFIG.PREFIX}allmenu`, text: "📋 ALL CMDS" },
-        { id: `${CONFIG.PREFIX}menu download`, text: "📥 DOWNLOAD" },
-        { id: `${CONFIG.PREFIX}menu group`, text: "👥 GROUP" },
-        { id: `${CONFIG.PREFIX}ping`, text: "🏓 PING" },
-      ], `⚡ ${CONFIG.BOT_NAME} • buttons only menu`);
+      // ── New handler path ────────────────────────────────────────────────
+      const { sendList: _hSendList, sendButtons: _hSendButtons } = await import("./handlers/interactiveHandler.js");
+      await _hSendList(sock, jid, compactBody, _menuSections, {
+        buttonText: "📂 Open Categories",
+        footer: _menuFooter,
+        title: CONFIG.BOT_NAME + ' MENU',
+        quoted: _menuQuoted,
+      });
+      await _hSendButtons(sock, jid, "Quick actions:", _quickBtns, { footer: _menuFooter });
       sent = true;
     } catch (e0) {
-      console.log('[NATIVE_MENU] native list failed:', e0?.message || e0);
-      const listPayload = {
-        text: compactBody,
-        footer: '⚡ ' + CONFIG.BOT_NAME + ' v' + CONFIG.VERSION + ' • tap a category',
-        title: '🗂️ AVAILABLE MENUS',
-        buttonText: '📂 Open Categories',
-        sections: [{ title: '┌── ' + CONFIG.BOT_NAME + ' MENU ──┐', rows: catRows }],
-      };
-      if (ppUrl) listPayload.contextInfo = __ppContext(ppUrl, "Tap a category below");
-      try { await sock.sendMessage(jid, listPayload, { quoted: imgSent ? undefined : msg }); sent = true; }
-      catch (e1) { console.log('[LIST_MENU] listMessage failed:', e1?.message || e1); }
+      console.log('[HANDLER_MENU] handler failed, trying native flow:', e0?.message || e0);
+      try {
+        // ── Legacy native-flow fallback ─────────────────────────────────
+        await sendNativeFlowListMenu(sock, jid, _menuQuoted, compactBody, [{
+          title: CONFIG.BOT_NAME + ' Categories',
+          highlight_label: 'Tap to open',
+          rows: catRows.map(row => ({ title: row.title, description: row.description, id: row.rowId }))
+        }], [
+          { id: `${CONFIG.PREFIX}allmenu`,       text: "📋 ALL CMDS" },
+          { id: `${CONFIG.PREFIX}menu download`, text: "📥 DOWNLOAD" },
+          { id: `${CONFIG.PREFIX}menu group`,    text: "👥 GROUP" },
+          { id: `${CONFIG.PREFIX}ping`,          text: "🏓 PING" },
+        ], _menuFooter);
+        sent = true;
+      } catch (e1) {
+        console.log('[NATIVE_MENU] native list failed:', e1?.message || e1);
+        const listPayload = {
+          text: compactBody,
+          footer: '⚡ ' + CONFIG.BOT_NAME + ' v' + CONFIG.VERSION + ' • tap a category',
+          title: '🗂️ AVAILABLE MENUS',
+          buttonText: '📂 Open Categories',
+          sections: [{ title: '┌── ' + CONFIG.BOT_NAME + ' MENU ──┐', rows: catRows }],
+        };
+        if (ppUrl) listPayload.contextInfo = __ppContext(ppUrl, "Tap a category below");
+        try { await sock.sendMessage(jid, listPayload, { quoted: _menuQuoted }); sent = true; }
+        catch (e2) { console.log('[LIST_MENU] listMessage failed:', e2?.message || e2); }
+      }
     }
   }
   if (imgSent) sent = true;
