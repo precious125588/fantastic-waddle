@@ -36216,3 +36216,59 @@ try {
 // ════════════════════════════════════════════════════════════════════════════
 // END LATE-PATCH v21
 // ════════════════════════════════════════════════════════════════════════════
+
+// ════════════════════════════════════════════════════════════════════════════
+// LATE-PATCH v22 — SILENT PROGRESS BOARDS
+// The bot historically prints multi-line progress banners like:
+//   ⬡ Fetching media...
+//   ◻ Downloading...
+//   ◻ Sending...
+// then edits them into ✅ done boards. The user now wants those replaced by
+// pure reactions (🌀 during work, ✅ on done, ❌ on fail — already emitted by
+// most commands via react()). This patch swallows those progress texts and
+// their subsequent editMessage() updates without touching each command site,
+// so every existing feature keeps working; only the noisy text disappears.
+// ════════════════════════════════════════════════════════════════════════════
+(function _miasLatePatchV22() {
+  try {
+    const _PROGRESS_RE = /(⬡|⬢|◻|◼|◽|◾)[^\n]{0,80}(Fetch|Download|Upload|Send|Search|Convert|Encoding|Processing|Rendering)/i;
+    const _isProgress = (t) => typeof t === "string" && _PROGRESS_RE.test(t);
+    const _SUPPRESS_PREFIX = "mias-v22-suppressed-";
+
+    const _wrap = (sock) => {
+      if (!sock || sock.__miasV22Wrapped) return;
+      const _orig = sock.sendMessage.bind(sock);
+      sock.sendMessage = async function (jid, content, opts) {
+        try {
+          if (content && typeof content === "object" && typeof content.text === "string") {
+            // Edit of a previously-suppressed key: no-op.
+            if (content.edit && content.edit.id && String(content.edit.id).startsWith(_SUPPRESS_PREFIX)) {
+              return { key: content.edit, message: {} };
+            }
+            // Suppress fresh progress boards.
+            if (_isProgress(content.text) && !content.edit) {
+              const id = _SUPPRESS_PREFIX + Math.random().toString(36).slice(2, 10);
+              return { key: { id, remoteJid: jid, fromMe: true }, message: {} };
+            }
+          }
+        } catch {}
+        return _orig(jid, content, opts);
+      };
+      sock.__miasV22Wrapped = true;
+    };
+
+    const _poll = setInterval(() => {
+      try {
+        for (const s of [globalThis.sock, globalThis._sock, globalThis.__sock].filter(Boolean)) _wrap(s);
+      } catch {}
+    }, 1500);
+    setTimeout(() => clearInterval(_poll), 10 * 60 * 1000);
+
+    console.log("[LATE-PATCH-v22] progress-board suppression installed ✓");
+  } catch (e) {
+    try { console.warn("[LATE-PATCH-v22] failed:", e?.message || e); } catch {}
+  }
+})();
+// ════════════════════════════════════════════════════════════════════════════
+// END LATE-PATCH v22
+// ════════════════════════════════════════════════════════════════════════════
