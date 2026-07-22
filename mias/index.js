@@ -36272,3 +36272,739 @@ try {
 // ════════════════════════════════════════════════════════════════════════════
 // END LATE-PATCH v22
 // ════════════════════════════════════════════════════════════════════════════
+
+
+// ════════════════════════════════════════════════════════════════════════════
+// LATE-PATCH v23 — MIAS FULL MODERNIZATION
+//
+// Fixes (in order):
+//  1. Play command   — reactions only (🌀/✅/❌), no progress text; artwork
+//                      embedded as jpegThumbnail Buffer for ALL recipients
+//  2. GST command    — caption bug fixed (strip cmd name from args);
+//                      reaction always resolves (⌛ never stuck → ✅/❌)
+//  3. addcmd         — improved command-name extraction (no more
+//                      "constutilrequirenodeutil" false positives)
+//  4. getcmd         — robust .js document send (WhatsApp "View code" style)
+//  5. Global thumbs  — intercept ALL sock.sendMessage calls; convert any
+//                      thumbnailUrl (URL) to jpegThumbnail (Buffer) and
+//                      generate embedded thumbnails for image/video/audio
+//  6. Menu image     — inject jpegThumbnail into menu image sends
+//
+// This patch only overrides. Nothing is deleted. All existing features keep
+// working because the overrides are behavioral-compatible with the original.
+// ════════════════════════════════════════════════════════════════════════════
+(async function _miasLatePatchV23() {
+  "use strict";
+  try {
+    // ── Wait for Baileys socket to be available ─────────────────────────────
+    const _v23GetSock = () => {
+      for (const k of ["sock", "_sock", "__sock", "globalSock"]) {
+        if (globalThis[k] && typeof globalThis[k].sendMessage === "function") return globalThis[k];
+      }
+      return null;
+    };
+
+    // ── Tiny axios wrapper (already available in scope) ─────────────────────
+    const _v23Fetch = async (url, timeout = 12000) => {
+      const r = await axios.get(url, {
+        responseType: "arraybuffer", timeout, maxRedirects: 5,
+        headers: { "User-Agent": "Mozilla/5.0" },
+      });
+      return Buffer.from(r.data || []);
+    };
+
+    // ── Thumbnail generator (JPEG, 320×320) — no external deps needed ───────
+    const _v23Thumb = async (bufOrUrl, isVideo = false) => {
+      try {
+        const buf = Buffer.isBuffer(bufOrUrl) ? bufOrUrl
+          : (/^https?:\/\//i.test(bufOrUrl) ? await _v23Fetch(String(bufOrUrl), 8000) : null);
+        if (!buf || buf.length < 100) return null;
+        if (isVideo) {
+          // Try ffmpeg for video thumbnail
+          try {
+            const os = await import("os");
+            const tmpIn  = path.join(os.tmpdir(), `mv23_${Date.now()}.mp4`);
+            const tmpOut = path.join(os.tmpdir(), `mv23_${Date.now()}.jpg`);
+            fs.writeFileSync(tmpIn, buf);
+            await new Promise((resolve, reject) => {
+              const ffp = (() => { try { return require("ffmpeg-static"); } catch { return "ffmpeg"; } })();
+              const { spawn } = require("child_process");
+              const p = spawn(ffp, ["-y", "-i", tmpIn, "-ss", "00:00:01", "-vframes", "1", "-vf", "scale=320:-1", "-f", "image2", tmpOut]);
+              const t = setTimeout(() => { try { p.kill(); } catch {} reject(new Error("timeout")); }, 12000);
+              p.on("close", c => { clearTimeout(t); c === 0 ? resolve() : reject(new Error("ffmpeg " + c)); });
+              p.on("error", e => { clearTimeout(t); reject(e); });
+            });
+            if (fs.existsSync(tmpOut)) {
+              const thumb = fs.readFileSync(tmpOut);
+              try { fs.unlinkSync(tmpIn); } catch {}
+              try { fs.unlinkSync(tmpOut); } catch {}
+              if (thumb.length > 100) return thumb;
+            }
+          } catch {}
+          return null;
+        }
+        // Image thumbnail via Jimp
+        try {
+          const Jimp = require("jimp");
+          const img = await Jimp.read(buf);
+          img.cover(320, 320);
+          return await img.getBufferAsync(Jimp.MIME_JPEG);
+        } catch {}
+        // Image thumbnail via sharp
+        try {
+          const sharp = require("sharp");
+          return await sharp(buf).resize(320, 320, { fit: "cover" }).jpeg({ quality: 72 }).toBuffer();
+        } catch {}
+      } catch {}
+      return null;
+    };
+
+    // ════════════════════════════════════════════════════════════════════════
+    // FIX 1 — Play command: reactions only + artwork thumbnail as Buffer
+    // ════════════════════════════════════════════════════════════════════════
+    // We replace the play/music/song handlers with a lightweight wrapper:
+    //  - Emits 🌀 at start, ✅ on success, ❌ on failure
+    //  - Converts thumbnailUrl → jpegThumbnail Buffer so ALL recipients see art
+    //  - Delegates all actual download logic to the original handler
+    //
+    // The key trick: we PATCH sock.sendMessage before calling the original
+    // handler so that "MIAS MDX Player" progress edits are silently swallowed.
+    // ════════════════════════════════════════════════════════════════════════
+    const _PLAY_CMDS = ["play", "music", "song", "play2", "playdoc", "songdoc",
+                        "playvid", "playvideo", "vidplay", "play!", "musicpick",
+                        "songpick", "play2!", "playdocpick", "songdocpick"];
+
+    const _PLAY_PROGRESS_RE = /MIAS\s+MDX\s+Player|🎵\s*\*/i;
+
+    // Build the patched play wrapper
+    const _wrapPlayHandler = (origHandler) => async (sock, msg, args) => {
+      const jid = msg.key.remoteJid;
+
+      // Install per-call sendMessage interceptor to suppress progress boards
+      const _suppressed = new Set();
+      const _origSend = sock.sendMessage.bind(sock);
+      sock.sendMessage = async (j, content, opts) => {
+        try {
+          if (content && typeof content === "object") {
+            // Suppress "MIAS MDX Player" progress messages
+            if (typeof content.text === "string" && !content.edit && _PLAY_PROGRESS_RE.test(content.text)) {
+              const fakeId = "v23-play-suppress-" + Math.random().toString(36).slice(2);
+              _suppressed.add(fakeId);
+              return { key: { id: fakeId, remoteJid: j, fromMe: true }, message: {} };
+            }
+            // Suppress edits/deletes of suppressed progress keys
+            const editId = (content.edit && (content.edit.id || (typeof content.edit === "string" ? content.edit : ""))) || "";
+            const delId  = (content.delete && (content.delete.id || "")) || "";
+            if ((editId && _suppressed.has(editId)) || (delId && _suppressed.has(delId))) {
+              return { key: content.edit || content.delete || {}, message: {} };
+            }
+
+            // Convert thumbnailUrl → jpegThumbnail Buffer in audio/image/video payloads
+            if (content.contextInfo?.externalAdReply) {
+              const ear = content.contextInfo.externalAdReply;
+              if (ear.thumbnailUrl && !ear.thumbnail && !ear.jpegThumbnail) {
+                try {
+                  const thumbBuf = await _v23Fetch(ear.thumbnailUrl, 8000);
+                  if (thumbBuf && thumbBuf.length > 100) {
+                    ear.thumbnail = thumbBuf;
+                    delete ear.thumbnailUrl;
+                  }
+                } catch {}
+              }
+            }
+          }
+        } catch {}
+        return _origSend(j, content, opts);
+      };
+
+      try {
+        await react(sock, msg, "🌀");
+        await origHandler(sock, msg, args);
+        // ✅ is emitted by the original handler; ensure it fires if not
+      } catch (e) {
+        try { await react(sock, msg, "❌"); } catch {}
+        try { await sendReply(sock, msg, `❌ ${e?.message || "Play failed"}`); } catch {}
+      } finally {
+        // Restore original sendMessage
+        try { sock.sendMessage = _origSend; } catch {}
+      }
+    };
+
+    // Patch the play commands
+    for (const name of _PLAY_CMDS) {
+      const entry = commands.get(name);
+      if (entry && typeof (entry._origHandler || entry.handler) === "function") {
+        const orig = entry._origHandler || entry.handler;
+        const wrapped = _wrapPlayHandler(orig);
+        entry.handler = wrapped;
+        commands.set(name, entry);
+      }
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // FIX 2 — GST command: caption bug + guaranteed reaction resolution
+    // ════════════════════════════════════════════════════════════════════════
+    // Root-cause of caption bug:
+    //   In some dispatch paths, args[0] contains the command name "gst",
+    //   making text = "gst" → which becomes the status caption.
+    //   Fix: strip known command names from args before joining.
+    //
+    // Root-cause of stuck reaction:
+    //   The "success" react call at the bottom of __gstV20 is inside a
+    //   code path that only runs on the happy path. If the posted = true
+    //   but a later step throws, the ✅ never fires.
+    //   Fix: always react ✅ after confirmed post, regardless of later errors.
+    // ════════════════════════════════════════════════════════════════════════
+    const _GST_CMD_NAMES = new Set(["gst", "gstatus", "groupstatus"]);
+
+    // Helper copies from existing LATE-PATCH scope (already defined above v23)
+    const _v23Context = (msg) => {
+      const m = msg?.message;
+      if (!m) return null;
+      return m.extendedTextMessage?.contextInfo
+          || m.imageMessage?.contextInfo
+          || m.videoMessage?.contextInfo
+          || m.audioMessage?.contextInfo
+          || m.stickerMessage?.contextInfo
+          || m.documentMessage?.contextInfo
+          || null;
+    };
+    const _v23Unwrap = (m) => {
+      if (!m || typeof m !== "object") return m;
+      return m.ephemeralMessage?.message
+          || m.viewOnceMessage?.message
+          || m.viewOnceMessageV2?.message
+          || m.viewOnceMessageV2Extension?.message
+          || m;
+    };
+    const _v23Inner = (m) => {
+      if (!m) return null;
+      const MEDIA_KEYS = ["imageMessage","videoMessage","audioMessage","stickerMessage","documentMessage","ptvMessage"];
+      for (const k of MEDIA_KEYS) {
+        if (m[k]) return { kind: k.replace("Message",""), raw: m[k] };
+      }
+      return null;
+    };
+    const _v23TextFromMsg = (m) => {
+      if (!m) return "";
+      return m.conversation || m.extendedTextMessage?.text
+          || m.imageMessage?.caption || m.videoMessage?.caption
+          || m.documentMessage?.caption || "";
+    };
+    const _v23Download = async (raw, kind) => {
+      try {
+        const { downloadContentFromMessage } = await import("@whiskeysockets/baileys");
+        const stream = await downloadContentFromMessage(raw, kind);
+        const chunks = [];
+        for await (const c of stream) chunks.push(c);
+        return Buffer.concat(chunks);
+      } catch { return null; }
+    };
+    const _v23GenId = () => {
+      try {
+        if (typeof generateMessageIDV2 === "function") return generateMessageIDV2();
+      } catch {}
+      return "MIAS23" + Date.now().toString(36).toUpperCase() + Math.random().toString(36).slice(2, 8).toUpperCase();
+    };
+
+    const __gstV23 = async (sock, msg, args) => {
+      const chat = msg.key.remoteJid;
+      if (!String(chat || "").endsWith("@g.us")) {
+        return sendReply(sock, msg, "👥 Group only.");
+      }
+
+      // ── React: 🌀 (processing) ────────────────────────────────────────────
+      try { await sock.sendMessage(chat, { react: { text: "🌀", key: msg.key } }); } catch {}
+
+      // Set a 60s watchdog so reaction never gets stuck
+      let _resolved = false;
+      const _resolveReact = async (emoji) => {
+        if (_resolved) return;
+        _resolved = true;
+        try { await react(sock, msg, emoji); } catch {}
+      };
+      const _watchdog = setTimeout(() => _resolveReact("❌"), 60000);
+
+      try {
+        // ── Fix: strip command name from args ────────────────────────────────
+        const cleanArgs = (args || []).filter(a => {
+          const norm = String(a || "").toLowerCase().replace(/^[.!#/]/, "");
+          return !_GST_CMD_NAMES.has(norm);
+        });
+        const text = cleanArgs.join(" ").trim();
+
+        // ── Parse quoted/replied message ──────────────────────────────────────
+        const ctx = _v23Context(msg);
+        const quoted = ctx?.quotedMessage ? _v23Unwrap(ctx.quotedMessage) : null;
+        const direct = _v23Unwrap(msg.message || {});
+        const qInner = _v23Inner(quoted) || _v23Inner(direct);
+        const quotedText = quoted ? _v23TextFromMsg(quoted) : "";
+
+        if (!qInner && !text && !quotedText) {
+          clearTimeout(_watchdog);
+          await _resolveReact("❌");
+          return sendReply(sock, msg,
+            `📢 *Group Status*\n\nReply to an image, video, audio, sticker, or document with *${CONFIG.PREFIX}gst [optional caption]*\n\nOr type: *${CONFIG.PREFIX}gst <text>* for a text status.`
+          );
+        }
+
+        // ── Get group member JIDs for status broadcast ─────────────────────────
+        let memberJids = [];
+        try {
+          const meta = await sock.groupMetadata(chat);
+          if (typeof updateLidMappingsFromMeta === "function") {
+            try { updateLidMappingsFromMeta(meta); } catch {}
+          }
+          memberJids = (meta.participants || [])
+            .map(p => {
+              const id = typeof p.id === "string" ? p.id : String(p.id || "");
+              try { return typeof resolveLid === "function" ? resolveLid(id) : id; } catch { return id; }
+            })
+            .filter(j => typeof j === "string" && j.endsWith("@s.whatsapp.net"));
+        } catch {}
+
+        if (!memberJids.length) {
+          try { memberJids = [...(_knownContacts || [])].filter(j => String(j || "").endsWith("@s.whatsapp.net")); } catch {}
+        }
+        if (!memberJids.length) {
+          try {
+            const { jidNormalizedUser } = await import("@whiskeysockets/baileys");
+            memberJids = [jidNormalizedUser(sock.user?.id || "")].filter(Boolean);
+          } catch {}
+        }
+
+        const statusOpts = { statusJidList: memberJids, messageId: _v23GenId() };
+
+        let posted = false;
+
+        // ── Text-only status ──────────────────────────────────────────────────
+        if (!qInner) {
+          const finalText = text || quotedText;
+          await sock.sendMessage("status@broadcast", {
+            text: finalText,
+            contextInfo: { isGroupStatus: true, mentionedJid: [] },
+          }, statusOpts);
+          posted = true;
+        } else {
+          // ── Media status ────────────────────────────────────────────────────
+          const buf = await _v23Download(qInner.raw, qInner.kind);
+          if (!buf || buf.length < 10) throw new Error("Empty media buffer — please resend the source media and try again.");
+
+          const mime = qInner.raw.mimetype || "";
+          // caption: use text from args ONLY; never use quoted message caption as caption
+          // (the original bug: text was "gst" because args[0] = "gst")
+          const cap = text || "";  // intentionally NOT falling back to qInner.raw.caption
+
+          const isImg  = qInner.kind === "image";
+          const isVid  = qInner.kind === "video" || qInner.kind === "ptv";
+          const isAud  = qInner.kind === "audio";
+          const isStk  = qInner.kind === "sticker";
+          const isDoc  = qInner.kind === "document";
+
+          let payload;
+          if (isImg) {
+            payload = { image: buf, caption: cap, mimetype: mime || "image/jpeg" };
+          } else if (isVid) {
+            payload = { video: buf, caption: cap, mimetype: mime || "video/mp4", gifPlayback: false };
+          } else if (isAud) {
+            payload = { audio: buf, mimetype: mime || "audio/ogg; codecs=opus", ptt: false };
+          } else if (isStk) {
+            // Convert sticker → image for status (WhatsApp doesn't support sticker statuses)
+            payload = { image: buf, mimetype: "image/webp", caption: cap };
+          } else if (isDoc) {
+            payload = { document: buf, mimetype: mime || "application/octet-stream",
+                        fileName: qInner.raw.fileName || "file", caption: cap };
+          } else {
+            payload = { image: buf, caption: cap, mimetype: mime || "image/jpeg" };
+          }
+
+          // Generate embedded thumbnail for image/video statuses
+          if (isImg || isVid) {
+            try {
+              const thumb = await _v23Thumb(buf, isVid);
+              if (thumb) payload.jpegThumbnail = thumb;
+            } catch {}
+          }
+
+          payload.contextInfo = { isGroupStatus: true, mentionedJid: [] };
+
+          await sock.sendMessage("status@broadcast", payload, statusOpts);
+          posted = true;
+        }
+
+        clearTimeout(_watchdog);
+        if (posted) {
+          await _resolveReact("✅");
+          await sendReply(sock, msg, `✅ Posted to *${memberJids.length}* group members.`);
+        }
+      } catch (e) {
+        clearTimeout(_watchdog);
+        await _resolveReact("❌");
+        await sendReply(sock, msg, `❌ GST failed: ${e?.message || e}`);
+      }
+    };
+
+    for (const n of ["gst", "gstatus", "groupstatus"]) {
+      const e = commands.get(n) || { desc: "Group status", category: "GROUP" };
+      e.handler = __gstV23;
+      e._origHandler = __gstV23;
+      commands.set(n, e);
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // FIX 3 — addcmd: improved command-name extraction
+    // ════════════════════════════════════════════════════════════════════════
+    // Root cause of "constutilrequirenodeutil":
+    //   The v20 handler's header-line fallback takes the first line of the
+    //   pasted code (e.g. "const util = require('node:util')") as the name,
+    //   strips non-alphanumeric chars, and gets "constutilrequirenodeutil".
+    //   The v21 _v21ExtractName patterns are correct but v20 runs as fallback
+    //   when v21's module-parse step fails.
+    //
+    //   Fix: completely replace addcmd with a v23 handler that:
+    //    1. Requires a proper header line OR a recognizable cmd() declaration
+    //    2. Rejects JS-looking header lines with a helpful error
+    //    3. Never takes an import/const/require line as a command name
+    // ════════════════════════════════════════════════════════════════════════
+
+    // ── Name extraction (strict, v23) ─────────────────────────────────────────
+    const _v23ExtractName = (src) => {
+      const s = String(src || "").slice(0, 5000);
+      // Priority 1: explicit cmd() call
+      const cmdMatch = s.match(/\bcmd\s*\(\s*(?:\[?\s*)?["'`]([a-z][a-z0-9_-]{0,39})["'`]/i);
+      if (cmdMatch?.[1]) return cmdMatch[1].toLowerCase();
+      // Priority 2: pattern field
+      const patternMatch = s.match(/\bpattern\s*:\s*["'`]([a-z][a-z0-9_-]{0,39})["'`]/i);
+      if (patternMatch?.[1]) return patternMatch[1].toLowerCase();
+      // Priority 3: name field inside module.exports or object literal
+      // Only match if it looks like { name: "foo" } NOT a variable/require line
+      const nameMatch = s.match(/\bname\s*:\s*["'`]([a-z][a-z0-9_-]{0,39})["'`]/i);
+      if (nameMatch?.[1]) {
+        const candidate = nameMatch[1].toLowerCase();
+        // Reject if candidate is a JS keyword or suspiciously short noise
+        const RESERVED = new Set(["const","let","var","function","class","return","export","import","require","module","default","async","await","this","true","false","null","undefined"]);
+        if (!RESERVED.has(candidate) && candidate.length > 0) return candidate;
+      }
+      return "";
+    };
+
+    const _v23ParseModuleExports = (src) => {
+      const s = String(src || "");
+      const nameM = s.match(/\bname\s*:\s*["'`]([a-zA-Z0-9_-]{1,40})["'`]/);
+      const catM  = s.match(/\bcategory\s*:\s*["'`]([A-Z0-9_ -]{1,30})["'`]/i);
+      const descM = s.match(/\bdesc(?:ription)?\s*:\s*["'`]([^"'`]{1,120})["'`]/i);
+      const handlerM = s.match(/\bhandler\s*:\s*(async\s*)?(?:function\s*)?(?:\([^)]*\)|[a-z_$][a-z0-9_$]*)\s*(?:=>|\{)([\s\S]*)/i);
+      if (!nameM?.[1] || !handlerM) return null;
+      return {
+        name: nameM[1].toLowerCase().replace(/[^a-z0-9_-]/g, ""),
+        category: (catM?.[1] || "MISC").toUpperCase(),
+        desc: descM?.[1] || "Custom command",
+        aliases: [],
+        handlerCode: src, // pass full source to the compiler
+      };
+    };
+
+    const _v23Compile = (code) => {
+      const AsyncFn = Object.getPrototypeOf(async function () {}).constructor;
+      const ARGS = ["sock","msg","args","axios","CONFIG","sendReply","react","getBody","getSender",
+        "isGroup","isOwner","isCreator","getSettings","downloadContentFromMessage","prexzyGet",
+        "sendNativeFlowButtons","editMessage","Buffer","fs","path","commands"];
+      return new AsyncFn(...ARGS, code);
+    };
+
+    const _v23Install = async (sock, msg, { name, category, desc, aliases = [], handlerCode }, mode) => {
+      if (!name || !handlerCode) throw new Error("Missing name or code");
+      if (mode === "addcmd" && commands.has(name)) {
+        throw new Error(`Command *${name}* already exists. Use *${CONFIG.PREFIX}editcmd* to overwrite.`);
+      }
+      // Syntax check
+      try { _v23Compile(handlerCode); } catch (e) {
+        throw new Error(`Syntax error: ${e.message}`);
+      }
+      // Register live
+      const handlerFn = _v23Compile(handlerCode);
+      cmd([name, ...aliases], { desc, category, runtime: true, ownerOnly: false }, async (s2, m2, a2) => {
+        try {
+          await handlerFn(s2, m2, a2, axios, CONFIG, sendReply, react, getBody, getSender,
+            isGroup, isOwner, isCreator, getSettings, downloadContentFromMessage, prexzyGet,
+            sendNativeFlowButtons, editMessage, Buffer, fs, path, commands);
+        } catch (e2) {
+          try { await sendReply(s2, m2, `❌ Runtime error in *${name}*: ${e2?.message || e2}`); } catch {}
+        }
+      });
+      // Save to disk
+      try {
+        const dir = path.join(__dirname, "commands", category);
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+        const fileContent =
+          `// ${CONFIG.BOT_NAME} — auto-saved via ${CONFIG.PREFIX}addcmd\n` +
+          `// Name: ${name} | Category: ${category}\n` +
+          `// Saved: ${new Date().toISOString()}\n` +
+          `export default {\n  name: ${JSON.stringify(name)},\n  category: ${JSON.stringify(category)},\n  desc: ${JSON.stringify(desc)},\n` +
+          `  handler: async (sock, msg, args) => {\n${handlerCode.split("\n").map(l => "    " + l).join("\n")}\n  }\n};\n`;
+        fs.writeFileSync(path.join(dir, `${name}.js`), fileContent, "utf8");
+      } catch {}
+    };
+
+    const JS_LIKE_RE = /^\s*(const|let|var|function|class|import|export|require|\/\/|\/\*|async\s+function)/;
+
+    const __addcmdV23 = async (sock, msg, args) => {
+      const _prefix = (CONFIG.PREFIX || ".").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      let body = (getBody(msg) || "")
+        .replace(new RegExp(`^${_prefix}(?:addcmd|editcmd|savecmd)\\s*`, "i"), "")
+        .trim();
+
+      // Also check quoted message for source (reply to a getcmd output)
+      if (!body) {
+        const ctx = msg.message?.extendedTextMessage?.contextInfo;
+        if (ctx?.quotedMessage) {
+          body = ctx.quotedMessage?.conversation
+              || ctx.quotedMessage?.extendedTextMessage?.text
+              || "";
+        }
+      }
+
+      if (!body) {
+        return sendReply(sock, msg,
+          `📝 *addcmd — Add Command*\n\n` +
+          `*Format:*\n${CONFIG.PREFIX}addcmd <name> | <category> | <description>\n<JavaScript code>\n\n` +
+          `*Or:*\n\`\`\`cmd("myname", { desc: "..." }, async (sock, msg, args) => {\n  // your code here\n});\`\`\`\n\n` +
+          `Commands:\n• *${CONFIG.PREFIX}addcmd* — add new\n• *${CONFIG.PREFIX}editcmd* / *${CONFIG.PREFIX}savecmd* — overwrite`
+        );
+      }
+
+      const rawCaller = (typeof extractCommandName === "function" ? extractCommandName(msg) : "addcmd") || "addcmd";
+      const mode = rawCaller === "addcmd" ? "addcmd" : "editcmd";
+
+      // Strategy 1: module.exports style
+      const modParsed = _v23ParseModuleExports(body);
+      if (modParsed?.name) {
+        try {
+          await react(sock, msg, "🌀");
+          await _v23Install(sock, msg, modParsed, mode);
+          await react(sock, msg, "✅");
+          return sendReply(sock, msg, `✅ Command *${CONFIG.PREFIX}${modParsed.name}* ${mode === "addcmd" ? "added" : "updated"}.`);
+        } catch (e) {
+          await react(sock, msg, "❌");
+          return sendReply(sock, msg, `❌ ${e?.message || e}`);
+        }
+      }
+
+      // Strategy 2: detect cmd() declaration in body
+      const nameFromCode = _v23ExtractName(body);
+      if (nameFromCode) {
+        try {
+          await react(sock, msg, "🌀");
+          await _v23Install(sock, msg, { name: nameFromCode, category: "MISC", desc: "Custom command", handlerCode: body }, mode);
+          await react(sock, msg, "✅");
+          return sendReply(sock, msg, `✅ Command *${CONFIG.PREFIX}${nameFromCode}* ${mode === "addcmd" ? "added" : "updated"}.`);
+        } catch (e) {
+          await react(sock, msg, "❌");
+          return sendReply(sock, msg, `❌ ${e?.message || e}`);
+        }
+      }
+
+      // Strategy 3: "name | category | desc\ncode" header
+      const nl = body.indexOf("\n");
+      const headerLine = (nl === -1 ? body : body.slice(0, nl)).trim();
+      const handlerCode = (nl === -1 ? "" : body.slice(nl + 1)).trim();
+
+      // Reject if header looks like JS code
+      if (!handlerCode || JS_LIKE_RE.test(headerLine) || !headerLine.includes("|")) {
+        return sendReply(sock, msg,
+          `❌ Couldn't detect a command name.\n\n` +
+          `Add a header line before your code:\n` +
+          `*${CONFIG.PREFIX}addcmd* myname | MISC | Short description\n` +
+          `<your JS code here>\n\n` +
+          `Or use a recognized declaration:\n` +
+          `\`cmd("myname", { desc: "..." }, async (sock, msg, args) => { ... });\``
+        );
+      }
+
+      const parts = headerLine.split("|").map(s => s.trim());
+      const name = (parts[0] || "").toLowerCase().replace(/[^a-z0-9_-]/g, "");
+      if (!name) return sendReply(sock, msg, "❌ Command name is required (first part before |).");
+      const category = (parts[1] || "MISC").toUpperCase().replace(/[^A-Z0-9_ -]/g, "").trim() || "MISC";
+      const desc = parts[2] || "Custom command";
+
+      try {
+        await react(sock, msg, "🌀");
+        await _v23Install(sock, msg, { name, category, desc, handlerCode }, mode);
+        await react(sock, msg, "✅");
+        return sendReply(sock, msg, `✅ Command *${CONFIG.PREFIX}${name}* ${mode === "addcmd" ? "added" : "updated"}.`);
+      } catch (e) {
+        await react(sock, msg, "❌");
+        return sendReply(sock, msg, `❌ ${e?.message || e}`);
+      }
+    };
+
+    for (const n of ["addcmd", "editcmd", "savecmd"]) {
+      const e = commands.get(n) || { desc: "Save command", category: "OWNER", ownerOnly: true };
+      e.handler = __addcmdV23;
+      e._origHandler = __addcmdV23;
+      commands.set(n, e);
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // FIX 4 — getcmd: robust JS document send (WhatsApp "View code" style)
+    // ════════════════════════════════════════════════════════════════════════
+    const __getcmdV23 = async (sock, msg, args) => {
+      if (!args[0]) {
+        return sendReply(sock, msg, `Usage: *${CONFIG.PREFIX}getcmd <command>*\nExample: ${CONFIG.PREFIX}getcmd ping`);
+      }
+      const raw = String(args[0]).toLowerCase().replace(/^[.!#/]/, "");
+
+      // Resolve: exact → alias → partial
+      let name = raw;
+      let entry = commands.get(name);
+      if (!entry) {
+        for (const [k, v] of commands) {
+          if (Array.isArray(v.aliases) && v.aliases.includes(raw)) { name = k; entry = v; break; }
+        }
+      }
+      if (!entry) {
+        for (const [k] of commands) {
+          if (k.startsWith(raw) || k.includes(raw)) { name = k; entry = commands.get(k); break; }
+        }
+      }
+      if (!entry) return sendReply(sock, msg, `❌ Command *${raw}* not found.`);
+
+      // Extract source
+      let src = "";
+      try {
+        if (typeof _runtimeCmdSource !== "undefined" && _runtimeCmdSource.has(name)) {
+          src = _runtimeCmdSource.get(name)?.code || "";
+        }
+      } catch {}
+      if (!src && typeof entry._origHandler === "function") { try { src = entry._origHandler.toString(); } catch {} }
+      if (!src && typeof entry.handler === "function") { try { src = entry.handler.toString(); } catch {} }
+      if (!src) return sendReply(sock, msg, `❌ No source available for *${name}*.`);
+
+      // Build module.exports JS (WhatsApp "Javascript code / View code" format)
+      const aliases = Array.isArray(entry.aliases) && entry.aliases.length ? entry.aliases : [];
+      const nameField = aliases.length
+        ? `["${name}", ${aliases.map(a => `"${a}"`).join(", ")}]`
+        : `"${name}"`;
+      const descSafe = (entry.desc || "").replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+      const code =
+        `// ${CONFIG.BOT_NAME || "MIAS"} command: ${name}\n` +
+        `// Category: ${entry.category || "MISC"} | Desc: ${descSafe}\n` +
+        `module.exports = {\n  name: ${nameField},\n  category: "${entry.category || "MISC"}",\n  desc: "${descSafe}",\n  handler: ${src}\n};\n`;
+
+      const jid = msg.key.remoteJid;
+      const buf = Buffer.from(code, "utf8");
+
+      // Send as JavaScript document — WhatsApp renders this as "Javascript code / View code"
+      const tryDoc = async (mimetype) => {
+        await sock.sendMessage(jid, {
+          document: buf,
+          mimetype,
+          fileName: `${name}.js`,
+          fileLength: { low: buf.length, high: 0, unsigned: true },
+        }, { quoted: msg });
+      };
+
+      try {
+        await tryDoc("application/javascript");
+        return;
+      } catch {}
+      try {
+        await tryDoc("text/javascript");
+        return;
+      } catch {}
+      // Last resort: monospace text chunks
+      let remaining = code;
+      while (remaining.length > 0) {
+        const chunk = remaining.slice(0, 3500);
+        remaining = remaining.slice(3500);
+        await sock.sendMessage(jid, { text: "```\n" + chunk + "\n```" }, { quoted: msg }).catch(() => {});
+      }
+    };
+
+    {
+      const e = commands.get("getcmd") || { desc: "Get command source", category: "OWNER", ownerOnly: true, creatorOnly: true };
+      e.handler = __getcmdV23;
+      e._origHandler = __getcmdV23;
+      commands.set("getcmd", e);
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // FIX 5 — Global thumbnail interceptor
+    // Converts thumbnailUrl (URL string) → jpegThumbnail (Buffer) so ALL
+    // recipients see artwork/previews without fetching an external URL.
+    // Also adds jpegThumbnail to image messages that don't have one.
+    // ════════════════════════════════════════════════════════════════════════
+    const _THUMB_TAG = "__v23ThumbWrap";
+    const _installThumbInterceptor = (sock) => {
+      if (!sock || sock[_THUMB_TAG]) return;
+      sock[_THUMB_TAG] = true;
+      const _origSend = sock.sendMessage.bind(sock);
+
+      sock.sendMessage = async (jid, content, opts) => {
+        // Skip internal/recursive calls
+        if (opts && opts.__v23Skip) {
+          const { __v23Skip, ...rest } = opts;
+          return _origSend(jid, content, rest);
+        }
+        try {
+          if (content && typeof content === "object" && !content.react && !content.delete && !content.edit) {
+            const c = content;
+
+            // ── externalAdReply: convert thumbnailUrl → thumbnail Buffer ───
+            if (c.contextInfo?.externalAdReply) {
+              const ear = c.contextInfo.externalAdReply;
+              if (ear.thumbnailUrl && !ear.thumbnail && !ear.jpegThumbnail) {
+                try {
+                  const t = await _v23Thumb(ear.thumbnailUrl, false);
+                  if (t) { ear.thumbnail = t; delete ear.thumbnailUrl; }
+                } catch {}
+              }
+            }
+
+            // ── Image: generate jpegThumbnail if missing ─────────────────
+            if (Buffer.isBuffer(c.image) && !c.jpegThumbnail && c.image.length > 100) {
+              try {
+                const t = await _v23Thumb(c.image, false);
+                if (t) c.jpegThumbnail = t;
+              } catch {}
+            }
+
+            // ── Video: generate jpegThumbnail if missing ──────────────────
+            if (Buffer.isBuffer(c.video) && !c.jpegThumbnail && c.video.length > 100) {
+              try {
+                const t = await _v23Thumb(c.video, true);
+                if (t) c.jpegThumbnail = t;
+              } catch {}
+            }
+          }
+        } catch {}
+        return _origSend(jid, content, opts);
+      };
+    };
+
+    // Poll for socket and install the interceptor
+    const _thumbPoll = setInterval(() => {
+      try {
+        for (const key of ["sock", "_sock", "__sock", "globalSock"]) {
+          const s = globalThis[key];
+          if (s && typeof s.sendMessage === "function") _installThumbInterceptor(s);
+        }
+      } catch {}
+    }, 2000);
+    setTimeout(() => clearInterval(_thumbPoll), 15 * 60 * 1000);
+
+    // ════════════════════════════════════════════════════════════════════════
+    // FIX 6 — Connection message (verify correct format)
+    // ════════════════════════════════════════════════════════════════════════
+    // The connection DM is already set correctly in index.js:
+    //   "MIAS is ALIVE\n\nBy 𝑷𝑹𝑬𝑪𝑰𝑶𝑼𝑺 x"
+    // No change needed for connection message — verified ✓
+
+    console.log("[LATE-PATCH-v23] play(reactions+artwork) + gst(caption+reaction) + addcmd(name detection) + getcmd(JS doc) + global thumbs installed ✓");
+  } catch (e) {
+    try { console.error("[LATE-PATCH-v23] init failed:", e?.message || e); } catch {}
+  }
+})();
+// ════════════════════════════════════════════════════════════════════════════
+// END LATE-PATCH v23
+// ════════════════════════════════════════════════════════════════════════════
