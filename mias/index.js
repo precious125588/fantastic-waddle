@@ -48,6 +48,12 @@ import {
 import { installHandlerGlobals, updateHandlerSock } from "./handlers/globals.js";
 import { setButtonMode, isButtonMode } from "./handlers/buttonHandler.js";
 import { isGktwAvailable } from "./handlers/gktwAdapter.js";
+// ── BUTTON MODE — wizard & interactive menu (new design) ──────────────────────
+import { handleWizardInput }   from "./handlers/wizardHandler.js";
+import {
+  sendButtonHomeScreen,
+  handleButtonResponse,
+}                              from "./handlers/buttonMenuHandler.js";
 // ─────────────────────────────────────────────────────────────────────────────
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -2805,6 +2811,31 @@ ${_atBotAdmin ? "✅ Message deleted." : "⚠️ Make me admin to auto-delete."}
             }
           }
 
+          // ── BUTTON MODE: wizard session & button-response routing ─────────────
+          // This block runs BEFORE the prefix check so un-prefixed replies
+          // (wizard input) and button response IDs (cat_*, cmd_*, btn_*)
+          // are captured and handled correctly.
+          if (isButtonMode()) {
+            // 1. Wizard session — user replied with input for a command
+            try {
+              const _wzJid = msg.key.remoteJid;
+              const _wzSnd = _wzJid.endsWith("@g.us")
+                ? (msg.key.participant || msg.participant || _wzJid)
+                : _wzJid;
+              const _wzHandled = await handleWizardInput(sock, msg, body, {
+                sender: _wzSnd,
+                prefix: CONFIG.PREFIX || ".",
+              });
+              if (_wzHandled) return;
+            } catch (_wzErr) { console.error("[WIZARD]", _wzErr?.message); }
+            // 2. Button / list response IDs
+            if (body && /^(btn_|cat_|cmd_)/.test(body)) {
+              try { await handleButtonResponse(sock, msg, body); } catch (_brErr) { console.error("[BTN_MENU]", _brErr?.message); }
+              return;
+            }
+          }
+          // ─────────────────────────────────────────────────────────────────────
+
           const _matchedPrefix = (body && (CONFIG.PREFIXES||[CONFIG.PREFIX]).find(p=>body.startsWith(p))) || null;
           if (!body || !_matchedPrefix) return;
 
@@ -2850,6 +2881,18 @@ ${_atBotAdmin ? "✅ Message deleted." : "⚠️ Make me admin to auto-delete."}
           const parts = raw.split(/\s+/);
           const name = (parts.shift() || "").toLowerCase();
           const args = parts;
+          // ── Expose command registry to wizard dispatcher (once, on first command) ──
+          if (!globalThis.__MIAS_COMMANDS__) globalThis.__MIAS_COMMANDS__ = commands;
+          // ── BUTTON MODE: .menu → full interactive home screen ──────────────────
+          if (isButtonMode() && name === "menu") {
+            try {
+              await sendButtonHomeScreen(sock, msg.key.remoteJid, msg, {
+                userName: msg.pushName,
+                prefix: CONFIG.PREFIX || ".",
+              });
+            } catch (_hmErr) { console.error("[BTN_HOME]", _hmErr?.message); }
+            return;
+          }
           // ── Joint commands: ".kick 234xxx & close" — & chains multiple commands ──
           let _jointQueue = [];
           {
