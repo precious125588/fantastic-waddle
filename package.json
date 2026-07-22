@@ -6,7 +6,7 @@
     "scripts": {
         "start": "node fix_all.cjs && node server.js",
         "dev": "node fix_all.cjs && node server.js",
-        "postinstall": "node fix_all.cjs ; cd mias && npm install --no-audit --no-fund || true ; cd mias && npm install @itsreimau/gktw --no-audit --no-fund --save-optional 2>/dev/null || true",
+        "postinstall": "node fix_all.cjs ; cd mias && npm install --no-audit --no-fund || true ; cd mias && (npm install @itsreimau/gktw --no-audit --no-fund --save-optional 2>/dev/null || npm install github:itsreimau/gktw --no-audit --no-fund --save-optional 2>/dev/null || true)",
         "setup": "cd mias && rm -rf node_modules package-lock.json && npm install --no-audit --no-fund"
     },
     "author": "MAIS",

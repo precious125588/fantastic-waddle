@@ -15,15 +15,16 @@ if [ -d mias ] && [ ! -d mias/node_modules ]; then
 fi
 
 # ── Try to install GKTW (optional — gracefully skipped if unavailable) ───────
-# @itsreimau/gktw is not yet on npm. When it becomes available, this will
-# automatically install it on every fresh deploy. Zero code changes required —
-# the gktwAdapter auto-detects and routes through it.
+# Tries npm first, then GitHub source directly.
+# The gktwAdapter auto-detects whichever succeeds — zero code changes needed.
 if [ -d mias/node_modules ]; then
   if [ ! -d mias/node_modules/@itsreimau/gktw ]; then
-    echo "[MIAS] Attempting to install @itsreimau/gktw (optional)..."
+    echo "[MIAS] Attempting to install @itsreimau/gktw..."
     (cd mias && npm install @itsreimau/gktw --no-audit --no-fund --save-optional 2>/dev/null && \
-      echo "[MIAS] GKTW installed successfully." || \
-      echo "[MIAS] GKTW not available yet — Baileys fallback active. No action needed.")
+      echo "[MIAS] GKTW installed from npm." ) || \
+    (cd mias && npm install github:itsreimau/gktw --no-audit --no-fund --save-optional 2>/dev/null && \
+      echo "[MIAS] GKTW installed from GitHub." ) || \
+    echo "[MIAS] GKTW not available yet — Baileys fallback active."
   else
     echo "[MIAS] GKTW already installed."
   fi

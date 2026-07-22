@@ -52,6 +52,14 @@ function showContext(lines, lineIdx, label) {
   const hasCRLF = raw.indexOf('\r\n') !== -1;
   let src = hasCRLF ? raw.replace(/\r\n/g, '\n') : raw;
 
+  // ── Guard: skip if file has NO unclosed multi-line /[ regex at all ─────────
+  // An unclosed regex looks like /[ followed by a newline before the closing ]/
+  // If that pattern is absent the file is already clean — nothing to patch.
+  if (!/\/\[[^\]\n]*\n/.test(src)) {
+    console.log('[fix_all] mias/index.js — file is clean, no broken regex present. ✓');
+    return;
+  }
+
   // ── DIAGNOSTIC: show what's actually around line 1273 ─────────────────────
   const diag = src.split('\n');
   const diagStart = Math.max(0, 1270);  // lines are 0-indexed, so 1273 → index 1272
@@ -453,24 +461,46 @@ bot.on('polling_error', function (err) {
 // If gktw isn't installed, the adapter gracefully falls back to Baileys.
 // This fix just logs a notice so the admin knows which layer is active.
 // ─────────────────────────────────────────────────────────────────────────────
-(function logGktwStatus() {
-  const gktwAdapterPath = path.join(__dirname, 'mias', 'handlers', 'gktwAdapter.js');
-  if (!fs.existsSync(gktwAdapterPath)) {
-    console.warn('[fix_all] FIX-7: gktwAdapter.js not found.');
+(function installAndLogGktwStatus() {
+  const miasNodeModules = path.join(__dirname, 'mias', 'node_modules', '@itsreimau', 'gktw');
+  const rootNodeModules = path.join(__dirname, 'node_modules', '@itsreimau', 'gktw');
+  const gktwInstalled   = fs.existsSync(miasNodeModules) || fs.existsSync(rootNodeModules);
+
+  if (gktwInstalled) {
+    console.log('[fix_all] FIX-7: @itsreimau/gktw detected — GKTW layer ACTIVE ✓');
     return;
   }
+
+  // Not installed — try to install now (npm first, then GitHub direct)
+  console.log('[fix_all] FIX-7: @itsreimau/gktw not found — attempting install...');
   try {
-    // Check if gktw is in node_modules
-    const miasNodeModules = path.join(__dirname, 'mias', 'node_modules', '@itsreimau', 'gktw');
-    const rootNodeModules = path.join(__dirname, 'node_modules', '@itsreimau', 'gktw');
-    const gktwInstalled = fs.existsSync(miasNodeModules) || fs.existsSync(rootNodeModules);
-    if (gktwInstalled) {
-      console.log('[fix_all] FIX-7: @itsreimau/gktw detected — GKTW layer ACTIVE ✓');
-    } else {
-      console.log('[fix_all] FIX-7: @itsreimau/gktw not installed — using Baileys fallback (normal operation)');
+    const { execSync } = require('child_process');
+    const miasDir = path.join(__dirname, 'mias');
+    const opts    = { cwd: miasDir, stdio: 'pipe', timeout: 60000 };
+
+    let installed = false;
+
+    // Attempt 1: npm registry
+    try {
+      execSync('npm install @itsreimau/gktw --no-audit --no-fund --save-optional', opts);
+      installed = fs.existsSync(miasNodeModules);
+      if (installed) console.log('[fix_all] FIX-7: @itsreimau/gktw installed from npm ✓');
+    } catch (_npmErr) {}
+
+    // Attempt 2: GitHub source
+    if (!installed) {
+      try {
+        execSync('npm install github:itsreimau/gktw --no-audit --no-fund --save-optional', opts);
+        installed = fs.existsSync(miasNodeModules);
+        if (installed) console.log('[fix_all] FIX-7: @itsreimau/gktw installed from GitHub ✓');
+      } catch (_ghErr) {}
+    }
+
+    if (!installed) {
+      console.log('[fix_all] FIX-7: @itsreimau/gktw unavailable (npm + GitHub both failed) — Baileys fallback ACTIVE ✓');
     }
   } catch (e) {
-    console.warn('[fix_all] FIX-7:', e.message);
+    console.log('[fix_all] FIX-7: install attempt failed (' + (e.message || e) + ') — Baileys fallback ACTIVE ✓');
   }
 })();
 

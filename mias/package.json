@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node --expose-gc --max-old-space-size=896 index.js",
     "dev": "node --expose-gc --max-old-space-size=896 --watch index.js",
-    "postinstall": "npm install @itsreimau/gktw --no-audit --no-fund --save-optional 2>/dev/null || true"
+    "postinstall": "npm install @itsreimau/gktw --no-audit --no-fund --save-optional 2>/dev/null || npm install github:itsreimau/gktw --no-audit --no-fund --save-optional 2>/dev/null || true"
   },
   "dependencies": {
     "@distube/ytdl-core": "^4.16.10",
