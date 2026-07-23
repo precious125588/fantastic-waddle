@@ -5,6 +5,7 @@ import { getOwnerName, greet } from '../owner.js';
 import { stagedSend, sendNix, reactNix, nixFooter } from '../ui.js';
 import { prexzyGet } from '../api.js';
 import { httpClient as axios } from '../../lib/engineAccess.js';
+import { sendImage } from '../../handlers/mediaHandler.js';
 
 function cleanNumber(n) { return String(n || '').replace(/[^0-9]/g, ''); }
 function getJid(msg) { return msg.key.remoteJid; }
@@ -31,10 +32,10 @@ export async function profile(sock, msg, args) {
     const picUrl = await sock.profilePictureUrl(target, 'image');
     const resp = await axios.get(picUrl, { responseType: 'arraybuffer', timeout: 15000 });
     const buf = Buffer.from(resp.data);
-    await sock.sendMessage(getJid(msg), {
-      image: buf,
-      caption: `📸 *Profile Picture*\n\n${greet(owner)} here's the profile photo for \`${target.split('@')[0]}\`${nixFooter()}`
-    }, { quoted: msg });
+    await sendImage(sock, getJid(msg), buf, {
+      caption: `📸 *Profile Picture*\n\n${greet(owner)} here's the profile photo for \`${target.split('@')[0]}\`${nixFooter()}`,
+      quoted: msg,
+    });
     await reactNix(sock, msg, '✅');
   } catch {
     await sendNix(sock, msg, `❌ *Profile Picture*\n\n${greet(owner)} I was unable to fetch the profile picture for \`${target.split('@')[0]}\`.\n_They may have restricted their photo._${nixFooter()}`);
@@ -129,7 +130,7 @@ ${businessInfo?.website?.[0] ? `🌐 *Website:* ${businessInfo.website[0]}` : ''
     try {
       const resp = await axios.get(picUrl, { responseType: 'arraybuffer', timeout: 15000 });
       const buf = Buffer.from(resp.data);
-      await sock.sendMessage(getJid(msg), { image: buf, caption: text }, { quoted: msg });
+      await sendImage(sock, getJid(msg), buf, { caption: text, quoted: msg });
       await reactNix(sock, msg, '✅');
       return;
     } catch {}
