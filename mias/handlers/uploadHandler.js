@@ -1,8 +1,9 @@
 /**
- * MIAS — Upload Handler
+ * MIAS — Upload Handler  v2
  *
  * Centralized media upload and thumbnail generation.
- * Supports HTTP fetch, image thumbnail (Jimp), and video thumbnail (ffmpeg).
+ * Supports HTTP fetch (with retry), image thumbnail (Jimp/sharp),
+ * and video thumbnail (ffmpeg).
  *
  * Architecture:  Commands → Handlers → Baileys Adapter → WhatsApp
  */
@@ -33,49 +34,65 @@ function _cacheSet(key, value) {
 
 /**
  * Fetch a remote URL into a Buffer.
+ * Retries up to `opts.retries` times on failure.
+ *
  * @param {string} url
  * @param {object} [opts]
  * @param {number} [opts.timeoutMs=30000]
  * @param {object} [opts.headers]
+ * @param {number} [opts.retries=2]       - Number of retry attempts on failure
+ * @param {boolean}[opts.noCache]         - Skip the URL cache
  * @returns {Promise<Buffer>}
  */
 export async function fetchBuffer(url, opts = {}) {
   const cachedKey = `fetch:${url}`;
-  const cached = _cacheGet(cachedKey);
-  if (cached) return cached;
-
-  const timeout = opts.timeoutMs ?? 30_000;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeout);
-
-  try {
-    const { default: nodeFetch } = await import("node-fetch").catch(() => ({ default: fetch }));
-    const fetchFn = nodeFetch || fetch;
-
-    const res = await fetchFn(url, {
-      signal: controller.signal,
-      headers: {
-        "User-Agent": "MIAS-Bot/5.3 (+https://github.com/precious125588/fantastic-waddle)",
-        ...(opts.headers || {}),
-      },
-    });
-
-    if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
-
-    const arrayBuf = await res.arrayBuffer();
-    const buf = Buffer.from(arrayBuf);
-    _cacheSet(cachedKey, buf);
-    return buf;
-  } finally {
-    clearTimeout(timer);
+  if (!opts.noCache) {
+    const cached = _cacheGet(cachedKey);
+    if (cached) return cached;
   }
+
+  const timeout   = opts.timeoutMs ?? 30_000;
+  const maxRetries = opts.retries ?? 2;
+
+  let lastErr;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeout);
+    try {
+      const { default: nodeFetch } = await import("node-fetch").catch(() => ({ default: fetch }));
+      const fetchFn = nodeFetch || fetch;
+
+      const res = await fetchFn(url, {
+        signal: controller.signal,
+        headers: {
+          "User-Agent": "MIAS-Bot/5.3 (+https://github.com/precious125588/fantastic-waddle)",
+          ...(opts.headers || {}),
+        },
+      });
+
+      if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+
+      const arrayBuf = await res.arrayBuffer();
+      const buf = Buffer.from(arrayBuf);
+      if (!opts.noCache) _cacheSet(cachedKey, buf);
+      return buf;
+    } catch (err) {
+      lastErr = err;
+      if (attempt < maxRetries) {
+        await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
+      }
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  throw new Error(`[fetchBuffer] Failed after ${maxRetries + 1} attempts: ${lastErr?.message}`);
 }
 
 // ─── Image thumbnail ──────────────────────────────────────────────────────────
 
 /**
- * Generate a JPEG thumbnail from an image buffer using Jimp.
- * Falls back to the original buffer if Jimp fails.
+ * Generate a JPEG thumbnail from an image buffer using Jimp or sharp.
+ * Falls back to the original buffer if both libraries fail.
  *
  * @param {Buffer} imageBuf
  * @param {object} [opts]
@@ -116,7 +133,7 @@ export async function generateImageThumbnail(imageBuf, opts = {}) {
 
 /**
  * Generate a JPEG thumbnail from a video buffer using ffmpeg.
- * Returns null if ffmpeg is unavailable.
+ * Returns null if ffmpeg is unavailable or the extraction fails.
  *
  * @param {Buffer} videoBuf
  * @param {object} [opts]
@@ -134,37 +151,51 @@ export async function generateVideoThumbnail(videoBuf, opts = {}) {
   const tmpOut = join(tmpdir(), `mias_vthumb_out_${Date.now()}.jpg`);
 
   try {
-    const { writeFile } = await import("fs/promises");
+    const { writeFile, readFile } = await import("fs/promises");
     await writeFile(tmpIn, videoBuf);
 
     const ffmpegStatic = await import("ffmpeg-static").then(m => m.default || m).catch(() => "ffmpeg");
-    const { execFile } = await import("child_process");
+    const { execFile }  = await import("child_process");
     const { promisify } = await import("util");
-    const exec = promisify(execFile);
+    const execFileAsync = promisify(execFile);
 
-    await exec(ffmpegStatic, [
-      "-y", "-i", tmpIn,
+    await execFileAsync(ffmpegStatic, [
       "-ss", String(t),
+      "-i", tmpIn,
       "-vframes", "1",
       "-vf", `scale=${w}:${h}:force_original_aspect_ratio=decrease,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2`,
-      tmpOut,
+      "-f", "image2",
+      "-y", tmpOut,
     ]);
 
-    const { readFile } = await import("fs/promises");
-    const buf = await readFile(tmpOut);
-    return buf;
+    const thumb = await readFile(tmpOut);
+    return thumb;
   } catch {
     return null;
   } finally {
-    try { await unlink(tmpIn); }  catch {}
-    try { await unlink(tmpOut); } catch {}
+    for (const p of [tmpIn, tmpOut]) {
+      unlink(p).catch(() => {});
+    }
   }
+}
+
+// ─── Temp file cleanup helper ─────────────────────────────────────────────────
+
+/**
+ * Delete a temporary file, silently ignoring errors.
+ * @param {string|null} filePath
+ */
+export async function cleanupTemp(filePath) {
+  if (!filePath) return;
+  try {
+    await unlink(filePath);
+  } catch {}
 }
 
 // ─── Catbox upload ────────────────────────────────────────────────────────────
 
 /**
- * Upload a Buffer to catbox.moe and return the public URL.
+ * Upload a file to catbox.moe and return the public URL.
  *
  * @param {Buffer} buf
  * @param {string} [filename="file.bin"]
@@ -189,7 +220,7 @@ export async function uploadToCatbox(buf, filename = "file.bin", mimetype = "app
       headers: form.getHeaders ? form.getHeaders() : {},
     });
 
-    if (!res.ok) throw new Error(`Catbox ${res.status}`);
+    if (!res.ok) throw new Error(`Catbox HTTP ${res.status}`);
     const url = (await res.text()).trim();
     if (!url.startsWith("https://")) throw new Error("Invalid catbox response");
     _cacheSet(cacheKey, url);
@@ -201,13 +232,13 @@ export async function uploadToCatbox(buf, filename = "file.bin", mimetype = "app
 
 /**
  * Upload media using the Baileys built-in upload mechanism.
- * Wraps prepareWAMessageMedia for cases where a URL is needed.
+ * Wraps prepareWAMessageMedia for cases where a media URL is needed.
  *
  * @param {object}   sock
  * @param {Buffer}   buf
  * @param {"image"|"video"|"audio"|"document"|"sticker"} type
  * @param {object}   [opts]
- * @returns {Promise<object>}   - Prepared media object with mediaUrl
+ * @returns {Promise<object>} - Prepared media object with mediaUrl
  */
 export async function uploadMedia(sock, buf, type = "image", opts = {}) {
   try {

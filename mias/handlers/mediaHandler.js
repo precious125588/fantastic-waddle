@@ -1,8 +1,8 @@
 /**
- * MIAS — Media Handler
+ * MIAS — Media Handler  v2
  *
  * Centralized abstraction for sending all media types:
- *  image, video, audio, sticker, GIF, document, album.
+ *  image, video, audio, voice note, sticker, GIF, document, album.
  *
  * All thumbnail generation, MIME detection, and media upload
  * go through this file. Commands never touch Baileys directly.
@@ -19,19 +19,31 @@ const MIME_MAP = {
   jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png",
   webp: "image/webp", gif: "image/gif",
   mp4: "video/mp4", mkv: "video/x-matroska", mov: "video/quicktime",
+  avi: "video/x-msvideo", wmv: "video/x-ms-wmv", flv: "video/x-flv",
   mp3: "audio/mpeg", ogg: "audio/ogg", m4a: "audio/mp4", aac: "audio/aac",
-  opus: "audio/ogg; codecs=opus",
+  opus: "audio/ogg; codecs=opus", wav: "audio/wav", flac: "audio/flac",
   pdf: "application/pdf",
   zip: "application/zip", rar: "application/x-rar-compressed",
+  "7z": "application/x-7z-compressed",
   doc: "application/msword",
   docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   xls: "application/vnd.ms-excel",
   xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  ppt: "application/vnd.ms-powerpoint",
+  pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
   txt: "text/plain",
   json: "application/json",
+  apk: "application/vnd.android.package-archive",
+  ipa: "application/octet-stream",
 };
 
-function _guessMime(filename, fallback = "application/octet-stream") {
+/**
+ * Guess MIME type from a filename extension.
+ * @param {string} filename
+ * @param {string} [fallback]
+ * @returns {string}
+ */
+export function guessMime(filename, fallback = "application/octet-stream") {
   const ext = (filename || "").split(".").pop()?.toLowerCase();
   return MIME_MAP[ext] || fallback;
 }
@@ -49,7 +61,7 @@ async function _resolveSource(src) {
     const { readFile } = await import("fs/promises");
     return readFile(src);
   }
-  throw new Error("Unsupported media source type");
+  throw new Error("Unsupported media source type: expected Buffer, URL, or file path");
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
@@ -65,8 +77,9 @@ async function _resolveSource(src) {
  * @param {string}        [opts.mimetype]
  * @param {object}        [opts.quoted]
  * @param {object}        [opts.contextInfo]
- * @param {Buffer}        [opts.thumbnail]    - Custom thumbnail (optional)
+ * @param {Buffer}        [opts.thumbnail]    - Custom JPEG thumbnail
  * @param {boolean}       [opts.viewOnce]     - View-once image
+ * @param {string[]}      [opts.mentions]     - JIDs to mention
  * @returns {Promise<object|null>}
  */
 export async function sendImage(sock, jid, image, opts = {}) {
@@ -80,6 +93,7 @@ export async function sendImage(sock, jid, image, opts = {}) {
     if (opts.viewOnce) content.viewOnce = true;
     if (opts.thumbnail) content.jpegThumbnail = opts.thumbnail;
     if (opts.contextInfo) content.contextInfo = opts.contextInfo;
+    if (opts.mentions?.length) content.mentions = opts.mentions;
 
     const sendOpts = {};
     if (opts.quoted) sendOpts.quoted = opts.quoted;
@@ -99,12 +113,13 @@ export async function sendImage(sock, jid, image, opts = {}) {
  * @param {object}        [opts]
  * @param {string}        [opts.caption]
  * @param {string}        [opts.mimetype]
- * @param {boolean}       [opts.gifPlayback]  - Play as GIF
- * @param {number}        [opts.seconds]      - Duration hint
+ * @param {boolean}       [opts.gifPlayback]  - Play as silent looping GIF
+ * @param {number}        [opts.seconds]      - Duration hint in seconds
  * @param {object}        [opts.quoted]
  * @param {object}        [opts.contextInfo]
- * @param {Buffer}        [opts.thumbnail]
+ * @param {Buffer}        [opts.thumbnail]    - Custom JPEG thumbnail
  * @param {boolean}       [opts.viewOnce]
+ * @param {string[]}      [opts.mentions]
  * @returns {Promise<object|null>}
  */
 export async function sendVideo(sock, jid, video, opts = {}) {
@@ -116,13 +131,17 @@ export async function sendVideo(sock, jid, video, opts = {}) {
       mimetype: opts.mimetype || "video/mp4",
     };
     if (opts.gifPlayback) content.gifPlayback = true;
-    if (opts.seconds) content.seconds = opts.seconds;
+    if (opts.seconds != null) content.seconds = opts.seconds;
     if (opts.viewOnce) content.viewOnce = true;
     if (opts.contextInfo) content.contextInfo = opts.contextInfo;
+    if (opts.mentions?.length) content.mentions = opts.mentions;
 
     // Auto-generate thumbnail if not provided
     if (!opts.thumbnail) {
-      try { content.jpegThumbnail = await generateVideoThumbnail(buf); } catch {}
+      try {
+        const thumb = await generateVideoThumbnail(buf);
+        if (thumb) content.jpegThumbnail = thumb;
+      } catch {}
     } else {
       content.jpegThumbnail = opts.thumbnail;
     }
@@ -137,16 +156,18 @@ export async function sendVideo(sock, jid, video, opts = {}) {
 }
 
 /**
- * Send a GIF (video with gifPlayback=true).
+ * Send a GIF (video with gifPlayback = true).
  *
  * @param {object}        sock
  * @param {string}        jid
- * @param {Buffer|string} gif
+ * @param {Buffer|string} gif         - mp4 buffer / URL (WhatsApp renders as GIF)
  * @param {object}        [opts]
+ * @param {string}        [opts.caption]
+ * @param {object}        [opts.quoted]
  * @returns {Promise<object|null>}
  */
 export async function sendGif(sock, jid, gif, opts = {}) {
-  return sendVideo(sock, jid, gif, { ...opts, gifPlayback: true, mimetype: opts.mimetype || "video/mp4" });
+  return sendVideo(sock, jid, gif, { ...opts, gifPlayback: true, mimetype: "video/mp4" });
 }
 
 /**
@@ -156,11 +177,10 @@ export async function sendGif(sock, jid, gif, opts = {}) {
  * @param {string}        jid
  * @param {Buffer|string} audio
  * @param {object}        [opts]
- * @param {boolean}       [opts.ptt=false]     - Push-to-talk (voice note)
+ * @param {boolean}       [opts.ptt]       - Send as voice note (push-to-talk)
  * @param {string}        [opts.mimetype]
- * @param {number}        [opts.seconds]
+ * @param {number}        [opts.seconds]   - Duration hint
  * @param {object}        [opts.quoted]
- * @param {object}        [opts.contextInfo]
  * @returns {Promise<object|null>}
  */
 export async function sendAudio(sock, jid, audio, opts = {}) {
@@ -168,11 +188,10 @@ export async function sendAudio(sock, jid, audio, opts = {}) {
     const buf = await _resolveSource(audio);
     const content = {
       audio: buf,
-      mimetype: opts.mimetype || (opts.ptt ? "audio/ogg; codecs=opus" : "audio/mpeg"),
-      ptt: opts.ptt ?? false,
+      mimetype: opts.mimetype || "audio/mpeg",
+      ptt: !!opts.ptt,
     };
-    if (opts.seconds) content.seconds = opts.seconds;
-    if (opts.contextInfo) content.contextInfo = opts.contextInfo;
+    if (opts.seconds != null) content.seconds = opts.seconds;
 
     const sendOpts = {};
     if (opts.quoted) sendOpts.quoted = opts.quoted;
@@ -184,15 +203,34 @@ export async function sendAudio(sock, jid, audio, opts = {}) {
 }
 
 /**
- * Send a sticker.
+ * Send a voice note (push-to-talk audio). Alias for sendAudio with ptt: true.
  *
  * @param {object}        sock
  * @param {string}        jid
- * @param {Buffer|string} sticker    - WebP buffer, URL, or file path
+ * @param {Buffer|string} audio
  * @param {object}        [opts]
- * @param {boolean}       [opts.animated]  - Animated sticker hint
+ * @param {string}        [opts.mimetype]   - Default: "audio/ogg; codecs=opus"
+ * @param {number}        [opts.seconds]
  * @param {object}        [opts.quoted]
- * @param {object}        [opts.contextInfo]
+ * @returns {Promise<object|null>}
+ */
+export async function sendVoiceNote(sock, jid, audio, opts = {}) {
+  return sendAudio(sock, jid, audio, {
+    ...opts,
+    ptt: true,
+    mimetype: opts.mimetype || "audio/ogg; codecs=opus",
+  });
+}
+
+/**
+ * Send a sticker (WebP).
+ *
+ * @param {object}        sock
+ * @param {string}        jid
+ * @param {Buffer|string} sticker
+ * @param {object}        [opts]
+ * @param {boolean}       [opts.isAnimated]  - Whether the sticker is animated
+ * @param {object}        [opts.quoted]
  * @returns {Promise<object|null>}
  */
 export async function sendSticker(sock, jid, sticker, opts = {}) {
@@ -202,7 +240,7 @@ export async function sendSticker(sock, jid, sticker, opts = {}) {
       sticker: buf,
       mimetype: "image/webp",
     };
-    if (opts.contextInfo) content.contextInfo = opts.contextInfo;
+    if (opts.isAnimated) content.isAnimated = true;
 
     const sendOpts = {};
     if (opts.quoted) sendOpts.quoted = opts.quoted;
@@ -218,10 +256,10 @@ export async function sendSticker(sock, jid, sticker, opts = {}) {
  *
  * @param {object}        sock
  * @param {string}        jid
- * @param {Buffer|string} document    - Buffer, URL, or file path
+ * @param {Buffer|string} document
  * @param {object}        [opts]
+ * @param {string}        [opts.filename]  - Original filename shown to receiver
  * @param {string}        [opts.mimetype]
- * @param {string}        [opts.filename]
  * @param {string}        [opts.caption]
  * @param {Buffer}        [opts.thumbnail]
  * @param {object}        [opts.quoted]
@@ -231,10 +269,10 @@ export async function sendSticker(sock, jid, sticker, opts = {}) {
 export async function sendDocument(sock, jid, document, opts = {}) {
   try {
     const buf = await _resolveSource(document);
-    const filename = opts.filename || "file.bin";
+    const filename = opts.filename || "file";
     const content = {
       document: buf,
-      mimetype: opts.mimetype || _guessMime(filename),
+      mimetype: opts.mimetype || guessMime(filename),
       fileName: filename,
       caption: opts.caption || "",
     };
@@ -251,37 +289,67 @@ export async function sendDocument(sock, jid, document, opts = {}) {
 }
 
 /**
- * Send a code snippet as a downloadable .txt document (alias for code handler).
- *
+ * Send a document with code content (alias used by codeHandler).
  * @param {object} sock
  * @param {string} jid
- * @param {string} code
- * @param {object} [opts]
- * @param {string} [opts.filename]
- * @param {string} [opts.caption]
- * @param {object} [opts.quoted]
- * @returns {Promise<object|null>}
+ * @param {Buffer} buf
+ * @param {object} opts
  */
-export async function sendCodeDocument(sock, jid, code, opts = {}) {
-  const buf = Buffer.from(String(code), "utf8");
-  return sendDocument(sock, jid, buf, {
-    mimetype: "text/plain",
-    filename: opts.filename || "code.txt",
-    caption: opts.caption || "",
-    quoted: opts.quoted,
-  });
+export async function sendCodeDocument(sock, jid, buf, opts = {}) {
+  return sendDocument(sock, jid, buf, opts);
 }
 
 /**
- * Send an album (multiple images/videos in one grouped message).
+ * Send a media item directly from a URL, auto-detecting the type from the URL.
  *
- * @param {object}        sock
- * @param {string}        jid
- * @param {object[]}      items    - [{type: "image"|"video", data: Buffer|string, caption?}]
- * @param {object}        [opts]
- * @param {string}        [opts.caption]   - Caption for the first item only
- * @param {object}        [opts.quoted]
- * @param {number}        [opts.delayMs]   - Delay between items (default 200ms)
+ * @param {object} sock
+ * @param {string} jid
+ * @param {string} url
+ * @param {object} [opts]
+ * @param {"image"|"video"|"audio"|"document"} [opts.type] - Override type detection
+ * @param {string} [opts.caption]
+ * @param {string} [opts.filename]
+ * @param {object} [opts.quoted]
+ * @returns {Promise<object|null>}
+ */
+export async function sendMediaFromUrl(sock, jid, url, opts = {}) {
+  try {
+    const buf = await fetchBuffer(url);
+    const filename = opts.filename || url.split("/").pop()?.split("?")[0] || "file";
+    const mime = guessMime(filename);
+
+    // Auto-detect type from MIME or URL
+    let type = opts.type;
+    if (!type) {
+      if (mime.startsWith("image/")) type = "image";
+      else if (mime.startsWith("video/")) type = "video";
+      else if (mime.startsWith("audio/")) type = "audio";
+      else type = "document";
+    }
+
+    switch (type) {
+      case "image":   return sendImage(sock, jid, buf, { ...opts, mimetype: mime });
+      case "video":   return sendVideo(sock, jid, buf, { ...opts, mimetype: mime });
+      case "audio":   return sendAudio(sock, jid, buf, { ...opts, mimetype: mime });
+      default:        return sendDocument(sock, jid, buf, { ...opts, mimetype: mime, filename });
+    }
+  } catch (err) {
+    console.error("[sendMediaFromUrl] Error:", err?.message);
+    return null;
+  }
+}
+
+/**
+ * Send an album (sequence of images/videos).
+ * WhatsApp renders consecutive media from the same sender as an album.
+ *
+ * @param {object}   sock
+ * @param {string}   jid
+ * @param {object[]} items    - [{type: "image"|"video", data: Buffer|string, caption?}]
+ * @param {object}   [opts]
+ * @param {string}   [opts.caption]   - Caption for the first item only
+ * @param {object}   [opts.quoted]
+ * @param {number}   [opts.delayMs]   - Delay between items (default 200ms)
  * @returns {Promise<void>}
  */
 export async function sendAlbum(sock, jid, items, opts = {}) {
@@ -312,7 +380,8 @@ export async function sendAlbum(sock, jid, items, opts = {}) {
 }
 
 /**
- * Prepare a JPEG thumbnail Buffer from an image.
+ * Prepare a JPEG thumbnail Buffer from an image source.
+ *
  * @param {Buffer|string} image
  * @param {object}        [opts]
  * @param {number}        [opts.width=300]

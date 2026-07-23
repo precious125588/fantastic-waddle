@@ -1,13 +1,9 @@
 /**
- * MIAS — Interactive Handler  v2
+ * MIAS — Interactive Handler  v3
  *
  * Centralized interactive message building.
  * Routes through GKTW when available, falls back to Baileys proto,
  * then falls back to plain text — always degrades gracefully.
- *
- * Every function here checks GKTW availability explicitly before
- * building messages, so handlers do the right thing without relying
- * solely on gktwAdapter's internal routing.
  *
  * Supported:
  *  - Quick-reply buttons
@@ -18,6 +14,7 @@
  *  - Hero cards (image/video/text header + buttons)
  *  - Carousels (multi-card)
  *  - External ad reply (link-preview cards)
+ *  - Poll messages
  *
  * Architecture:  Commands → Handlers → Baileys Adapter → WhatsApp
  */
@@ -27,6 +24,7 @@ import {
   getProto,
   getBaileys,
   isGktwAvailable,
+  sendPoll as _adapterSendPoll,
 } from "./gktwAdapter.js";
 import { sendText } from "./messageHandler.js";
 import { sendImage, sendVideo } from "./mediaHandler.js";
@@ -35,12 +33,12 @@ import { sendImage, sendVideo } from "./mediaHandler.js";
 
 /**
  * @typedef {object} Button
- * @property {string}  text           - Display label (no emojis)
- * @property {string}  [id]           - quick_reply payload
- * @property {string}  [url]          - URL button destination
- * @property {string}  [copyCode]     - Text to copy on tap
- * @property {string}  [phone]        - Phone number for call button
- * @property {string}  [type]         - "url" | "copy" | "call" (auto-detected from fields)
+ * @property {string}  text      - Display label
+ * @property {string}  [id]      - quick_reply payload
+ * @property {string}  [url]     - URL button destination
+ * @property {string}  [copyCode]- Text to copy on tap
+ * @property {string}  [phone]   - Phone number for call button
+ * @property {string}  [type]    - "url" | "copy" | "call" (auto-detected)
  */
 
 /**
@@ -59,7 +57,7 @@ import { sendImage, sendVideo } from "./mediaHandler.js";
 // ─── Internal: proto button builder ──────────────────────────────────────────
 
 async function _protoBtn(btn, i) {
-  const proto = (await getBaileys()).proto;
+  const proto = await getProto();
   const NF = proto.Message.InteractiveMessage.NativeFlowMessage.NativeFlowButton;
 
   if (btn.url || btn.type === "url") {
@@ -116,7 +114,7 @@ function _textFallback(header, body, buttons, footer) {
 
 /**
  * Send native-flow quick-reply (or mixed) buttons.
- * Explicitly checks GKTW, then falls back to Baileys proto, then text.
+ * Falls back gracefully: GKTW → Baileys proto → plain text.
  *
  * @param {object}   sock
  * @param {string}   jid
@@ -127,63 +125,88 @@ function _textFallback(header, body, buttons, footer) {
  * @param {string}   [opts.header]
  * @param {object}   [opts.quoted]
  * @param {object}   [opts.contextInfo]
+ * @returns {Promise<object|null>}
  */
 export async function sendButtons(sock, jid, body, buttons, opts = {}) {
-  const gktwActive = await isGktwAvailable();
-  const params = {
-    body,
-    footer: opts.footer || "",
-    header: opts.header || "",
-    buttons: buttons || [],
-    contextInfo: opts.contextInfo || {},
-    quoted: opts.quoted || null,
-  };
-
-  // ── GKTW path ────────────────────────────────────────────────────────────
-  if (gktwActive) {
-    try {
-      return await sendInteractiveMessage(sock, jid, params);
-    } catch (gktwErr) {
-      // Fall through to Baileys proto
-    }
+  try {
+    return await sendInteractiveMessage(sock, jid, {
+      body,
+      footer: opts.footer || "",
+      header: opts.header || "",
+      buttons: buttons || [],
+      contextInfo: opts.contextInfo || {},
+      quoted: opts.quoted || null,
+    });
+  } catch (err) {
+    // Final fallback: plain text
+    const text = _textFallback(opts.header, body, buttons, opts.footer);
+    return sendText(sock, jid, text, { quoted: opts.quoted });
   }
+}
 
-  // ── Baileys proto path ────────────────────────────────────────────────────
+/**
+ * Re-export for direct interactive sending (same as sendButtons but generic name).
+ */
+export async function sendInteractive(sock, jid, params) {
+  return sendInteractiveMessage(sock, jid, params);
+}
+
+/**
+ * Send a single-select list message.
+ *
+ * @param {object}        sock
+ * @param {string}        jid
+ * @param {string}        body
+ * @param {ListSection[]} sections
+ * @param {object}        [opts]
+ * @param {string}        [opts.title]
+ * @param {string}        [opts.footer]
+ * @param {string}        [opts.buttonText]  - List open button label
+ * @param {object}        [opts.quoted]
+ * @returns {Promise<object|null>}
+ */
+export async function sendList(sock, jid, body, sections, opts = {}) {
+  // Build list message via Baileys proto
   try {
     const B = await getBaileys();
     const proto = B.proto;
 
-    const flowButtons = await Promise.all((buttons || []).map((btn, i) => _protoBtn(btn, i)));
+    const protoSections = (sections || []).map(s =>
+      proto.Message.ListMessage.Section.create({
+        title: s.title || "",
+        rows: (s.rows || []).map(r =>
+          proto.Message.ListMessage.Row.create({
+            rowId: r.id || "",
+            title: r.title || "",
+            description: r.description || "",
+          })
+        ),
+      })
+    );
 
-    const interactiveMsg = proto.Message.InteractiveMessage.create({
-      body: proto.Message.InteractiveMessage.Body.create({ text: body }),
-      footer: proto.Message.InteractiveMessage.Footer.create({ text: opts.footer || "" }),
-      header: proto.Message.InteractiveMessage.Header.create({
-        title: opts.header || "",
-        hasMediaAttachment: false,
-      }),
-      nativeFlowMessage: proto.Message.InteractiveMessage.NativeFlowMessage.create({
-        buttons: flowButtons,
-        messageParamsJson: "{}",
-        messageVersion: 1,
-      }),
-      contextInfo: proto.ContextInfo.create({
-        ...(opts.contextInfo || {}),
-        forwardingScore: opts.contextInfo?.forwardingScore ?? 0,
-        isForwarded: opts.contextInfo?.isForwarded ?? false,
+    const listMsg = proto.Message.create({
+      listMessage: proto.Message.ListMessage.create({
+        title: opts.title || "",
+        description: body || "",
+        buttonText: opts.buttonText || "Options",
+        listType: proto.Message.ListMessage.ListType.SINGLE_SELECT,
+        footer: opts.footer || "",
+        sections: protoSections,
       }),
     });
 
-    const fullMsg = proto.Message.create({ interactiveMessage: interactiveMsg });
-    const wam = await B.generateWAMessageFromContent(jid, fullMsg, {
+    const wam = await B.generateWAMessageFromContent(jid, listMsg, {
       userJid: sock.user?.id,
       quoted: opts.quoted || undefined,
     });
     await sock.relayMessage(jid, wam.message, { messageId: wam.key.id });
     return wam;
-  } catch (protoErr) {
-    // ── Plain text fallback ──────────────────────────────────────────────
-    const text = _textFallback(opts.header, body, buttons, opts.footer);
+  } catch {
+    // Fallback: plain text with numbered options
+    const allRows = (sections || []).flatMap(s => s.rows || []);
+    const lines = allRows.map((r, i) => `[${i + 1}] ${r.title}${r.description ? ` — ${r.description}` : ""}`).join("\n");
+    const text = [opts.title ? `*${opts.title}*` : null, body, lines, opts.footer ? `_${opts.footer}_` : null]
+      .filter(Boolean).join("\n\n");
     return sendText(sock, jid, text, { quoted: opts.quoted });
   }
 }
@@ -196,195 +219,94 @@ export async function sendButtons(sock, jid, body, buttons, opts = {}) {
  * @param {string}   body
  * @param {object[]} urlButtons  - [{text, url}]
  * @param {object}   [opts]
+ * @returns {Promise<object|null>}
  */
 export async function sendUrlButtons(sock, jid, body, urlButtons, opts = {}) {
-  const buttons = (urlButtons || []).map(b => ({ text: b.text, url: b.url, type: "url" }));
+  const buttons = (urlButtons || []).map(b => ({
+    text: b.text || b.label || "Open",
+    url: b.url || "",
+    type: "url",
+  }));
   return sendButtons(sock, jid, body, buttons, opts);
 }
 
 /**
- * Send a single-select list message.
- * Falls back to Baileys sock.sendMessage list, then plain text.
+ * Send a hero card — a message with an image/video header and action buttons.
  *
- * @param {object}        sock
- * @param {string}        jid
- * @param {string}        body
- * @param {ListSection[]} sections
- * @param {object}        [opts]
- * @param {string}        [opts.buttonText]
- * @param {string}        [opts.footer]
- * @param {string}        [opts.title]
- * @param {object}        [opts.quoted]
+ * @param {object} sock
+ * @param {string} jid
+ * @param {object} card
+ * @param {string}       [card.body]
+ * @param {string}       [card.header]      - Text header (if no image/video)
+ * @param {string}       [card.footer]
+ * @param {Buffer|string}[card.image]       - Image buffer or URL
+ * @param {Buffer|string}[card.video]       - Video buffer or URL
+ * @param {Button[]}     [card.buttons]
+ * @param {object}       [card.contextInfo]
+ * @param {object}       [opts]
+ * @param {object}       [opts.quoted]
+ * @returns {Promise<object|null>}
  */
-export async function sendList(sock, jid, body, sections, opts = {}) {
-  const gktwActive = await isGktwAvailable();
+export async function sendHeroCard(sock, jid, card, opts = {}) {
+  const { body = "", header = "", footer = "", buttons = [], contextInfo = {} } = card;
+  const cardQuoted = opts.quoted || card.quoted || null;
 
-  // ── GKTW path ────────────────────────────────────────────────────────────
-  if (gktwActive) {
+  // If image provided, send image with contextInfo buttons
+  if (card.image) {
     try {
-      return await sendInteractiveMessage(sock, jid, {
-        body,
-        footer: opts.footer || "",
-        header: opts.title || "",
-        sections: sections || [],
-        listButtonText: opts.buttonText || "Open Menu",
-        quoted: opts.quoted || null,
-      });
-    } catch {
-      // Fall through
-    }
-  }
+      const { fetchBuffer } = await import("./uploadHandler.js");
+      const imgBuf = Buffer.isBuffer(card.image)
+        ? card.image
+        : await fetchBuffer(card.image);
 
-  // ── Baileys list message ──────────────────────────────────────────────────
-  try {
-    const sendOpts = {};
-    if (opts.quoted) sendOpts.quoted = opts.quoted;
-    return await sock.sendMessage(jid, {
-      text: body,
-      footer: opts.footer || "",
-      title: opts.title || "",
-      buttonText: opts.buttonText || "Open Menu",
-      sections: sections || [],
-    }, sendOpts);
-  } catch (listErr) {
-    // ── Plain text fallback ──────────────────────────────────────────────
-    const lines = (sections || []).flatMap(s => [
-      `*${s.title}*`,
-      ...(s.rows || []).map((r, i) => `[${i + 1}] ${r.title}${r.description ? " — " + r.description : ""}`),
-    ]);
-    const text = [
-      opts.title ? `*${opts.title}*` : null,
-      body,
-      lines.join("\n"),
-      opts.footer ? `_${opts.footer}_` : null,
-    ].filter(Boolean).join("\n\n");
-    return sendText(sock, jid, text, { quoted: opts.quoted });
-  }
-}
+      // Build contextInfo with forwarding score 0 to avoid "forwarded" tag
+      const ctx = {
+        ...contextInfo,
+        externalAdReply: {
+          title: header || body,
+          body: footer || "",
+          mediaType: 1,
+          renderLargerThumbnail: true,
+          showAdAttribution: false,
+          thumbnail: imgBuf.slice(0, Math.min(imgBuf.length, 65536)),
+        },
+      };
 
-/**
- * Send a hero card — body text, optional media header, action buttons.
- * Tries image/video send with context (shows buttons if interactive failed),
- * then falls back to plain interactive, then plain text.
- *
- * @param {object}        sock
- * @param {string}        jid
- * @param {object}        opts
- * @param {string}        opts.body
- * @param {Buffer|string} [opts.image]
- * @param {Buffer|string} [opts.video]
- * @param {string}        [opts.header]
- * @param {string}        [opts.footer]
- * @param {Button[]}      [opts.buttons]
- * @param {object}        [opts.contextInfo]
- * @param {object}        [opts.externalAdReply]
- * @param {object}        [opts.quoted]
- */
-export async function sendHeroCard(sock, jid, opts = {}) {
-  const {
-    body = "", image, video, header, footer,
-    buttons = [], quoted, contextInfo = {}, externalAdReply,
-  } = opts;
-
-  const ctx = { ...contextInfo };
-  if (externalAdReply) ctx.externalAdReply = externalAdReply;
-
-  // ── With media ────────────────────────────────────────────────────────────
-  if (image || video) {
-    try {
-      // Try interactive with image header
-      return await sendInteractiveMessage(sock, jid, {
-        body, footer: footer || "", header: header || "",
-        buttons, contextInfo: ctx, quoted,
-        headerImage: image || null,
-        headerVideo: video || null,
-      });
-    } catch {
-      // Send media + caption as fallback, then buttons separately
-      try {
-        if (image) await sendImage(sock, jid, image, { caption: body, quoted, contextInfo: ctx });
-        else await sendVideo(sock, jid, video, { caption: body, quoted, contextInfo: ctx });
+      const imgOpts = {
+        caption: body,
+        contextInfo: ctx,
+        quoted: cardQuoted,
+      };
+      const result = await sendImage(sock, jid, imgBuf, imgOpts);
+      if (result) {
+        // Follow up with buttons if provided
         if (buttons.length) {
           await new Promise(r => setTimeout(r, 300));
-          return await sendButtons(sock, jid, header || "Actions", buttons, {
-            footer, quoted,
-          });
+          await sendButtons(sock, jid, body, buttons, { footer, header, quoted: cardQuoted });
         }
-        return null;
-      } catch {
-        return sendText(sock, jid, _textFallback(header, body, buttons, footer), { quoted });
+        return result;
       }
-    }
+    } catch {}
   }
 
-  // ── Text-only hero ────────────────────────────────────────────────────────
-  try {
-    return await sendButtons(sock, jid, body, buttons, {
-      header: header || "",
-      footer: footer || "",
-      contextInfo: ctx,
-      quoted,
-    });
-  } catch (err) {
-    return sendText(sock, jid, _textFallback(header, body, buttons, footer), { quoted });
-  }
+  // No image / image failed: send interactive buttons
+  return sendButtons(sock, jid, body, buttons, { footer, header, contextInfo, quoted: cardQuoted });
 }
 
 /**
- * Build an ExternalAdReply object for link-preview cards.
- *
- * @param {object} opts
- * @param {string} opts.title
- * @param {string} [opts.body]
- * @param {string} [opts.sourceUrl]
- * @param {string} [opts.mediaUrl]
- * @param {string} [opts.mediaType]  - "IMAGE" | "VIDEO"
- * @param {Buffer} [opts.thumbnail]
- * @returns {object}
- */
-export function buildExternalAdReply(opts = {}) {
-  return {
-    title: opts.title || "",
-    body: opts.body || "",
-    sourceUrl: opts.sourceUrl || "https://whatsapp.com",
-    mediaUrl: opts.mediaUrl || opts.sourceUrl || "",
-    mediaType: opts.mediaType === "VIDEO" ? 2 : 1,
-    thumbnail: opts.thumbnail || null,
-    renderLargerThumbnail: opts.renderLargerThumbnail ?? true,
-    showAdAttribution: opts.showAdAttribution ?? false,
-  };
-}
-
-/**
- * Send a carousel of hero cards.
- * Each card: {title, body, footer, buttons:[{text,id}]}
+ * Send a carousel of cards (multi-card interactive message).
+ * Falls back to individual hero cards if carousel proto is unsupported.
  *
  * @param {object}   sock
  * @param {string}   jid
- * @param {object[]} cards
+ * @param {object[]} cards  - [{title, body, footer, buttons}]
  * @param {object}   [opts]
  * @param {string}   [opts.body]
  * @param {string}   [opts.footer]
  * @param {object}   [opts.quoted]
+ * @returns {Promise<object|null>}
  */
 export async function sendCarousel(sock, jid, cards, opts = {}) {
-  const gktwActive = await isGktwAvailable();
-
-  // ── GKTW carousel path ───────────────────────────────────────────────────
-  if (gktwActive) {
-    try {
-      return await sendInteractiveMessage(sock, jid, {
-        body: opts.body || "",
-        footer: opts.footer || "",
-        cards,
-        quoted: opts.quoted || null,
-      });
-    } catch {
-      // Fall through to Baileys proto
-    }
-  }
-
-  // ── Baileys proto carousel ────────────────────────────────────────────────
   try {
     const B = await getBaileys();
     const proto = B.proto;
@@ -425,7 +347,7 @@ export async function sendCarousel(sock, jid, cards, opts = {}) {
     });
     await sock.relayMessage(jid, wam.message, { messageId: wam.key.id });
     return wam;
-  } catch (carouselErr) {
+  } catch {
     // Fallback: individual hero cards
     for (const card of (cards || [])) {
       await sendHeroCard(sock, jid, {
@@ -433,9 +355,55 @@ export async function sendCarousel(sock, jid, cards, opts = {}) {
         header: card.title || "",
         footer: card.footer || "",
         buttons: card.buttons || [],
-        quoted: opts.quoted,
-      });
+      }, { quoted: opts.quoted });
     }
     return null;
+  }
+}
+
+/**
+ * Build an external ad reply (link preview card) context info object.
+ *
+ * @param {object} opts
+ * @param {string} [opts.title]
+ * @param {string} [opts.body]
+ * @param {string} [opts.sourceUrl]
+ * @param {Buffer} [opts.thumbnail]
+ * @returns {object} - contextInfo.externalAdReply object
+ */
+export function buildExternalAdReply(opts = {}) {
+  return {
+    externalAdReply: {
+      title: opts.title || "",
+      body: opts.body || "",
+      sourceUrl: opts.sourceUrl || "https://whatsapp.com",
+      mediaType: opts.mediaType === "VIDEO" ? 2 : 1,
+      thumbnail: opts.thumbnail || null,
+      renderLargerThumbnail: opts.renderLargerThumbnail ?? true,
+      showAdAttribution: false,
+    },
+  };
+}
+
+/**
+ * Send an interactive poll message.
+ * Falls back to numbered text list if unsupported.
+ *
+ * @param {object}   sock
+ * @param {string}   jid
+ * @param {string}   question
+ * @param {string[]} options
+ * @param {object}   [opts]
+ * @param {number}   [opts.selectableCount=1]
+ * @param {object}   [opts.quoted]
+ * @returns {Promise<object|null>}
+ */
+export async function sendPollInteractive(sock, jid, question, options, opts = {}) {
+  try {
+    return await _adapterSendPoll(sock, jid, question, options, opts);
+  } catch {
+    const lines = (options || []).map((o, i) => `[${i + 1}] ${o}`).join("\n");
+    const text = `📊 *${question}*\n\n${lines}`;
+    return sendText(sock, jid, text, { quoted: opts.quoted });
   }
 }

@@ -1,11 +1,15 @@
 /**
- * MIAS — Message Handler
+ * MIAS — Message Handler  v2
  *
- * Centralized abstraction for sending text messages and replies.
+ * Centralized abstraction for sending text messages, replies, polls,
+ * typing indicators, read receipts, and message edits.
+ *
  * Every text-output path in every command must route through here.
  *
  * Architecture:  Commands → Handlers → Baileys Adapter → WhatsApp
  */
+
+import { sendPoll as _sendPoll } from "./gktwAdapter.js";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -30,6 +34,14 @@ function _chunk(text, size = CHUNK_SIZE) {
     start += size;
   }
   return chunks;
+}
+
+/**
+ * Detect if the second argument is a WAMessage (has .key) rather than a plain JID string.
+ * Allows sendReply(sock, msg, text) as a shorthand.
+ */
+function _isMsgObject(v) {
+  return v && typeof v === "object" && v.key && typeof v.key === "object";
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
@@ -71,17 +83,30 @@ export async function sendText(sock, jid, text, opts = {}) {
 /**
  * Send a reply to a specific message.
  *
+ * Supports two signatures:
+ *   sendReply(sock, jid, text, quotedMsg, opts?)   — explicit JID + quoted
+ *   sendReply(sock, msg, text, opts?)              — msg object shorthand (jid auto-extracted)
+ *
  * @param {object} sock
- * @param {string} jid
+ * @param {string|object} jidOrMsg  - Chat JID string, or a WAMessage object
  * @param {string} text
- * @param {object} quoted   - WAMessage to quote (required)
+ * @param {object|string} [quotedOrOpts] - WAMessage to quote, or opts when using msg shorthand
  * @param {object} [opts]
- * @param {string[]}[opts.mentions]
- * @param {object}  [opts.contextInfo]
  * @returns {Promise<object|null>}
  */
-export async function sendReply(sock, jid, text, quoted, opts = {}) {
-  return sendText(sock, jid, text, { ...opts, quoted });
+export async function sendReply(sock, jidOrMsg, text, quotedOrOpts, opts = {}) {
+  // Shorthand: sendReply(sock, msg, text, opts?)
+  if (_isMsgObject(jidOrMsg)) {
+    const msg = jidOrMsg;
+    const jid = msg.key?.remoteJid;
+    const extraOpts = (quotedOrOpts && typeof quotedOrOpts === "object" && !quotedOrOpts.key)
+      ? quotedOrOpts
+      : {};
+    return sendText(sock, jid, text, { ...extraOpts, quoted: msg });
+  }
+
+  // Standard: sendReply(sock, jid, text, quotedMsg, opts?)
+  return sendText(sock, jidOrMsg, text, { ...opts, quoted: quotedOrOpts });
 }
 
 /**
@@ -135,7 +160,7 @@ export async function sendLong(sock, jid, text, opts = {}) {
 }
 
 /**
- * Send a text message with a typing indicator before it.
+ * Show a typing indicator, wait, then send the text.
  *
  * @param {object} sock
  * @param {string} jid
@@ -181,7 +206,7 @@ export async function editText(sock, jid, msgKey, newText) {
 }
 
 /**
- * Send a message with mentions.
+ * Send a message with @mentions.
  *
  * @param {object}   sock
  * @param {string}   jid
@@ -192,4 +217,58 @@ export async function editText(sock, jid, msgKey, newText) {
  */
 export async function sendMention(sock, jid, text, jids = [], opts = {}) {
   return sendText(sock, jid, text, { ...opts, mentions: jids });
+}
+
+/**
+ * Send a poll message.
+ *
+ * @param {object}   sock
+ * @param {string}   jid
+ * @param {string}   question            - Poll question
+ * @param {string[]} options             - 2–12 answer choices
+ * @param {object}   [opts]
+ * @param {number}   [opts.selectableCount=1]  - Max selectable answers
+ * @param {object}   [opts.quoted]
+ * @returns {Promise<object|null>}
+ */
+export async function sendPoll(sock, jid, question, options, opts = {}) {
+  try {
+    return await _sendPoll(sock, jid, question, options, opts);
+  } catch (err) {
+    // Fallback: plain-text representation
+    const lines = options.map((o, i) => `[${i + 1}] ${o}`).join("\n");
+    const fallback = `📊 *${question}*\n\n${lines}`;
+    return sendText(sock, jid, fallback, { quoted: opts.quoted });
+  }
+}
+
+/**
+ * Mark a message as read.
+ *
+ * @param {object} sock
+ * @param {object} msg - WAMessage to mark read
+ * @returns {Promise<void>}
+ */
+export async function sendRead(sock, msg) {
+  try {
+    const key = msg?.key;
+    if (key && typeof sock.readMessages === "function") {
+      await sock.readMessages([key]);
+    }
+  } catch {}
+}
+
+/**
+ * Send a typing presence update.
+ *
+ * @param {object} sock
+ * @param {string} jid
+ * @param {"composing"|"paused"|"recording"} [state="composing"]
+ */
+export async function sendTyping(sock, jid, state = "composing") {
+  try {
+    if (typeof sock.sendPresenceUpdate === "function") {
+      await sock.sendPresenceUpdate(state, jid);
+    }
+  } catch {}
 }

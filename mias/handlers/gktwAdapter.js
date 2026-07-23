@@ -1,5 +1,5 @@
 /**
- * MIAS — GKTW Adapter Layer  v2
+ * MIAS — GKTW Adapter Layer  v3
  *
  * ════════════════════════════════════════════════════════════════
  *  Architecture:
@@ -11,7 +11,7 @@
  *  - Falls back to raw @whiskeysockets/baileys for every feature.
  *  - Handlers never care which layer is active.
  *
- *  @itsreimau/gktw is not on npm yet — adapter falls back gracefully.
+ *  @itsreimau/gktw is optional — adapter falls back gracefully.
  *  When it becomes available: cd mias && npm install @itsreimau/gktw
  *  Zero code changes needed — adapter auto-routes everything.
  * ════════════════════════════════════════════════════════════════
@@ -38,9 +38,10 @@ async function getGktw() {
   if (_gktwAvailable === null) {
     try {
       _gktw = await import("@itsreimau/gktw");
-      _gktwAvailable = typeof _gktw?.sendInteractive === "function" || typeof _gktw?.default?.sendInteractive === "function";
+      _gktwAvailable =
+        typeof _gktw?.sendInteractive === "function" ||
+        typeof _gktw?.default?.sendInteractive === "function";
       if (!_gktwAvailable) {
-        // Package loaded but doesn't expose expected API — treat as absent
         _gktw = null;
         _gktwAvailable = false;
       }
@@ -77,6 +78,44 @@ export async function getProto() {
   return B.proto;
 }
 
+// ─── JID helpers ──────────────────────────────────────────────────────────────
+
+export async function jidNormalizedUser(jid) {
+  const B = await getBaileys();
+  return B.jidNormalizedUser ? B.jidNormalizedUser(jid) : jid;
+}
+
+/**
+ * Check if a JID is a newsletter / channel JID.
+ * @param {string} jid
+ * @returns {boolean}
+ */
+export async function isJidNewsletter(jid) {
+  try {
+    const B = await getBaileys();
+    if (typeof B.isJidNewsletter === "function") return B.isJidNewsletter(jid);
+  } catch {}
+  return String(jid || "").endsWith("@newsletter");
+}
+
+/**
+ * Check if a JID is a group JID.
+ * @param {string} jid
+ * @returns {boolean}
+ */
+export function isJidGroup(jid) {
+  return String(jid || "").endsWith("@g.us");
+}
+
+/**
+ * Check if a JID is a user JID.
+ * @param {string} jid
+ * @returns {boolean}
+ */
+export function isJidUser(jid) {
+  return String(jid || "").endsWith("@s.whatsapp.net");
+}
+
 // ─── generateWAMessageFromContent ────────────────────────────────────────────
 
 export async function generateWAMessageFromContent(jid, content, options) {
@@ -105,24 +144,95 @@ export async function prepareWAMessageMedia(content, options) {
   return B.prepareWAMessageMedia(content, options);
 }
 
-// ─── jidNormalizedUser ────────────────────────────────────────────────────────
-
-export async function jidNormalizedUser(jid) {
-  const B = await getBaileys();
-  return B.jidNormalizedUser ? B.jidNormalizedUser(jid) : jid;
-}
-
 // ─── getContentType ───────────────────────────────────────────────────────────
 
 export async function getContentType(message) {
   const B = await getBaileys();
-  return B.getContentType ? B.getContentType(message) : Object.keys(message || {})[0];
+  if (typeof B.getContentType === "function") return B.getContentType(message);
+  // Fallback: first key that isn't __type or server/client fields
+  const skip = new Set(["senderKeyDistributionMessage", "messageContextInfo"]);
+  const key = Object.keys(message || {}).find(k => !skip.has(k));
+  return key || null;
 }
 
-// ─── Smart sendMessage — tries GKTW first, falls back to Baileys ──────────────
+// ─── Group metadata ───────────────────────────────────────────────────────────
 
 /**
- * Smart send: automatically picks GKTW or Baileys based on message type.
+ * Fetch group metadata for a group JID.
+ * @param {object} sock
+ * @param {string} jid
+ * @returns {Promise<object|null>}
+ */
+export async function getGroupMetadata(sock, jid) {
+  try {
+    if (typeof sock.groupMetadata === "function") {
+      return await sock.groupMetadata(jid);
+    }
+  } catch (err) {
+    console.error("[getGroupMetadata] Error:", err?.message);
+  }
+  return null;
+}
+
+/**
+ * Fetch all groups the bot is participating in.
+ * @param {object} sock
+ * @returns {Promise<object>}
+ */
+export async function groupFetchAllParticipating(sock) {
+  try {
+    if (typeof sock.groupFetchAllParticipating === "function") {
+      return await sock.groupFetchAllParticipating();
+    }
+  } catch (err) {
+    console.error("[groupFetchAllParticipating] Error:", err?.message);
+  }
+  return {};
+}
+
+// ─── Poll message ──────────────────────────────────────────────────────────────
+
+/**
+ * Send a poll message.
+ *
+ * @param {object}   sock
+ * @param {string}   jid
+ * @param {string}   question      - Poll question text
+ * @param {string[]} options       - Array of answer choices (2–12)
+ * @param {object}   [opts]
+ * @param {number}   [opts.selectableCount]  - Max selectable options (default 1)
+ * @param {object}   [opts.quoted]
+ * @returns {Promise<object|null>}
+ */
+export async function sendPoll(sock, jid, question, options, opts = {}) {
+  try {
+    if (!question || !Array.isArray(options) || options.length < 2) {
+      throw new Error("Poll requires a question and at least 2 options");
+    }
+    const pollOptions = options.slice(0, 12).map(o => String(o).trim()).filter(Boolean);
+
+    const content = {
+      poll: {
+        name: String(question).trim(),
+        values: pollOptions,
+        selectableCount: opts.selectableCount ?? 1,
+      },
+    };
+
+    const sendOpts = {};
+    if (opts.quoted) sendOpts.quoted = opts.quoted;
+
+    return await sock.sendMessage(jid, content, sendOpts);
+  } catch (err) {
+    console.error("[sendPoll] Error:", err?.message);
+    return null;
+  }
+}
+
+// ─── Smart send (GKTW-first, Baileys fallback) ────────────────────────────────
+
+/**
+ * Send a message using GKTW when available, falling back to Baileys.
  *
  * @param {object} sock
  * @param {string} jid
@@ -131,61 +241,42 @@ export async function getContentType(message) {
  * @returns {Promise<object|null>}
  */
 export async function smartSend(sock, jid, content, opts = {}) {
-  const gktw = await getGktw();
-  const msgType = Object.keys(content)[0];
-
-  // GKTW handles interactive types
-  if (gktw && _gktwAvailable) {
-    const interactiveTypes = ["interactiveMessage", "buttonsMessage", "listMessage", "templateMessage"];
-    if (interactiveTypes.includes(msgType)) {
-      try {
-        const g = gktw.default || gktw;
-        if (typeof g.send === "function") {
-          return await g.send(sock, jid, content, opts);
-        }
-      } catch (err) {
-        // Fall through to Baileys
+  try {
+    const gktw = await getGktw();
+    if (gktw) {
+      const fn = gktw.sendMessage || gktw.default?.sendMessage;
+      if (typeof fn === "function") {
+        return await fn(sock, jid, content, opts);
       }
     }
-  }
-
-  // Baileys default path
-  try {
     return await sock.sendMessage(jid, content, opts);
   } catch (err) {
-    console.error("[smartSend] Baileys error:", err?.message);
-    return null;
+    // Final fallback
+    try {
+      return await sock.sendMessage(jid, content, opts);
+    } catch (innerErr) {
+      console.error("[smartSend] Error:", innerErr?.message);
+      return null;
+    }
   }
 }
 
-// ─── sendInteractiveMessage ───────────────────────────────────────────────────
+// ─── Interactive message (native-flow) ────────────────────────────────────────
 
 /**
- * Unified interactive message sender.
- * Tries GKTW first, falls back to Baileys native proto, falls back to plain text.
+ * Send an interactive/native-flow message.
+ * Routes through GKTW when available; falls back to Baileys proto; then plain text.
  *
- * Supported button types per button object:
- *   { text, id }             → quick_reply
- *   { text, url }            → cta_url (URL button)
- *   { text, copyCode }       → cta_copy (copy-to-clipboard)
- *   { text, phone }          → cta_call (call button)
- *   { text, id, type:"copy"} → cta_copy
- *   { text, id, type:"call"} → cta_call
- *
- * @param {object}   sock
- * @param {string}   jid
- * @param {object}   params
- * @param {string}   params.body
- * @param {string}   [params.footer]
- * @param {string}   [params.header]
+ * @param {object} sock
+ * @param {string} jid
+ * @param {object} params
+ * @param {string} [params.body]
+ * @param {string} [params.footer]
+ * @param {string} [params.header]
  * @param {object[]} [params.buttons]
- * @param {object[]} [params.sections]      - For list messages
- * @param {string}   [params.listButtonText]
- * @param {object}   [params.contextInfo]
- * @param {object}   [params.quoted]
- * @param {Buffer}   [params.headerImage]   - Image for image-header interactive
- * @param {Buffer}   [params.headerVideo]   - Video for video-header interactive
- * @param {string}   [params.headerDoc]     - Document title for doc-header interactive
+ * @param {object} [params.contextInfo]
+ * @param {object} [params.quoted]
+ * @returns {Promise<object|null>}
  */
 export async function sendInteractiveMessage(sock, jid, params) {
   const {
@@ -193,55 +284,32 @@ export async function sendInteractiveMessage(sock, jid, params) {
     footer = "",
     header = "",
     buttons = [],
-    sections = [],
     contextInfo = {},
     quoted = null,
-    listButtonText = "Open Menu",
-    headerImage = null,
-    headerVideo = null,
   } = params;
 
-  // ── 1. Try GKTW ──────────────────────────────────────────────────────────
+  // ── GKTW path ──────────────────────────────────────────────────────────────
   const gktw = await getGktw();
-  if (gktw && _gktwAvailable) {
-    try {
-      const g = gktw.default || gktw;
-      if (typeof g.sendInteractive === "function") {
-        return await g.sendInteractive(sock, jid, params);
+  if (gktw) {
+    const fn = gktw.sendInteractive || gktw.default?.sendInteractive;
+    if (typeof fn === "function") {
+      try {
+        return await fn(sock, jid, { body, footer, header, buttons, contextInfo, quoted });
+      } catch {
+        // fall through to Baileys proto
       }
-    } catch {
-      // Fall through to Baileys
     }
   }
 
-  // ── 2. Baileys proto: list message ────────────────────────────────────────
-  if (sections.length > 0 && buttons.length === 0) {
-    try {
-      const sendOpts = {};
-      if (quoted) sendOpts.quoted = quoted;
-      return await sock.sendMessage(jid, {
-        text: body,
-        footer,
-        title: header,
-        buttonText: listButtonText,
-        sections,
-        ...(Object.keys(contextInfo).length ? { contextInfo } : {}),
-      }, sendOpts);
-    } catch (listErr) {
-      // Fall through to text
-    }
-  }
-
-  // ── 3. Baileys proto: native-flow interactive ─────────────────────────────
+  // ── Baileys proto path ─────────────────────────────────────────────────────
   try {
     const B = await getBaileys();
     const proto = B.proto;
+    const NF = proto.Message.InteractiveMessage.NativeFlowMessage.NativeFlowButton;
 
-    // Build buttons
-    const flowButtons = (buttons || []).map((btn, i) => {
-      // URL button
+    const builtButtons = buttons.map((btn, i) => {
       if (btn.url || btn.type === "url") {
-        return proto.Message.InteractiveMessage.NativeFlowMessage.NativeFlowButton.create({
+        return NF.create({
           name: "cta_url",
           buttonParamsJson: JSON.stringify({
             display_text: btn.text || `Link ${i + 1}`,
@@ -250,9 +318,8 @@ export async function sendInteractiveMessage(sock, jid, params) {
           }),
         });
       }
-      // Copy-to-clipboard button
       if (btn.copyCode || btn.type === "copy") {
-        return proto.Message.InteractiveMessage.NativeFlowMessage.NativeFlowButton.create({
+        return NF.create({
           name: "cta_copy",
           buttonParamsJson: JSON.stringify({
             display_text: btn.text || "Copy",
@@ -260,9 +327,8 @@ export async function sendInteractiveMessage(sock, jid, params) {
           }),
         });
       }
-      // Call button
       if (btn.phone || btn.type === "call") {
-        return proto.Message.InteractiveMessage.NativeFlowMessage.NativeFlowButton.create({
+        return NF.create({
           name: "cta_call",
           buttonParamsJson: JSON.stringify({
             display_text: btn.text || "Call",
@@ -270,8 +336,7 @@ export async function sendInteractiveMessage(sock, jid, params) {
           }),
         });
       }
-      // Default: quick_reply
-      return proto.Message.InteractiveMessage.NativeFlowMessage.NativeFlowButton.create({
+      return NF.create({
         name: "quick_reply",
         buttonParamsJson: JSON.stringify({
           display_text: btn.text || `Option ${i + 1}`,
@@ -280,64 +345,39 @@ export async function sendInteractiveMessage(sock, jid, params) {
       });
     });
 
-    // Build header
-    let headerProto;
-    if (headerImage) {
-      const mediaMsg = await B.prepareWAMessageMedia({ image: headerImage }, { upload: sock.waUploadToServer });
-      headerProto = proto.Message.InteractiveMessage.Header.create({
-        ...mediaMsg,
-        hasMediaAttachment: true,
-      });
-    } else if (headerVideo) {
-      const mediaMsg = await B.prepareWAMessageMedia({ video: headerVideo }, { upload: sock.waUploadToServer });
-      headerProto = proto.Message.InteractiveMessage.Header.create({
-        ...mediaMsg,
-        hasMediaAttachment: true,
-      });
-    } else {
-      headerProto = proto.Message.InteractiveMessage.Header.create({
-        title: header || "",
-        hasMediaAttachment: false,
-      });
-    }
-
-    const nativeFlow = proto.Message.InteractiveMessage.NativeFlowMessage.create({
-      buttons: flowButtons,
-      messageParamsJson: "{}",
-      messageVersion: 1,
+    const msgContent = proto.Message.create({
+      interactiveMessage: proto.Message.InteractiveMessage.create({
+        body: proto.Message.InteractiveMessage.Body.create({ text: body }),
+        footer: proto.Message.InteractiveMessage.Footer.create({ text: footer }),
+        header: proto.Message.InteractiveMessage.Header.create({
+          title: header,
+          hasMediaAttachment: false,
+        }),
+        contextInfo: Object.keys(contextInfo).length ? contextInfo : undefined,
+        nativeFlowMessage: proto.Message.InteractiveMessage.NativeFlowMessage.create({
+          buttons: builtButtons,
+          messageParamsJson: "{}",
+          messageVersion: 1,
+        }),
+      }),
     });
 
-    const ctxProto = proto.ContextInfo.create({
-      ...contextInfo,
-      forwardingScore: contextInfo.forwardingScore ?? 0,
-      isForwarded: contextInfo.isForwarded ?? false,
-    });
-
-    const interactiveMsg = proto.Message.InteractiveMessage.create({
-      body: proto.Message.InteractiveMessage.Body.create({ text: body }),
-      footer: proto.Message.InteractiveMessage.Footer.create({ text: footer }),
-      header: headerProto,
-      nativeFlowMessage: nativeFlow,
-      contextInfo: ctxProto,
-    });
-
-    const fullMsg = proto.Message.create({ interactiveMessage: interactiveMsg });
-
-    const wam = await B.generateWAMessageFromContent(jid, fullMsg, {
+    const wam = await B.generateWAMessageFromContent(jid, msgContent, {
       userJid: sock.user?.id,
       quoted: quoted || undefined,
     });
     await sock.relayMessage(jid, wam.message, { messageId: wam.key.id });
     return wam;
-  } catch (protoErr) {
-    // ── 4. Final fallback: plain text ─────────────────────────────────────
-    const btnLines = (buttons || []).map((b, i) => `[${i + 1}] ${b.text}`).join("\n");
+  } catch {
+    // ── Plain-text fallback ──────────────────────────────────────────────────
+    const btnLines = buttons.map((b, i) => `[${i + 1}] ${b.text}`).join("\n");
     const text = [
       header ? `*${header}*` : null,
       body,
       btnLines || null,
       footer ? `_${footer}_` : null,
     ].filter(Boolean).join("\n\n");
+
     const sendOpts = {};
     if (quoted) sendOpts.quoted = quoted;
     return sock.sendMessage(jid, { text }, sendOpts);
@@ -352,8 +392,11 @@ export async function fetchLatestBaileysVersion() {
     if (typeof B.fetchLatestBaileysVersion === "function") {
       return B.fetchLatestBaileysVersion();
     }
+    if (typeof B.fetchLatestWaWebVersion === "function") {
+      return B.fetchLatestWaWebVersion();
+    }
   } catch {}
-  return { version: [0, 0, 0], isLatest: false };
+  return { version: [2, 3000, 1017531287], isLatest: false };
 }
 
 // ─── makeInMemoryStore ────────────────────────────────────────────────────────
@@ -381,5 +424,4 @@ export async function makeWASocket(config) {
 }
 
 // ─── Export raw Baileys getters for adapters that need them ───────────────────
-
 export { getBaileys, getGktw };

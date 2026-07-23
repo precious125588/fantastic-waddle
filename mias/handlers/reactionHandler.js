@@ -1,5 +1,5 @@
 /**
- * MIAS — Reaction Handler
+ * MIAS — Reaction Handler  v2
  *
  * Centralized emoji-reaction abstraction.
  * Commands must never send reactions directly through Baileys.
@@ -24,6 +24,29 @@ export const REACTIONS = {
   WARN:       "⚠️",
   STOP:       "🛑",
   BOT:        "🤖",
+  SEARCH:     "🔍",
+  DOWNLOAD:   "⬇️",
+  UPLOAD:     "⬆️",
+  MUSIC:      "🎵",
+  VIDEO:      "🎬",
+  IMAGE:      "🖼️",
+  COOL:       "😎",
+  CLAP:       "👏",
+  EYES:       "👀",
+};
+
+/**
+ * Common reaction sequences for reuse across commands.
+ */
+export const REACTION_SETS = {
+  /** Processing → Success */
+  PROCESS_OK:   [REACTIONS.PROCESSING, REACTIONS.SUCCESS],
+  /** Processing → Fail */
+  PROCESS_FAIL: [REACTIONS.PROCESSING, REACTIONS.FAIL],
+  /** Loading → Done */
+  LOAD_DONE:    [REACTIONS.LOADING, REACTIONS.DONE],
+  /** Download flow */
+  DOWNLOAD:     [REACTIONS.DOWNLOAD, REACTIONS.SUCCESS],
 };
 
 // ─── Internal helper ──────────────────────────────────────────────────────────
@@ -50,6 +73,16 @@ async function _react(sock, msg, emoji) {
  * @returns {Promise<object|null>}
  */
 export async function sendReaction(sock, msg, emoji) {
+  return _react(sock, msg, emoji);
+}
+
+/**
+ * Alias for sendReaction — explicit name for custom emoji reactions.
+ * @param {object} sock
+ * @param {object} msg
+ * @param {string} emoji
+ */
+export async function reactCustom(sock, msg, emoji) {
   return _react(sock, msg, emoji);
 }
 
@@ -92,20 +125,35 @@ export async function reactLoading(sock, msg) {
   return _react(sock, msg, REACTIONS.LOADING);
 }
 
+/** React with ⬇️ (downloading) */
+export async function reactDownload(sock, msg) {
+  return _react(sock, msg, REACTIONS.DOWNLOAD);
+}
+
+/** React with 🔥 (fire / hype) */
+export async function reactFire(sock, msg) {
+  return _react(sock, msg, REACTIONS.FIRE);
+}
+
+/** React with 👍 (like / approval) */
+export async function reactLike(sock, msg) {
+  return _react(sock, msg, REACTIONS.LIKE);
+}
+
 /**
  * Wrap an async operation with automatic reactions.
- * - Reacts with 🌀 before running.
- * - Reacts with ✅ on success.
- * - Reacts with ❌ on failure.
- * - Re-throws on failure.
+ *  - Reacts with 🌀 before running.
+ *  - Reacts with ✅ on success.
+ *  - Reacts with ❌ on failure.
+ *  - Optionally re-throws on failure.
  *
  * @param {object}   sock
  * @param {object}   msg
- * @param {Function} fn         - Async function to execute
+ * @param {Function} fn           - Async function to execute
  * @param {object}   [opts]
- * @param {string}   [opts.startEmoji]   - Override start emoji
- * @param {string}   [opts.successEmoji] - Override success emoji
- * @param {string}   [opts.failEmoji]    - Override fail emoji
+ * @param {string}   [opts.startEmoji]   - Override start emoji (default 🌀)
+ * @param {string}   [opts.successEmoji] - Override success emoji (default ✅)
+ * @param {string}   [opts.failEmoji]    - Override fail emoji (default ❌)
  * @param {boolean}  [opts.rethrow=true] - Whether to re-throw errors
  * @returns {Promise<any>}
  */
@@ -142,4 +190,19 @@ export async function reactSequence(sock, msg, emojis, delayMs = 1000) {
     await _react(sock, msg, emoji);
     if (delayMs > 0) await new Promise(r => setTimeout(r, delayMs));
   }
+}
+
+/**
+ * React with a predefined REACTION_SET sequence.
+ * e.g. await reactSet(sock, msg, "PROCESS_OK")
+ *
+ * @param {object} sock
+ * @param {object} msg
+ * @param {keyof typeof REACTION_SETS} setName
+ * @param {number} [delayMs=1000]
+ */
+export async function reactSet(sock, msg, setName, delayMs = 1000) {
+  const emojis = REACTION_SETS[setName];
+  if (!emojis) return;
+  return reactSequence(sock, msg, emojis, delayMs);
 }

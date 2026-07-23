@@ -1,5 +1,5 @@
 /**
- * MIAS — Utility Handler
+ * MIAS — Utility Handler  v2
  *
  * General-purpose utilities used across handlers.
  * Commands must never call Baileys directly — use these helpers.
@@ -7,21 +7,24 @@
  * Architecture:  Commands → Handlers → Baileys Adapter → WhatsApp
  */
 
-import { getContentType as _getContentType, getBaileys, getProto } from "./gktwAdapter.js";
+import { getContentType as _getContentType, getBaileys } from "./gktwAdapter.js";
 
 // ─── JID utilities ────────────────────────────────────────────────────────────
 
 /**
- * Normalize a JID to its canonical form (e.g. remove device suffix).
+ * Normalize a JID to its canonical form (removes device suffix).
  * @param {string} jid
- * @returns {string}
+ * @returns {Promise<string>}
  */
 export async function normalizeJid(jid) {
   try {
     const B = await getBaileys();
     if (typeof B.jidNormalizedUser === "function") return B.jidNormalizedUser(jid);
   } catch {}
-  return jid?.split(":")[0] + (jid?.includes("@") ? "@" + jid.split("@")[1] : "");
+  const str = String(jid || "");
+  const at = str.indexOf("@");
+  if (at === -1) return str;
+  return `${str.slice(0, at).split(":")[0]}@${str.slice(at + 1)}`;
 }
 
 /**
@@ -34,8 +37,8 @@ export function phoneFromJid(jid) {
 }
 
 /**
- * Convert a phone number to a user JID.
- * @param {string} phone
+ * Convert a phone number string to a user JID.
+ * @param {string|number} phone
  * @returns {string}
  */
 export function toUserJid(phone) {
@@ -53,7 +56,7 @@ export function isGroupJid(jid) {
 }
 
 /**
- * Check if a JID is a broadcast/status.
+ * Check if a JID is a broadcast / status.
  * @param {string} jid
  * @returns {boolean}
  */
@@ -61,12 +64,71 @@ export function isBroadcastJid(jid) {
   return (jid || "").endsWith("@broadcast") || jid === "status@broadcast";
 }
 
+/**
+ * Check if a JID is a newsletter / channel.
+ * @param {string} jid
+ * @returns {boolean}
+ */
+export function isNewsletterJid(jid) {
+  return (jid || "").endsWith("@newsletter");
+}
+
+/**
+ * Check if a JID is a user (not group/broadcast/newsletter).
+ * @param {string} jid
+ * @returns {boolean}
+ */
+export function isUserJid(jid) {
+  return (jid || "").endsWith("@s.whatsapp.net");
+}
+
+/**
+ * Resolve and normalize a JID from any input (phone string or jid string).
+ * @param {string} input
+ * @returns {string}
+ */
+export function resolveJid(input) {
+  const str = String(input || "").trim();
+  if (str.includes("@")) return str;
+  const clean = str.replace(/\D/g, "");
+  if (clean) return `${clean}@s.whatsapp.net`;
+  return str;
+}
+
+// ─── Sender resolution ────────────────────────────────────────────────────────
+
+/**
+ * Get the effective sender JID of a message.
+ * In groups: returns the participant JID (real sender).
+ * In DMs: returns the remoteJid.
+ *
+ * @param {object} msg - WAMessage
+ * @returns {string}
+ */
+export function getEffectiveSender(msg) {
+  if (!msg?.key) return "";
+  const { remoteJid, participant, fromMe } = msg.key;
+  if (isGroupJid(remoteJid)) {
+    return participant || msg.participant || remoteJid;
+  }
+  return remoteJid || "";
+}
+
+/**
+ * Check whether a message was sent by the bot itself.
+ * @param {object} msg - WAMessage
+ * @returns {boolean}
+ */
+export function isBotMessage(msg) {
+  return !!msg?.key?.fromMe;
+}
+
 // ─── Message content utilities ────────────────────────────────────────────────
 
 /**
  * Get the content type of a message.
- * @param {object} message - message.message object
- * @returns {string|null}
+ * @param {object} message - message.message object (inner)
+ * @returns {Promise<string|null>}
  */
 export async function getContentType(message) {
   try {
@@ -78,48 +140,105 @@ export async function getContentType(message) {
 
 /**
  * Extract plain text from any message type.
- * @param {object} msg - WAMessage object
+ * Covers conversation, extendedText, image/video caption, button response,
+ * list response, interactive response, and poll responses.
+ *
+ * @param {object} msg - WAMessage object (full)
  * @returns {string}
  */
 export function extractText(msg) {
   if (!msg?.message) return "";
   const m = msg.message;
+
+  // Unwrap common wrappers
+  const inner =
+    m.ephemeralMessage?.message ||
+    m.viewOnceMessage?.message ||
+    m.viewOnceMessageV2?.message ||
+    m.deviceSentMessage?.message ||
+    m.documentWithCaptionMessage?.message ||
+    m;
+
   return (
-    m.conversation ||
-    m.extendedTextMessage?.text ||
-    m.imageMessage?.caption ||
-    m.videoMessage?.caption ||
-    m.documentMessage?.caption ||
-    m.buttonsResponseMessage?.selectedButtonId ||
-    m.listResponseMessage?.singleSelectReply?.selectedRowId ||
-    m.interactiveResponseMessage?.nativeFlowResponseMessage?.paramsJson ||
-    m.templateButtonReplyMessage?.selectedId ||
+    inner.conversation ||
+    inner.extendedTextMessage?.text ||
+    inner.imageMessage?.caption ||
+    inner.videoMessage?.caption ||
+    inner.documentMessage?.caption ||
+    inner.audioMessage?.caption ||
+    inner.buttonsResponseMessage?.selectedButtonId ||
+    inner.listResponseMessage?.singleSelectReply?.selectedRowId ||
+    inner.templateButtonReplyMessage?.selectedId ||
+    inner.interactiveResponseMessage?.nativeFlowResponseMessage?.paramsJson ||
+    inner.pollCreationMessage?.name ||
     ""
   );
 }
 
 /**
+ * Alias for extractText — used by many handlers as "body" of the message.
+ * @param {object} msg - WAMessage object (full)
+ * @returns {string}
+ */
+export function extractBody(msg) {
+  return extractText(msg);
+}
+
+/**
  * Get a message's quoted context (the replied-to message).
- * @param {object} msg - WAMessage object
+ * @param {object} msg - WAMessage object (full)
  * @returns {object|null}
  */
 export function getQuoted(msg) {
   const m = msg?.message;
   if (!m) return null;
-  const inner = m.extendedTextMessage || m.imageMessage || m.videoMessage || m.documentMessage || m.audioMessage;
-  return inner?.contextInfo?.quotedMessage ? { message: inner.contextInfo.quotedMessage, key: { id: inner.contextInfo.stanzaId, remoteJid: inner.contextInfo.remoteJid || msg.key?.remoteJid, participant: inner.contextInfo.participant } } : null;
+  const unwrap = m.ephemeralMessage?.message || m.viewOnceMessage?.message || m;
+  const inner =
+    unwrap.extendedTextMessage ||
+    unwrap.imageMessage ||
+    unwrap.videoMessage ||
+    unwrap.documentMessage ||
+    unwrap.audioMessage ||
+    unwrap.stickerMessage ||
+    {};
+  const qMsg = inner?.contextInfo?.quotedMessage;
+  if (!qMsg) return null;
+  return {
+    message: qMsg,
+    key: {
+      id: inner.contextInfo.stanzaId,
+      remoteJid: inner.contextInfo.remoteJid || msg.key?.remoteJid,
+      participant: inner.contextInfo.participant,
+    },
+  };
 }
 
 /**
  * Extract all mentioned JIDs from a message.
- * @param {object} msg
+ * @param {object} msg - WAMessage (full)
  * @returns {string[]}
  */
 export function getMentions(msg) {
   const m = msg?.message;
   if (!m) return [];
-  const inner = m.extendedTextMessage || m.imageMessage || m.videoMessage || {};
+  const inner =
+    m.extendedTextMessage ||
+    m.imageMessage ||
+    m.videoMessage ||
+    m.stickerMessage ||
+    {};
   return inner?.contextInfo?.mentionedJid || [];
+}
+
+/**
+ * Extract the command name from a parsed message body (first word, no prefix).
+ * @param {string} body    - Raw message text
+ * @param {string} prefix  - Bot prefix (e.g. ".")
+ * @returns {string}
+ */
+export function extractCommandName(body, prefix = ".") {
+  if (!body?.startsWith(prefix)) return "";
+  return body.slice(prefix.length).split(/\s+/)[0].toLowerCase().trim();
 }
 
 // ─── Timing & retry utilities ─────────────────────────────────────────────────
@@ -134,10 +253,11 @@ export function sleep(ms) {
 }
 
 /**
- * Retry an async function up to `retries` times with exponential backoff.
+ * Retry an async function up to `retries` times with exponential back-off.
+ *
  * @param {Function} fn
- * @param {number} [retries=3]
- * @param {number} [baseDelayMs=500]
+ * @param {number}   [retries=3]
+ * @param {number}   [baseDelayMs=500]
  * @returns {Promise<any>}
  */
 export async function withRetry(fn, retries = 3, baseDelayMs = 500) {
@@ -147,54 +267,46 @@ export async function withRetry(fn, retries = 3, baseDelayMs = 500) {
       return await fn();
     } catch (err) {
       lastErr = err;
-      if (i < retries) await sleep(baseDelayMs * Math.pow(2, i));
+      if (i < retries) {
+        await sleep(baseDelayMs * Math.pow(2, i));
+      }
     }
   }
   throw lastErr;
 }
 
-// ─── Text formatting utilities ────────────────────────────────────────────────
+// ─── Uptime formatting ────────────────────────────────────────────────────────
 
 /**
- * Truncate a string to a max length with ellipsis.
- * @param {string} str
- * @param {number} maxLen
- * @returns {string}
- */
-export function truncate(str, maxLen = 500) {
-  if (!str) return "";
-  return str.length > maxLen ? str.slice(0, maxLen - 3) + "..." : str;
-}
-
-/**
- * Format bytes to human-readable string.
- * @param {number} bytes
- * @returns {string}
- */
-export function formatBytes(bytes) {
-  if (!bytes || bytes === 0) return "0 B";
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  const i = Math.floor(Math.log(bytes) / Math.log(1024));
-  return `${(bytes / Math.pow(1024, i)).toFixed(2)} ${units[i]}`;
-}
-
-/**
- * Format milliseconds to human-readable uptime.
+ * Format a duration in milliseconds as a human-readable string.
+ * e.g. "3d 4h 12m 5s"
  * @param {number} ms
  * @returns {string}
  */
 export function formatUptime(ms) {
-  const s = Math.floor(ms / 1000);
-  const d = Math.floor(s / 86400);
-  const h = Math.floor((s % 86400) / 3600);
-  const m = Math.floor((s % 3600) / 60);
-  const sec = s % 60;
+  const totalSeconds = Math.floor((ms || 0) / 1000);
+  const d = Math.floor(totalSeconds / 86400);
+  const h = Math.floor((totalSeconds % 86400) / 3600);
+  const m = Math.floor((totalSeconds % 3600) / 60);
+  const s = totalSeconds % 60;
   const parts = [];
-  if (d) parts.push(`${d}d`);
-  if (h) parts.push(`${h}h`);
-  if (m) parts.push(`${m}m`);
-  parts.push(`${sec}s`);
+  if (d > 0) parts.push(`${d}d`);
+  if (h > 0) parts.push(`${h}h`);
+  if (m > 0) parts.push(`${m}m`);
+  parts.push(`${s}s`);
   return parts.join(" ");
+}
+
+/**
+ * Format a byte count as a human-readable string.
+ * @param {number} bytes
+ * @returns {string}
+ */
+export function formatBytes(bytes) {
+  if (bytes < 1024)             return `${bytes} B`;
+  if (bytes < 1024 * 1024)      return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
+  return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
 }
 
 // ─── Presence helpers ─────────────────────────────────────────────────────────
@@ -214,10 +326,10 @@ export async function setPresence(sock, jid, state = "composing") {
 }
 
 /**
- * Update typing presence for the duration of fn(), then stop.
- * @param {object} sock
- * @param {string} jid
- * @param {Function} fn
+ * Show typing presence for the duration of fn(), then pause.
+ * @param {object}   sock
+ * @param {string}   jid
+ * @param {Function} fn   - Async function to run while showing typing
  * @returns {Promise<any>}
  */
 export async function withTyping(sock, jid, fn) {
