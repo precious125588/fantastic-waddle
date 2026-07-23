@@ -1,10 +1,29 @@
 /**
  * NIX — Media Tools Module
+ *
+ * All media sends and reactions are routed through the centralized
+ * media/reaction handlers. Commands must NEVER call `sock.sendMessage`
+ * directly for media, and must NEVER hand-roll reaction emojis.
  */
 import { getOwnerName, greet } from '../owner.js';
-import { stagedSend, sendNix, reactNix, nixFooter, typingOn, typingOff } from '../ui.js';
+import { stagedSend, sendNix, nixFooter, typingOn, typingOff } from '../ui.js';
 import { nixDownload, nixGif, prexzyGet } from '../api.js';
 import { httpClient as axios } from '../../lib/engineAccess.js';
+import {
+  sendImage,
+  sendVideo,
+  sendGif,
+  sendAudio,
+  sendDocument,
+} from '../../handlers/mediaHandler.js';
+import {
+  reactDownload,
+  reactSuccess,
+  reactFail,
+  reactCustom,
+  withReactions,
+} from '../../handlers/reactionHandler.js';
+import { downloadViewOnce } from '../../handlers/downloadHandler.js';
 
 function getJid(msg) { return msg.key.remoteJid; }
 function getQuotedMsg(msg) {
@@ -20,73 +39,88 @@ export async function download(sock, msg, args) {
     await sendNix(sock, msg, `⬇️ *Download*\n\nUsage: \`.nix download <url>\`\nSupports: TikTok, Instagram, YouTube, Twitter/X, Facebook, Pinterest\n\nExample: \`.nix download https://vm.tiktok.com/...\`${nixFooter()}`);
     return;
   }
-  await reactNix(sock, msg, '⬇️');
+
+  await reactDownload(sock, msg);
   await typingOn(sock, getJid(msg));
   const result = await nixDownload(url);
   await typingOff(sock, getJid(msg));
+
   if (!result.ok) {
+    await reactFail(sock, msg);
     await sendNix(sock, msg, `❌ *Download Failed*\n\n${greet(owner)} I was unable to download from that link.\n_Make sure the URL is valid and publicly accessible._${nixFooter()}`);
     return;
   }
+
   const d = result.data;
   const mediaUrl = d?.url || d?.dl || d?.download || d?.video || d?.audio || d?.file;
   const title = d?.title || d?.caption || 'Downloaded Media';
+
   if (!mediaUrl) {
+    await reactFail(sock, msg);
     await sendNix(sock, msg, `❌ *Download Failed*\n\n${greet(owner)} no downloadable media found in that link.${nixFooter()}`);
     return;
   }
+
   try {
     const resp = await axios.get(mediaUrl, { responseType: 'arraybuffer', timeout: 60000 });
     const buf = Buffer.from(resp.data);
-    const ct = resp.headers['content-type'] || '';
+    const ct = String(resp.headers['content-type'] || '');
     const jid = getJid(msg);
+    const caption = `✅ *${title}*\n\n> 🧠 _Powered by Nix ⚡_`;
+
     if (ct.includes('video') || mediaUrl.includes('.mp4')) {
-      await sock.sendMessage(jid, { video: buf, caption: `✅ *${title}*\n\n> 🧠 _Powered by Nix ⚡_` }, { quoted: msg });
+      // sendVideo auto-generates a jpeg thumbnail via mediaHandler._autoThumb
+      await sendVideo(sock, jid, buf, { caption, quoted: msg });
     } else if (ct.includes('audio') || mediaUrl.includes('.mp3')) {
-      await sock.sendMessage(jid, { audio: buf, mimetype: 'audio/mp4' }, { quoted: msg });
+      await sendAudio(sock, jid, buf, { mimetype: 'audio/mp4', quoted: msg });
     } else if (ct.includes('image')) {
-      await sock.sendMessage(jid, { image: buf, caption: `✅ *${title}*\n\n> 🧠 _Powered by Nix ⚡_` }, { quoted: msg });
+      await sendImage(sock, jid, buf, { caption, quoted: msg });
     } else {
-      await sock.sendMessage(jid, { document: buf, fileName: title, caption: `✅ Downloaded${nixFooter()}` }, { quoted: msg });
+      await sendDocument(sock, jid, buf, {
+        fileName: title,
+        caption: `✅ Downloaded${nixFooter()}`,
+        quoted: msg,
+      });
     }
-    await reactNix(sock, msg, '✅');
+
+    await reactSuccess(sock, msg);
   } catch {
+    await reactFail(sock, msg);
     await sendNix(sock, msg, `⬇️ *Download Link*\n\n${greet(owner)} here's your media link:\n${mediaUrl}${nixFooter()}`);
   }
 }
 
 export async function viewOnce(sock, msg) {
   const owner = getOwnerName();
+  const ctx = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage;
+  if (!ctx) {
+    await sendNix(sock, msg, `👁️ *View Once*\n\n${greet(owner)} reply to a view-once message with \`.nix viewonce\` to reveal it.${nixFooter()}`);
+    return;
+  }
+
+  // Build a synthetic wrapper so downloadViewOnce sees the quoted content
+  // as if it were the top-level message.
+  const wrapper = { message: ctx };
+
   try {
-    const ctx = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage;
-    if (!ctx) {
-      await sendNix(sock, msg, `👁️ *View Once*\n\n${greet(owner)} reply to a view-once message with \`.nix viewonce\` to reveal it.${nixFooter()}`);
-      return;
-    }
-    const voMsg = ctx?.viewOnceMessage?.message || ctx?.viewOnceMessageV2?.message || ctx;
-    const imageMsg = voMsg?.imageMessage;
-    const videoMsg = voMsg?.videoMessage;
-    if (!imageMsg && !videoMsg) {
+    await reactCustom(sock, msg, '👁️');
+    const result = await downloadViewOnce(wrapper);
+    if (!result?.buffer) {
+      await reactFail(sock, msg);
       await sendNix(sock, msg, `👁️ *View Once*\n\n${greet(owner)} the replied message is not a view-once media.${nixFooter()}`);
       return;
     }
-    await reactNix(sock, msg, '👁️');
-    // Route through MIAS handler — no direct Baileys import
-    const { downloadContentFromMessage: _dlContent } = await import('../../handlers/gktwAdapter.js');
-    const mediaMsg = imageMsg || videoMsg;
-    const type = imageMsg ? 'image' : 'video';
-    const stream = await _dlContent(mediaMsg, type);
-    const chunks = [];
-    for await (const chunk of stream) chunks.push(chunk);
-    const buf = Buffer.concat(chunks);
+
     const jid = getJid(msg);
-    if (type === 'image') {
-      await sock.sendMessage(jid, { image: buf, caption: `👁️ *View Once Revealed*\n\n> 🧠 _Powered by Nix ⚡_` }, { quoted: msg });
+    const caption = `👁️ *View Once Revealed*\n\n> 🧠 _Powered by Nix ⚡_`;
+    if (result.type === 'image') {
+      await sendImage(sock, jid, result.buffer, { caption, quoted: msg });
     } else {
-      await sock.sendMessage(jid, { video: buf, caption: `👁️ *View Once Revealed*\n\n> 🧠 _Powered by Nix ⚡_` }, { quoted: msg });
+      await sendVideo(sock, jid, result.buffer, { caption, quoted: msg });
     }
-    await reactNix(sock, msg, '✅');
+    await reactSuccess(sock, msg);
   } catch {
+    await reactFail(sock, msg);
     await sendNix(sock, msg, `❌ *View Once Failed*\n\nNix is currently unable to reveal this message.${nixFooter()}`);
   }
 }
@@ -98,54 +132,72 @@ export async function gif(sock, msg, args) {
     await sendNix(sock, msg, `🎬 *GIF Search*\n\nUsage: \`.nix gif <keyword>\`\nExample: \`.nix gif funny cat\`${nixFooter()}`);
     return;
   }
-  await reactNix(sock, msg, '🎬');
+
+  await reactCustom(sock, msg, '🎬');
   const result = await nixGif(keyword);
   if (!result.ok) {
+    await reactFail(sock, msg);
     await sendNix(sock, msg, `❌ *GIF Not Found*\n\n${greet(owner)} I couldn't find a GIF for "${keyword}".${nixFooter()}`);
     return;
   }
+
   const url = result.data?.url || result.data?.gif;
   if (!url) {
+    await reactFail(sock, msg);
     await sendNix(sock, msg, `❌ *GIF Not Found*\n\n${greet(owner)} no GIF available for "${keyword}".${nixFooter()}`);
     return;
   }
+
   try {
     const resp = await axios.get(url, { responseType: 'arraybuffer', timeout: 20000 });
     const buf = Buffer.from(resp.data);
-    await sock.sendMessage(getJid(msg), { video: buf, gifPlayback: true, caption: `🎬 *${keyword}*\n> 🧠 _Nix ⚡_` }, { quoted: msg });
-    await reactNix(sock, msg, '✅');
+    await sendGif(sock, getJid(msg), buf, {
+      caption: `🎬 *${keyword}*\n> 🧠 _Nix ⚡_`,
+      quoted: msg,
+    });
+    await reactSuccess(sock, msg);
   } catch {
+    await reactFail(sock, msg);
     await sendNix(sock, msg, `🎬 *GIF Found*\n\n${url}${nixFooter()}`);
   }
 }
 
 export async function meme(sock, msg) {
   const owner = getOwnerName();
-  await reactNix(sock, msg, '😂');
+  await reactCustom(sock, msg, '😂');
+
+  const trySend = async (url, title) => {
+    const resp = await axios.get(url, { responseType: 'arraybuffer', timeout: 20000 });
+    const buf = Buffer.from(resp.data);
+    await sendImage(sock, getJid(msg), buf, {
+      caption: `😂 *${title}*\n\n> 🧠 _Nix ⚡_`,
+      quoted: msg,
+    });
+  };
+
   try {
     const r = await prexzyGet('/fun/meme');
     const d = r.ok ? (r.data?.data || r.data) : null;
     const url = d?.url || d?.image || d?.meme;
     if (url) {
-      const resp = await axios.get(url, { responseType: 'arraybuffer', timeout: 20000 });
-      const buf = Buffer.from(resp.data);
-      await sock.sendMessage(getJid(msg), { image: buf, caption: `😂 *Random Meme*\n\n> 🧠 _Nix ⚡_` }, { quoted: msg });
-      await reactNix(sock, msg, '✅');
+      await trySend(url, 'Random Meme');
+      await reactSuccess(sock, msg);
       return;
     }
   } catch {}
+
   // Fallback: meme-api
   try {
     const { data } = await axios.get('https://meme-api.com/gimme', { timeout: 10000 });
     const url = data?.url;
     if (url) {
-      const resp = await axios.get(url, { responseType: 'arraybuffer', timeout: 20000 });
-      const buf = Buffer.from(resp.data);
-      await sock.sendMessage(getJid(msg), { image: buf, caption: `😂 *${data.title || 'Random Meme'}*\n\n> 🧠 _Nix ⚡_` }, { quoted: msg });
-      await reactNix(sock, msg, '✅');
+      await trySend(url, data.title || 'Random Meme');
+      await reactSuccess(sock, msg);
       return;
     }
   } catch {}
+
+  await reactFail(sock, msg);
   await sendNix(sock, msg, `❌ *Meme Failed*\n\n${greet(owner)} I couldn't fetch a meme right now.${nixFooter()}`);
 }
 
@@ -153,7 +205,7 @@ export async function lastMedia(sock, msg, args) {
   const owner = getOwnerName();
   const num = args[0];
   const targetJid = num ? `${num.replace(/[^0-9]/g, '')}@s.whatsapp.net` : getJid(msg);
-  await reactNix(sock, msg, '📸');
+  await reactCustom(sock, msg, '📸');
   try {
     const msgs = await sock.fetchMessagesFromWA?.(targetJid, 20) || [];
     const mediaMsg = msgs.find(m => m.message?.imageMessage || m.message?.videoMessage || m.message?.audioMessage || m.message?.documentMessage);
@@ -174,7 +226,7 @@ export async function mediaFrom(sock, msg, args) {
     await sendNix(sock, msg, `📸 *Media From Contact*\n\nUsage: \`.nix mediafrom <number>\`\nExample: \`.nix mediafrom 2349012345678\`${nixFooter()}`);
     return;
   }
-  await reactNix(sock, msg, '📸');
+  await reactCustom(sock, msg, '📸');
   await sendNix(sock, msg, `📸 *Media From ${num}*\n\n${greet(owner)} fetching media received from \`${num}\`...\n\n_This feature requires message history access. Open the chat with this contact to view media._${nixFooter()}`);
 }
 
@@ -185,6 +237,6 @@ export async function mediaSent(sock, msg, args) {
     await sendNix(sock, msg, `📤 *Media Sent to Contact*\n\nUsage: \`.nix mediasent <number>\`\nExample: \`.nix mediasent 2349012345678\`${nixFooter()}`);
     return;
   }
-  await reactNix(sock, msg, '📤');
+  await reactCustom(sock, msg, '📤');
   await sendNix(sock, msg, `📤 *Media Sent to ${num}*\n\n${greet(owner)} fetching media you sent to \`${num}\`...\n\n_This feature requires message history access. Open the chat with this contact to view sent media._${nixFooter()}`);
 }

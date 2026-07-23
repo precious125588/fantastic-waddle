@@ -15,6 +15,17 @@ import path from "path";
 import os from "os";
 import { fileURLToPath } from "url";
 import { createRequire } from "module";
+import {
+  sendVideo,
+  sendAudio,
+  sendImage,
+  sendDocument,
+} from "../handlers/mediaHandler.js";
+import {
+  reactDownload,
+  reactSuccess,
+  reactFail,
+} from "../handlers/reactionHandler.js";
 
 // Load @vreden/youtube_scraper (CommonJS) — same library used by .ytmp4/.ytmp3 commands
 let _ytdl = null;
@@ -1372,8 +1383,9 @@ export async function handleAutoDownload(sock, msg, body, mode, isOwner) {
   const platform = detectPlatform(url);
   if (!platform) return false;
 
-  try { await sock.sendMessage(msg.key.remoteJid, { react: { text: "⬇️", key: msg.key } }); } catch {}
+  await reactDownload(sock, msg);
 
+  const jid = msg.key.remoteJid;
   let tmpPath = null;
   try {
     const result = await resolveMediaUrl(url, platform);
@@ -1386,28 +1398,50 @@ export async function handleAutoDownload(sock, msg, body, mode, isOwner) {
       ? `${(downloaded.size / 1024 / 1024).toFixed(1)} MB`
       : `${(downloaded.size / 1024).toFixed(1)} KB`;
     const caption = `*${result.title || `Auto-downloaded from ${platform}`}*\n📦 ${sizeText}`;
+    const fileName = `${platform}_${Date.now()}.${downloaded.ext}`;
 
     if (downloaded.type === "video") {
-      try {
-        await sock.sendMessage(msg.key.remoteJid, { video: bytes, caption, mimetype: downloaded.mimetype, fileName: `${platform}_${Date.now()}.${downloaded.ext}` }, { quoted: msg });
-      } catch {
-        await sock.sendMessage(msg.key.remoteJid, { document: bytes, caption, mimetype: downloaded.mimetype, fileName: `${platform}_${Date.now()}.${downloaded.ext}` }, { quoted: msg });
+      // sendVideo auto-generates a jpeg thumbnail via mediaHandler
+      const sent = await sendVideo(sock, jid, bytes, {
+        caption,
+        mimetype: downloaded.mimetype,
+        quoted: msg,
+      });
+      if (!sent) {
+        await sendDocument(sock, jid, bytes, {
+          caption,
+          mimetype: downloaded.mimetype,
+          fileName,
+          quoted: msg,
+        });
       }
     } else if (downloaded.type === "audio") {
-      await sock.sendMessage(msg.key.remoteJid, { audio: bytes, mimetype: downloaded.mimetype || "audio/mpeg", ptt: false, fileName: `${platform}_${Date.now()}.${downloaded.ext}` }, { quoted: msg });
+      await sendAudio(sock, jid, bytes, {
+        mimetype: downloaded.mimetype || "audio/mpeg",
+        quoted: msg,
+      });
     } else if (downloaded.type === "image") {
-      await sock.sendMessage(msg.key.remoteJid, { image: bytes, caption, mimetype: downloaded.mimetype }, { quoted: msg });
+      await sendImage(sock, jid, bytes, {
+        caption,
+        mimetype: downloaded.mimetype,
+        quoted: msg,
+      });
     } else {
-      await sock.sendMessage(msg.key.remoteJid, { document: bytes, caption, mimetype: downloaded.mimetype || "application/octet-stream", fileName: `${platform}_${Date.now()}.${downloaded.ext}` }, { quoted: msg });
+      await sendDocument(sock, jid, bytes, {
+        caption,
+        mimetype: downloaded.mimetype || "application/octet-stream",
+        fileName,
+        quoted: msg,
+      });
     }
 
-    await sock.sendMessage(msg.key.remoteJid, { react: { text: "✅", key: msg.key } });
+    await reactSuccess(sock, msg);
     return true;
   } catch (e) {
     console.error(`[AutoDownloader] ${platform} failed:`, e.message);
     try {
-      await sock.sendMessage(msg.key.remoteJid, { react: { text: "❌", key: msg.key } });
-      await sock.sendMessage(msg.key.remoteJid, { text: `❌ Auto-download failed for ${platform}.\n_${e.message}_` }, { quoted: msg });
+      await reactFail(sock, msg);
+      await sock.sendMessage(jid, { text: `❌ Auto-download failed for ${platform}.\n_${e.message}_` }, { quoted: msg });
     } catch {}
     return true;
   } finally {
