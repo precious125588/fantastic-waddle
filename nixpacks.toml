@@ -17,11 +17,16 @@ nixPkgs = [
 ]
 
 [phases.install]
-# --ignore-scripts prevents the postinstall hook (fix_all.cjs) from running
-# a nested `npm install` during build — that nested call is what crashes npm
-# with "Exit handler never called!". The fix_all.cjs patcher runs at startup
-# anyway via: npm start -> node fix_all.cjs && node server.js
-cmds = ["npm install --no-audit --no-fund --loglevel=error --ignore-scripts"]
+# Step 1: install root deps without lifecycle hooks — prevents fix_all.cjs
+#         from spawning a nested npm install that crashes the parent npm process
+# Step 2: install mias/ bot dependencies separately (it has its own package.json)
+# Step 3: install @itsreimau/gktw into mias/ — tries npm registry first,
+#         falls back to GitHub source, gracefully skips if both unavailable
+cmds = [
+  "npm install --no-audit --no-fund --loglevel=error --ignore-scripts",
+  "cd mias && npm install --no-audit --no-fund --loglevel=error --ignore-scripts || true",
+  "cd mias && npm install @itsreimau/gktw --no-audit --no-fund --save-optional 2>/dev/null || npm install github:itsreimau/gktw --no-audit --no-fund --save-optional 2>/dev/null || echo '[nixpacks] gktw unavailable — Baileys fallback will be active'"
+]
 
 [start]
 cmd = "npm start"
