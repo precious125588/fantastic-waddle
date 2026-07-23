@@ -48,6 +48,7 @@ import {
 import { installHandlerGlobals, updateHandlerSock } from "./handlers/globals.js";
 import { setButtonMode, isButtonMode } from "./handlers/buttonHandler.js";
 import { isGktwAvailable } from "./handlers/gktwAdapter.js";
+import { sendMenu as sendMenuV2 } from "./handlers/menuHandler.js";
 // ── BUTTON MODE — wizard & interactive menu (new design) ──────────────────────
 import { handleWizardInput }   from "./handlers/wizardHandler.js";
 import {
@@ -6989,11 +6990,11 @@ cmd(["menu", "help", "commands", ".menu", "start"], { desc: "Show full menu", ca
       if (entry?.handler) { await entry.handler(sock, msg, []); return; }
     }
     if (explicitMenuMode === "list") {
-      await sendInteractiveListMenu(sock, msg, menuText, coverBuf);
+      await sendMenuV2(sock, jid, msg, { userName: senderName });
       return;
     }
     if (!explicitMenuMode && !!ownerS?.buttonsMode) {
-      await sendInteractiveListMenu(sock, msg, menuText, coverBuf);
+      await sendMenuV2(sock, jid, msg, { userName: senderName });
       return;
     }
   }
