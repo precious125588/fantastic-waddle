@@ -1,6 +1,4 @@
 # nixpacks.toml — Railway build configuration
-# Adds the system libraries required by the native canvas / @napi-rs/canvas
-# packages so npm install succeeds in the Railway build environment.
 
 [phases.setup]
 nixPkgs = [
@@ -19,8 +17,11 @@ nixPkgs = [
 ]
 
 [phases.install]
-# Use npm install instead of npm ci — more resilient for native module builds
-cmds = ["npm install --no-audit --no-fund --loglevel=error"]
+# --ignore-scripts prevents the postinstall hook (fix_all.cjs) from running
+# a nested `npm install` during build — that nested call is what crashes npm
+# with "Exit handler never called!". The fix_all.cjs patcher runs at startup
+# anyway via: npm start -> node fix_all.cjs && node server.js
+cmds = ["npm install --no-audit --no-fund --loglevel=error --ignore-scripts"]
 
 [start]
 cmd = "npm start"
