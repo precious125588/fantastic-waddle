@@ -4,6 +4,7 @@
  */
 
 import { nixDynamicFooter } from './personality.js';
+import { reactCustom } from '../handlers/reactionHandler.js';
 
 export async function typingOn(sock, jid) {
   try { await sock.sendPresenceUpdate('composing', jid); } catch {}
@@ -27,11 +28,9 @@ export async function sendNix(sock, msg, text) {
 }
 
 export async function reactNix(sock, msg, emoji) {
-  try {
-    await sock.sendMessage(msg.key.remoteJid, {
-      react: { text: emoji, key: msg.key }
-    });
-  } catch {}
+  // Delegate to the centralized reaction handler so every nix module reaction
+  // goes through the same pipeline as the rest of the bot.
+  try { await reactCustom(sock, msg, emoji); } catch {}
 }
 
 /**
