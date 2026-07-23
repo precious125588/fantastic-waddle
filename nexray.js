@@ -15,7 +15,7 @@
  *   // image endpoints → { type:'media', contentType:'image/png', buffer:Buffer }
  */
 
-const axios    = require('axios');
+const { httpClient: axios } = require('./mias/lib/engineAccess.cjs');
 const FormData = require('form-data');
 const fs       = require('fs');
 

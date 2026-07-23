@@ -65,6 +65,50 @@ mias/
 └── api.js                — API routing (ZeroAPI → Prexzy → Nexray fallback)
 ```
 
+## Shared infrastructure engines
+
+Reusable infrastructure lives under `mias/lib/engines/` and is intentionally
+isolated from command and handler logic. Existing commands do not need to
+change to use these modules.
+
+- `httpClient.cjs` — shared Axios client with URL validation, timeouts,
+  response-size limits, exponential retries, and safe idempotent retry rules.
+- `fileDetection.cjs` — magic-byte media detection with image, video, audio,
+  GIF, sticker, PDF, archive, and document categories.
+- `mediaEngine.cjs` — normalized image/video/audio/voice-note/document/sticker
+  payloads plus sequential album sending.
+- `imageProcessing.cjs` — Jimp resize, crop, overlay, blur, watermark, and
+  bounded optimization helpers using the existing Jimp-compatible API.
+- `canvasEngine.cjs`, `svgEngine.cjs`, and `cardEngine.cjs` — lazy-loaded
+  native renderers (`@napi-rs/canvas` first, `canvas` fallback) and reusable
+  hero, thumbnail, profile, music, rank, menu, welcome, goodbye, dashboard,
+  and AI card builders.
+- `linkPreview.cjs`, `stickerEngine.cjs`, and `speedTest.cjs` — reusable
+  metadata, sticker, and network measurement helpers.
+- `mias/lib/dev/moduleWatcher.mjs` — development-only chokidar watcher.
+  Production startup does not load it.
+- `mias/lib/engineRegistry.cjs` — singleton registry that initializes the
+  reusable engines once, exposes stable aliases (`graphics`, `preview`, `file`,
+  and `speed`), reports isolated engine failures, and records GKTW/Baileys
+  fallback status.
+
+The engine modules use CommonJS to remain compatible with the root CJS runtime
+and are loaded lazily where native dependencies are involved. This keeps
+pairing, sessions, Baileys, GKTW fallback behavior, and existing commands
+independent of optional infrastructure.
+
+Handlers expose the registry through `getEngineRegistry()`, `getEngine()`, and
+`engineStatus()`. CJS modules can use the same services through
+`mias/handlers/bridge.cjs` (`MIAS.engines`, `MIAS.getEngine()`, and
+`MIAS.engineStatus()`).
+
+Command/API compatibility modules use `mias/lib/engineAccess.cjs` or
+`mias/lib/engineAccess.js`. These preserve the existing Axios, Jimp, and
+File Type call signatures while routing them through the registered engines.
+The protected `case.js` command file, pairing boundary, and protected
+`mias/index.js` startup compatibility shim retain their direct imports
+intentionally; new and unprotected command/API modules use the registry.
+
 ## ESM/CJS Interoperability
 
 The project has two contexts:

@@ -6,7 +6,7 @@ const fsSync = require('fs');
 const path = require('path');
 const chalk = require('chalk');
 const os = require('os');
-const axios = require('axios');
+const { httpClient: axios } = require('./mias/lib/engineAccess.cjs');
 const { BOT_TOKEN } = require('./nexstore/token');
 const { autoLoadPairs } = require('./autoload');
 
