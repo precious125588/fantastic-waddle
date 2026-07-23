@@ -1,5 +1,5 @@
 /**
- * MIAS — GKTW Adapter Layer  v3
+ * MIAS — GKTW Adapter Layer  v4
  *
  * ════════════════════════════════════════════════════════════════
  *  Architecture:
@@ -18,16 +18,25 @@
  *
  * ONLY Handlers/Adapters may import this file.
  * Commands must NEVER import this directly.
+ *
+ * v4 Changes:
+ *  - Broader GKTW function detection (sendHeroCard, sendCarousel, sendList)
+ *  - gktwVersion() — expose installed GKTW version string
+ *  - generateContextInfo() — build contextInfo helper
+ *  - generateExternalAdReply() — build externalAdReply helper
+ *  - Improved sendInteractiveMessage fallback chain
+ *  - Safer lazy-load with detailed error capture
  */
 
 // ─── Lazy singletons ──────────────────────────────────────────────────────────
-let _baileys = null;
-let _gktw = null;
+let _baileys      = null;
+let _gktw         = null;
 let _gktwAvailable = null; // null = unchecked, true/false = final result
+let _gktwLoadErr  = null;  // stores the load error for diagnostics
 
 // ─── Internal loader helpers ──────────────────────────────────────────────────
 
-async function getBaileys() {
+export async function getBaileys() {
   if (!_baileys) {
     _baileys = await import("@whiskeysockets/baileys");
   }
@@ -38,16 +47,24 @@ async function getGktw() {
   if (_gktwAvailable === null) {
     try {
       _gktw = await import("@itsreimau/gktw");
-      _gktwAvailable =
-        typeof _gktw?.sendInteractive === "function" ||
-        typeof _gktw?.default?.sendInteractive === "function";
-      if (!_gktwAvailable) {
+      // Verify at least one known GKTW function exists
+      const mod = _gktw?.default || _gktw;
+      const hasAny = [
+        "sendInteractive", "sendHeroCard", "sendCarousel",
+        "sendList", "createInteractiveMessage",
+      ].some(fn => typeof mod?.[fn] === "function" || typeof _gktw?.[fn] === "function");
+
+      if (hasAny) {
+        _gktwAvailable = true;
+      } else {
         _gktw = null;
         _gktwAvailable = false;
+        _gktwLoadErr = new Error("GKTW package loaded but no expected functions found");
       }
-    } catch {
+    } catch (err) {
       _gktwAvailable = false;
       _gktw = null;
+      _gktwLoadErr = err;
     }
   }
   return _gktw;
@@ -71,7 +88,37 @@ export async function baileysModule() {
   return getBaileys();
 }
 
-// ─── Proto helper ──────────────────────────────────────────────────────────────
+/**
+ * Returns the installed GKTW version string, or null if unavailable.
+ * @returns {Promise<string|null>}
+ */
+export async function gktwVersion() {
+  if (!(await isGktwAvailable())) return null;
+  try {
+    const mod = _gktw?.default || _gktw;
+    if (mod?.version) return String(mod.version);
+    // Try reading package.json
+    const pkg = await import("@itsreimau/gktw/package.json", { assert: { type: "json" } })
+      .catch(() => null);
+    return pkg?.default?.version || pkg?.version || "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
+/**
+ * Return diagnostics about adapter state.
+ * @returns {object}
+ */
+export function adapterDiagnostics() {
+  return {
+    gktwAvailable: _gktwAvailable,
+    gktwLoadError: _gktwLoadErr?.message || null,
+    baileysLoaded: !!_baileys,
+  };
+}
+
+// ─── Proto helper ─────────────────────────────────────────────────────────────
 
 export async function getProto() {
   const B = await getBaileys();
@@ -85,11 +132,7 @@ export async function jidNormalizedUser(jid) {
   return B.jidNormalizedUser ? B.jidNormalizedUser(jid) : jid;
 }
 
-/**
- * Check if a JID is a newsletter / channel JID.
- * @param {string} jid
- * @returns {boolean}
- */
+/** Check if a JID is a newsletter / channel JID. */
 export async function isJidNewsletter(jid) {
   try {
     const B = await getBaileys();
@@ -98,32 +141,22 @@ export async function isJidNewsletter(jid) {
   return String(jid || "").endsWith("@newsletter");
 }
 
-/**
- * Check if a JID is a group JID.
- * @param {string} jid
- * @returns {boolean}
- */
+/** Check if a JID is a group JID. */
 export function isJidGroup(jid) {
   return String(jid || "").endsWith("@g.us");
 }
 
-/**
- * Check if a JID is a user JID.
- * @param {string} jid
- * @returns {boolean}
- */
+/** Check if a JID is a user JID. */
 export function isJidUser(jid) {
   return String(jid || "").endsWith("@s.whatsapp.net");
 }
 
-// ─── generateWAMessageFromContent ────────────────────────────────────────────
+// ─── Message generation helpers ───────────────────────────────────────────────
 
 export async function generateWAMessageFromContent(jid, content, options) {
   const B = await getBaileys();
   return B.generateWAMessageFromContent(jid, content, options);
 }
-
-// ─── generateWAMessage ────────────────────────────────────────────────────────
 
 export async function generateWAMessage(jid, content, options) {
   const B = await getBaileys();
@@ -147,26 +180,23 @@ export async function prepareWAMessageMedia(content, options) {
 // ─── getContentType ───────────────────────────────────────────────────────────
 
 export async function getContentType(message) {
-  const B = await getBaileys();
-  if (typeof B.getContentType === "function") return B.getContentType(message);
-  // Fallback: first key that isn't __type or server/client fields
-  const skip = new Set(["senderKeyDistributionMessage", "messageContextInfo"]);
-  const key = Object.keys(message || {}).find(k => !skip.has(k));
-  return key || null;
+  try {
+    const B = await getBaileys();
+    if (typeof B.getContentType === "function") return B.getContentType(message);
+  } catch {}
+  // Manual fallback
+  const keys = Object.keys(message || {});
+  return keys.find(k => !["senderKeyDistributionMessage", "messageContextInfo"].includes(k)) || null;
 }
 
-// ─── Group metadata ───────────────────────────────────────────────────────────
+// ─── Group helpers ────────────────────────────────────────────────────────────
 
-/**
- * Fetch group metadata for a group JID.
- * @param {object} sock
- * @param {string} jid
- * @returns {Promise<object|null>}
- */
 export async function getGroupMetadata(sock, jid) {
   try {
-    if (typeof sock.groupMetadata === "function") {
-      return await sock.groupMetadata(jid);
+    if (typeof sock.groupMetadata === "function") return await sock.groupMetadata(jid);
+    if (typeof sock.groupFetchAllParticipating === "function") {
+      const all = await sock.groupFetchAllParticipating();
+      return all?.[jid] || null;
     }
   } catch (err) {
     console.error("[getGroupMetadata] Error:", err?.message);
@@ -174,11 +204,6 @@ export async function getGroupMetadata(sock, jid) {
   return null;
 }
 
-/**
- * Fetch all groups the bot is participating in.
- * @param {object} sock
- * @returns {Promise<object>}
- */
 export async function groupFetchAllParticipating(sock) {
   try {
     if (typeof sock.groupFetchAllParticipating === "function") {
@@ -190,27 +215,14 @@ export async function groupFetchAllParticipating(sock) {
   return {};
 }
 
-// ─── Poll message ──────────────────────────────────────────────────────────────
+// ─── Poll ─────────────────────────────────────────────────────────────────────
 
-/**
- * Send a poll message.
- *
- * @param {object}   sock
- * @param {string}   jid
- * @param {string}   question      - Poll question text
- * @param {string[]} options       - Array of answer choices (2–12)
- * @param {object}   [opts]
- * @param {number}   [opts.selectableCount]  - Max selectable options (default 1)
- * @param {object}   [opts.quoted]
- * @returns {Promise<object|null>}
- */
 export async function sendPoll(sock, jid, question, options, opts = {}) {
   try {
     if (!question || !Array.isArray(options) || options.length < 2) {
       throw new Error("Poll requires a question and at least 2 options");
     }
     const pollOptions = options.slice(0, 12).map(o => String(o).trim()).filter(Boolean);
-
     const content = {
       poll: {
         name: String(question).trim(),
@@ -218,10 +230,8 @@ export async function sendPoll(sock, jid, question, options, opts = {}) {
         selectableCount: opts.selectableCount ?? 1,
       },
     };
-
     const sendOpts = {};
     if (opts.quoted) sendOpts.quoted = opts.quoted;
-
     return await sock.sendMessage(jid, content, sendOpts);
   } catch (err) {
     console.error("[sendPoll] Error:", err?.message);
@@ -231,67 +241,101 @@ export async function sendPoll(sock, jid, question, options, opts = {}) {
 
 // ─── Smart send (GKTW-first, Baileys fallback) ────────────────────────────────
 
-/**
- * Send a message using GKTW when available, falling back to Baileys.
- *
- * @param {object} sock
- * @param {string} jid
- * @param {object} content
- * @param {object} [opts]
- * @returns {Promise<object|null>}
- */
 export async function smartSend(sock, jid, content, opts = {}) {
   try {
     const gktw = await getGktw();
     if (gktw) {
-      const fn = gktw.sendMessage || gktw.default?.sendMessage;
+      const mod = gktw.default || gktw;
+      const fn  = mod?.sendMessage || gktw.sendMessage;
       if (typeof fn === "function") {
         return await fn(sock, jid, content, opts);
       }
     }
     return await sock.sendMessage(jid, content, opts);
-  } catch (err) {
-    // Final fallback
-    try {
-      return await sock.sendMessage(jid, content, opts);
-    } catch (innerErr) {
+  } catch {
+    try { return await sock.sendMessage(jid, content, opts); } catch (innerErr) {
       console.error("[smartSend] Error:", innerErr?.message);
       return null;
     }
   }
 }
 
+// ─── Context info builder ─────────────────────────────────────────────────────
+
+/**
+ * Build a contextInfo object for enriched messages.
+ *
+ * @param {object} opts
+ * @param {string} [opts.title]
+ * @param {string} [opts.body]
+ * @param {string} [opts.sourceUrl]
+ * @param {Buffer} [opts.thumbnail]
+ * @param {number} [opts.mediaType=1]   - 1=image, 2=video
+ * @param {boolean} [opts.renderLarger=true]
+ * @returns {object}
+ */
+export function generateContextInfo(opts = {}) {
+  const info = {};
+  if (opts.title || opts.body || opts.sourceUrl || opts.thumbnail) {
+    info.externalAdReply = {
+      title:                opts.title       || "",
+      body:                 opts.body        || "",
+      sourceUrl:            opts.sourceUrl   || "https://whatsapp.com",
+      mediaType:            opts.mediaType   ?? 1,
+      thumbnail:            opts.thumbnail   || null,
+      renderLargerThumbnail: opts.renderLarger !== false,
+      showAdAttribution:    false,
+    };
+  }
+  if (opts.forwardingScore !== undefined) {
+    info.forwardingScore = opts.forwardingScore;
+    info.isForwarded     = opts.forwardingScore > 0;
+  }
+  if (opts.mentionedJid?.length) {
+    info.mentionedJid = opts.mentionedJid;
+  }
+  return info;
+}
+
+/**
+ * Build an externalAdReply contextInfo block.
+ * Alias with a cleaner name.
+ */
+export function generateExternalAdReply(opts = {}) {
+  return {
+    externalAdReply: {
+      title:                opts.title       || "",
+      body:                 opts.body        || "",
+      sourceUrl:            opts.sourceUrl   || "https://whatsapp.com",
+      mediaType:            opts.mediaType   ?? 1,
+      thumbnail:            opts.thumbnail   || null,
+      renderLargerThumbnail: opts.renderLarger !== false,
+      showAdAttribution:    false,
+    },
+  };
+}
+
 // ─── Interactive message (native-flow) ────────────────────────────────────────
 
 /**
  * Send an interactive/native-flow message.
- * Routes through GKTW when available; falls back to Baileys proto; then plain text.
- *
- * @param {object} sock
- * @param {string} jid
- * @param {object} params
- * @param {string} [params.body]
- * @param {string} [params.footer]
- * @param {string} [params.header]
- * @param {object[]} [params.buttons]
- * @param {object} [params.contextInfo]
- * @param {object} [params.quoted]
- * @returns {Promise<object|null>}
+ * Routes: GKTW → Baileys proto → plain text fallback.
  */
 export async function sendInteractiveMessage(sock, jid, params) {
   const {
-    body = "",
-    footer = "",
-    header = "",
-    buttons = [],
+    body       = "",
+    footer     = "",
+    header     = "",
+    buttons    = [],
     contextInfo = {},
-    quoted = null,
+    quoted     = null,
   } = params;
 
   // ── GKTW path ──────────────────────────────────────────────────────────────
   const gktw = await getGktw();
   if (gktw) {
-    const fn = gktw.sendInteractive || gktw.default?.sendInteractive;
+    const mod = gktw.default || gktw;
+    const fn  = mod?.sendInteractive || gktw.sendInteractive;
     if (typeof fn === "function") {
       try {
         return await fn(sock, jid, { body, footer, header, buttons, contextInfo, quoted });
@@ -305,75 +349,65 @@ export async function sendInteractiveMessage(sock, jid, params) {
   try {
     const B = await getBaileys();
     const proto = B.proto;
-    const NF = proto.Message.InteractiveMessage.NativeFlowMessage.NativeFlowButton;
+    const NF    = proto?.Message?.InteractiveMessage?.NativeFlowMessage?.NativeFlowButton;
 
-    const builtButtons = buttons.map((btn, i) => {
+    if (!NF) throw new Error("NativeFlowButton proto not available");
+
+    const builtButtons = await Promise.all(buttons.map(async (btn, i) => {
       if (btn.url || btn.type === "url") {
-        return NF.create({
-          name: "cta_url",
-          buttonParamsJson: JSON.stringify({
-            display_text: btn.text || `Link ${i + 1}`,
-            url: btn.url || "",
-            merchant_url: btn.url || "",
-          }),
-        });
+        return NF.create({ name: "cta_url", buttonParamsJson: JSON.stringify({
+          display_text: btn.text || `Link ${i + 1}`,
+          url:          btn.url || "",
+          merchant_url: btn.url || "",
+        })});
       }
       if (btn.copyCode || btn.type === "copy") {
-        return NF.create({
-          name: "cta_copy",
-          buttonParamsJson: JSON.stringify({
-            display_text: btn.text || "Copy",
-            copy_code: btn.copyCode || btn.id || "",
-          }),
-        });
+        return NF.create({ name: "cta_copy", buttonParamsJson: JSON.stringify({
+          display_text: btn.text || "Copy",
+          copy_code:    btn.copyCode || btn.id || "",
+        })});
       }
       if (btn.phone || btn.type === "call") {
-        return NF.create({
-          name: "cta_call",
-          buttonParamsJson: JSON.stringify({
-            display_text: btn.text || "Call",
-            phone_number: btn.phone || "",
-          }),
-        });
+        return NF.create({ name: "cta_call", buttonParamsJson: JSON.stringify({
+          display_text: btn.text || "Call",
+          phone_number: btn.phone || "",
+        })});
       }
-      return NF.create({
-        name: "quick_reply",
-        buttonParamsJson: JSON.stringify({
-          display_text: btn.text || `Option ${i + 1}`,
-          id: btn.id || String(i),
-        }),
-      });
-    });
+      return NF.create({ name: "quick_reply", buttonParamsJson: JSON.stringify({
+        display_text: btn.text || `Option ${i + 1}`,
+        id:           btn.id   || String(i),
+      })});
+    }));
 
-    const msgContent = proto.Message.create({
-      interactiveMessage: proto.Message.InteractiveMessage.create({
-        body: proto.Message.InteractiveMessage.Body.create({ text: body }),
-        footer: proto.Message.InteractiveMessage.Footer.create({ text: footer }),
-        header: proto.Message.InteractiveMessage.Header.create({
-          title: header,
-          hasMediaAttachment: false,
-        }),
-        contextInfo: Object.keys(contextInfo).length ? contextInfo : undefined,
-        nativeFlowMessage: proto.Message.InteractiveMessage.NativeFlowMessage.create({
-          buttons: builtButtons,
-          messageParamsJson: "{}",
-          messageVersion: 1,
-        }),
+    const interactiveMsg = proto.Message.InteractiveMessage.create({
+      body:    proto.Message.InteractiveMessage.Body.create({ text: body }),
+      footer:  proto.Message.InteractiveMessage.Footer.create({ text: footer }),
+      header:  proto.Message.InteractiveMessage.Header.create({
+        title:      header,
+        hasMediaAttachment: false,
+      }),
+      nativeFlowMessage: proto.Message.InteractiveMessage.NativeFlowMessage.create({
+        buttons: builtButtons,
       }),
     });
 
-    const wam = await B.generateWAMessageFromContent(jid, msgContent, {
-      userJid: sock.user?.id,
-      quoted: quoted || undefined,
+    const fullContent = proto.Message.create({ interactiveMessage: interactiveMsg });
+    const sendOpts = {};
+    if (quoted) sendOpts.quoted = quoted;
+    if (Object.keys(contextInfo).length) sendOpts.contextInfo = contextInfo;
+
+    const generated = await B.generateWAMessageFromContent(jid, fullContent, {
+      userJid:       sock.user?.id,
+      ...sendOpts,
     });
-    await sock.relayMessage(jid, wam.message, { messageId: wam.key.id });
-    return wam;
+
+    return await sock.relayMessage(jid, generated.message, { messageId: generated.key.id });
   } catch {
-    // ── Plain-text fallback ──────────────────────────────────────────────────
+    // ── Plain-text fallback ────────────────────────────────────────────────────
     const btnLines = buttons.map((b, i) => `[${i + 1}] ${b.text}`).join("\n");
     const text = [
       header ? `*${header}*` : null,
-      body,
+      body   || null,
       btnLines || null,
       footer ? `_${footer}_` : null,
     ].filter(Boolean).join("\n\n");
@@ -384,44 +418,34 @@ export async function sendInteractiveMessage(sock, jid, params) {
   }
 }
 
-// ─── fetchLatestBaileysVersion ────────────────────────────────────────────────
+// ─── Baileys version ──────────────────────────────────────────────────────────
 
 export async function fetchLatestBaileysVersion() {
   try {
     const B = await getBaileys();
-    if (typeof B.fetchLatestBaileysVersion === "function") {
-      return B.fetchLatestBaileysVersion();
-    }
-    if (typeof B.fetchLatestWaWebVersion === "function") {
-      return B.fetchLatestWaWebVersion();
-    }
+    if (typeof B.fetchLatestBaileysVersion === "function") return B.fetchLatestBaileysVersion();
+    if (typeof B.fetchLatestWaWebVersion === "function") return B.fetchLatestWaWebVersion();
   } catch {}
   return { version: [2, 3000, 1017531287], isLatest: false };
 }
 
-// ─── makeInMemoryStore ────────────────────────────────────────────────────────
+// ─── Store / socket helpers ───────────────────────────────────────────────────
 
 export async function makeInMemoryStore(opts) {
   const B = await getBaileys();
-  if (typeof B.makeInMemoryStore === "function") {
-    return B.makeInMemoryStore(opts);
-  }
+  if (typeof B.makeInMemoryStore === "function") return B.makeInMemoryStore(opts);
   return null;
 }
-
-// ─── useMultiFileAuthState ────────────────────────────────────────────────────
 
 export async function useMultiFileAuthState(folder) {
   const B = await getBaileys();
   return B.useMultiFileAuthState(folder);
 }
 
-// ─── makeWASocket ─────────────────────────────────────────────────────────────
-
 export async function makeWASocket(config) {
   const B = await getBaileys();
   return B.makeWASocket(config);
 }
 
-// ─── Export raw Baileys getters for adapters that need them ───────────────────
-export { getBaileys, getGktw };
+// ─── Export raw loaders for adapters that need them ──────────────────────────
+export { getGktw };

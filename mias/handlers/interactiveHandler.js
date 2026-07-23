@@ -1,9 +1,16 @@
 /**
- * MIAS — Interactive Handler  v3
+ * MIAS — Interactive Handler  v4
  *
  * Centralized interactive message building.
  * Routes through GKTW when available, falls back to Baileys proto,
  * then falls back to plain text — always degrades gracefully.
+ *
+ * v4 improvements:
+ *  - Uses capabilityHandler for feature detection before attempting each path
+ *  - Emits beforeInteractive / afterInteractive event hooks
+ *  - Hero card image/video thumbnail auto-generation
+ *  - sendCarousel with per-card button support
+ *  - Cleaner proto button builder (shared with gktwAdapter)
  *
  * Supported:
  *  - Quick-reply buttons
@@ -25,20 +32,23 @@ import {
   getBaileys,
   isGktwAvailable,
   sendPoll as _adapterSendPoll,
+  getGktw,
 } from "./gktwAdapter.js";
-import { sendText } from "./messageHandler.js";
-import { sendImage, sendVideo } from "./mediaHandler.js";
+import { sendText }              from "./messageHandler.js";
+import { sendImage, sendVideo }  from "./mediaHandler.js";
+import { emitHook }              from "./eventHooks.js";
+import { getCapabilities }       from "./capabilityHandler.js";
 
 // ─── JSDoc types ─────────────────────────────────────────────────────────────
 
 /**
  * @typedef {object} Button
- * @property {string}  text      - Display label
- * @property {string}  [id]      - quick_reply payload
- * @property {string}  [url]     - URL button destination
- * @property {string}  [copyCode]- Text to copy on tap
- * @property {string}  [phone]   - Phone number for call button
- * @property {string}  [type]    - "url" | "copy" | "call" (auto-detected)
+ * @property {string}  text       - Display label
+ * @property {string}  [id]       - quick_reply payload
+ * @property {string}  [url]      - URL button destination
+ * @property {string}  [copyCode] - Text to copy on tap
+ * @property {string}  [phone]    - Phone number for call button
+ * @property {string}  [type]     - "url"|"copy"|"call" (auto-detected)
  */
 
 /**
@@ -58,53 +68,42 @@ import { sendImage, sendVideo } from "./mediaHandler.js";
 
 async function _protoBtn(btn, i) {
   const proto = await getProto();
-  const NF = proto.Message.InteractiveMessage.NativeFlowMessage.NativeFlowButton;
+  if (!proto) return null;
+  const NF = proto?.Message?.InteractiveMessage?.NativeFlowMessage?.NativeFlowButton;
+  if (!NF) return null;
 
   if (btn.url || btn.type === "url") {
-    return NF.create({
-      name: "cta_url",
-      buttonParamsJson: JSON.stringify({
-        display_text: btn.text || `Link ${i + 1}`,
-        url: btn.url || "",
-        merchant_url: btn.url || "",
-      }),
-    });
+    return NF.create({ name: "cta_url", buttonParamsJson: JSON.stringify({
+      display_text: btn.text || `Link ${i + 1}`,
+      url:          btn.url  || "",
+      merchant_url: btn.url  || "",
+    })});
   }
   if (btn.copyCode || btn.type === "copy") {
-    return NF.create({
-      name: "cta_copy",
-      buttonParamsJson: JSON.stringify({
-        display_text: btn.text || "Copy",
-        copy_code: btn.copyCode || btn.id || "",
-      }),
-    });
+    return NF.create({ name: "cta_copy", buttonParamsJson: JSON.stringify({
+      display_text: btn.text || "Copy",
+      copy_code:    btn.copyCode || btn.id || "",
+    })});
   }
   if (btn.phone || btn.type === "call") {
-    return NF.create({
-      name: "cta_call",
-      buttonParamsJson: JSON.stringify({
-        display_text: btn.text || "Call",
-        phone_number: btn.phone || "",
-      }),
-    });
+    return NF.create({ name: "cta_call", buttonParamsJson: JSON.stringify({
+      display_text: btn.text || "Call",
+      phone_number: btn.phone || "",
+    })});
   }
-  // Default: quick_reply
-  return NF.create({
-    name: "quick_reply",
-    buttonParamsJson: JSON.stringify({
-      display_text: btn.text || `Option ${i + 1}`,
-      id: btn.id || String(i),
-    }),
-  });
+  return NF.create({ name: "quick_reply", buttonParamsJson: JSON.stringify({
+    display_text: btn.text || `Option ${i + 1}`,
+    id:           btn.id   || String(i),
+  })});
 }
 
-// ─── Internal: plain-text fallback renderer ───────────────────────────────────
+// ─── Internal: plain-text fallback ───────────────────────────────────────────
 
 function _textFallback(header, body, buttons, footer) {
   const btnLines = (buttons || []).map((b, i) => `[${i + 1}] ${b.text}`).join("\n");
   return [
     header ? `*${header}*` : null,
-    body || null,
+    body   || null,
     btnLines || null,
     footer ? `_${footer}_` : null,
   ].filter(Boolean).join("\n\n");
@@ -128,27 +127,44 @@ function _textFallback(header, body, buttons, footer) {
  * @returns {Promise<object|null>}
  */
 export async function sendButtons(sock, jid, body, buttons, opts = {}) {
+  await emitHook("beforeInteractive", { type: "buttons", jid, body, buttons });
+  let result = null;
   try {
-    return await sendInteractiveMessage(sock, jid, {
+    result = await sendInteractiveMessage(sock, jid, {
       body,
-      footer: opts.footer || "",
-      header: opts.header || "",
-      buttons: buttons || [],
+      footer:      opts.footer      || "",
+      header:      opts.header      || "",
+      buttons:     buttons          || [],
       contextInfo: opts.contextInfo || {},
-      quoted: opts.quoted || null,
+      quoted:      opts.quoted      || null,
     });
-  } catch (err) {
-    // Final fallback: plain text
+  } catch {
     const text = _textFallback(opts.header, body, buttons, opts.footer);
-    return sendText(sock, jid, text, { quoted: opts.quoted });
+    const sendOpts = {};
+    if (opts.quoted) sendOpts.quoted = opts.quoted;
+    result = await sendText(sock, jid, text, sendOpts);
   }
+  await emitHook("afterInteractive", { type: "buttons", jid, result });
+  return result;
 }
 
 /**
- * Re-export for direct interactive sending (same as sendButtons but generic name).
+ * Alias for sendButtons with explicit name.
  */
-export async function sendInteractive(sock, jid, params) {
-  return sendInteractiveMessage(sock, jid, params);
+export const sendInteractive = sendButtons;
+
+/**
+ * Send URL-only buttons (convenience wrapper).
+ *
+ * @param {object} sock
+ * @param {string} jid
+ * @param {string} body
+ * @param {Array<{text:string, url:string}>} links
+ * @param {object} [opts]
+ */
+export async function sendUrlButtons(sock, jid, body, links, opts = {}) {
+  const buttons = (links || []).map(l => ({ text: l.text, url: l.url, type: "url" }));
+  return sendButtons(sock, jid, body, buttons, opts);
 }
 
 /**
@@ -159,228 +175,236 @@ export async function sendInteractive(sock, jid, params) {
  * @param {string}        body
  * @param {ListSection[]} sections
  * @param {object}        [opts]
+ * @param {string}        [opts.buttonText]  - Label on the list-open button
  * @param {string}        [opts.title]
  * @param {string}        [opts.footer]
- * @param {string}        [opts.buttonText]  - List open button label
  * @param {object}        [opts.quoted]
  * @returns {Promise<object|null>}
  */
 export async function sendList(sock, jid, body, sections, opts = {}) {
-  // Build list message via Baileys proto
+  await emitHook("beforeInteractive", { type: "list", jid, sections });
+  let result = null;
+
   try {
-    const B = await getBaileys();
-    const proto = B.proto;
+    const gktw = await getGktw();
+    if (gktw) {
+      const mod = gktw.default || gktw;
+      const fn  = mod?.sendList || gktw.sendList;
+      if (typeof fn === "function") {
+        result = await fn(sock, jid, {
+          body,
+          buttonText: opts.buttonText || "Open",
+          title:      opts.title      || "",
+          footer:     opts.footer     || "",
+          sections,
+          quoted:     opts.quoted     || null,
+        });
+        await emitHook("afterInteractive", { type: "list", jid, result });
+        return result;
+      }
+    }
 
-    const protoSections = (sections || []).map(s =>
-      proto.Message.ListMessage.Section.create({
-        title: s.title || "",
-        rows: (s.rows || []).map(r =>
-          proto.Message.ListMessage.Row.create({
-            rowId: r.id || "",
-            title: r.title || "",
-            description: r.description || "",
-          })
-        ),
-      })
-    );
-
-    const listMsg = proto.Message.create({
-      listMessage: proto.Message.ListMessage.create({
-        title: opts.title || "",
-        description: body || "",
-        buttonText: opts.buttonText || "Options",
-        listType: proto.Message.ListMessage.ListType.SINGLE_SELECT,
-        footer: opts.footer || "",
-        sections: protoSections,
-      }),
-    });
-
-    const wam = await B.generateWAMessageFromContent(jid, listMsg, {
-      userJid: sock.user?.id,
-      quoted: opts.quoted || undefined,
-    });
-    await sock.relayMessage(jid, wam.message, { messageId: wam.key.id });
-    return wam;
-  } catch {
-    // Fallback: plain text with numbered options
-    const allRows = (sections || []).flatMap(s => s.rows || []);
-    const lines = allRows.map((r, i) => `[${i + 1}] ${r.title}${r.description ? ` — ${r.description}` : ""}`).join("\n");
-    const text = [opts.title ? `*${opts.title}*` : null, body, lines, opts.footer ? `_${opts.footer}_` : null]
-      .filter(Boolean).join("\n\n");
-    return sendText(sock, jid, text, { quoted: opts.quoted });
-  }
-}
-
-/**
- * Send a URL button message.
- *
- * @param {object}   sock
- * @param {string}   jid
- * @param {string}   body
- * @param {object[]} urlButtons  - [{text, url}]
- * @param {object}   [opts]
- * @returns {Promise<object|null>}
- */
-export async function sendUrlButtons(sock, jid, body, urlButtons, opts = {}) {
-  const buttons = (urlButtons || []).map(b => ({
-    text: b.text || b.label || "Open",
-    url: b.url || "",
-    type: "url",
-  }));
-  return sendButtons(sock, jid, body, buttons, opts);
-}
-
-/**
- * Send a hero card — a message with an image/video header and action buttons.
- *
- * @param {object} sock
- * @param {string} jid
- * @param {object} card
- * @param {string}       [card.body]
- * @param {string}       [card.header]      - Text header (if no image/video)
- * @param {string}       [card.footer]
- * @param {Buffer|string}[card.image]       - Image buffer or URL
- * @param {Buffer|string}[card.video]       - Video buffer or URL
- * @param {Button[]}     [card.buttons]
- * @param {object}       [card.contextInfo]
- * @param {object}       [opts]
- * @param {object}       [opts.quoted]
- * @returns {Promise<object|null>}
- */
-export async function sendHeroCard(sock, jid, card, opts = {}) {
-  const { body = "", header = "", footer = "", buttons = [], contextInfo = {} } = card;
-  const cardQuoted = opts.quoted || card.quoted || null;
-
-  // If image provided, send image with contextInfo buttons
-  if (card.image) {
+    // Baileys proto list fallback
     try {
-      const { fetchBuffer } = await import("./uploadHandler.js");
-      const imgBuf = Buffer.isBuffer(card.image)
-        ? card.image
-        : await fetchBuffer(card.image);
-
-      // Build contextInfo with forwarding score 0 to avoid "forwarded" tag
-      const ctx = {
-        ...contextInfo,
-        externalAdReply: {
-          title: header || body,
-          body: footer || "",
-          mediaType: 1,
-          renderLargerThumbnail: true,
-          showAdAttribution: false,
-          thumbnail: imgBuf.slice(0, Math.min(imgBuf.length, 65536)),
+      const B     = await getBaileys();
+      const proto = B.proto;
+      const rows  = sections.flatMap(s =>
+        (s.rows || []).map(r => proto.Message.ListMessage.Row.create({
+          rowId:       r.id,
+          title:       r.title,
+          description: r.description || "",
+        }))
+      );
+      const listMsg = {
+        list: {
+          title:       opts.title      || "",
+          description: body,
+          buttonText:  opts.buttonText || "Open",
+          listType:    proto.Message.ListMessage.ListType.SINGLE_SELECT,
+          sections:    sections.map(s => ({
+            title: s.title,
+            rows:  (s.rows || []).map(r => ({
+              rowId:       r.id,
+              title:       r.title,
+              description: r.description || "",
+            })),
+          })),
+          footer:      opts.footer || "",
         },
       };
+      const sendOpts = {};
+      if (opts.quoted) sendOpts.quoted = opts.quoted;
+      result = await sock.sendMessage(jid, listMsg, sendOpts);
+      await emitHook("afterInteractive", { type: "list", jid, result });
+      return result;
+    } catch {}
 
-      const imgOpts = {
-        caption: body,
-        contextInfo: ctx,
-        quoted: cardQuoted,
-      };
-      const result = await sendImage(sock, jid, imgBuf, imgOpts);
-      if (result) {
-        // Follow up with buttons if provided
-        if (buttons.length) {
-          await new Promise(r => setTimeout(r, 300));
-          await sendButtons(sock, jid, body, buttons, { footer, header, quoted: cardQuoted });
-        }
+    // Plain-text fallback
+    const allRows = sections.flatMap(s => s.rows || []);
+    const listText = allRows.map((r, i) => `[${i + 1}] ${r.title}${r.description ? " — " + r.description : ""}`).join("\n");
+    const text = [
+      opts.title ? `*${opts.title}*` : null,
+      body || null,
+      listText || null,
+      opts.footer ? `_${opts.footer}_` : null,
+    ].filter(Boolean).join("\n\n");
+
+    const sendOpts2 = {};
+    if (opts.quoted) sendOpts2.quoted = opts.quoted;
+    result = await sendText(sock, jid, text, sendOpts2);
+  } catch (err) {
+    console.error("[sendList] Error:", err?.message);
+  }
+
+  await emitHook("afterInteractive", { type: "list", jid, result });
+  return result;
+}
+
+/**
+ * Send a hero card (image/video/text header + body + buttons).
+ * Falls back through each layer gracefully.
+ *
+ * @param {object}        sock
+ * @param {string}        jid
+ * @param {object}        params
+ * @param {Buffer|string} [params.image]   - Header image
+ * @param {Buffer|string} [params.video]   - Header video (preferred over image)
+ * @param {string}        [params.title]   - Header title text
+ * @param {string}        [params.body]
+ * @param {string}        [params.footer]
+ * @param {Button[]}      [params.buttons]
+ * @param {object}        [params.quoted]
+ * @returns {Promise<object|null>}
+ */
+export async function sendHeroCard(sock, jid, params) {
+  const {
+    image, video, title = "",
+    body = "", footer = "",
+    buttons = [], quoted = null,
+  } = params || {};
+
+  await emitHook("beforeInteractive", { type: "heroCard", jid, body });
+
+  // ── Try GKTW sendHeroCard ─────────────────────────────────────────────────
+  try {
+    const gktw = await getGktw();
+    if (gktw) {
+      const mod = gktw.default || gktw;
+      const fn  = mod?.sendHeroCard || gktw.sendHeroCard;
+      if (typeof fn === "function") {
+        const result = await fn(sock, jid, params);
+        await emitHook("afterInteractive", { type: "heroCard", jid, result });
         return result;
+      }
+    }
+  } catch {}
+
+  // ── Image header + buttons via sendButtons ────────────────────────────────
+  if ((image || video) && buttons.length) {
+    try {
+      const mediaBuf = video
+        ? (Buffer.isBuffer(video) ? video : await import("./uploadHandler.js").then(m => m.fetchBuffer(video)).catch(() => null))
+        : (Buffer.isBuffer(image) ? image : await import("./uploadHandler.js").then(m => m.fetchBuffer(image)).catch(() => null));
+
+      if (mediaBuf) {
+        const sendFn = video ? sendVideo : sendImage;
+        await sendFn(sock, jid, mediaBuf, { caption: title || body, quoted });
       }
     } catch {}
   }
 
-  // No image / image failed: send interactive buttons
-  return sendButtons(sock, jid, body, buttons, { footer, header, contextInfo, quoted: cardQuoted });
+  // Buttons (or plain text if buttons fail)
+  const result = await sendButtons(sock, jid, body, buttons, { header: title, footer, quoted });
+  await emitHook("afterInteractive", { type: "heroCard", jid, result });
+  return result;
 }
 
 /**
  * Send a carousel of cards (multi-card interactive message).
- * Falls back to individual hero cards if carousel proto is unsupported.
  *
  * @param {object}   sock
  * @param {string}   jid
- * @param {object[]} cards  - [{title, body, footer, buttons}]
+ * @param {object[]} cards
+ * @param {string}   [cards[].title]
+ * @param {string}   [cards[].body]
+ * @param {Buffer}   [cards[].image]
+ * @param {Button[]} [cards[].buttons]
  * @param {object}   [opts]
- * @param {string}   [opts.body]
- * @param {string}   [opts.footer]
  * @param {object}   [opts.quoted]
  * @returns {Promise<object|null>}
  */
 export async function sendCarousel(sock, jid, cards, opts = {}) {
+  await emitHook("beforeInteractive", { type: "carousel", jid, cardCount: cards?.length });
+
+  // ── Try GKTW sendCarousel ─────────────────────────────────────────────────
   try {
-    const B = await getBaileys();
-    const proto = B.proto;
-
-    const builtCards = await Promise.all((cards || []).map(async card => {
-      const cardButtons = await Promise.all((card.buttons || []).map((btn, i) => _protoBtn(btn, i)));
-      return proto.Message.InteractiveMessage.create({
-        body: proto.Message.InteractiveMessage.Body.create({ text: card.body || "" }),
-        footer: proto.Message.InteractiveMessage.Footer.create({ text: card.footer || "" }),
-        header: proto.Message.InteractiveMessage.Header.create({
-          title: card.title || "",
-          hasMediaAttachment: false,
-        }),
-        nativeFlowMessage: proto.Message.InteractiveMessage.NativeFlowMessage.create({
-          buttons: cardButtons,
-          messageParamsJson: "{}",
-          messageVersion: 1,
-        }),
-      });
-    }));
-
-    const fullMsg = proto.Message.create({
-      interactiveMessage: proto.Message.InteractiveMessage.create({
-        body: proto.Message.InteractiveMessage.Body.create({ text: opts.body || "" }),
-        footer: proto.Message.InteractiveMessage.Footer.create({ text: opts.footer || "" }),
-        header: proto.Message.InteractiveMessage.Header.create({ hasMediaAttachment: false }),
-        nativeFlowMessage: proto.Message.InteractiveMessage.NativeFlowMessage.create({
-          buttons: [],
-          messageParamsJson: JSON.stringify({ carousel: builtCards }),
-          messageVersion: 1,
-        }),
-      }),
-    });
-
-    const wam = await B.generateWAMessageFromContent(jid, fullMsg, {
-      userJid: sock.user?.id,
-      quoted: opts.quoted || undefined,
-    });
-    await sock.relayMessage(jid, wam.message, { messageId: wam.key.id });
-    return wam;
-  } catch {
-    // Fallback: individual hero cards
-    for (const card of (cards || [])) {
-      await sendHeroCard(sock, jid, {
-        body: card.body || card.title || "",
-        header: card.title || "",
-        footer: card.footer || "",
-        buttons: card.buttons || [],
-      }, { quoted: opts.quoted });
+    const gktw = await getGktw();
+    if (gktw) {
+      const mod = gktw.default || gktw;
+      const fn  = mod?.sendCarousel || gktw.sendCarousel;
+      if (typeof fn === "function") {
+        const result = await fn(sock, jid, cards, opts);
+        await emitHook("afterInteractive", { type: "carousel", jid, result });
+        return result;
+      }
     }
-    return null;
+  } catch {}
+
+  // ── Fallback: send each card as a hero card with a delay ─────────────────
+  const delay = opts.delayMs ?? 300;
+  let result  = null;
+  for (let i = 0; i < (cards || []).length; i++) {
+    const card = cards[i];
+    try {
+      result = await sendHeroCard(sock, jid, {
+        image:   card.image,
+        title:   card.title  || "",
+        body:    card.body   || "",
+        buttons: card.buttons || [],
+        quoted:  i === 0 ? opts.quoted : undefined,
+      });
+    } catch {}
+    if (i < cards.length - 1 && delay > 0) {
+      await new Promise(r => setTimeout(r, delay));
+    }
   }
+
+  await emitHook("afterInteractive", { type: "carousel", jid, result });
+  return result;
 }
 
 /**
- * Build an external ad reply (link preview card) context info object.
+ * Send a native-flow message (full control).
+ * @param {object} sock
+ * @param {string} jid
+ * @param {object} params
+ * @returns {Promise<object|null>}
+ */
+export async function sendNativeFlow(sock, jid, params) {
+  return sendInteractiveMessage(sock, jid, params);
+}
+
+/**
+ * Build an external ad reply (link preview card) contextInfo object.
  *
  * @param {object} opts
  * @param {string} [opts.title]
  * @param {string} [opts.body]
  * @param {string} [opts.sourceUrl]
  * @param {Buffer} [opts.thumbnail]
- * @returns {object} - contextInfo.externalAdReply object
+ * @param {number} [opts.mediaType=1]
+ * @returns {object}
  */
 export function buildExternalAdReply(opts = {}) {
   return {
     externalAdReply: {
-      title: opts.title || "",
-      body: opts.body || "",
-      sourceUrl: opts.sourceUrl || "https://whatsapp.com",
-      mediaType: opts.mediaType === "VIDEO" ? 2 : 1,
-      thumbnail: opts.thumbnail || null,
+      title:                opts.title       || "",
+      body:                 opts.body        || "",
+      sourceUrl:            opts.sourceUrl   || "https://whatsapp.com",
+      mediaType:            opts.mediaType === "VIDEO" ? 2 : (opts.mediaType ?? 1),
+      thumbnail:            opts.thumbnail   || null,
       renderLargerThumbnail: opts.renderLargerThumbnail ?? true,
-      showAdAttribution: false,
+      showAdAttribution:    false,
     },
   };
 }
@@ -403,7 +427,7 @@ export async function sendPollInteractive(sock, jid, question, options, opts = {
     return await _adapterSendPoll(sock, jid, question, options, opts);
   } catch {
     const lines = (options || []).map((o, i) => `[${i + 1}] ${o}`).join("\n");
-    const text = `📊 *${question}*\n\n${lines}`;
+    const text  = `*${question}*\n\n${lines}`;
     return sendText(sock, jid, text, { quoted: opts.quoted });
   }
 }

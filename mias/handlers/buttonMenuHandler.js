@@ -1,9 +1,11 @@
 /**
- * MIAS — Button Menu Handler  v1
+ * MIAS — Button Menu Handler  v2
  *
- * Complete redesign of Button Mode's .menu experience.
- * Provides a fully navigable in-app menu:
+ * Complete navigable in-app menu for Button Mode:
  *   Home Screen → Category → Command → [Wizard] → Execute
+ *
+ * Now reads ALL categories and commands from menuConfig.js (single source).
+ * Adding a new category only requires editing menuConfig.js.
  *
  * ONLY active when Button Mode is ON.
  * Text Mode and all existing command handlers are completely untouched.
@@ -15,595 +17,320 @@ import { sendButtons, sendList, sendHeroCard } from "./interactiveHandler.js";
 import { sendText }                            from "./messageHandler.js";
 import { buildVCard, fetchProfilePic }         from "./contactHandler.js";
 import { formatUptime }                        from "./utilityHandler.js";
+import { getCapabilities }                     from "./capabilityHandler.js";
 import {
   startWizardSession,
   clearWizardSession,
   hasWizardSession,
   COMMAND_INPUTS,
 }                                              from "./wizardHandler.js";
+import {
+  MENU_CATEGORIES,
+  getCategoryById,
+  getTotalCommandCount,
+}                                              from "./menuConfig.js";
 
 // ─── Visual constants ─────────────────────────────────────────────────────────
 
 const LINE = "─".repeat(32);
 
-// ─── Category registry ────────────────────────────────────────────────────────
-// cat_*  → id used in list rows.  Row IDs travel back as the body.
-
-const CATEGORIES = [
-  {
-    id: "cat_dl", label: "Downloads",
-    cmds: [
-      { name: "play",       desc: "Play / download a song" },
-      { name: "song",       desc: "Download song as audio" },
-      { name: "video",      desc: "Download a YouTube video" },
-      { name: "ytmp3",      desc: "YouTube → MP3 audio" },
-      { name: "ytmp4",      desc: "YouTube → MP4 video" },
-      { name: "spotify",    desc: "Download Spotify track" },
-      { name: "facebook",   desc: "Facebook video downloader" },
-      { name: "instagram",  desc: "Instagram downloader" },
-      { name: "tiktok",     desc: "TikTok video downloader" },
-      { name: "pinterest",  desc: "Pinterest image search" },
-      { name: "mediafire",  desc: "MediaFire downloader" },
-      { name: "soundcloud", desc: "SoundCloud downloader" },
-      { name: "twitter",    desc: "Twitter / X downloader" },
-      { name: "apk",        desc: "Search and download APK" },
-    ],
-  },
-  {
-    id: "cat_ai", label: "AI",
-    cmds: [
-      { name: "ai",      desc: "AI assistant chat" },
-      { name: "gpt",     desc: "ChatGPT conversation" },
-      { name: "gemi",    desc: "Google Gemini AI" },
-      { name: "claude",  desc: "Anthropic Claude AI" },
-      { name: "bing",    desc: "Bing AI chat" },
-      { name: "gpt4",    desc: "GPT-4 conversation" },
-      { name: "imagine", desc: "AI image generation" },
-      { name: "dalle",   desc: "DALL-E image creation" },
-    ],
-  },
-  {
-    id: "cat_search", label: "Search",
-    cmds: [
-      { name: "google",   desc: "Google web search" },
-      { name: "youtube",  desc: "YouTube search" },
-      { name: "wiki",     desc: "Wikipedia lookup" },
-      { name: "weather",  desc: "Weather for a city" },
-      { name: "news",     desc: "Latest news headlines" },
-    ],
-  },
-  {
-    id: "cat_media", label: "Media",
-    cmds: [
-      { name: "sticker",  desc: "Image / video → sticker" },
-      { name: "toimg",    desc: "Sticker → image" },
-      { name: "toanim",   desc: "Sticker → animated GIF" },
-      { name: "togif",    desc: "Video → GIF" },
-      { name: "ttp",      desc: "Text → sticker" },
-      { name: "attp",     desc: "Text → animated sticker" },
-      { name: "remini",   desc: "Enhance photo with Remini AI" },
-      { name: "enhance",  desc: "AI image enhancer" },
-      { name: "ocr",      desc: "Extract text from image" },
-    ],
-  },
-  {
-    id: "cat_tools", label: "Tools",
-    cmds: [
-      { name: "translate", desc: "Translate to any language" },
-      { name: "shorten",   desc: "URL shortener" },
-      { name: "qr",        desc: "Generate a QR code" },
-      { name: "base64",    desc: "Encode text to Base64" },
-      { name: "decode",    desc: "Decode Base64 text" },
-      { name: "carbon",    desc: "Code image generator" },
-    ],
-  },
-  {
-    id: "cat_group", label: "Group",
-    cmds: [
-      { name: "kick",    desc: "Remove a member" },
-      { name: "promote", desc: "Promote to admin" },
-      { name: "demote",  desc: "Remove admin role" },
-      { name: "mute",    desc: "Mute a member" },
-      { name: "unmute",  desc: "Unmute a member" },
-      { name: "open",    desc: "Open group for all" },
-      { name: "close",   desc: "Restrict to admins" },
-      { name: "link",    desc: "Get invite link" },
-      { name: "revoke",  desc: "Revoke invite link" },
-      { name: "tagall",  desc: "Tag all members" },
-      { name: "warn",    desc: "Warn a member" },
-    ],
-  },
-  {
-    id: "cat_owner", label: "Owner",
-    cmds: [
-      { name: "ban",       desc: "Ban a user" },
-      { name: "unban",     desc: "Unban a user" },
-      { name: "broadcast", desc: "Broadcast to all chats" },
-      { name: "setprefix", desc: "Change command prefix" },
-      { name: "restart",   desc: "Restart the bot" },
-      { name: "shutdown",  desc: "Shutdown the bot" },
-    ],
-  },
-  {
-    id: "cat_fun", label: "Fun",
-    cmds: [
-      { name: "joke",   desc: "Random joke" },
-      { name: "fact",   desc: "Random fact" },
-      { name: "quote",  desc: "Inspirational quote" },
-      { name: "riddle", desc: "A riddle to solve" },
-      { name: "dare",   desc: "Dare challenge" },
-      { name: "truth",  desc: "Truth question" },
-      { name: "8ball",  desc: "Magic 8-ball" },
-      { name: "roast",  desc: "Generate a roast" },
-      { name: "ship",   desc: "Ship two names" },
-      { name: "meme",   desc: "Random meme" },
-    ],
-  },
-  {
-    id: "cat_games", label: "Games",
-    cmds: [
-      { name: "tictactoe", desc: "Play Tic-Tac-Toe" },
-      { name: "wordle",    desc: "Play Wordle" },
-      { name: "quiz",      desc: "Knowledge quiz" },
-      { name: "trivia",    desc: "Trivia question" },
-    ],
-  },
-  {
-    id: "cat_utility", label: "Utility",
-    cmds: [
-      { name: "ping",    desc: "Bot response speed" },
-      { name: "alive",   desc: "Check if bot is alive" },
-      { name: "runtime", desc: "Bot runtime info" },
-      { name: "uptime",  desc: "Bot uptime" },
-      { name: "botinfo", desc: "Full bot information" },
-      { name: "owner",   desc: "Contact the bot owner" },
-    ],
-  },
-  {
-    id: "cat_settings", label: "Settings",
-    cmds: [
-      { name: "setting",     desc: "Open settings menu" },
-      { name: "buttonsmode", desc: "Toggle Button Mode" },
-      { name: "richmode",    desc: "Toggle Rich Mode" },
-      { name: "autochat",    desc: "Toggle AI auto-chatbot" },
-      { name: "autoview",    desc: "Toggle auto-view statuses" },
-      { name: "autolike",    desc: "Toggle auto-like statuses" },
-    ],
-  },
-  {
-    id: "cat_convert", label: "Converter",
-    cmds: [
-      { name: "convert",  desc: "Unit conversion" },
-      { name: "currency", desc: "Currency conversion" },
-    ],
-  },
-  {
-    id: "cat_anime", label: "Anime",
-    cmds: [
-      { name: "anime",   desc: "Anime search" },
-      { name: "manga",   desc: "Manga search" },
-      { name: "waifu",   desc: "Random waifu image" },
-      { name: "neko",    desc: "Random neko image" },
-      { name: "husbando",desc: "Random husbando image" },
-    ],
-  },
-];
-
 // ─── Config helpers ───────────────────────────────────────────────────────────
 
-function _cfg()     { return globalThis.__MIAS_CONFIG__ || {}; }
-function _prefix()  { try { return _cfg().PREFIX  || "."; }  catch { return ".";   } }
-function _version() { try { return _cfg().VERSION || "1.0"; } catch { return "1.0"; } }
-function _owner()   {
+function _prefix() {
   try {
-    return _cfg().OWNER_NAME || _cfg().OWNER ||
-           (globalThis.__GET_SETTING__ ? globalThis.__GET_SETTING__("owner") : null) ||
-           "Owner";
-  } catch { return "Owner"; }
+    if (globalThis.__MIAS_CONFIG__?.PREFIX) return globalThis.__MIAS_CONFIG__.PREFIX;
+    if (globalThis.__GET_SETTING__) return globalThis.__GET_SETTING__("prefix") || ".";
+  } catch {}
+  return ".";
 }
 
 function _botName() {
   try {
+    if (globalThis.__MIAS_CONFIG__?.BOT_NAME) return globalThis.__MIAS_CONFIG__.BOT_NAME;
     const sock = globalThis.__MIAS_SOCK__;
-    return _cfg().BOT_NAME || sock?.user?.name || "MIAS";
-  } catch { return "MIAS"; }
+    if (sock?.user?.name) return sock.user.name;
+  } catch {}
+  return "MIAS BOT";
 }
 
 function _cmdCount() {
   try {
-    const map = globalThis.__MIAS_COMMANDS__;
-    if (map) return map.size;
-    return typeof globalThis.__MIAS_CMD_COUNT__ === "number"
-      ? globalThis.__MIAS_CMD_COUNT__ : "—";
-  } catch { return "—"; }
-}
-
-function _senderNum(msg) {
-  try {
-    const jid = msg.key.remoteJid;
-    const raw  = jid.endsWith("@g.us")
-      ? (msg.key.participant || msg.participant || "")
-      : jid;
-    return raw.split("@")[0].split(":")[0].replace(/[^0-9]/g, "");
-  } catch { return ""; }
-}
-
-function _isPremium(num) {
-  try {
-    const list = globalThis.__MIAS_PREMIUM_LIST__;
-    if (Array.isArray(list)) return list.includes(num);
-    if (list instanceof Set) return list.has(num);
+    if (typeof globalThis.__MIAS_CMD_COUNT__ === "number") return globalThis.__MIAS_CMD_COUNT__;
+    if (globalThis.__MIAS_COMMANDS__) return globalThis.__MIAS_COMMANDS__.size;
   } catch {}
-  return false;
+  return getTotalCommandCount();
 }
 
 // ─── Home screen ──────────────────────────────────────────────────────────────
 
 /**
  * Send the Button Mode home screen.
- * Called when the user types .menu while Button Mode is ON.
- *
- * @param {object} sock
- * @param {string} jid
- * @param {object} msg
- * @param {object} [opts]
+ * Shows bot info + quick-action buttons + category list.
  */
 export async function sendButtonHomeScreen(sock, jid, msg, opts = {}) {
-  const t0       = Date.now();
-  const botName  = _botName();
   const prefix   = _prefix();
-  const version  = _version();
-  const ownerStr = _owner();
+  const botName  = _botName();
   const cmdCount = _cmdCount();
+  const uptime   = formatUptime(process.uptime?.() || 0);
+  const caps     = await getCapabilities(sock);
 
-  // Collect sender info
-  const senderNum  = _senderNum(msg);
-  const userName   = opts.userName || msg?.pushName || "User";
-  const isPremium  = _isPremium(senderNum);
-  const rank       = isPremium ? "Premium" : "Free";
-  const platform   = process.platform || "linux";
-  const memMB      = Math.round(process.memoryUsage().rss / 1024 / 1024);
-  const uptime     = formatUptime(process.uptime ? process.uptime() * 1000 : 0);
-  const ping       = Date.now() - t0;
-  const now        = new Date();
-  const date       = now.toLocaleDateString("en-GB",
-    { weekday: "short", day: "2-digit", month: "short", year: "numeric" });
-  const time       = now.toLocaleTimeString("en-GB",
-    { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-
-  // ── 1. User profile card ──────────────────────────────────────────────────
+  // Try to get bot profile pic for header
+  let picBuffer = null;
   try {
-    let picBuffer = null;
-    if (senderNum) {
-      const uJid = `${senderNum}@s.whatsapp.net`;
-      try { picBuffer = await fetchProfilePic(sock, uJid); } catch {}
-    }
-
-    const userVcard = buildVCard({
-      displayName: userName,
-      phone: senderNum || "0",
-      org: `MIAS User — ${rank}`,
-      note: `Button Mode ON`,
-      picBuffer,
-    });
-
-    await sock.sendMessage(jid, {
-      contacts: {
-        displayName: userName,
-        contacts: [{ vcard: userVcard }],
-      },
-    }, opts.quoted ? { quoted: opts.quoted } : {});
-    await new Promise(r => setTimeout(r, 350));
-  } catch { /* non-fatal */ }
-
-  // ── 2. Hero card — bot info + "Open Menu" button ─────────────────────────
-  const heroBody = [
-    `Welcome back, *${userName}*`,
-    LINE,
-    `Bot      : ${botName}`,
-    `Version  : v${version}`,
-    `Owner    : ${ownerStr}`,
-    `Prefix   : ${prefix}`,
-    `Commands : ${cmdCount}+`,
-    LINE,
-    `Ping     : ${ping} ms`,
-    `Uptime   : ${uptime}`,
-    `Memory   : ${memMB} MB`,
-    `Platform : ${platform}`,
-    LINE,
-    `${date}  |  ${time}`,
-  ].join("\n");
-
-  // Attempt to fetch the bot's own picture for the hero image
-  let botPicBuf = null;
-  try {
-    const botJid = sock.user?.id;
-    if (botJid) botPicBuf = await fetchProfilePic(sock, botJid);
+    const sock_ = globalThis.__MIAS_SOCK__ || sock;
+    const botJid = sock_?.user?.id;
+    if (botJid) picBuffer = await fetchProfilePic(sock_, botJid);
   } catch {}
 
-  try {
-    if (botPicBuf) {
-      // sendHeroCard with image header + button
-      await sendHeroCard(sock, jid, {
-        image: botPicBuf,
-        body: heroBody,
-        footer: `${botName} v${version}`,
+  const header = `${botName}`;
+  const body   = [
+    `Commands : ${cmdCount}`,
+    `Uptime   : ${uptime}`,
+    LINE,
+    `What would you like to do?`,
+  ].join("\n");
+
+  // Hero card with image header (if capable)
+  if (caps.heroCards && picBuffer) {
+    try {
+      return await sendHeroCard(sock, jid, {
+        image:   picBuffer,
+        title:   header,
+        body,
+        footer:  `${prefix}help <cmd> for details`,
         buttons: [
-          { text: "Open Menu",  id: "btn_openmenu" },
-          { text: "Close",      id: "btn_close" },
+          { text: "Browse Commands", id: "btn_openmenu" },
+          { text: "Close",           id: "btn_close"    },
         ],
-        quoted: opts.quoted || msg || null,
+        quoted:  msg,
       });
-    } else {
-      // No image — plain interactive card
-      await sendButtons(sock, jid, heroBody,
-        [
-          { text: "Open Menu",  id: "btn_openmenu" },
-          { text: "Close",      id: "btn_close" },
-        ],
-        {
-          header: botName,
-          footer: `${botName} v${version}`,
-          quoted: opts.quoted || msg || null,
-        }
-      );
-    }
-  } catch {
-    // Final fallback: plain text with inline instruction
-    await sendText(sock, jid,
-      heroBody + `\n\nReply with *${prefix}menu cat* to browse categories.`,
-      { quoted: opts.quoted || msg || null }
-    ).catch(() => {});
+    } catch {}
   }
+
+  // Buttons fallback
+  if (caps.buttons) {
+    try {
+      return await sendButtons(sock, jid, `*${header}*\n\n${body}`, [
+        { text: "Browse Commands", id: "btn_openmenu" },
+        { text: "Close",           id: "btn_close"    },
+      ], {
+        footer: `${prefix}help <cmd> for details`,
+        quoted: msg,
+      });
+    } catch {}
+  }
+
+  // Plain text fallback
+  return sendText(sock, jid,
+    `*${header}*\n${LINE}\n${body}\n\nType *${prefix}menu* to browse commands.`,
+    { quoted: msg }
+  );
 }
 
 // ─── Category selector ────────────────────────────────────────────────────────
 
 /**
- * Send the interactive category list.
+ * Send an interactive list of all categories.
+ * Reads from menuConfig — no hardcoded category lists here.
  */
 export async function sendButtonCategorySelector(sock, jid, msg, opts = {}) {
-  const botName = _botName();
-  const version = _version();
-  const prefix  = _prefix();
-  const quoted  = opts.quoted || msg || null;
+  const prefix = _prefix();
+  const caps   = await getCapabilities(sock);
 
-  const rows = CATEGORIES.map(cat => ({
+  const rows = MENU_CATEGORIES.map(cat => ({
     id:          cat.id,
     title:       cat.label,
-    description: `${cat.cmds.length} commands`,
+    description: `${cat.cmds.length} command${cat.cmds.length !== 1 ? "s" : ""}`,
   }));
 
-  try {
-    await sendList(sock, jid,
-      "Select a category to browse its commands.",
-      [{ title: "Categories", rows }],
-      {
-        title:      `${botName} — Menu`,
-        buttonText: "Browse Categories",
-        footer:     `${botName} v${version} — ${prefix}menu for home`,
-        quoted,
-      }
-    );
-  } catch {
-    // Fallback: chunked quick-reply buttons (max 3 per message)
-    const chunks = [];
-    for (let i = 0; i < CATEGORIES.length; i += 3) chunks.push(CATEGORIES.slice(i, i + 3));
-    for (let i = 0; i < chunks.length; i++) {
-      const btns = chunks[i].map(c => ({ text: c.label, id: c.id }));
-      await sendButtons(sock, jid,
-        i === 0 ? "Choose a category:" : "More categories:",
-        btns,
-        {
-          header: i === 0 ? `${botName} Menu` : "",
-          footer: i === chunks.length - 1 ? `${prefix}menu → home` : "",
-          quoted: i === 0 ? quoted : null,
-        }
-      ).catch(() => {});
-      if (i < chunks.length - 1) await new Promise(r => setTimeout(r, 300));
-    }
+  const body = `*${_botName()} — Categories*\n${LINE}\nChoose a category:`;
+
+  if (caps.lists) {
+    try {
+      return await sendList(sock, jid, body, [
+        { title: "All Categories", rows },
+      ], {
+        buttonText: "Browse",
+        title:      "Categories",
+        footer:     `${prefix}menu to go home`,
+        quoted:     msg,
+      });
+    } catch {}
   }
+
+  if (caps.buttons) {
+    // Split into chunks of 3 (WA button limit)
+    try {
+      await sendText(sock, jid, body, { quoted: msg });
+      for (let i = 0; i < MENU_CATEGORIES.length; i += 3) {
+        const chunk = MENU_CATEGORIES.slice(i, i + 3);
+        await sendButtons(sock, jid, "Select a category:", chunk.map(c => ({
+          text: c.label,
+          id:   c.id,
+        })), { quoted: msg });
+      }
+      return;
+    } catch {}
+  }
+
+  // Plain text
+  const list = MENU_CATEGORIES.map((c, i) => `[${i + 1}] ${c.label}`).join("\n");
+  return sendText(sock, jid, `${body}\n\n${list}`, { quoted: msg });
 }
 
-// ─── Command selector ─────────────────────────────────────────────────────────
+// ─── Command selector (for a given category) ─────────────────────────────────
 
 /**
- * Send the command list for a given category ID (cat_*).
+ * Send the command list for the selected category.
+ * @param {string} catId - e.g. "cat_ai"
  */
 export async function sendButtonCommandSelector(sock, jid, msg, catId, opts = {}) {
-  const botName = _botName();
-  const version = _version();
-  const prefix  = _prefix();
-  const quoted  = opts.quoted || msg || null;
-
-  const cat = CATEGORIES.find(c => c.id === catId);
+  const cat    = getCategoryById(catId);
   if (!cat) {
-    await sendButtonCategorySelector(sock, jid, msg, opts);
-    return;
+    return sendText(sock, jid, `Category not found. Type *${_prefix()}menu* to start over.`, { quoted: msg });
   }
 
-  // Build rows — prefix command names for clarity
-  const rows = cat.cmds.map(cmd => ({
-    id:          `cmd_${cmd.name}`,
-    title:       `${prefix}${cmd.name}`,
-    description: cmd.desc || "",
-  }));
-  // Navigation row
-  rows.push({ id: "btn_back", title: "Back to Categories", description: "" });
+  const prefix = _prefix();
+  const cmds   = (cat.cmds || []).slice(0, 10);
+  const caps   = await getCapabilities(sock);
 
-  try {
-    await sendList(sock, jid,
-      `Commands in *${cat.label}*. Tap any command to run it.`,
-      [{ title: cat.label, rows }],
-      {
+  const body  = `*${cat.label}*\n${LINE}\nSelect a command:`;
+
+  if (caps.lists) {
+    try {
+      const rows = cmds.map(c => ({
+        id:          `cmd_${c.name}`,
+        title:       `${prefix}${c.name}`,
+        description: c.desc || "",
+      }));
+      return await sendList(sock, jid, body, [
+        { title: cat.label, rows },
+      ], {
+        buttonText: "Choose",
         title:      cat.label,
-        buttonText: `Browse ${cat.label}`,
-        footer:     `${botName} v${version} — Tap a command to select`,
-        quoted,
-      }
-    );
-  } catch {
-    // Fallback: up to 9 commands as chunked buttons
-    const limited = cat.cmds.slice(0, 9);
-    const chunks  = [];
-    for (let i = 0; i < limited.length; i += 3) chunks.push(limited.slice(i, i + 3));
-    for (let i = 0; i < chunks.length; i++) {
-      const btns = chunks[i].map(c => ({ text: prefix + c.name, id: `cmd_${c.name}` }));
-      if (i === chunks.length - 1) btns.push({ text: "Back", id: "btn_back" });
-      await sendButtons(sock, jid,
-        i === 0 ? `${cat.label} commands:` : "More:",
-        btns.slice(0, 3),
-        {
-          header: i === 0 ? cat.label : "",
-          footer: i === chunks.length - 1 ? `${prefix}menu → home` : "",
-          quoted: i === 0 ? quoted : null,
-        }
-      ).catch(() => {});
-      if (i < chunks.length - 1) await new Promise(r => setTimeout(r, 300));
-    }
+        footer:     `${prefix}menu to go home`,
+        quoted:     msg,
+      });
+    } catch {}
   }
+
+  if (caps.buttons) {
+    try {
+      await sendText(sock, jid, body, { quoted: msg });
+      for (let i = 0; i < cmds.length; i += 3) {
+        const chunk = cmds.slice(i, i + 3);
+        await sendButtons(sock, jid, "Pick a command:", chunk.map(c => ({
+          text: `${prefix}${c.name}`,
+          id:   `cmd_${c.name}`,
+        })), {
+          footer: `${prefix}menu to go home`,
+          quoted: msg,
+        });
+      }
+      return;
+    } catch {}
+  }
+
+  const list = cmds.map(c => `  ${prefix}${c.name}  —  ${c.desc || ""}`).join("\n");
+  return sendText(sock, jid, `${body}\n\n${list}`, { quoted: msg });
 }
 
-// ─── Command execution / wizard ───────────────────────────────────────────────
+// ─── Command selection handler ────────────────────────────────────────────────
 
 /**
- * Handle a selected command (cmd_*).
- * No input needed → execute immediately.
- * Input needed    → start wizard session and prompt.
+ * Called when a user picks a command from the button menu.
+ * Either starts a wizard session (if input required) or runs immediately.
  */
 export async function handleCommandSelection(sock, jid, msg, cmdName, opts = {}) {
-  const prefix  = _prefix();
-  const botName = _botName();
-  const version = _version();
-  const quoted  = opts.quoted || msg || null;
-
-  // Resolve input spec
-  const inputSpec = cmdName in COMMAND_INPUTS ? COMMAND_INPUTS[cmdName] : undefined;
-
-  // ── No input → execute immediately ────────────────────────────────────────
-  if (inputSpec === null || inputSpec === undefined) {
-    try {
-      if (typeof globalThis.__MIAS_DISPATCH_CMD__ === "function") {
-        await globalThis.__MIAS_DISPATCH_CMD__(sock, msg, cmdName, []);
-      } else {
-        const entry = globalThis.__MIAS_COMMANDS__?.get?.(cmdName);
-        if (entry?.handler) await entry.handler(sock, msg, []);
-        else {
-          await sendText(sock, jid,
-            `Unknown command: *${cmdName}*\nType *${prefix}${cmdName}* manually.`,
-            { quoted }
-          ).catch(() => {});
-        }
-      }
-    } catch (e) {
-      await sendText(sock, jid,
-        `Error running *${cmdName}*: ${e?.message || e}`,
-        { quoted }
-      ).catch(() => {});
-    }
-
-    // After execution — offer navigation
-    await new Promise(r => setTimeout(r, 500));
-    try {
-      await sendButtons(sock, jid,
-        "Done. What would you like to do next?",
-        [
-          { text: "Home",             id: "btn_home" },
-          { text: "Browse More",      id: "btn_back" },
-        ],
-        {
-          footer: `${botName} v${version}`,
-        }
-      );
-    } catch {}
-    return;
-  }
-
-  // ── Needs input → start wizard ────────────────────────────────────────────
-  const isGrp      = jid.endsWith("@g.us");
-  const senderJid  = isGrp
-    ? (msg.key?.participant || msg.participant || jid)
+  const prefix     = _prefix();
+  const spec       = COMMAND_INPUTS[cmdName];
+  const isGrp      = (jid || "").endsWith("@g.us");
+  const effectiveJid = isGrp
+    ? (msg?.key?.participant || msg?.participant || jid)
     : jid;
 
-  // Store on both senderJid (for group DM resolution) and jid
-  startWizardSession(senderJid, cmdName, inputSpec.prompt, 90_000);
-  if (senderJid !== jid) startWizardSession(jid, cmdName, inputSpec.prompt, 90_000);
+  if (spec) {
+    // Wizard required — prompt for input
+    startWizardSession(effectiveJid, cmdName, { timeoutMs: 90_000 });
+    if (effectiveJid !== jid) startWizardSession(jid, cmdName, { timeoutMs: 90_000 });
 
-  const promptBody = [
-    `*${cmdName.toUpperCase()}*`,
-    LINE,
-    inputSpec.prompt,
-    LINE,
-    `Reply with your input to continue.`,
-    `Type *cancel* to abort.`,
-    `Session expires in 90 seconds.`,
-  ].join("\n");
+    const promptText = [
+      `*${_botName()} — ${cmdName.toUpperCase()}*`,
+      LINE,
+      spec.prompt,
+      "",
+      `_Reply with your input. Type *cancel* to exit._`,
+      `_Session expires in 90 seconds._`,
+    ].join("\n");
 
+    return sendText(sock, jid, promptText, { quoted: msg });
+  }
+
+  // No input needed — dispatch immediately
   try {
-    await sendButtons(sock, jid, promptBody,
-      [{ text: "Cancel", id: "btn_cancel" }],
-      {
-        header: `${prefix}${cmdName}`,
-        footer: `${botName} — waiting for input`,
-      }
+    if (typeof globalThis.__MIAS_DISPATCH_CMD__ === "function") {
+      return await globalThis.__MIAS_DISPATCH_CMD__(sock, msg, cmdName, []);
+    }
+    const cmds = globalThis.__MIAS_COMMANDS__;
+    if (cmds) {
+      const entry = cmds.get(cmdName);
+      if (entry?.handler) return await entry.handler(sock, msg, []);
+    }
+    await sendText(sock, jid,
+      `Running *${prefix}${cmdName}*...`,
+      { quoted: msg }
     );
-  } catch {
-    await sendText(sock, jid, promptBody, { quoted }).catch(() => {});
+  } catch (e) {
+    try {
+      await sendText(sock, jid,
+        `Error running *${cmdName}*: ${e?.message || e}`,
+        { quoted: msg }
+      );
+    } catch {}
   }
 }
 
 // ─── Button response router ───────────────────────────────────────────────────
 
 /**
- * Route a button/list response payload.
- * Called by index.js when the extracted body matches btn_*, cat_*, or cmd_*.
+ * Route an incoming button / list response to the correct handler.
+ * Called from mias/index.js when isButtonMode() is true and a button ID arrives.
  *
  * @param {object} sock
  * @param {object} msg
- * @param {string} body  - Extracted button/list ID
+ * @param {string} body  - Extracted button/list ID or response text
  */
 export async function handleButtonResponse(sock, msg, body) {
-  const jid  = msg.key.remoteJid;
-  const opts = {};
+  const jid = msg?.key?.remoteJid;
+  if (!jid) return;
 
-  // ── Navigation ──────────────────────────────────────────────────────────
+  const prefix = _prefix();
+
+  // ── Navigation ──────────────────────────────────────────────────────────────
   if (body === "btn_home" || body === "btn_menu") {
-    await sendButtonHomeScreen(sock, jid, msg, opts);
-    return;
+    return sendButtonHomeScreen(sock, jid, msg, {});
   }
-
-  if (body === "btn_openmenu") {
-    await sendButtonCategorySelector(sock, jid, msg, opts);
-    return;
+  if (body === "btn_openmenu" || body === "btn_back") {
+    return sendButtonCategorySelector(sock, jid, msg, {});
   }
-
-  if (body === "btn_back") {
-    await sendButtonCategorySelector(sock, jid, msg, opts);
-    return;
-  }
-
   if (body === "btn_close" || body === "btn_cancel") {
+    const isGrp   = (jid || "").endsWith("@g.us");
+    const sJid    = isGrp ? (msg?.key?.participant || msg?.participant || jid) : jid;
     clearWizardSession(jid);
-    const isGrp = jid.endsWith("@g.us");
-    const sJid  = isGrp ? (msg.key.participant || msg.participant || jid) : jid;
     clearWizardSession(sJid);
-    const prefix = _prefix();
-    await sendText(sock, jid,
+    return sendText(sock, jid,
       `Closed. Type *${prefix}menu* to return to the menu.`
     ).catch(() => {});
-    return;
   }
 
-  // ── Category selected ───────────────────────────────────────────────────
+  // ── Category selected ────────────────────────────────────────────────────────
   if (body.startsWith("cat_")) {
-    await sendButtonCommandSelector(sock, jid, msg, body, opts);
-    return;
+    return sendButtonCommandSelector(sock, jid, msg, body, {});
   }
 
-  // ── Command selected ────────────────────────────────────────────────────
+  // ── Command selected ─────────────────────────────────────────────────────────
   if (body.startsWith("cmd_")) {
-    const cmdName = body.slice(4); // strip "cmd_"
-    await handleCommandSelection(sock, jid, msg, cmdName, opts);
-    return;
+    const cmdName = body.slice(4);
+    return handleCommandSelection(sock, jid, msg, cmdName, {});
   }
 }

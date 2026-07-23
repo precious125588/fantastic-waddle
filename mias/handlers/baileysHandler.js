@@ -1,5 +1,5 @@
 /**
- * MIAS — Baileys Handler (Universal API / Main Abstraction Layer)  v3
+ * MIAS — Baileys Handler (Universal API / Main Abstraction Layer)  v4
  *
  * ════════════════════════════════════════════════════════════════
  *  Architecture:
@@ -16,10 +16,16 @@
  * ════════════════════════════════════════════════════════════════
  *
  * ONLY import from this file. Never import Baileys or GKTW directly in commands.
- * Every handler function lives in a sibling file; this module re-exports them all
- * under one roof so commands only need one import:
+ * Every handler function lives in a sibling file; this module re-exports them
+ * all under one roof so commands only need one import:
  *
  *   import * as MIAS from "../handlers/baileysHandler.js";
+ *
+ * v4 additions:
+ *  - Re-exports: uiHandler, menuConfig, eventHooks, capabilityHandler
+ *  - Re-exports: gktwVersion, adapterDiagnostics, generateContextInfo,
+ *                generateExternalAdReply, capabilitySummary
+ *  - Re-exports: wizardSessionCount, listWizardSessions, resumeWizardSession
  *
  * ─── Universal API surface ───────────────────────────────────────────────────
  *  sendText()        sendReply()        sendPoll()         sendMention()
@@ -28,8 +34,9 @@
  *  sendImage()       sendVideo()        sendAudio()        sendVoiceNote()
  *  sendSticker()     sendGif()          sendDocument()     sendAlbum()
  *  sendMediaFromUrl() prepareThumbnail() guessMime()
+ *  prepareContextInfo() prepareExternalAdReply()
  *  sendButtons()     sendInteractive()  sendList()
- *  sendCarousel()    sendNativeFlow()   sendHeroCard()
+ *  sendCarousel()    sendNativeFlow()   sendHeroCard()     sendUrlButtons()
  *  sendCode()        sendCodeMulti()    sendMenu()
  *  sendReaction()    reactCustom()      clearReaction()
  *  reactProcessing() reactWaiting()     reactSuccess()     reactFail()
@@ -43,7 +50,6 @@
  *  uploadMedia()     uploadToCatbox()   downloadMedia()    downloadQuotedMedia()
  *  downloadViewOnce() downloadFromUrl() fetchBuffer()      cleanupTemp()
  *  getMessageType()  hasMedia()
- *  prepareContextInfo() prepareExternalAdReply()
  *  deleteMessage()   editMessage()      getPresence()      isOnWhatsApp()
  *  getProfilePicture() getBaileysVersion() isGktwAvailable()
  *  getGroupMetadata() normalizeJid()    getEffectiveSender() resolveJid()
@@ -53,10 +59,18 @@
  *  sleep()           withRetry()        formatUptime()     formatBytes()
  *  setPresence()     withTyping()       markRead()
  *  REACTIONS         REACTION_SETS
+ *  ── New in v4 ────────────────────────────────────────────────────────────────
+ *  UI                (UI Manager — openHome, openCategory, openWizard, etc.)
+ *  onHook()          offHook()          emitHook()         withCommandHooks()
+ *  getCapabilities() can()              capabilitySummary() invalidateCapabilityCache()
+ *  MENU_CATEGORIES   getCategoryById()  findCommand()      getTotalCommandCount()
+ *  gktwVersion()     adapterDiagnostics() generateContextInfo() generateExternalAdReply()
+ *  startWizardSession() clearWizardSession() hasWizardSession() getWizardSession()
+ *  resumeWizardSession() listWizardSessions() wizardSessionCount()
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
-// ── Re-export all sibling handlers ───────────────────────────────────────────
+// ── Re-export all sibling handlers ────────────────────────────────────────────
 export * from "./reactionHandler.js";
 export * from "./messageHandler.js";
 export * from "./mediaHandler.js";
@@ -70,7 +84,22 @@ export * from "./menuHandler.js";
 export * from "./codeHandler.js";
 export * from "./buttonHandler.js";
 export * from "./utilityHandler.js";
-export { isGktwAvailable } from "./gktwAdapter.js";
+
+// ── New v4 layers ──────────────────────────────────────────────────────────────
+export * from "./uiHandler.js";
+export * from "./eventHooks.js";
+export * from "./capabilityHandler.js";
+export * from "./menuConfig.js";
+export * from "./wizardHandler.js";
+
+// ── Adapter exports ────────────────────────────────────────────────────────────
+export {
+  isGktwAvailable,
+  gktwVersion,
+  adapterDiagnostics,
+  generateContextInfo,
+  generateExternalAdReply,
+} from "./gktwAdapter.js";
 
 // ─── Core adapter utilities ───────────────────────────────────────────────────
 
@@ -84,121 +113,21 @@ import {
 } from "./gktwAdapter.js";
 
 /**
- * Get the current Baileys version being used.
- * @returns {Promise<string>}
+ * Get the currently installed Baileys version string.
+ * @returns {Promise<{version: number[], isLatest: boolean}>}
  */
 export async function getBaileysVersion() {
   try {
-    const { version } = await _fetchVersion();
-    return Array.isArray(version) ? version.join(".") : String(version);
-  } catch {}
-  return "unknown";
-}
-
-/**
- * Delete a bot-sent or bot-admin-deletable message.
- * @param {object} sock
- * @param {string} jid
- * @param {object} msgKey - The key of the message to delete
- */
-export async function deleteMessage(sock, jid, msgKey) {
-  try {
-    await sock.sendMessage(jid, { delete: msgKey });
+    return await _fetchVersion();
   } catch {
-    // Silently ignore — message may already be gone
+    return { version: [2, 3000, 0], isLatest: false };
   }
-}
-
-/**
- * Edit a previously sent text message (own messages only).
- * @param {object} sock
- * @param {string} jid
- * @param {object} msgKey - Key of the message to edit
- * @param {string} newText
- */
-export async function editMessage(sock, jid, msgKey, newText) {
-  try {
-    await sock.sendMessage(jid, { text: String(newText ?? ""), edit: msgKey });
-  } catch {}
-}
-
-/**
- * Subscribe to a contact's presence and retrieve their current status.
- * @param {object} sock
- * @param {string} jid
- * @param {number} [timeoutMs=5000]
- * @returns {Promise<{status: string, lastSeenMs: number|null}>}
- */
-export async function getPresence(sock, jid, timeoutMs = 5000) {
-  try {
-    if (typeof sock.presenceSubscribe === "function") {
-      await sock.presenceSubscribe(jid);
-    }
-
-    return await new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error("Presence timeout")), timeoutMs);
-      const handler = ({ id, presences }) => {
-        if (!id || !id.includes(jid.split("@")[0])) return;
-        clearTimeout(timer);
-        try { sock.ev.off("presence.update", handler); } catch {}
-        const entries = Object.values(presences || {});
-        const entry = entries[0] || {};
-        resolve({
-          status: entry.lastKnownPresence || "unknown",
-          lastSeenMs: entry.lastSeen ? entry.lastSeen * 1000 : null,
-        });
-      };
-      if (typeof sock.ev?.on === "function") {
-        sock.ev.on("presence.update", handler);
-      } else {
-        clearTimeout(timer);
-        resolve({ status: "unknown", lastSeenMs: null });
-      }
-    });
-  } catch {
-    return { status: "unknown", lastSeenMs: null };
-  }
-}
-
-/**
- * Check if a JID is registered on WhatsApp.
- * @param {object}   sock
- * @param {string[]} jids  - Array of JIDs to check
- * @returns {Promise<object[]>}
- */
-export async function isOnWhatsApp(sock, jids) {
-  try {
-    const arr = Array.isArray(jids) ? jids : [jids];
-    if (typeof sock.onWhatsApp === "function") {
-      return await sock.onWhatsApp(...arr);
-    }
-  } catch (err) {
-    console.error("[isOnWhatsApp] Error:", err?.message);
-  }
-  return [];
-}
-
-/**
- * Get the profile picture URL for a JID.
- * @param {object} sock
- * @param {string} jid
- * @param {"image"|"preview"} [type="image"]
- * @returns {Promise<string|null>}
- */
-export async function getProfilePicture(sock, jid, type = "image") {
-  try {
-    if (typeof sock.profilePictureUrl === "function") {
-      return await sock.profilePictureUrl(jid, type);
-    }
-  } catch {}
-  return null;
 }
 
 /**
  * Fetch group metadata.
  * @param {object} sock
- * @param {string} jid  - Group JID
- * @returns {Promise<object|null>}
+ * @param {string} jid
  */
 export async function getGroupMetadata(sock, jid) {
   return _getGroupMetadata(sock, jid);
@@ -207,67 +136,120 @@ export async function getGroupMetadata(sock, jid) {
 /**
  * Fetch all groups the bot is participating in.
  * @param {object} sock
- * @returns {Promise<object>}
  */
 export async function groupFetchAllParticipating(sock) {
   return _groupFetchAll(sock);
 }
 
 /**
- * Build a contextInfo object for attaching metadata to messages.
- *
- * @param {object}  [opts]
- * @param {object}  [opts.quoted]       - WAMessage to reference
- * @param {string}  [opts.mentionedJid] - Single JID or array of JIDs to mention
- * @param {string}  [opts.forwardingScore]
- * @returns {object}
+ * Delete a sent message.
+ * @param {object} sock
+ * @param {string} jid
+ * @param {object} key  - Message key { id, fromMe, remoteJid }
  */
-export function prepareContextInfo(opts = {}) {
-  const ctx = {};
-  if (opts.quoted?.key) {
-    ctx.stanzaId        = opts.quoted.key.id;
-    ctx.participant     = opts.quoted.key.participant || opts.quoted.key.remoteJid;
-    ctx.quotedMessage   = opts.quoted.message;
-    ctx.remoteJid       = opts.quoted.key.remoteJid;
+export async function deleteMessage(sock, jid, key) {
+  try {
+    return await sock.sendMessage(jid, { delete: key });
+  } catch (err) {
+    console.error("[deleteMessage] Error:", err?.message);
+    return null;
   }
-  const mentions = opts.mentionedJid
-    ? (Array.isArray(opts.mentionedJid) ? opts.mentionedJid : [opts.mentionedJid])
-    : [];
-  if (mentions.length) ctx.mentionedJid = mentions;
-  if (opts.forwardingScore != null) {
-    ctx.forwardingScore = opts.forwardingScore;
-    ctx.isForwarded = opts.forwardingScore > 0;
-  }
-  return ctx;
 }
 
 /**
- * Build an ExternalAdReply object for link-preview cards.
- *
- * @param {object} [opts]
- * @param {string} [opts.title]
- * @param {string} [opts.body]
- * @param {string} [opts.sourceUrl]
- * @param {string} [opts.mediaUrl]
- * @param {string} [opts.mediaType="IMAGE"]  - "IMAGE"|"VIDEO"
- * @param {Buffer} [opts.thumbnail]
- * @param {string} [opts.sourceId]
- * @param {boolean}[opts.renderLargerThumbnail]
+ * Edit a sent text message.
+ * @param {object} sock
+ * @param {string} jid
+ * @param {object} key
+ * @param {string} newText
+ */
+export async function editMessage(sock, jid, key, newText) {
+  try {
+    return await sock.sendMessage(jid, { text: String(newText), edit: key });
+  } catch (err) {
+    console.error("[editMessage] Error:", err?.message);
+    return null;
+  }
+}
+
+/**
+ * Alias for editMessage — same signature, clearer name.
+ */
+export const editText = editMessage;
+
+/**
+ * Get a contact's presence (online/offline/typing).
+ * @param {object} sock
+ * @param {string} jid
+ */
+export async function getPresence(sock, jid) {
+  try {
+    if (typeof sock.presenceSubscribe === "function") {
+      await sock.presenceSubscribe(jid);
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Check if a phone number is registered on WhatsApp.
+ * @param {object} sock
+ * @param {string} jid
+ * @returns {Promise<boolean>}
+ */
+export async function isOnWhatsApp(sock, jid) {
+  try {
+    const result = await sock.onWhatsApp(jid);
+    return !!(Array.isArray(result) ? result[0]?.exists : result?.exists);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Get a contact's profile picture URL.
+ * Returns null when unavailable.
+ * @param {object} sock
+ * @param {string} jid
+ * @returns {Promise<string|null>}
+ */
+export async function getProfilePicture(sock, jid) {
+  try {
+    return await sock.profilePictureUrl(jid, "image");
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Prepare a contextInfo with externalAdReply (link-preview card).
+ * Re-exported from mediaHandler for backward compat.
+ * @param {object} opts
  * @returns {object}
  */
-export function prepareExternalAdReply(opts = {}) {
+export function prepareContextInfo(opts = {}) {
   return {
-    title: opts.title || "",
-    body: opts.body || "",
-    sourceUrl: opts.sourceUrl || "https://whatsapp.com",
-    mediaUrl: opts.mediaUrl || opts.sourceUrl || "",
-    mediaType: opts.mediaType === "VIDEO" ? 2 : 1,
-    thumbnail: opts.thumbnail || null,
-    sourceId: opts.sourceId || "",
-    renderLargerThumbnail: opts.renderLargerThumbnail ?? true,
-    showAdAttribution: opts.showAdAttribution ?? false,
+    externalAdReply: {
+      title:                opts.title       || "",
+      body:                 opts.body        || "",
+      sourceUrl:            opts.sourceUrl   || "https://whatsapp.com",
+      mediaType:            opts.mediaType   ?? 1,
+      thumbnail:            opts.thumbnail   || null,
+      renderLargerThumbnail: opts.renderLarger !== false,
+      showAdAttribution:    false,
+    },
   };
 }
+
+/**
+ * Build an externalAdReply contextInfo block.
+ * Alias for prepareContextInfo.
+ * @param {object} opts
+ * @returns {object}
+ */
+export const prepareExternalAdReply = prepareContextInfo;
 
 /**
  * Send a location message.
@@ -284,9 +266,9 @@ export async function sendLocation(sock, jid, latitude, longitude, opts = {}) {
   try {
     const content = {
       location: {
-        degreesLatitude: latitude,
+        degreesLatitude:  latitude,
         degreesLongitude: longitude,
-        name: opts.name || "",
+        name:    opts.name    || "",
         address: opts.address || "",
       },
     };
@@ -302,7 +284,6 @@ export async function sendLocation(sock, jid, latitude, longitude, opts = {}) {
 /**
  * Send an interactive poll.
  * Falls back to a numbered text list if polls are unsupported.
- *
  * @param {object}   sock
  * @param {string}   jid
  * @param {string}   question
@@ -315,8 +296,9 @@ export async function sendPollMessage(sock, jid, question, options, opts = {}) {
   try {
     return await _sendPollDirect(sock, jid, question, options, opts);
   } catch {
+    const { sendText } = await import("./messageHandler.js");
     const lines = (options || []).map((o, i) => `[${i + 1}] ${o}`).join("\n");
-    const text = `📊 *${question}*\n\n${lines}`;
+    const text  = `*${question}*\n\n${lines}`;
     const sendOpts = {};
     if (opts.quoted) sendOpts.quoted = opts.quoted;
     return sock.sendMessage(jid, { text }, sendOpts);
