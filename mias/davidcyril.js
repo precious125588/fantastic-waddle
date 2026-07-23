@@ -1,6 +1,6 @@
 // davidcyril.js — DavidCyril public API helper (axios-based, ESM)
 // Base: https://apis.davidcyril.name.ng — 468 public endpoints, no key required
-import axios from "axios";
+import { httpClient as axios } from "./lib/engineAccess.js";
 
 const DC_BASE = "https://apis.davidcyril.name.ng";
 const DC_TIMEOUT = 25000;

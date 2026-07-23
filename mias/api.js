@@ -6,7 +6,7 @@
  * Fallback2: public APIs
  */
 
-import axios from 'axios';
+import { httpClient as axios } from './lib/engineAccess.js';
 
 const ZERO_BASE  = 'https://zeroapi2-production.up.railway.app';
 const ZERO_KEY   = process.env.ZERO_API_KEY || 'ZERO-ADMIN-4e8a479a618e7a43d0a4edd1';
