@@ -12,6 +12,10 @@ import { createWriteStream } from "fs";
 import { unlink } from "fs/promises";
 import { tmpdir } from "os";
 import { join } from "path";
+import {
+  httpClient,
+  image as imageEngine,
+} from "../lib/engineAccess.js";
 
 // ─── Simple LRU cache for upload results ─────────────────────────────────────
 
@@ -59,21 +63,21 @@ export async function fetchBuffer(url, opts = {}) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeout);
     try {
-      const { default: nodeFetch } = await import("node-fetch").catch(() => ({ default: fetch }));
-      const fetchFn = nodeFetch || fetch;
-
-      const res = await fetchFn(url, {
+      const response = await httpClient.get(url, {
+        timeout,
         signal: controller.signal,
         headers: {
           "User-Agent": "MIAS-Bot/5.3 (+https://github.com/precious125588/fantastic-waddle)",
           ...(opts.headers || {}),
         },
+        responseType: "arraybuffer",
+        maxContentLength: opts.maxBytes || 50 * 1024 * 1024,
+        maxBodyLength: opts.maxBytes || 50 * 1024 * 1024,
       });
 
-      if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
-
-      const arrayBuf = await res.arrayBuffer();
-      const buf = Buffer.from(arrayBuf);
+      const buf = Buffer.isBuffer(response.data)
+        ? response.data
+        : Buffer.from(response.data);
       if (!opts.noCache) _cacheSet(cachedKey, buf);
       return buf;
     } catch (err) {
@@ -104,14 +108,13 @@ export async function generateImageThumbnail(imageBuf, opts = {}) {
   const w = opts.width  ?? 300;
   const h = opts.height ?? 150;
 
-  // Try Jimp
+  // Use the registered Jimp engine first.
   try {
-    const Jimp = await import("jimp");
-    const JimpCls = Jimp.Jimp || Jimp.default?.Jimp || Jimp.default;
-    if (JimpCls) {
-      const img = await JimpCls.fromBuffer(imageBuf);
-      img.resize({ w, h });
-      return await img.getBuffer("image/jpeg");
+    if (imageEngine) {
+      return await imageEngine.resize(imageBuf, w, h, {
+        mime: "image/jpeg",
+        quality: 75,
+      });
     }
   } catch {}
 

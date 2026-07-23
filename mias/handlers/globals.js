@@ -16,6 +16,22 @@
 import * as Handlers from "./baileysHandler.js";
 
 let _installed = false;
+let _devWatcherStarted = false;
+
+async function startDevelopmentWatcher() {
+  if (_devWatcherStarted) return;
+  if (process.env.NODE_ENV !== "development" && process.env.MIAS_DEV_WATCH !== "1") return;
+  _devWatcherStarted = true;
+  try {
+    const { startModuleWatcher } = await import("../lib/dev/moduleWatcher.mjs");
+    await startModuleWatcher([
+      new URL("../handlers", import.meta.url),
+      new URL("../lib/engines", import.meta.url),
+    ]);
+  } catch (error) {
+    console.error("[MIAS] Development watcher disabled:", error?.message || error);
+  }
+}
 
 /**
  * Install all handler functions globally.
@@ -30,13 +46,26 @@ export function installHandlerGlobals(sock, config = {}) {
   globalThis.__MIAS_SOCK__   = sock;
   globalThis.__MIAS_CONFIG__ = config;
 
-  if (_installed) return;
+  if (!_installed) {
+    // Initialize all reusable services once before exposing the handler facade.
+    // GKTW remains optional; its adapter always retains the Baileys fallback.
+    Handlers.initializeEngineRegistry({
+      gktw: {
+        isAvailable: Handlers.isGktwAvailable,
+        getModule: Handlers.gktwModule,
+        version: Handlers.gktwVersion,
+        diagnostics: Handlers.adapterDiagnostics,
+      },
+      baileys: {
+        getModule: Handlers.baileysModule,
+      },
+    });
 
-  // ── Full handler namespace ─────────────────────────────────────────────────
-  globalThis.__MIAS__ = Handlers;
+    // ── Full handler namespace ───────────────────────────────────────────────
+    globalThis.__MIAS__ = Handlers;
 
-  // ── UI Manager ─────────────────────────────────────────────────────────────
-  globalThis.__MIAS_UI__              = Handlers.UI;
+    // ── UI Manager ────────────────────────────────────────────────────────────
+    globalThis.__MIAS_UI__              = Handlers.UI;
 
   // ── Event hooks ────────────────────────────────────────────────────────────
   globalThis.__MIAS_ON_HOOK__         = (event, fn) => Handlers.onHook(event, fn);
@@ -145,7 +174,16 @@ export function installHandlerGlobals(sock, config = {}) {
   globalThis.__MIAS_WIZARD_COUNT__    = ()                               => Handlers.wizardSessionCount();
   globalThis.__MIAS_WIZARD_LIST__     = ()                               => Handlers.listWizardSessions();
 
-  _installed = true;
+    globalThis.__MIAS_ENGINES__       = Handlers.getEngineRegistry();
+    globalThis.__MIAS_GET_ENGINE__    = (name) => Handlers.getEngine(name);
+    globalThis.__MIAS_ENGINE_STATUS__ = () => Handlers.engineStatus();
+    void globalThis.__MIAS_ENGINES__.refreshAdapters();
+
+    _installed = true;
+  }
+
+  // Development-only; production startup never imports chokidar.
+  void startDevelopmentWatcher();
 }
 
 /**

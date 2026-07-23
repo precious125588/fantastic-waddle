@@ -4,7 +4,7 @@
 import { getOwnerName, greet } from '../owner.js';
 import { stagedSend, sendNix, reactNix, nixFooter } from '../ui.js';
 import { prexzyGet } from '../api.js';
-import axios from 'axios';
+import { httpClient as axios } from '../../lib/engineAccess.js';
 
 function cleanNumber(n) { return String(n || '').replace(/[^0-9]/g, ''); }
 function getJid(msg) { return msg.key.remoteJid; }

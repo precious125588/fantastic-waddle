@@ -4,7 +4,7 @@
 import { getOwnerName, greet } from '../owner.js';
 import { stagedSend, sendNix, reactNix, nixFooter, typingOn, typingOff } from '../ui.js';
 import { nixDownload, nixGif, prexzyGet } from '../api.js';
-import axios from 'axios';
+import { httpClient as axios } from '../../lib/engineAccess.js';
 
 function getJid(msg) { return msg.key.remoteJid; }
 function getQuotedMsg(msg) {

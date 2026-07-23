@@ -65,6 +65,7 @@
  *  getCapabilities() can()              capabilitySummary() invalidateCapabilityCache()
  *  MENU_CATEGORIES   getCategoryById()  findCommand()      getTotalCommandCount()
  *  gktwVersion()     adapterDiagnostics() generateContextInfo() generateExternalAdReply()
+ *  getEngineRegistry() getEngine() engineStatus()
  *  startWizardSession() clearWizardSession() hasWizardSession() getWizardSession()
  *  resumeWizardSession() listWizardSessions() wizardSessionCount()
  * ─────────────────────────────────────────────────────────────────────────────
@@ -96,10 +97,37 @@ export * from "./wizardHandler.js";
 export {
   isGktwAvailable,
   gktwVersion,
+  gktwModule,
+  baileysModule,
   adapterDiagnostics,
   generateContextInfo,
   generateExternalAdReply,
 } from "./gktwAdapter.js";
+
+// ── Shared engine registry ────────────────────────────────────────────────────
+import engineRegistryModule from "../lib/engineRegistry.cjs";
+
+const {
+  getEngine: _getEngine,
+  getEngineRegistry: _getEngineRegistry,
+  initializeEngineRegistry: _initializeEngineRegistry,
+} = engineRegistryModule;
+
+export function initializeEngineRegistry(adapters = {}) {
+  return _initializeEngineRegistry({ adapters });
+}
+
+export function getEngineRegistry() {
+  return _getEngineRegistry();
+}
+
+export function getEngine(name) {
+  return _getEngine(name);
+}
+
+export function engineStatus() {
+  return getEngineRegistry().diagnostics();
+}
 
 // ─── Core adapter utilities ───────────────────────────────────────────────────
 

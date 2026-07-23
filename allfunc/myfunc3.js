@@ -6,10 +6,9 @@
 
 const { proto, delay, getContentType } = require('@whiskeysockets/baileys')
 const chalk = require('chalk')
-const axios = require('axios');
+const { httpClient: axios, jimp: Jimp } = require('../mias/lib/engineAccess.cjs');
 const { sizeFormatter } = require('human-readable');
 const fs = require("fs");
-const Jimp = require("jimp");
 
 // exports serialize
 exports.serialize = (ptz, m) => {

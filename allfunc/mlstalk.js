@@ -1,4 +1,4 @@
-const axios = require('axios')
+const { httpClient: axios } = require('../mias/lib/engineAccess.cjs')
 
 async function mlstalk(id, zoneId) {
     return new Promise(async (resolve, reject) => {

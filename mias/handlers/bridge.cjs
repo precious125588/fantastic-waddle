@@ -34,6 +34,23 @@ const MIAS_BRIDGE = new Proxy({}, {
     if (prop === "handlers") {
       return globalThis.__MIAS__ || {};
     }
+    if (prop === "engines") {
+      return globalThis.__MIAS_ENGINES__ || {};
+    }
+    if (prop === "engineStatus") {
+      return async function () {
+        return typeof globalThis.__MIAS_ENGINE_STATUS__ === "function"
+          ? globalThis.__MIAS_ENGINE_STATUS__()
+          : {};
+      };
+    }
+    if (prop === "getEngine") {
+      return async function (name) {
+        return typeof globalThis.__MIAS_GET_ENGINE__ === "function"
+          ? globalThis.__MIAS_GET_ENGINE__(name)
+          : null;
+      };
+    }
 
     // Forward any function call through __MIAS__
     return async function (...args) {
@@ -57,7 +74,7 @@ const MIAS_BRIDGE = new Proxy({}, {
   },
 
   has(_, prop) {
-    if (prop === "isReady" || prop === "handlers") return true;
+    if (prop === "isReady" || prop === "handlers" || prop === "engines") return true;
     const handlers = globalThis.__MIAS__ || {};
     return prop in handlers;
   },

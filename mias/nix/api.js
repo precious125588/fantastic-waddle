@@ -11,7 +11,7 @@
  * NEVER crashes — always returns a graceful error object.
  */
 
-import axios from 'axios';
+import { httpClient as axios } from '../lib/engineAccess.js';
 
 // ── Constants ────────────────────────────────────────────────
 const ZERO_BASE   = 'https://zeroapi2-production.up.railway.app';
@@ -180,6 +180,16 @@ export async function nixUniversal(url) {
   }
   return _socialDl('universal', url);
 }
+
+// Compatibility names used by the existing NIX command modules.
+// Keep these aliases at the API boundary so command syntax and handlers do
+// not need to know which provider implementation currently serves the call.
+export const nixDownload = nixUniversal;
+export const nixGif = (keyword) => prexzyGet('/search/gif', { query: keyword });
+export const nixNews = () => prexzyGet('/news');
+export const nixFetch = (url, options = {}) =>
+  _http.get(url, options).then(({ data }) => ({ ok: true, data }))
+    .catch((error) => ({ ok: false, error: error?.message || 'Fetch failed' }));
 
 // ════════════════════════════════════════════════════════════
 //  FILE HOSTING  (/api/<host>)

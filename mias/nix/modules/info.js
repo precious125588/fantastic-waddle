@@ -4,7 +4,7 @@
 import { getOwnerName, greet } from '../owner.js';
 import { stagedSend, sendNix, reactNix, nixFooter } from '../ui.js';
 import { nixWeather, nixWiki, nixNews, prexzyGet, nixFetch } from '../api.js';
-import axios from 'axios';
+import { httpClient as axios } from '../../lib/engineAccess.js';
 
 export async function weather(sock, msg, args) {
   const owner = getOwnerName();

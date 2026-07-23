@@ -3,12 +3,12 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 }
 Object.defineProperty(exports, "__esModule", { value: true })
 
-const axios = require("axios")
+const { httpClient: axios } = require('../mias/lib/engineAccess.cjs')
 const cheerio = require("cheerio")
 const { resolve } = require("path")
 const util = require("util")
 let BodyForm = require('form-data')
-let { fromBuffer } = require('file-type')
+let { fromBuffer } = require('../mias/lib/engineAccess.cjs').file
 //let fetch = require('node-fetch')
 let fs = require('fs')
 const child_process = require('child_process')

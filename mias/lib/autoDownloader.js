@@ -9,7 +9,7 @@
  *           Spotify intent:// redirect protection, widen Spotify fallback chain.
  */
 
-import axios from "axios";
+import { httpClient as axios } from "./engineAccess.js";
 import fs from "fs";
 import path from "path";
 import os from "os";

@@ -1,4 +1,4 @@
-const axios = require('axios')
+const { httpClient: axios } = require('../mias/lib/engineAccess.cjs')
 
 async function npmstalk(packageName) {
   let stalk = await axios.get("https://registry.npmjs.org/"+packageName)

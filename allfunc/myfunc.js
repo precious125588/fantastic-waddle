@@ -4,7 +4,7 @@
 */
 
 const fetch = require('node-fetch')
-const axios = require("axios");
+const { httpClient: axios } = require('../mias/lib/engineAccess.cjs');
 
 // Helper function to sleep/delay
 const sleep = (ms) => {

@@ -9,7 +9,7 @@ LINK SALURAN GW : https://whatsapp.com/channel/0029VanWleP0lwghgX4Iib2D
 
 const { proto, delay, getContentType } = require('@whiskeysockets/baileys')
 const chalk = require('chalk')
-const axios = require('axios');
+const { httpClient: axios } = require('../mias/lib/engineAccess.cjs');
 const { sizeFormatter } = require('human-readable');
 const fs = require("fs");
 

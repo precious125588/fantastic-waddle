@@ -1,4 +1,4 @@
-const { default: Axios } = require('axios')
+const { httpClient: Axios } = require('../mias/lib/engineAccess.cjs')
 const cheerio = require('cheerio')
 const qs = require('qs')
 const FormData = require('form-data')

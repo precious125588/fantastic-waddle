@@ -7,12 +7,12 @@ const { extractMessageContent, jidNormalizedUser, proto, delay, getContentType, 
 const chalk = require('chalk')
 const fs = require('fs')
 const Crypto = require('crypto')
-const axios = require('axios')
+const { httpClient: axios, jimp: Jimp } = require('../mias/lib/engineAccess.cjs')
 const moment = require('moment-timezone')
 const { sizeFormatter } = require('human-readable')
 const util = require('util')
 const { defaultMaxListeners } = require('stream')
-const { read, MIME_JPEG, RESIZE_BILINEAR, AUTO } = require('jimp')
+const { read, MIME_JPEG, RESIZE_BILINEAR, AUTO } = Jimp
 
 const unixTimestampSeconds = (date = new Date()) => Math.floor(date.getTime() / 1000)
 
@@ -175,7 +175,6 @@ exports.logic = (check, inp, out) => {
 }
 
 exports.generateProfilePicture = async (buffer) => {
-  const Jimp = require('jimp')
   const img = await Jimp.read(buffer)
   const size = Math.min(img.getWidth(), img.getHeight())
   const cropped = img.crop(0, 0, size, size).resize(720, 720)

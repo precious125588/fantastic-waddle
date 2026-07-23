@@ -1,6 +1,6 @@
 const fetch = require('node-fetch')
 const FormData = require('form-data')
-const { fromBuffer } = require('file-type')
+const { fromBuffer } = require('../mias/lib/engineAccess.cjs').file
 
 /**
  * Upload epheremal file to file.io

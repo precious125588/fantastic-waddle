@@ -5,7 +5,7 @@
  * All endpoints wired here — import and use princeGet() / princePost()
  */
 
-const axios = require('axios');
+const { httpClient: axios } = require('../mias/lib/engineAccess.cjs');
 
 const BASE = 'https://api.princetechn.com';
 const KEY  = 'prince';

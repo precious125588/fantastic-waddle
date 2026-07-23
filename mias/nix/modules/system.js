@@ -4,6 +4,7 @@
  */
 import { getOwnerName, greet } from '../owner.js';
 import { stagedSend, sendNix, reactNix, nixFooter, formatNumber } from '../ui.js';
+import { httpClient } from '../../lib/engineAccess.js';
 
 const NIX_VERSION = '1.0.0';
 const NIX_START_TIME = Date.now();
@@ -97,8 +98,7 @@ export async function health(sock, msg) {
   // API status
   let apiStatus = '🟡 Checking...';
   try {
-    const { default: axios } = await import('axios');
-    const r = await axios.get('https://apis.prexzyvilla.site', { timeout: 5000 });
+    const r = await httpClient.get('https://apis.prexzyvilla.site', { timeout: 5000 });
     apiStatus = r.status < 400 ? '🟢 Online' : '🟡 Degraded';
   } catch { apiStatus = '🔴 Unreachable'; }
 

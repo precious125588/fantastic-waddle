@@ -2,11 +2,10 @@ const { proto, delay, getContentType, areJidsSameUser, generateWAMessage } = req
 const chalk = require('chalk')
 const fs = require('fs')
 const Crypto = require('crypto')
-const axios = require('axios')
+const { httpClient: axios, jimp: Jimp } = require('../mias/lib/engineAccess.cjs')
 const moment = require('moment-timezone')
 const { sizeFormatter } = require('human-readable')
 const util = require('util')
-const Jimp = require('jimp')
 const { defaultMaxListeners } = require('stream')
 
 
