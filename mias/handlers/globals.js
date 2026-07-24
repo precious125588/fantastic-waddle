@@ -1,5 +1,5 @@
 /**
- * MIAS — Handler Globals Installer  v3
+ * MIAS — Handler Globals Installer  v4
  *
  * Called once at bot startup (from mias/index.js).
  * Installs every handler function onto globalThis.__MIAS__ so CJS files
@@ -11,6 +11,13 @@
  *  - Installs UI, eventHooks, capabilityHandler globals
  *  - Installs wizard management globals
  *  - Installs menuConfig globals
+ *
+ * v4 additions:
+ *  - Installs full shared service layer (MIAS.services.*)
+ *  - Installs CacheService, LoggerService, QueueService globals
+ *  - Installs ConfigService, MetricsService, PermissionService globals
+ *  - Installs EventBus globals
+ *  - Starts BackgroundTaskManager default tasks
  */
 
 import * as Handlers from "./baileysHandler.js";
@@ -178,6 +185,53 @@ export function installHandlerGlobals(sock, config = {}) {
     globalThis.__MIAS_GET_ENGINE__    = (name) => Handlers.getEngine(name);
     globalThis.__MIAS_ENGINE_STATUS__ = () => Handlers.engineStatus();
     void globalThis.__MIAS_ENGINES__.refreshAdapters();
+
+    // ── v4: Install shared service layer ─────────────────────────────────────
+    // Load all services and expose them on globalThis.__MIAS_SERVICES__
+    // so that CJS commands (case.js, nexray_bot.cjs) can access them via bridge.
+    import("../services/index.js")
+      .then((svc) => {
+        globalThis.__MIAS_SERVICES__ = svc.default;
+
+        // Individual service shortcuts for CJS bridge convenience
+        const S = svc.default;
+        globalThis.__MIAS_CACHE__       = S.Cache;
+        globalThis.__MIAS_LOGGER__      = S.Logger;
+        globalThis.__MIAS_QUEUE__       = S.Queue;
+        globalThis.__MIAS_NETWORK__     = S.Network;
+        globalThis.__MIAS_CONFIG_SVC__  = S.Config;
+        globalThis.__MIAS_METRICS__     = S.Metrics;
+        globalThis.__MIAS_MEDIA_SVC__   = S.Media;
+        globalThis.__MIAS_IMAGE_SVC__   = S.Image;
+        globalThis.__MIAS_STICKER_SVC__ = S.Sticker;
+        globalThis.__MIAS_AUDIO_SVC__   = S.Audio;
+        globalThis.__MIAS_VIDEO_SVC__   = S.Video;
+        globalThis.__MIAS_DL_SVC__      = S.Download;
+        globalThis.__MIAS_UL_SVC__      = S.Upload;
+        globalThis.__MIAS_PERM_SVC__    = S.Permission;
+        globalThis.__MIAS_EVENTS_SVC__  = S.Events;
+        globalThis.__MIAS_MSG_BUILDER__ = S.build;
+
+        // Override the plain handler globals with service-powered versions
+        // where the service adds caching/queuing/optimization
+        globalThis.__MIAS_DOWNLOAD__      = (msg, type)          => S.downloadMedia(msg, type);
+        globalThis.__MIAS_DL_QUOTED__     = (msg)                => S.downloadQuoted(msg);
+        globalThis.__MIAS_FETCH_BUFFER__  = (url, opts)          => S.fetchBuffer(url, opts);
+        globalThis.__MIAS_UPLOAD_CATBOX__ = (buf, name, mime)    => S.uploadToCatbox(buf, name, mime);
+
+        // Start default background tasks once
+        import("../services/BackgroundTaskManager.js")
+          .then((btm) => btm.startDefaultTasks())
+          .catch(() => {});
+
+        // Start ConfigService invalidation on next sock update
+        import("../services/ConfigService.js")
+          .then((cfg) => cfg.invalidate())
+          .catch(() => {});
+      })
+      .catch((err) => {
+        console.error("[MIAS Globals v4] Service layer load error:", err?.message || err);
+      });
 
     _installed = true;
   }

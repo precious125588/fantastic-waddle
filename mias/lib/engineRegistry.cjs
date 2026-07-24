@@ -1,25 +1,33 @@
 "use strict";
 
 /**
- * MIAS Engine Registry
+ * MIAS Engine Registry  v2
  *
  * The registry is intentionally CommonJS so both the root CJS application and
  * the ESM mias/ application can use the same singleton without a module-system
  * migration. Engine modules are loaded once, lazily at registry initialization,
  * and a failed optional engine is isolated from the rest of the bot.
+ *
+ * v2: Adds cache, queue, logger, utility engines.
  */
 
 const ENGINE_LOADERS = Object.freeze({
-  canvas: () => require("./engines/canvasEngine.cjs"),
-  cards: () => require("./engines/cardEngine.cjs"),
-  fileDetection: () => require("./engines/fileDetection.cjs"),
-  http: () => require("./engines/httpClient.cjs"),
-  image: () => require("./engines/imageProcessing.cjs"),
-  linkPreview: () => require("./engines/linkPreview.cjs"),
-  media: () => require("./engines/mediaEngine.cjs"),
-  speedTest: () => require("./engines/speedTest.cjs"),
-  sticker: () => require("./engines/stickerEngine.cjs"),
-  svg: () => require("./engines/svgEngine.cjs"),
+  // ── Original engines ──────────────────────────────────────────────────────
+  canvas:       () => require("./engines/canvasEngine.cjs"),
+  cards:        () => require("./engines/cardEngine.cjs"),
+  fileDetection:() => require("./engines/fileDetection.cjs"),
+  http:         () => require("./engines/httpClient.cjs"),
+  image:        () => require("./engines/imageProcessing.cjs"),
+  linkPreview:  () => require("./engines/linkPreview.cjs"),
+  media:        () => require("./engines/mediaEngine.cjs"),
+  speedTest:    () => require("./engines/speedTest.cjs"),
+  sticker:      () => require("./engines/stickerEngine.cjs"),
+  svg:          () => require("./engines/svgEngine.cjs"),
+  // ── New v2 engines ────────────────────────────────────────────────────────
+  cache:        () => require("./engines/cacheEngine.cjs"),
+  queue:        () => require("./engines/queueEngine.cjs"),
+  logger:       () => require("./engines/loggerEngine.cjs"),
+  utility:      () => require("./engines/utilityEngine.cjs"),
 });
 
 let singleton = null;
@@ -31,22 +39,10 @@ function logEngineError(name, error) {
 function safeLoad(name, loader) {
   try {
     const value = loader();
-    return {
-      name,
-      enabled: true,
-      initialized: true,
-      error: null,
-      value,
-    };
+    return { name, enabled: true, initialized: true, error: null, value };
   } catch (error) {
     logEngineError(name, error);
-    return {
-      name,
-      enabled: false,
-      initialized: true,
-      error: error?.message || String(error),
-      value: null,
-    };
+    return { name, enabled: false, initialized: true, error: error?.message || String(error), value: null };
   }
 }
 
@@ -97,44 +93,39 @@ function initializeEngineRegistry(options = {}) {
     if (record.enabled) engines[name] = record.value;
   }
 
-  // Stable names for future commands. These are references to the already
-  // loaded modules, not additional initializations.
+  // ── Stable aliases for future commands ──────────────────────────────────
   if (engines.canvas || engines.cards) {
     engines.graphics = Object.freeze({
       canvas: engines.canvas || null,
-      cards: engines.cards || null,
+      cards:  engines.cards  || null,
     });
     records.graphics = {
-      name: "graphics",
-      enabled: Boolean(engines.graphics.canvas || engines.graphics.cards),
-      initialized: true,
-      error: null,
-      value: engines.graphics,
+      name: "graphics", enabled: Boolean(engines.graphics.canvas || engines.graphics.cards),
+      initialized: true, error: null, value: engines.graphics,
     };
   }
   if (engines.linkPreview) engines.preview = engines.linkPreview;
   if (engines.fileDetection) engines.file = engines.fileDetection;
   if (engines.speedTest) engines.speed = engines.speedTest;
 
+  // ── GKTW / Baileys adapter services ─────────────────────────────────────
   const adapters = options.adapters || {};
-  const gktw = createAdapterService("gktw", adapters.gktw);
+  const gktw    = createAdapterService("gktw",    adapters.gktw);
   const baileys = createAdapterService("baileys", adapters.baileys);
-  engines.gktw = gktw;
+  engines.gktw    = gktw;
   engines.baileys = baileys;
-  records.gktw = { name: "gktw", enabled: true, initialized: true, error: null, value: gktw };
+  records.gktw    = { name: "gktw",    enabled: true, initialized: true, error: null, value: gktw };
   records.baileys = { name: "baileys", enabled: true, initialized: true, error: null, value: baileys };
 
   const publicRegistry = {
-    version: 1,
+    version: 2,
     initializedAt: new Date().toISOString(),
     engines: Object.freeze(engines),
     refreshPromise: null,
-    get(name) {
-      return this.engines[name] || null;
-    },
-    has(name) {
-      return Boolean(this.engines[name]);
-    },
+
+    get(name) { return this.engines[name] || null; },
+    has(name) { return Boolean(this.engines[name]); },
+
     status() {
       const result = {};
       for (const [name, record] of Object.entries(records)) {
@@ -146,9 +137,10 @@ function initializeEngineRegistry(options = {}) {
         };
       }
       result.gktw.available = gktw.available;
-      result.gktw.mode = gktw.mode;
+      result.gktw.mode      = gktw.mode;
       return result;
     },
+
     diagnostics() {
       return {
         version: this.version,
@@ -156,6 +148,7 @@ function initializeEngineRegistry(options = {}) {
         engines: this.status(),
       };
     },
+
     refreshAdapters() {
       if (this.refreshPromise) return this.refreshPromise;
       if (typeof gktw.isAvailable !== "function") {
@@ -193,8 +186,4 @@ function getEngine(name, options = {}) {
   return getEngineRegistry(options).get(name);
 }
 
-module.exports = {
-  getEngine,
-  getEngineRegistry,
-  initializeEngineRegistry,
-};
+module.exports = { getEngine, getEngineRegistry, initializeEngineRegistry };
