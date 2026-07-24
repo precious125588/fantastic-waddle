@@ -43,11 +43,15 @@ export * as Menu       from "./MenuService.js";
 export * as Context    from "./ContextService.js";
 
 // ── Bot management services ───────────────────────────────────────────────────
-export * as Permission from "./PermissionService.js";
-export * as Utility    from "./UtilityService.js";
-export * as Events     from "./EventBus.js";
-export * as BgTasks    from "./BackgroundTaskManager.js";
-export * as Plugins    from "./PluginSystem.js";
+export * as Permission   from "./PermissionService.js";
+export * as Utility      from "./UtilityService.js";
+export * as Events       from "./EventBus.js";
+export * as BgTasks      from "./BackgroundTaskManager.js";
+export * as Plugins      from "./PluginSystem.js";
+
+// ── Web services ──────────────────────────────────────────────────────────────
+export * as LinkPreview  from "./LinkPreviewService.js";
+export * as SpeedTest    from "./SpeedTestService.js";
 
 // ── Message builder ───────────────────────────────────────────────────────────
 export { build, quick as quickSend } from "./MessageBuilder.js";
@@ -109,6 +113,16 @@ export { enqueueMedia, enqueueDownload, enqueueUpload, enqueueAI,
 // Network
 export { fetchBuffer as httpGet, getJson, postJson } from "./NetworkService.js";
 
+// Link preview
+export { preview as previewLink, sendPreview, formatPreview,
+         extractUrl as extractUrlFromText, toAdReply as linkToAdReply,
+         prefetch as prefetchLink, isUrl } from "./LinkPreviewService.js";
+
+// Speed test
+export { run as runSpeedTest, quickRun as quickSpeedTest,
+         sendSpeedTest, format as formatSpeedTest,
+         formatCompact as formatSpeedTestCompact } from "./SpeedTestService.js";
+
 // Thumbnail
 export { fromImage as thumbFromImage, fromVideo as thumbFromVideo, autoThumb } from "./ThumbnailService.js";
 
@@ -162,8 +176,10 @@ import * as _Context    from "./ContextService.js";
 import * as _Permission from "./PermissionService.js";
 import * as _Utility    from "./UtilityService.js";
 import * as _Events     from "./EventBus.js";
-import * as _BgTasks    from "./BackgroundTaskManager.js";
-import * as _Plugins    from "./PluginSystem.js";
+import * as _BgTasks      from "./BackgroundTaskManager.js";
+import * as _Plugins      from "./PluginSystem.js";
+import * as _LinkPreview  from "./LinkPreviewService.js";
+import * as _SpeedTest    from "./SpeedTestService.js";
 import { build as _build, quick as _quick } from "./MessageBuilder.js";
 
 const MIAS = {
@@ -192,6 +208,8 @@ const MIAS = {
   Events:      _Events,
   BgTasks:     _BgTasks,
   Plugins:     _Plugins,
+  LinkPreview: _LinkPreview,
+  SpeedTest:   _SpeedTest,
 
   // Builder
   build:       _build,
@@ -292,6 +310,19 @@ const MIAS = {
   httpGet:           _Network.fetchBuffer,
   getJson:           _Network.getJson,
   postJson:          _Network.postJson,
+  // Link preview
+  previewLink:       _LinkPreview.preview,
+  sendPreview:       _LinkPreview.sendPreview,
+  formatPreview:     _LinkPreview.formatPreview,
+  extractUrl:        _LinkPreview.extractUrl,
+  linkToAdReply:     _LinkPreview.toAdReply,
+  prefetchLink:      _LinkPreview.prefetch,
+  isUrl:             _LinkPreview.isUrl,
+  // Speed test
+  runSpeedTest:      _SpeedTest.run,
+  quickSpeedTest:    _SpeedTest.quickRun,
+  sendSpeedTest:     _SpeedTest.sendSpeedTest,
+  formatSpeedTest:   _SpeedTest.format,
 };
 
 export default MIAS;

@@ -2,7 +2,7 @@
  * ESM compatibility access layer for MIAS command/API modules.
  * All values resolve from the singleton CommonJS Engine Registry.
  *
- * v2: Adds cache, queue, logger, utility engine exports.
+ * v3: Adds linkPreview, speedTest engine exports.
  */
 
 import registryModule from "./engineRegistry.cjs";
@@ -20,11 +20,13 @@ export const media       = registry.get("media");
 export const graphics    = registry.get("graphics");
 export const svg         = registry.get("svg");
 export const sticker     = registry.get("sticker");
-export const preview     = registry.get("preview");
-export const speed       = registry.get("speed");
 
-// ── New v2 engines ────────────────────────────────────────────────────────────
+// ── v2 engines ────────────────────────────────────────────────────────────────
 export const cache       = registry.get("cache");
 export const queue       = registry.get("queue");
 export const logger      = registry.get("logger");
 export const utility     = registry.get("utility");
+
+// ── v3 engines ────────────────────────────────────────────────────────────────
+export const linkPreview = registry.get("linkPreview");
+export const speedTest   = registry.get("speedTest");
