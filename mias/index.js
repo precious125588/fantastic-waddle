@@ -2884,6 +2884,7 @@ ${_atBotAdmin ? "✅ Message deleted." : "⚠️ Make me admin to auto-delete."}
           const args = parts;
           // ── Expose command registry to wizard dispatcher (once, on first command) ──
           if (!globalThis.__MIAS_COMMANDS__) globalThis.__MIAS_COMMANDS__ = commands;
+          if (!globalThis.__MIAS_MENU_CATEGORIES__) globalThis.__MIAS_MENU_CATEGORIES__ = MENU_CATEGORIES;
           // ── BUTTON MODE: .menu → full interactive home screen ──────────────────
           if (isButtonMode() && name === "menu") {
             try {

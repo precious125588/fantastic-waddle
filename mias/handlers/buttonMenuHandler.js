@@ -1,5 +1,5 @@
 /**
- * MIAS — Button Menu Handler  v3
+ * MIAS — Button Menu Handler  v4 (FIXED)
  *
  * Complete navigable in-app menu for Button Mode:
  *   Home Screen (Owner vCard + 1 list button) → Category List (radio flow) → Command List (radio flow) → [Wizard] → Execute
@@ -12,6 +12,14 @@
  * Text Mode and all existing command handlers are completely untouched.
  *
  * Architecture:  .menu → Owner vCard → Home → Categories (list) → Commands (list) → Wizard → Execute
+ *
+ * v4 FIXES:
+ *  - _sendListMessage now uses the correct flat { text, sections, buttonText, ... } format
+ *    that works with @itsliaaa/baileys (same format as the working [LIST_MENU] in index.js)
+ *  - sendButtonCategorySelector now reads ALL real categories from globalThis.__MIAS_MENU_CATEGORIES__
+ *    (the 34-category system from index.js) with per-category command counts
+ *  - sendButtonCommandSelector reads real commands from globalThis.__MIAS_COMMANDS__ keyed by category
+ *  - Robust multi-format fallback: tries flat list → old list → numbered text
  */
 
 import { sendText }                              from "./messageHandler.js";
@@ -24,7 +32,7 @@ import {
   COMMAND_INPUTS,
 }                                                from "./wizardHandler.js";
 import {
-  MENU_CATEGORIES,
+  MENU_CATEGORIES as _STATIC_MENU_CATEGORIES,
   getCategoryById,
   getTotalCommandCount,
 }                                                from "./menuConfig.js";
@@ -85,6 +93,100 @@ function _ownerName() {
   return "Owner";
 }
 
+// ─── Real category/command resolver ───────────────────────────────────────────
+
+const _CAT_EMOJI = {
+  ADULT: "🔞", AI: "🤖", ANIME: "🎌", AUDIO: "🎵", CONFIG: "⚙️",
+  CONVERT: "🔄", CONVERTER: "🔄", CREATOR: "🎨", DEBUG: "🐛",
+  DOWNLOAD: "⬇️", ECONOMY: "💰", FUN: "🎉", GAMES: "🎮",
+  GROUP: "👥", HENTAI: "🔞", INFO: "ℹ️", LOGO: "🖼️",
+  MEDIA: "🎬", MISC: "📦", NSFW: "🔞", OWNER: "👑",
+  PANEL: "🗂️", RANDOM: "🎲", REACTIONS: "😄", RELIGION: "🕌",
+  SEARCH: "🔍", SESSION: "🔐", SETTINGS: "⚙️", STALK: "🔍",
+  SYSTEM: "⚙️", TEXT: "📝", TEXTMAKER: "✍️", TOOLS: "🛠️",
+  TTS: "🔊", UTILITY: "🛠️", WHATSAPP: "💬", OTHER: "📁",
+};
+
+/**
+ * Build categories from the REAL index.js MENU_CATEGORIES (globalThis.__MIAS_MENU_CATEGORIES__)
+ * Falls back to static menuConfig.js categories.
+ * Returns: [{ id, label, emoji, cmdNames: string[], totalCount }]
+ */
+function _getRealCategories() {
+  try {
+    // Prefer the full index.js MENU_CATEGORIES exposed via globalThis
+    const real = globalThis.__MIAS_MENU_CATEGORIES__;
+    if (Array.isArray(real) && real.length > 0) {
+      return real
+        .filter(cat => cat && (cat.name || cat.id) && Array.isArray(cat.cmds) && cat.cmds.length > 0)
+        .map(cat => {
+          const name  = (cat.name || cat.id || "OTHER").toUpperCase();
+          const emoji = cat.emoji || _CAT_EMOJI[name] || "📁";
+          const cmds  = [...new Set(cat.cmds)]; // deduplicate
+          return {
+            id:         `cat_${name.toLowerCase()}`,
+            label:      `${emoji} ${name}`,
+            emoji,
+            name,
+            cmdNames:   cmds,
+            totalCount: cmds.length,
+          };
+        })
+        .filter(c => c.totalCount > 0)
+        .sort((a, b) => a.name.localeCompare(b.name));
+    }
+  } catch {}
+
+  // Fallback: build categories from globalThis.__MIAS_COMMANDS__ dynamically
+  try {
+    const cmds = globalThis.__MIAS_COMMANDS__;
+    if (cmds && typeof cmds.entries === "function") {
+      const catMap = new Map();
+      for (const [name, entry] of cmds.entries()) {
+        if (!entry?.handler) continue;
+        const cat = (entry.category || "OTHER").toUpperCase();
+        if (!catMap.has(cat)) catMap.set(cat, []);
+        catMap.get(cat).push(name);
+      }
+      if (catMap.size > 0) {
+        return Array.from(catMap.entries())
+          .map(([cat, cmdNames]) => {
+            const emoji = _CAT_EMOJI[cat] || "📁";
+            return { id: `cat_${cat.toLowerCase()}`, label: `${emoji} ${cat}`, emoji, name: cat, cmdNames, totalCount: cmdNames.length };
+          })
+          .filter(c => c.totalCount > 0)
+          .sort((a, b) => a.name.localeCompare(b.name));
+      }
+    }
+  } catch {}
+
+  // Last resort: static menuConfig.js
+  return _STATIC_MENU_CATEGORIES.map(cat => {
+    const name  = (cat.id || cat.label || "OTHER").toUpperCase().replace(/^CAT_/, "");
+    const emoji = _CAT_EMOJI[name] || "📁";
+    const cmds  = (cat.cmds || []).map(c => (typeof c === "string" ? c : c.name));
+    return { id: cat.id, label: cat.label || `${emoji} ${name}`, emoji, name, cmdNames: cmds, totalCount: cmds.length };
+  });
+}
+
+/**
+ * Get commands for a given category id (e.g. "cat_ai").
+ * Returns { name, desc }[] from __MIAS_COMMANDS__ or static menuConfig.
+ */
+function _getCategoryCommands(catId) {
+  // Look up from real categories first
+  const cats = _getRealCategories();
+  const cat  = cats.find(c => c.id === catId);
+  if (!cat) return [];
+
+  // Try to get desc for each cmd from __MIAS_COMMANDS__
+  const cmdsMap = globalThis.__MIAS_COMMANDS__;
+  return cat.cmdNames.map(n => {
+    const entry = cmdsMap?.get(n);
+    return { name: n, desc: entry?.desc || "" };
+  });
+}
+
 // ─── Owner vCard sender ───────────────────────────────────────────────────────
 
 /**
@@ -133,40 +235,78 @@ async function _sendOwnerVCard(sock, jid, msg) {
 // ─── Direct WhatsApp list message builder ─────────────────────────────────────
 
 /**
- * Send a WhatsApp list message (radio flow — shows a selectable list when tapped).
- * Uses sock.sendMessage directly with `list` content type — most reliable method.
+ * Send a WhatsApp list message (radio flow).
  *
- * WhatsApp limitations:
- *   - Max 10 rows per section
- *   - Max ~5 sections per list
- *   - buttonText = label on the "Select" tap target
+ * FIXED v4: Uses the flat { text, sections, buttonText, title, footer } format
+ * that works with @itsliaaa/baileys — matches the [LIST_MENU] format in index.js.
  *
- * @returns {Promise<object|null>} Sent message or null on failure
+ * Falls back to old { list: {...} } format, then numbered plain text.
+ *
+ * @returns {Promise<object|null>} Sent message or null on ALL failures
  */
 async function _sendListMessage(sock, jid, { title, body, buttonText, footer, sections, quoted }) {
+  const sendOpts = {};
+  if (quoted) sendOpts.quoted = quoted;
+
+  // ── Format 1: flat { text, sections, buttonText, title, footer } ─────────
+  // This is the format that works in @itsliaaa/baileys (see [LIST_MENU] in index.js)
   try {
-    const content = {
+    const payload = {
+      text:       body       || "",
+      title:      title      || "",
+      buttonText: buttonText || "Select",
+      footer:     footer     || "",
+      sections:   (sections  || []).map(s => ({
+        title: s.title || "",
+        rows:  (s.rows || []).slice(0, 10).map(r => ({
+          rowId:       String(r.id),
+          title:       String(r.title).slice(0, 24),
+          description: String(r.description || "").slice(0, 72),
+        })),
+      })).filter(s => s.rows.length > 0),
+    };
+    const result = await sock.sendMessage(jid, payload, sendOpts);
+    if (result) return result;
+  } catch {}
+
+  // ── Format 2: { list: { description, ... } } (older Baileys format) ───────
+  try {
+    const payload2 = {
       list: {
-        title:       title       || "",
-        description: body        || "",
-        buttonText:  buttonText  || "Select",
-        listType:    1,            // SINGLE_SELECT
-        sections:    (sections || []).map(s => ({
+        title:       title      || "",
+        description: body       || "",
+        buttonText:  buttonText || "Select",
+        listType:    1,
+        footer:      footer     || "",
+        sections:    (sections  || []).map(s => ({
           title: s.title || "",
           rows:  (s.rows || []).slice(0, 10).map(r => ({
             rowId:       String(r.id),
-            title:       String(r.title).slice(0, 24),      // WA title limit
-            description: String(r.description || "").slice(0, 72), // WA desc limit
+            title:       String(r.title).slice(0, 24),
+            description: String(r.description || "").slice(0, 72),
           })),
         })).filter(s => s.rows.length > 0),
-        footer: footer || "",
       },
     };
-    const sendOpts = {};
-    if (quoted) sendOpts.quoted = quoted;
-    return await sock.sendMessage(jid, content, sendOpts);
+    const result2 = await sock.sendMessage(jid, payload2, sendOpts);
+    if (result2) return result2;
+  } catch {}
+
+  // ── Format 3: numbered text fallback ─────────────────────────────────────
+  try {
+    const allRows = (sections || []).flatMap(s => s.rows || []);
+    const numbered = allRows.map((r, i) =>
+      `[${i + 1}] *${r.title}*${r.description ? `  —  _${r.description}_` : ""}`
+    ).join("\n");
+    const text = [
+      title  ? `*${title}*`  : null,
+      body   ? body          : null,
+      numbered || null,
+      footer ? `_${footer}_` : null,
+    ].filter(Boolean).join("\n\n");
+    return await sock.sendMessage(jid, { text }, sendOpts);
   } catch (err) {
-    console.error("[buttonMenu] _sendListMessage error:", err?.message);
+    console.error("[buttonMenu] _sendListMessage all formats failed:", err?.message);
     return null;
   }
 }
@@ -177,7 +317,7 @@ async function _sendListMessage(sock, jid, { title, body, buttonText, footer, se
  * Send the Button Mode home screen.
  *
  * Steps:
- *  1. Owner vCard (name + profile picture)
+ *  1. Owner vCard (name + profile picture)  ← shown at TOP as the header
  *  2. ONE list message with a single "Open Menu" button
  *     → tapping it returns "btn_openmenu" and shows the category list
  */
@@ -187,10 +327,10 @@ export async function sendButtonHomeScreen(sock, jid, msg, opts = {}) {
   const cmdCount = _cmdCount();
   const uptime   = formatUptime(process.uptime?.() || 0);
 
-  // Step 1 — owner vCard with profile pic
+  // Step 1 — owner vCard with profile pic (appears at the TOP of the menu)
   await _sendOwnerVCard(sock, jid, msg);
 
-  // Step 2 — home menu as a list (radio flow) with one Browse action
+  // Step 2 — home menu as a list (radio flow) with Browse + Close actions
   const body = [
     `*${botName}*`,
     LINE,
@@ -229,9 +369,10 @@ export async function sendButtonHomeScreen(sock, jid, msg, opts = {}) {
 
   if (result) return result;
 
-  // Plain-text fallback
+  // Plain-text fallback (should not reach here — _sendListMessage has its own fallback)
   return sendText(sock, jid,
-    `*${botName}*\n${LINE}\nCommands: ${cmdCount}  |  Uptime: ${uptime}\n\nType *${prefix}menu* to browse commands.`,
+    `*${botName}*\n${LINE}\nCommands: ${cmdCount}  |  Uptime: ${uptime}\n\n` +
+    `Type *${prefix}menu* to browse commands.\n_Button mode active — try ${prefix}menu_`,
     { quoted: msg }
   );
 }
@@ -239,130 +380,138 @@ export async function sendButtonHomeScreen(sock, jid, msg, opts = {}) {
 // ─── Category selector (radio flow) ──────────────────────────────────────────
 
 /**
- * Send all menu categories as a WhatsApp list (radio flow).
- * The user taps "Select Category" → sees all categories → taps one.
- *
- * Uses up to 2 sections if there are more than 10 categories.
+ * Send ALL menu categories as a WhatsApp list (radio flow).
+ * Reads from globalThis.__MIAS_MENU_CATEGORIES__ (the real 34-category system).
+ * Falls back to globalThis.__MIAS_COMMANDS__ grouped by category.
+ * Last resort: static menuConfig.js categories.
  */
 export async function sendButtonCategorySelector(sock, jid, msg, opts = {}) {
   const prefix  = _prefix();
   const botName = _botName();
 
+  const cats = _getRealCategories();
+
   const body = [
     `*${botName} — Categories*`,
+    LINE,
+    `${cats.length} categories  •  ${_cmdCount()} total commands`,
     LINE,
     `Select a category to browse its commands:`,
   ].join("\n");
 
-  // Build rows for all categories
-  const allRows = MENU_CATEGORIES.map(cat => ({
+  // Build rows for all categories (WhatsApp allows max 10 rows per section)
+  const allRows = cats.map(cat => ({
     id:          cat.id,
-    title:       cat.label,
-    description: `${cat.cmds.length} command${cat.cmds.length !== 1 ? "s" : ""}`,
+    title:       cat.label.slice(0, 24),
+    description: `${cat.totalCount} command${cat.totalCount !== 1 ? "s" : ""}`,
   }));
 
-  // WhatsApp allows max 10 rows per section; split into sections of 10
+  // Split into sections of 10 (WhatsApp limit per section)
   const sections = [];
   const CHUNK = 10;
   for (let i = 0; i < allRows.length; i += CHUNK) {
     sections.push({
-      title: i === 0 ? "Categories" : "More Categories",
+      title: i === 0 ? "📂 Categories" : `📂 More Categories (${Math.floor(i / CHUNK) + 1})`,
       rows:  allRows.slice(i, i + CHUNK),
     });
   }
 
+  // Add navigation row
+  const lastSec = sections[sections.length - 1];
+  if (lastSec && lastSec.rows.length < 10) {
+    lastSec.rows.push({ id: "btn_close", title: "❌ Close", description: "Dismiss the menu" });
+  } else {
+    sections.push({ title: "Navigation", rows: [
+      { id: "btn_close", title: "❌ Close", description: "Dismiss the menu" },
+    ]});
+  }
+
   const result = await _sendListMessage(sock, jid, {
-    title:      "Menu Categories",
+    title:      "📋 Menu Categories",
     body,
     buttonText: "Select Category",
-    footer:     `${prefix}menu to go home`,
+    footer:     `${prefix}menu to go home  •  ${cats.length} categories`,
     sections,
     quoted:     msg,
   });
 
   if (result) return result;
 
-  // Plain-text fallback
-  const catList = MENU_CATEGORIES.map((c, i) =>
-    `[${i + 1}] *${c.label}* — ${c.cmds.length} cmds`
-  ).join("\n");
-  return sendText(sock, jid, `${body}\n\n${catList}\n\n_Type the category name or number._`, { quoted: msg });
+  // Fallback text already sent by _sendListMessage
 }
 
 // ─── Command selector (radio flow) ───────────────────────────────────────────
 
 /**
  * Send all commands in a category as a WhatsApp list (radio flow).
- * Shows ALL commands — no artificial limit.
- * Uses multiple sections (max 10 rows each) when a category has >10 commands.
+ * Shows ALL commands — uses multiple sections (max 10 rows each).
+ * Reads real commands from __MIAS_COMMANDS__ / __MIAS_MENU_CATEGORIES__.
  *
  * @param {string} catId - e.g. "cat_ai"
  */
 export async function sendButtonCommandSelector(sock, jid, msg, catId, opts = {}) {
-  const cat = getCategoryById(catId);
+  const prefix = _prefix();
+  const cats   = _getRealCategories();
+  const cat    = cats.find(c => c.id === catId);
+
   if (!cat) {
+    // Unknown category — go back to category selector
+    return sendButtonCategorySelector(sock, jid, msg, opts);
+  }
+
+  const cmds = _getCategoryCommands(catId);
+
+  if (!cmds.length) {
     return sendText(sock, jid,
-      `Category not found. Type *${_prefix()}menu* to start over.`,
+      `*${cat.label}*\n${LINE}\nNo commands found in this category.\n\nType *${prefix}menu* to start over.`,
       { quoted: msg }
     );
   }
-
-  const prefix = _prefix();
-  const cmds   = cat.cmds || [];
 
   const body = [
     `*${cat.label}*`,
     LINE,
     `${cmds.length} command${cmds.length !== 1 ? "s" : ""} available.`,
-    `Select a command to use it:`,
+    `Select a command — tap to use it:`,
   ].join("\n");
 
-  // Build rows for ALL commands — no slice limit
+  // Build rows for ALL commands — use multiple sections (10 per section)
   const allRows = cmds.map(c => ({
     id:          `cmd_${c.name}`,
-    title:       `${prefix}${c.name}`,
-    description: c.desc || "",
+    title:       `${prefix}${c.name}`.slice(0, 24),
+    description: (c.desc || "No description").slice(0, 72),
   }));
 
-  // Split into sections of max 10 rows each (WhatsApp limit per section)
   const sections = [];
   const CHUNK = 10;
   for (let i = 0; i < allRows.length; i += CHUNK) {
+    const sectionNum = Math.floor(i / CHUNK);
     sections.push({
-      title: i === 0 ? cat.label : `${cat.label} (more)`,
+      title: sectionNum === 0 ? cat.label : `${cat.label} (${sectionNum + 1})`,
       rows:  allRows.slice(i, i + CHUNK),
     });
   }
 
-  // Append "Back" row to the last section
-  if (sections.length > 0) {
-    const last = sections[sections.length - 1];
-    if (last.rows.length < 10) {
-      last.rows.push({ id: "btn_back", title: "⬅ Back to Categories", description: "" });
-    } else {
-      sections.push({
-        title: "Navigation",
-        rows:  [{ id: "btn_back", title: "⬅ Back to Categories", description: "" }],
-      });
-    }
-  }
+  // Navigation section (Back + Close)
+  sections.push({
+    title: "Navigation",
+    rows: [
+      { id: "btn_back",  title: "⬅️ Back to Categories", description: "Browse other categories" },
+      { id: "btn_close", title: "❌ Close",               description: "Dismiss the menu" },
+    ],
+  });
 
   const result = await _sendListMessage(sock, jid, {
     title:      cat.label,
     body,
     buttonText: "Select Command",
-    footer:     `${prefix}menu to go home`,
+    footer:     `${prefix}help <command> for details  •  ${prefix}menu to go home`,
     sections,
     quoted:     msg,
   });
 
   if (result) return result;
-
-  // Plain-text fallback
-  const list = cmds.map((c, i) =>
-    `[${i + 1}] *${prefix}${c.name}* — ${c.desc || ""}`
-  ).join("\n");
-  return sendText(sock, jid, `${body}\n\n${list}`, { quoted: msg });
+  // Fallback text already sent by _sendListMessage
 }
 
 // ─── Command selection handler ────────────────────────────────────────────────
@@ -396,7 +545,7 @@ export async function handleCommandSelection(sock, jid, msg, cmdName, opts = {})
     return sendText(sock, jid, promptText, { quoted: msg });
   }
 
-  // No input needed — dispatch immediately
+  // No input needed — dispatch immediately via command registry
   try {
     if (typeof globalThis.__MIAS_DISPATCH_CMD__ === "function") {
       return await globalThis.__MIAS_DISPATCH_CMD__(sock, msg, cmdName, []);
@@ -406,14 +555,15 @@ export async function handleCommandSelection(sock, jid, msg, cmdName, opts = {})
       const entry = cmds.get(cmdName);
       if (entry?.handler) return await entry.handler(sock, msg, []);
     }
+    // If no registry entry, just send a notice
     await sendText(sock, jid,
-      `Running *${prefix}${cmdName}*...`,
+      `▶️ Running *${prefix}${cmdName}*...`,
       { quoted: msg }
     );
   } catch (e) {
     try {
       await sendText(sock, jid,
-        `Error running *${cmdName}*: ${e?.message || e}`,
+        `❌ Error running *${prefix}${cmdName}*: ${e?.message || e}`,
         { quoted: msg }
       );
     } catch {}
@@ -434,7 +584,7 @@ export async function handleButtonResponse(sock, msg, body) {
   const jid = msg?.key?.remoteJid;
   if (!jid) return;
 
-  const prefix = _prefix();
+  const prefix  = _prefix();
   const trimmed = (body || "").trim();
 
   // ── Navigation ──────────────────────────────────────────────────────────────
@@ -445,12 +595,13 @@ export async function handleButtonResponse(sock, msg, body) {
     return sendButtonCategorySelector(sock, jid, msg, {});
   }
   if (trimmed === "btn_close" || trimmed === "btn_cancel") {
-    const isGrp = (jid || "").endsWith("@g.us");
-    const sJid  = isGrp ? (msg?.key?.participant || msg?.participant || jid) : jid;
+    const sJid = jid.endsWith("@g.us")
+      ? (msg?.key?.participant || msg?.participant || jid)
+      : jid;
     clearWizardSession(jid);
     clearWizardSession(sJid);
     return sendText(sock, jid,
-      `Menu closed. Type *${prefix}menu* to open the menu again.`
+      `✅ Menu closed. Type *${prefix}menu* to open it again.`
     ).catch(() => {});
   }
 
@@ -465,6 +616,6 @@ export async function handleButtonResponse(sock, msg, body) {
     return handleCommandSelection(sock, jid, msg, cmdName, {});
   }
 
-  // ── Unknown — show home screen ───────────────────────────────────────────────
-  // (could be a stale button ID or unsupported payload)
+  // ── Unknown payload — show home screen ───────────────────────────────────────
+  return sendButtonHomeScreen(sock, jid, msg, {});
 }

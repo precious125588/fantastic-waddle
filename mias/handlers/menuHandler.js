@@ -166,10 +166,24 @@ export async function sendMenu(sock, jid, msg, opts = {}) {
         botName, owner: _getOwner(), prefix, version, uptime,
         ping: opts.ping ?? null, mode, cmdCount, userName: opts.userName,
       });
-      const rows = MENU_CATEGORIES.map(cat => ({
+      const _realCats = (() => {
+        try {
+          const mc = globalThis.__MIAS_MENU_CATEGORIES__;
+          if (Array.isArray(mc) && mc.length > 0) {
+            return mc.filter(c=>c&&Array.isArray(c.cmds)&&c.cmds.length>0).map(cat => {
+              const name  = (cat.name || cat.id || 'OTHER').toUpperCase();
+              const emoji = cat.emoji || '📁';
+              const cmds  = [...new Set(cat.cmds)];
+              return { id: 'cat_'+name.toLowerCase(), label: emoji+' '+name, cmds };
+            });
+          }
+        } catch {}
+        return MENU_CATEGORIES;
+      })();
+      const rows = _realCats.map(cat => ({
         id:          cat.id,
-        title:       cat.label,
-        description: `${cat.cmds.length} command${cat.cmds.length !== 1 ? "s" : ""}`,
+        title:       (cat.label||cat.id).slice(0,24),
+        description: `${[...new Set(cat.cmds||[])].length} commands`,
       }));
       return await sendList(sock, jid, menuText, [
         { title: "Categories", rows },
