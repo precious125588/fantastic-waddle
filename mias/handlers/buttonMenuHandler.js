@@ -1,35 +1,33 @@
 /**
- * MIAS — Button Menu Handler  v2
+ * MIAS — Button Menu Handler  v3
  *
  * Complete navigable in-app menu for Button Mode:
- *   Home Screen → Category → Command → [Wizard] → Execute
+ *   Home Screen (Owner vCard + 1 list button) → Category List (radio flow) → Command List (radio flow) → [Wizard] → Execute
  *
- * Now reads ALL categories and commands from menuConfig.js (single source).
- * Adding a new category only requires editing menuConfig.js.
+ * ALL selection screens use WhatsApp LIST messages (radio flow — tap to select).
+ * Owner vCard (with name + profile picture) is sent at the top of every home screen.
+ * A single "Open Menu" button on the home screen expands to show all categories.
  *
  * ONLY active when Button Mode is ON.
  * Text Mode and all existing command handlers are completely untouched.
  *
- * Architecture:  .menu → Home → Categories → Commands → Wizard → Execute
+ * Architecture:  .menu → Owner vCard → Home → Categories (list) → Commands (list) → Wizard → Execute
  */
 
-import { sendButtons, sendList, sendHeroCard, sendRichInteractive } from "./interactiveHandler.js";
-import { sendText }                            from "./messageHandler.js";
-import { buildVCard, fetchProfilePic }         from "./contactHandler.js";
-import { formatUptime }                        from "./utilityHandler.js";
-import { getCapabilities }                     from "./capabilityHandler.js";
+import { sendText }                              from "./messageHandler.js";
+import { buildVCard, fetchProfilePic }           from "./contactHandler.js";
+import { formatUptime }                          from "./utilityHandler.js";
 import {
   startWizardSession,
   clearWizardSession,
   hasWizardSession,
   COMMAND_INPUTS,
-}                                              from "./wizardHandler.js";
+}                                                from "./wizardHandler.js";
 import {
   MENU_CATEGORIES,
   getCategoryById,
   getTotalCommandCount,
-}                                              from "./menuConfig.js";
-import { MenuBuilder }                         from "./builders/MenuBuilder.js";
+}                                                from "./menuConfig.js";
 
 // ─── Visual constants ─────────────────────────────────────────────────────────
 
@@ -62,12 +60,126 @@ function _cmdCount() {
   return getTotalCommandCount();
 }
 
+function _ownerNumber() {
+  try {
+    const n = (
+      globalThis.__MIAS_CONFIG__?.OWNER_NUMBER ||
+      globalThis.__MIAS_CONFIG__?.OWNER ||
+      (globalThis.__GET_SETTING__ && globalThis.__GET_SETTING__("ownerNumber")) ||
+      ""
+    ).replace(/\D/g, "");
+    return n;
+  } catch {}
+  return "";
+}
+
+function _ownerName() {
+  try {
+    return (
+      globalThis.__MIAS_CONFIG__?.OWNER_NAME ||
+      global?.OWNER_NAME ||
+      (globalThis.__GET_SETTING__ && globalThis.__GET_SETTING__("ownerName")) ||
+      "Owner"
+    );
+  } catch {}
+  return "Owner";
+}
+
+// ─── Owner vCard sender ───────────────────────────────────────────────────────
+
+/**
+ * Send the owner's vCard (with name + profile picture) as a contact card.
+ * This appears at the top of every home screen in Button Mode.
+ */
+async function _sendOwnerVCard(sock, jid, msg) {
+  try {
+    const ownerNum  = _ownerNumber();
+    const ownerName = _ownerName();
+    if (!ownerNum) return; // skip if owner not configured
+
+    const ownerJid = `${ownerNum}@s.whatsapp.net`;
+
+    // Fetch owner's WhatsApp profile picture
+    let picBuffer = null;
+    try {
+      picBuffer = await fetchProfilePic(sock, ownerJid);
+    } catch {}
+
+    const vcard = buildVCard({
+      displayName: ownerName,
+      phone:       ownerNum,
+      org:         _botName(),
+      note:        "Bot Owner",
+      picBuffer,
+    });
+
+    const sendOpts = {};
+    if (msg) sendOpts.quoted = msg;
+
+    await sock.sendMessage(jid, {
+      contacts: {
+        displayName: ownerName,
+        contacts: [{ vcard }],
+      },
+    }, sendOpts);
+
+    // Small delay so the vCard renders before the menu message
+    await new Promise(r => setTimeout(r, 450));
+  } catch (err) {
+    console.error("[buttonMenu] _sendOwnerVCard error:", err?.message);
+  }
+}
+
+// ─── Direct WhatsApp list message builder ─────────────────────────────────────
+
+/**
+ * Send a WhatsApp list message (radio flow — shows a selectable list when tapped).
+ * Uses sock.sendMessage directly with `list` content type — most reliable method.
+ *
+ * WhatsApp limitations:
+ *   - Max 10 rows per section
+ *   - Max ~5 sections per list
+ *   - buttonText = label on the "Select" tap target
+ *
+ * @returns {Promise<object|null>} Sent message or null on failure
+ */
+async function _sendListMessage(sock, jid, { title, body, buttonText, footer, sections, quoted }) {
+  try {
+    const content = {
+      list: {
+        title:       title       || "",
+        description: body        || "",
+        buttonText:  buttonText  || "Select",
+        listType:    1,            // SINGLE_SELECT
+        sections:    (sections || []).map(s => ({
+          title: s.title || "",
+          rows:  (s.rows || []).slice(0, 10).map(r => ({
+            rowId:       String(r.id),
+            title:       String(r.title).slice(0, 24),      // WA title limit
+            description: String(r.description || "").slice(0, 72), // WA desc limit
+          })),
+        })).filter(s => s.rows.length > 0),
+        footer: footer || "",
+      },
+    };
+    const sendOpts = {};
+    if (quoted) sendOpts.quoted = quoted;
+    return await sock.sendMessage(jid, content, sendOpts);
+  } catch (err) {
+    console.error("[buttonMenu] _sendListMessage error:", err?.message);
+    return null;
+  }
+}
+
 // ─── Home screen ──────────────────────────────────────────────────────────────
 
 /**
  * Send the Button Mode home screen.
- * Uses MenuBuilder → sendRichInteractive() to combine
- * image + buttons + contextInfo in ONE sendMessage() call.
+ *
+ * Steps:
+ *  1. Owner vCard (name + profile picture)
+ *  2. ONE list message with a single "Open Menu" button
+ *     → tapping it returns "btn_openmenu" and shows the category list
  */
 export async function sendButtonHomeScreen(sock, jid, msg, opts = {}) {
   const prefix   = _prefix();
@@ -75,191 +187,194 @@ export async function sendButtonHomeScreen(sock, jid, msg, opts = {}) {
   const cmdCount = _cmdCount();
   const uptime   = formatUptime(process.uptime?.() || 0);
 
-  // Try to get bot profile pic for image header
-  let picBuffer = null;
-  try {
-    const sock_ = globalThis.__MIAS_SOCK__ || sock;
-    const botJid = sock_?.user?.id;
-    if (botJid) picBuffer = await fetchProfilePic(sock_, botJid);
-  } catch {}
+  // Step 1 — owner vCard with profile pic
+  await _sendOwnerVCard(sock, jid, msg);
 
-  // ── ONE rich message: image + category buttons + adReply (via MenuBuilder) ──
-  try {
-    const mb = new MenuBuilder(sock, jid)
-      .botName(botName)
-      .cmdCount(cmdCount)
-      .uptime(uptime)
-      .prefix(prefix)
-      .categories(MENU_CATEGORIES)
-      .footer(`${prefix}help <cmd> for details`)
-      .quoted(msg);
-
-    if (picBuffer) mb.coverImage(picBuffer);
-
-    return await mb.send();
-  } catch {}
-
-  // ── Fallback: sendRichInteractive with image + quick-action buttons ─────────
+  // Step 2 — home menu as a list (radio flow) with one Browse action
   const body = [
+    `*${botName}*`,
+    LINE,
     `Commands : ${cmdCount}`,
     `Uptime   : ${uptime}`,
     LINE,
-    `What would you like to do?`,
+    `Tap *Open Menu* below to browse all categories and commands.`,
   ].join("\n");
 
-  try {
-    return await sendRichInteractive(sock, jid, {
-      header:  botName,
-      body,
-      footer:  `${prefix}help <cmd> for details`,
-      buttons: [
-        { text: "Browse Commands", id: "btn_openmenu" },
-        { text: "Close",           id: "btn_close"    },
+  const sections = [
+    {
+      title: "Main Menu",
+      rows: [
+        {
+          id:          "btn_openmenu",
+          title:       "📋 Open Menu",
+          description: `Browse all ${cmdCount} commands`,
+        },
+        {
+          id:          "btn_close",
+          title:       "❌ Close",
+          description: "Dismiss the menu",
+        },
       ],
-      image:  picBuffer || undefined,
-      quoted: msg,
-    });
-  } catch {}
+    },
+  ];
 
-  // ── Plain-button fallback ───────────────────────────────────────────────────
-  const caps = await getCapabilities(sock).catch(() => ({}));
-  if (caps.buttons) {
-    try {
-      return await sendButtons(sock, jid, `*${botName}*\n\n${body}`, [
-        { text: "Browse Commands", id: "btn_openmenu" },
-        { text: "Close",           id: "btn_close"    },
-      ], {
-        footer: `${prefix}help <cmd> for details`,
-        quoted: msg,
-      });
-    } catch {}
-  }
+  const result = await _sendListMessage(sock, jid, {
+    title:      botName,
+    body,
+    buttonText: "Open Menu",
+    footer:     `${prefix}menu to return here`,
+    sections,
+    quoted:     msg,
+  });
 
-  // Plain text fallback
+  if (result) return result;
+
+  // Plain-text fallback
   return sendText(sock, jid,
-    `*${header}*\n${LINE}\n${body}\n\nType *${prefix}menu* to browse commands.`,
+    `*${botName}*\n${LINE}\nCommands: ${cmdCount}  |  Uptime: ${uptime}\n\nType *${prefix}menu* to browse commands.`,
     { quoted: msg }
   );
 }
 
-// ─── Category selector ────────────────────────────────────────────────────────
+// ─── Category selector (radio flow) ──────────────────────────────────────────
 
 /**
- * Send an interactive list of all categories.
- * Reads from menuConfig — no hardcoded category lists here.
+ * Send all menu categories as a WhatsApp list (radio flow).
+ * The user taps "Select Category" → sees all categories → taps one.
+ *
+ * Uses up to 2 sections if there are more than 10 categories.
  */
 export async function sendButtonCategorySelector(sock, jid, msg, opts = {}) {
-  const prefix = _prefix();
-  const caps   = await getCapabilities(sock);
+  const prefix  = _prefix();
+  const botName = _botName();
 
-  const rows = MENU_CATEGORIES.map(cat => ({
+  const body = [
+    `*${botName} — Categories*`,
+    LINE,
+    `Select a category to browse its commands:`,
+  ].join("\n");
+
+  // Build rows for all categories
+  const allRows = MENU_CATEGORIES.map(cat => ({
     id:          cat.id,
     title:       cat.label,
     description: `${cat.cmds.length} command${cat.cmds.length !== 1 ? "s" : ""}`,
   }));
 
-  const body = `*${_botName()} — Categories*\n${LINE}\nChoose a category:`;
-
-  if (caps.lists) {
-    try {
-      return await sendList(sock, jid, body, [
-        { title: "All Categories", rows },
-      ], {
-        buttonText: "Browse",
-        title:      "Categories",
-        footer:     `${prefix}menu to go home`,
-        quoted:     msg,
-      });
-    } catch {}
+  // WhatsApp allows max 10 rows per section; split into sections of 10
+  const sections = [];
+  const CHUNK = 10;
+  for (let i = 0; i < allRows.length; i += CHUNK) {
+    sections.push({
+      title: i === 0 ? "Categories" : "More Categories",
+      rows:  allRows.slice(i, i + CHUNK),
+    });
   }
 
-  if (caps.buttons) {
-    // Split into chunks of 3 (WA button limit)
-    try {
-      await sendText(sock, jid, body, { quoted: msg });
-      for (let i = 0; i < MENU_CATEGORIES.length; i += 3) {
-        const chunk = MENU_CATEGORIES.slice(i, i + 3);
-        await sendButtons(sock, jid, "Select a category:", chunk.map(c => ({
-          text: c.label,
-          id:   c.id,
-        })), { quoted: msg });
-      }
-      return;
-    } catch {}
-  }
+  const result = await _sendListMessage(sock, jid, {
+    title:      "Menu Categories",
+    body,
+    buttonText: "Select Category",
+    footer:     `${prefix}menu to go home`,
+    sections,
+    quoted:     msg,
+  });
 
-  // Plain text
-  const list = MENU_CATEGORIES.map((c, i) => `[${i + 1}] ${c.label}`).join("\n");
-  return sendText(sock, jid, `${body}\n\n${list}`, { quoted: msg });
+  if (result) return result;
+
+  // Plain-text fallback
+  const catList = MENU_CATEGORIES.map((c, i) =>
+    `[${i + 1}] *${c.label}* — ${c.cmds.length} cmds`
+  ).join("\n");
+  return sendText(sock, jid, `${body}\n\n${catList}\n\n_Type the category name or number._`, { quoted: msg });
 }
 
-// ─── Command selector (for a given category) ─────────────────────────────────
+// ─── Command selector (radio flow) ───────────────────────────────────────────
 
 /**
- * Send the command list for the selected category.
+ * Send all commands in a category as a WhatsApp list (radio flow).
+ * Shows ALL commands — no artificial limit.
+ * Uses multiple sections (max 10 rows each) when a category has >10 commands.
+ *
  * @param {string} catId - e.g. "cat_ai"
  */
 export async function sendButtonCommandSelector(sock, jid, msg, catId, opts = {}) {
-  const cat    = getCategoryById(catId);
+  const cat = getCategoryById(catId);
   if (!cat) {
-    return sendText(sock, jid, `Category not found. Type *${_prefix()}menu* to start over.`, { quoted: msg });
+    return sendText(sock, jid,
+      `Category not found. Type *${_prefix()}menu* to start over.`,
+      { quoted: msg }
+    );
   }
 
   const prefix = _prefix();
-  const cmds   = (cat.cmds || []).slice(0, 10);
-  const caps   = await getCapabilities(sock);
+  const cmds   = cat.cmds || [];
 
-  const body  = `*${cat.label}*\n${LINE}\nSelect a command:`;
+  const body = [
+    `*${cat.label}*`,
+    LINE,
+    `${cmds.length} command${cmds.length !== 1 ? "s" : ""} available.`,
+    `Select a command to use it:`,
+  ].join("\n");
 
-  if (caps.lists) {
-    try {
-      const rows = cmds.map(c => ({
-        id:          `cmd_${c.name}`,
-        title:       `${prefix}${c.name}`,
-        description: c.desc || "",
-      }));
-      return await sendList(sock, jid, body, [
-        { title: cat.label, rows },
-      ], {
-        buttonText: "Choose",
-        title:      cat.label,
-        footer:     `${prefix}menu to go home`,
-        quoted:     msg,
+  // Build rows for ALL commands — no slice limit
+  const allRows = cmds.map(c => ({
+    id:          `cmd_${c.name}`,
+    title:       `${prefix}${c.name}`,
+    description: c.desc || "",
+  }));
+
+  // Split into sections of max 10 rows each (WhatsApp limit per section)
+  const sections = [];
+  const CHUNK = 10;
+  for (let i = 0; i < allRows.length; i += CHUNK) {
+    sections.push({
+      title: i === 0 ? cat.label : `${cat.label} (more)`,
+      rows:  allRows.slice(i, i + CHUNK),
+    });
+  }
+
+  // Append "Back" row to the last section
+  if (sections.length > 0) {
+    const last = sections[sections.length - 1];
+    if (last.rows.length < 10) {
+      last.rows.push({ id: "btn_back", title: "⬅ Back to Categories", description: "" });
+    } else {
+      sections.push({
+        title: "Navigation",
+        rows:  [{ id: "btn_back", title: "⬅ Back to Categories", description: "" }],
       });
-    } catch {}
+    }
   }
 
-  if (caps.buttons) {
-    try {
-      await sendText(sock, jid, body, { quoted: msg });
-      for (let i = 0; i < cmds.length; i += 3) {
-        const chunk = cmds.slice(i, i + 3);
-        await sendButtons(sock, jid, "Pick a command:", chunk.map(c => ({
-          text: `${prefix}${c.name}`,
-          id:   `cmd_${c.name}`,
-        })), {
-          footer: `${prefix}menu to go home`,
-          quoted: msg,
-        });
-      }
-      return;
-    } catch {}
-  }
+  const result = await _sendListMessage(sock, jid, {
+    title:      cat.label,
+    body,
+    buttonText: "Select Command",
+    footer:     `${prefix}menu to go home`,
+    sections,
+    quoted:     msg,
+  });
 
-  const list = cmds.map(c => `  ${prefix}${c.name}  —  ${c.desc || ""}`).join("\n");
+  if (result) return result;
+
+  // Plain-text fallback
+  const list = cmds.map((c, i) =>
+    `[${i + 1}] *${prefix}${c.name}* — ${c.desc || ""}`
+  ).join("\n");
   return sendText(sock, jid, `${body}\n\n${list}`, { quoted: msg });
 }
 
 // ─── Command selection handler ────────────────────────────────────────────────
 
 /**
- * Called when a user picks a command from the button menu.
- * Either starts a wizard session (if input required) or runs immediately.
+ * Called when a user picks a command from the list menu.
+ * Either starts a wizard session (if input required) or dispatches immediately.
  */
 export async function handleCommandSelection(sock, jid, msg, cmdName, opts = {}) {
-  const prefix     = _prefix();
-  const spec       = COMMAND_INPUTS[cmdName];
-  const isGrp      = (jid || "").endsWith("@g.us");
+  const prefix       = _prefix();
+  const spec         = COMMAND_INPUTS[cmdName];
+  const isGrp        = (jid || "").endsWith("@g.us");
   const effectiveJid = isGrp
     ? (msg?.key?.participant || msg?.participant || jid)
     : jid;
@@ -305,11 +420,11 @@ export async function handleCommandSelection(sock, jid, msg, cmdName, opts = {})
   }
 }
 
-// ─── Button response router ───────────────────────────────────────────────────
+// ─── Button / list response router ───────────────────────────────────────────
 
 /**
- * Route an incoming button / list response to the correct handler.
- * Called from mias/index.js when isButtonMode() is true and a button ID arrives.
+ * Route an incoming button ID or list selectedRowId to the correct handler.
+ * Called from mias/index.js when isButtonMode() is true and a button/list ID arrives.
  *
  * @param {object} sock
  * @param {object} msg
@@ -320,32 +435,36 @@ export async function handleButtonResponse(sock, msg, body) {
   if (!jid) return;
 
   const prefix = _prefix();
+  const trimmed = (body || "").trim();
 
   // ── Navigation ──────────────────────────────────────────────────────────────
-  if (body === "btn_home" || body === "btn_menu") {
+  if (trimmed === "btn_home" || trimmed === "btn_menu") {
     return sendButtonHomeScreen(sock, jid, msg, {});
   }
-  if (body === "btn_openmenu" || body === "btn_back") {
+  if (trimmed === "btn_openmenu" || trimmed === "btn_back") {
     return sendButtonCategorySelector(sock, jid, msg, {});
   }
-  if (body === "btn_close" || body === "btn_cancel") {
-    const isGrp   = (jid || "").endsWith("@g.us");
-    const sJid    = isGrp ? (msg?.key?.participant || msg?.participant || jid) : jid;
+  if (trimmed === "btn_close" || trimmed === "btn_cancel") {
+    const isGrp = (jid || "").endsWith("@g.us");
+    const sJid  = isGrp ? (msg?.key?.participant || msg?.participant || jid) : jid;
     clearWizardSession(jid);
     clearWizardSession(sJid);
     return sendText(sock, jid,
-      `Closed. Type *${prefix}menu* to return to the menu.`
+      `Menu closed. Type *${prefix}menu* to open the menu again.`
     ).catch(() => {});
   }
 
   // ── Category selected ────────────────────────────────────────────────────────
-  if (body.startsWith("cat_")) {
-    return sendButtonCommandSelector(sock, jid, msg, body, {});
+  if (trimmed.startsWith("cat_")) {
+    return sendButtonCommandSelector(sock, jid, msg, trimmed, {});
   }
 
   // ── Command selected ─────────────────────────────────────────────────────────
-  if (body.startsWith("cmd_")) {
-    const cmdName = body.slice(4);
+  if (trimmed.startsWith("cmd_")) {
+    const cmdName = trimmed.slice(4);
     return handleCommandSelection(sock, jid, msg, cmdName, {});
   }
+
+  // ── Unknown — show home screen ───────────────────────────────────────────────
+  // (could be a stale button ID or unsupported payload)
 }
