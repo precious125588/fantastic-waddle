@@ -2887,12 +2887,47 @@ ${_atBotAdmin ? "✅ Message deleted." : "⚠️ Make me admin to auto-delete."}
           if (!globalThis.__MIAS_MENU_CATEGORIES__) globalThis.__MIAS_MENU_CATEGORIES__ = MENU_CATEGORIES;
           // ── BUTTON MODE: .menu → full interactive home screen ──────────────────
           if (isButtonMode() && name === "menu") {
+            let _btnSent = false;
             try {
               await sendButtonHomeScreen(sock, msg.key.remoteJid, msg, {
                 userName: msg.pushName,
                 prefix: CONFIG.PREFIX || ".",
               });
-            } catch (_hmErr) { console.error("[BTN_HOME]", _hmErr?.message); }
+              _btnSent = true;
+            } catch (_hmErr) {
+              console.error("[BTN_HOME] sendButtonHomeScreen failed:", _hmErr?.message, _hmErr?.stack?.split('\n').slice(0,3).join(' | '));
+            }
+            if (!_btnSent) {
+              // Hard fallback — send a plain text menu so the user always sees something
+              try {
+                const _pfx = CONFIG.PREFIX || ".";
+                const _cats = (() => {
+                  try {
+                    const mc = globalThis.__MIAS_MENU_CATEGORIES__;
+                    if (Array.isArray(mc) && mc.length > 0) return mc;
+                  } catch {}
+                  return MENU_CATEGORIES;
+                })();
+                const _catLines = _cats.map((c,i) => {
+                  const name  = c.name || c.id || '';
+                  const emoji = c.emoji || '📁';
+                  const count = Array.isArray(c.cmds) ? [...new Set(c.cmds)].length : 0;
+                  return `[${i+1}] ${emoji} ${name.toUpperCase()}  (${count} cmds)`;
+                }).join('\n');
+                const _fallbackText = [
+                  `*${CONFIG.BOT_NAME || 'MIAS'} — MENU*`,
+                  `─────────────────`,
+                  `Commands: ${globalThis.__MIAS_COMMANDS__?.size || '?'}`,
+                  `Mode: Button ON`,
+                  `─────────────────`,
+                  `*Categories:*`,
+                  _catLines,
+                  `─────────────────`,
+                  `Type ${_pfx}help <cmd> for command details.`,
+                ].join('\n');
+                await sock.sendMessage(msg.key.remoteJid, { text: _fallbackText }, { quoted: msg });
+              } catch (_fb2) { console.error('[BTN_HOME_FB]', _fb2?.message); }
+            }
             return;
           }
           // ── Joint commands: ".kick 234xxx & close" — & chains multiple commands ──
