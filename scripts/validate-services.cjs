@@ -41,6 +41,8 @@ const requiredServices = [
   "BackgroundTaskManager.js",
   "PluginSystem.js",
   "MessageBuilder.js",
+  "LinkPreviewService.js",
+  "SpeedTestService.js",
   "index.js",
 ];
 
