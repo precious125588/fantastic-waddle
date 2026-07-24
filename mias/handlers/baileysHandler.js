@@ -102,7 +102,32 @@ export {
   adapterDiagnostics,
   generateContextInfo,
   generateExternalAdReply,
+  sendRichInteractive,
 } from "./gktwAdapter.js";
+
+// ── Builder exports (fluent message builders) ──────────────────────────────────
+// All builders compose into ONE sendMessage() call — no split sends.
+export {
+  MIASMessageBuilder,
+  build,
+  MenuBuilder,
+  menu,
+  InteractiveBuilder,
+  interactive,
+  MediaBuilder,
+  media,
+  ContextBuilder,
+  context,
+  ExternalAdReplyBuilder,
+  adReply,
+  VCardBuilder,
+  vcard,
+  ReactionBuilder,
+  reaction,
+  EMOJIS,
+  ThumbnailBuilder,
+  thumbnail,
+} from "./builders/index.js";
 
 // ── Shared engine registry ────────────────────────────────────────────────────
 import engineRegistryModule from "../lib/engineRegistry.cjs";

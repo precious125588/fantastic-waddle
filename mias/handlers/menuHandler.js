@@ -1,16 +1,19 @@
 /**
- * MIAS — Menu Handler  v3
+ * MIAS — Menu Handler  v4
  *
- * Main bot menu system — sends bot vCard (with profile picture) +
- * interactive category navigation. Now reads all categories from
- * menuConfig.js (single source of truth — no hardcoded lists here).
+ * Main bot menu system. Sends the full menu as ONE rich message:
+ *   image header + body text + category buttons + externalAdReply
+ *   → single sendMessage() via MenuBuilder → sendRichInteractive()
+ *
+ * No more separate vCard + text + buttons sends.
+ * Falls back gracefully when interactive features are unavailable.
  *
  * Architecture:  Commands → Handlers → Baileys Adapter → WhatsApp
  */
 
 import { sendImage, sendDocument }    from "./mediaHandler.js";
 import { sendText }                   from "./messageHandler.js";
-import { sendButtons, sendList }      from "./interactiveHandler.js";
+import { sendButtons, sendList, sendRichInteractive } from "./interactiveHandler.js";
 import { sendBotVCard }               from "./contactHandler.js";
 import { getBaileysVersion }          from "./baileysHandler.js";
 import { isGktwAvailable }            from "./gktwAdapter.js";
@@ -21,6 +24,8 @@ import {
   getTotalCommandCount,
 }                                     from "./menuConfig.js";
 import { getCapabilities }            from "./capabilityHandler.js";
+import { MenuBuilder }                from "./builders/MenuBuilder.js";
+import { fetchProfilePic }            from "./contactHandler.js";
 
 // ─── Dynamic resolver (set by index.js via globalThis) ───────────────────────
 
@@ -71,8 +76,7 @@ function _getCmdCount() {
 function _buildMenuText(opts = {}) {
   const {
     botName, owner, prefix, version, uptime, ping,
-    date, time, mode, cmdCount, userName,
-    baileysVer, gktwActive,
+    mode, cmdCount, userName,
   } = opts;
 
   const bar = "─".repeat(32);
@@ -80,23 +84,14 @@ function _buildMenuText(opts = {}) {
   return [
     `*${botName}*`,
     bar,
-    `User     : ${userName || "Guest"}`,
-    `Owner    : ${owner}`,
-    `Prefix   : ${prefix}`,
-    `Version  : ${version}`,
-    `Mode     : ${mode}`,
-    bar,
     `Commands : ${cmdCount}`,
     `Uptime   : ${uptime || "0s"}`,
-    `Ping     : ${ping != null ? ping + "ms" : "—"}`,
-    `Date     : ${date}`,
-    `Time     : ${time}`,
-    bar,
-    `Baileys  : ${baileysVer || "unknown"}`,
-    `GKTW     : ${gktwActive ? "Active" : "Inactive (Baileys fallback)"}`,
+    ping != null ? `Ping     : ${ping}ms` : null,
+    `Mode     : ${mode}`,
+    `Version  : ${version}`,
     bar,
     `Select a category below.`,
-  ].join("\n");
+  ].filter(l => l !== null).join("\n");
 }
 
 // ─── WhatsApp native buttons limit = 3 per message ───────────────────────────
@@ -110,7 +105,12 @@ function _chunk(arr, size = 3) {
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 /**
- * Send the full bot menu (info card + interactive category navigation).
+ * Send the full bot menu as ONE rich interactive message.
+ *
+ * Combines: image header + bot info text + category buttons + externalAdReply card
+ * → single sendMessage() via MenuBuilder → sendRichInteractive()
+ *
+ * Falls back gracefully: rich interactive → list → buttons → plain text.
  *
  * @param {object} sock
  * @param {string} jid
@@ -118,44 +118,59 @@ function _chunk(arr, size = 3) {
  * @param {object} [opts]
  * @param {string} [opts.userName]  - Display name shown in the menu header
  * @param {number} [opts.ping]      - Latency in ms
+ * @param {Buffer} [opts.coverImage] - Cover image buffer (falls back to bot profile pic)
  * @returns {Promise<void>}
  */
 export async function sendMenu(sock, jid, msg, opts = {}) {
-  const prefix     = _getPrefix();
-  const botName    = _getBotName();
-  const owner      = _getOwner();
-  const version    = _getVersion();
-  const mode       = _getMode();
-  const cmdCount   = _getCmdCount();
-  const uptime     = formatUptime(process.uptime?.() || 0);
-  const gktwActive = await isGktwAvailable().catch(() => false);
+  const prefix   = _getPrefix();
+  const botName  = _getBotName();
+  const version  = _getVersion();
+  const mode     = _getMode();
+  const cmdCount = _getCmdCount();
+  const uptime   = formatUptime(process.uptime?.() || 0);
 
-  let baileysVer = "unknown";
-  try { const bv = await getBaileysVersion(); baileysVer = bv?.version?.join(".") || "unknown"; } catch {}
+  // Fetch bot profile picture for image header
+  let coverImage = opts.coverImage || null;
+  if (!coverImage) {
+    try {
+      const botJid = sock.user?.id;
+      if (botJid) coverImage = await fetchProfilePic(sock, botJid);
+    } catch {}
+  }
 
-  const now  = new Date();
-  const date = now.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
-  const time = now.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+  // ── Try MenuBuilder: ONE rich message with image + buttons + adReply ────────
+  try {
+    const mb = new MenuBuilder(sock, jid)
+      .botName(botName)
+      .cmdCount(cmdCount)
+      .uptime(uptime)
+      .prefix(prefix)
+      .userName(opts.userName || "Guest")
+      .version(version)
+      .mode(mode)
+      .categories(MENU_CATEGORIES)
+      .footer(`${prefix}help <command> for details`)
+      .quoted(msg);
 
-  const menuText = _buildMenuText({
-    botName, owner, prefix, version, uptime, ping: opts.ping ?? null,
-    date, time, mode, cmdCount, userName: opts.userName,
-    baileysVer, gktwActive,
-  });
+    if (opts.ping != null) mb.ping(opts.ping);
+    if (coverImage)        mb.coverImage(coverImage);
 
-  // ── Send bot vCard with profile pic ─────────────────────────────────────────
-  try { await sendBotVCard(sock, jid, { quoted: msg, withPic: true }); } catch {}
+    return await mb.send();
+  } catch {}
 
-  // ── Try interactive list (all categories from menuConfig) ────────────────────
-  const caps = await getCapabilities(sock);
+  // ── Fallback: interactive list (all categories) ───────────────────────────
+  const caps = await getCapabilities(sock).catch(() => ({}));
   if (caps.lists) {
     try {
+      const menuText = _buildMenuText({
+        botName, owner: _getOwner(), prefix, version, uptime,
+        ping: opts.ping ?? null, mode, cmdCount, userName: opts.userName,
+      });
       const rows = MENU_CATEGORIES.map(cat => ({
         id:          cat.id,
         title:       cat.label,
         description: `${cat.cmds.length} command${cat.cmds.length !== 1 ? "s" : ""}`,
       }));
-
       return await sendList(sock, jid, menuText, [
         { title: "Categories", rows },
       ], {
@@ -167,9 +182,13 @@ export async function sendMenu(sock, jid, msg, opts = {}) {
     } catch {}
   }
 
-  // ── Try quick-reply buttons (max 3 per message, split into pages) ────────────
+  // ── Fallback: buttons ────────────────────────────────────────────────────
   if (caps.buttons) {
     try {
+      const menuText = _buildMenuText({
+        botName, owner: _getOwner(), prefix, version, uptime,
+        ping: opts.ping ?? null, mode, cmdCount, userName: opts.userName,
+      });
       await sendText(sock, jid, menuText, { quoted: msg });
       const chunks = _chunk(MENU_CATEGORIES, 3);
       for (const chunk of chunks) {
@@ -182,9 +201,13 @@ export async function sendMenu(sock, jid, msg, opts = {}) {
     } catch {}
   }
 
-  // ── Fallback: plain-text category list ─────────────────────────────────────
+  // ── Last resort: plain text ──────────────────────────────────────────────
+  const menuText = _buildMenuText({
+    botName, owner: _getOwner(), prefix, version, uptime,
+    ping: opts.ping ?? null, mode, cmdCount, userName: opts.userName,
+  });
   const catList = MENU_CATEGORIES.map((c, i) =>
-    `[${i + 1}] ${c.label} (${c.cmds.length} cmds)`
+    `[${i + 1}] ${c.label} — ${c.cmds.length} cmds`
   ).join("\n");
   return sendText(sock, jid, `${menuText}\n\n${catList}`, { quoted: msg });
 }

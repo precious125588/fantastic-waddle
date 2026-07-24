@@ -28,6 +28,7 @@
 
 import {
   sendInteractiveMessage,
+  sendRichInteractive,
   getProto,
   getBaileys,
   isGktwAvailable,
@@ -261,18 +262,21 @@ export async function sendList(sock, jid, body, sections, opts = {}) {
 }
 
 /**
- * Send a hero card (image/video/text header + body + buttons).
- * Falls back through each layer gracefully.
+ * Send a hero card (image/video/text header + body + buttons) — ONE sendMessage() call.
+ *
+ * Uses sendRichInteractive() to combine image + buttons + contextInfo in a single
+ * WhatsApp proto InteractiveMessage. No more sending image first then buttons separately.
  *
  * @param {object}        sock
  * @param {string}        jid
  * @param {object}        params
- * @param {Buffer|string} [params.image]   - Header image
- * @param {Buffer|string} [params.video]   - Header video (preferred over image)
- * @param {string}        [params.title]   - Header title text
+ * @param {Buffer|string} [params.image]       - Header image (Buffer or URL)
+ * @param {Buffer|string} [params.video]       - Header video (preferred over image)
+ * @param {string}        [params.title]       - Header title text
  * @param {string}        [params.body]
  * @param {string}        [params.footer]
  * @param {Button[]}      [params.buttons]
+ * @param {object}        [params.contextInfo] - ExternalAdReply / contextInfo
  * @param {object}        [params.quoted]
  * @returns {Promise<object|null>}
  */
@@ -281,40 +285,24 @@ export async function sendHeroCard(sock, jid, params) {
     image, video, title = "",
     body = "", footer = "",
     buttons = [], quoted = null,
+    contextInfo = {},
   } = params || {};
 
   await emitHook("beforeInteractive", { type: "heroCard", jid, body });
 
-  // ── Try GKTW sendHeroCard ─────────────────────────────────────────────────
-  try {
-    const gktw = await getGktw();
-    if (gktw) {
-      const mod = gktw.default || gktw;
-      const fn  = mod?.sendHeroCard || gktw.sendHeroCard;
-      if (typeof fn === "function") {
-        const result = await fn(sock, jid, params);
-        await emitHook("afterInteractive", { type: "heroCard", jid, result });
-        return result;
-      }
-    }
-  } catch {}
+  // ── ONE sendMessage() — image + buttons + contextInfo combined ────────────
+  // sendRichInteractive handles: GKTW → Baileys proto with image header → graceful fallback
+  const result = await sendRichInteractive(sock, jid, {
+    header:      title,
+    body,
+    footer,
+    buttons,
+    image:       image || null,
+    video:       video || null,
+    contextInfo,
+    quoted,
+  });
 
-  // ── Image header + buttons via sendButtons ────────────────────────────────
-  if ((image || video) && buttons.length) {
-    try {
-      const mediaBuf = video
-        ? (Buffer.isBuffer(video) ? video : await import("./uploadHandler.js").then(m => m.fetchBuffer(video)).catch(() => null))
-        : (Buffer.isBuffer(image) ? image : await import("./uploadHandler.js").then(m => m.fetchBuffer(image)).catch(() => null));
-
-      if (mediaBuf) {
-        const sendFn = video ? sendVideo : sendImage;
-        await sendFn(sock, jid, mediaBuf, { caption: title || body, quoted });
-      }
-    } catch {}
-  }
-
-  // Buttons (or plain text if buttons fail)
-  const result = await sendButtons(sock, jid, body, buttons, { header: title, footer, quoted });
   await emitHook("afterInteractive", { type: "heroCard", jid, result });
   return result;
 }
@@ -383,6 +371,12 @@ export async function sendCarousel(sock, jid, cards, opts = {}) {
 export async function sendNativeFlow(sock, jid, params) {
   return sendInteractiveMessage(sock, jid, params);
 }
+
+/**
+ * Re-export sendRichInteractive from gktwAdapter for use in handlers.
+ * Sends image + buttons + contextInfo in ONE sendMessage() call.
+ */
+export { sendRichInteractive } from "./gktwAdapter.js";
 
 /**
  * Build an external ad reply (link preview card) contextInfo object.

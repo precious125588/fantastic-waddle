@@ -53,27 +53,61 @@ async function getProductivity() { return _productivity ??= await import('./modu
 async function getContact()      { return _contact      ??= await import('./modules/contact.js'); }
 async function getAutoFeat()     { return _autoFeat     ??= await import('./modules/autofeatures.js'); }
 
-// ── Menu with bot pic ────────────────────────────────────────────────────────
+// ── Menu with bot pic + buttons ────────────────────────────────────────────────
 /**
- * Sends the menu as image + caption (bot pic shown alongside commands).
- * Falls back gracefully to plain text if the image is missing or fails.
+ * Sends the menu as ONE rich interactive message: image header + caption + buttons.
+ * All three (image, body text, buttons) go in a single sendMessage() call via
+ * sendRichInteractive() → Baileys proto InteractiveMessage with image header.
+ *
+ * Fallback chain:
+ *   1. Rich interactive (image + buttons combined)   ← main fix
+ *   2. Image + caption only (if buttons fail)
+ *   3. Plain text (if image also fails)
  */
-async function sendMenuWithPic(sock, msg, menuText) {
+async function sendMenuWithPic(sock, msg, menuText, menuButtons) {
   const jid = msg.key.remoteJid;
+  const buttons = Array.isArray(menuButtons) ? menuButtons : [];
+
   try {
     if (fs.existsSync(BOT_PIC_PATH)) {
       const imageBuffer = fs.readFileSync(BOT_PIC_PATH);
+
+      // ── Try ONE rich message: image + buttons + adReply ──────────────────
+      if (buttons.length) {
+        try {
+          const { sendRichInteractive } = await import('../handlers/gktwAdapter.js');
+          return await sendRichInteractive(sock, jid, {
+            header:  sock.user?.name || 'NIX',
+            body:    menuText,
+            footer:  'NIX Assistant',
+            buttons,
+            image:   imageBuffer,
+            quoted:  msg,
+          });
+        } catch {}
+      }
+
+      // ── Fallback: image + caption only (no buttons) ───────────────────────
       await sock.sendMessage(jid, {
-        image: imageBuffer,
+        image:   imageBuffer,
         caption: menuText,
         mimetype: 'image/jpeg',
       }, { quoted: msg });
+
+      // Send buttons as separate text if rich path failed
+      if (buttons.length) {
+        const btnLines = buttons.map((b, i) => `[${i + 1}] ${b.text}`).join('\n');
+        await sock.sendMessage(jid, { text: btnLines }, {});
+      }
     } else {
       // No pic file — plain text menu
-      await sock.sendMessage(jid, { text: menuText }, { quoted: msg });
+      const extra = buttons.length
+        ? '\n\n' + buttons.map((b, i) => `[${i + 1}] ${b.text}`).join('\n')
+        : '';
+      await sock.sendMessage(jid, { text: menuText + extra }, { quoted: msg });
     }
   } catch {
-    // If image send fails for any reason — fallback to text
+    // Last-resort: plain text
     try { await sock.sendMessage(jid, { text: menuText }, { quoted: msg }); } catch {}
   }
 }
@@ -244,7 +278,14 @@ async function route(sock, msg, { intent, args, raw }, isOwner) {
     // ── META ─────────────────────────────────────────────────────────────────
     case 'menu':
       await reactNix(sock, msg, '🧠');
-      await sendMenuWithPic(sock, msg, buildMainMenu());
+      await sendMenuWithPic(sock, msg, buildMainMenu(), [
+        { text: '👤 Account',     id: 'nix_account'      },
+        { text: '💬 Messaging',   id: 'nix_messaging'    },
+        { text: '🤖 AI',          id: 'nix_ai'           },
+        { text: '🎵 Media',       id: 'nix_media'        },
+        { text: '📊 System',      id: 'nix_system'       },
+        { text: 'ℹ️ Info',         id: 'nix_info'         },
+      ]);
       break;
 
     case 'help': {
@@ -253,7 +294,14 @@ async function route(sock, msg, { intent, args, raw }, isOwner) {
       if (catHelp) {
         await sendNix(sock, msg, catHelp + nixFooter());
       } else {
-        await sendMenuWithPic(sock, msg, buildMainMenu());
+        await sendMenuWithPic(sock, msg, buildMainMenu(), [
+          { text: '👤 Account',   id: 'nix_account'      },
+          { text: '💬 Messaging', id: 'nix_messaging'    },
+          { text: '🤖 AI',        id: 'nix_ai'           },
+          { text: '🎵 Media',     id: 'nix_media'        },
+          { text: '📊 System',    id: 'nix_system'       },
+          { text: 'ℹ️ Info',       id: 'nix_info'         },
+        ]);
       }
       break;
     }

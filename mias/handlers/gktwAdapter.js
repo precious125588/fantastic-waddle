@@ -315,20 +315,83 @@ export function generateExternalAdReply(opts = {}) {
   };
 }
 
+// ─── Internal: resolve a media source to a Buffer ─────────────────────────────
+
+async function _resolveMediaBuffer(src) {
+  if (!src) return null;
+  if (Buffer.isBuffer(src)) return src;
+  if (typeof src === "string" && (src.startsWith("http://") || src.startsWith("https://"))) {
+    try {
+      const { fetchBuffer } = await import("./uploadHandler.js");
+      return await fetchBuffer(src);
+    } catch { return null; }
+  }
+  if (typeof src === "string") {
+    try {
+      const { readFile } = await import("fs/promises");
+      return await readFile(src);
+    } catch { return null; }
+  }
+  return null;
+}
+
+// ─── Internal: build NativeFlowButton array ────────────────────────────────────
+
+async function _buildNativeButtons(NF, buttons) {
+  return Promise.all((buttons || []).map(async (btn, i) => {
+    if (btn.url || btn.type === "url") {
+      return NF.create({ name: "cta_url", buttonParamsJson: JSON.stringify({
+        display_text: btn.text || `Link ${i + 1}`,
+        url:          btn.url  || "",
+        merchant_url: btn.url  || "",
+      })});
+    }
+    if (btn.copyCode || btn.type === "copy") {
+      return NF.create({ name: "cta_copy", buttonParamsJson: JSON.stringify({
+        display_text: btn.text    || "Copy",
+        copy_code:    btn.copyCode || btn.id || "",
+      })});
+    }
+    if (btn.phone || btn.type === "call") {
+      return NF.create({ name: "cta_call", buttonParamsJson: JSON.stringify({
+        display_text: btn.text  || "Call",
+        phone_number: btn.phone || "",
+      })});
+    }
+    return NF.create({ name: "quick_reply", buttonParamsJson: JSON.stringify({
+      display_text: btn.text || `Option ${i + 1}`,
+      id:           btn.id   || String(i),
+    })});
+  }));
+}
+
+// ─── Internal: plain-text fallback ────────────────────────────────────────────
+
+function _textFallbackInteractive(header, body, buttons, footer) {
+  const btnLines = (buttons || []).map((b, i) => `[${i + 1}] ${b.text}`).join("\n");
+  return [
+    header ? `*${header}*` : null,
+    body   || null,
+    btnLines || null,
+    footer ? `_${footer}_` : null,
+  ].filter(Boolean).join("\n\n");
+}
+
 // ─── Interactive message (native-flow) ────────────────────────────────────────
 
 /**
- * Send an interactive/native-flow message.
+ * Send an interactive/native-flow message (text headers only).
+ * For image/video headers use sendRichInteractive() instead.
  * Routes: GKTW → Baileys proto → plain text fallback.
  */
 export async function sendInteractiveMessage(sock, jid, params) {
   const {
-    body       = "",
-    footer     = "",
-    header     = "",
-    buttons    = [],
+    body        = "",
+    footer      = "",
+    header      = "",
+    buttons     = [],
     contextInfo = {},
-    quoted     = null,
+    quoted      = null,
   } = params;
 
   // ── GKTW path ──────────────────────────────────────────────────────────────
@@ -347,71 +410,262 @@ export async function sendInteractiveMessage(sock, jid, params) {
 
   // ── Baileys proto path ─────────────────────────────────────────────────────
   try {
-    const B = await getBaileys();
+    const B     = await getBaileys();
     const proto = B.proto;
     const NF    = proto?.Message?.InteractiveMessage?.NativeFlowMessage?.NativeFlowButton;
-
     if (!NF) throw new Error("NativeFlowButton proto not available");
 
-    const builtButtons = await Promise.all(buttons.map(async (btn, i) => {
-      if (btn.url || btn.type === "url") {
-        return NF.create({ name: "cta_url", buttonParamsJson: JSON.stringify({
-          display_text: btn.text || `Link ${i + 1}`,
-          url:          btn.url || "",
-          merchant_url: btn.url || "",
-        })});
-      }
-      if (btn.copyCode || btn.type === "copy") {
-        return NF.create({ name: "cta_copy", buttonParamsJson: JSON.stringify({
-          display_text: btn.text || "Copy",
-          copy_code:    btn.copyCode || btn.id || "",
-        })});
-      }
-      if (btn.phone || btn.type === "call") {
-        return NF.create({ name: "cta_call", buttonParamsJson: JSON.stringify({
-          display_text: btn.text || "Call",
-          phone_number: btn.phone || "",
-        })});
-      }
-      return NF.create({ name: "quick_reply", buttonParamsJson: JSON.stringify({
-        display_text: btn.text || `Option ${i + 1}`,
-        id:           btn.id   || String(i),
-      })});
-    }));
+    const builtButtons   = await _buildNativeButtons(NF, buttons);
+    const hasContextInfo = contextInfo && Object.keys(contextInfo).length > 0;
 
     const interactiveMsg = proto.Message.InteractiveMessage.create({
-      body:    proto.Message.InteractiveMessage.Body.create({ text: body }),
-      footer:  proto.Message.InteractiveMessage.Footer.create({ text: footer }),
-      header:  proto.Message.InteractiveMessage.Header.create({
-        title:      header,
+      body:   proto.Message.InteractiveMessage.Body.create({ text: body }),
+      footer: proto.Message.InteractiveMessage.Footer.create({ text: footer }),
+      header: proto.Message.InteractiveMessage.Header.create({
+        title:              header,
         hasMediaAttachment: false,
       }),
       nativeFlowMessage: proto.Message.InteractiveMessage.NativeFlowMessage.create({
         buttons: builtButtons,
       }),
+      ...(hasContextInfo ? { contextInfo: proto.ContextInfo.create(contextInfo) } : {}),
     });
 
     const fullContent = proto.Message.create({ interactiveMessage: interactiveMsg });
-    const sendOpts = {};
-    if (quoted) sendOpts.quoted = quoted;
-    if (Object.keys(contextInfo).length) sendOpts.contextInfo = contextInfo;
+    const genOpts     = { userJid: sock.user?.id };
+    if (quoted) genOpts.quoted = quoted;
 
-    const generated = await B.generateWAMessageFromContent(jid, fullContent, {
-      userJid:       sock.user?.id,
-      ...sendOpts,
-    });
-
+    const generated = await B.generateWAMessageFromContent(jid, fullContent, genOpts);
     return await sock.relayMessage(jid, generated.message, { messageId: generated.key.id });
   } catch {
     // ── Plain-text fallback ────────────────────────────────────────────────────
-    const btnLines = buttons.map((b, i) => `[${i + 1}] ${b.text}`).join("\n");
-    const text = [
-      header ? `*${header}*` : null,
-      body   || null,
-      btnLines || null,
-      footer ? `_${footer}_` : null,
-    ].filter(Boolean).join("\n\n");
+    const text = _textFallbackInteractive(header, body, buttons, footer);
+    const sendOpts = {};
+    if (quoted) sendOpts.quoted = quoted;
+    return sock.sendMessage(jid, { text }, sendOpts);
+  }
+}
 
+/**
+ * Send a RICH interactive message — image/video header + buttons + contextInfo
+ * + externalAdReply + footer — ALL in ONE sendMessage() call.
+ *
+ * This is the correct way to send image+buttons together.
+ * Sending them as two separate messages is the anti-pattern this fixes.
+ *
+ * Route priority:
+ *   1. GKTW (if available) — most feature-rich
+ *   2. Baileys proto with prepareWAMessageMedia image header
+ *   3. Image-as-caption + buttons (two sends as graceful fallback)
+ *   4. Plain text (last resort)
+ *
+ * @param {object} sock
+ * @param {string} jid
+ * @param {object} params
+ * @param {string}        [params.header]       - Header title text
+ * @param {string}        [params.body]         - Body text
+ * @param {string}        [params.footer]       - Footer text
+ * @param {Array}         [params.buttons]      - Button array
+ * @param {Array}         [params.sections]     - List sections (switches to list mode)
+ * @param {string}        [params.buttonText]   - Label for list-open button
+ * @param {string}        [params.listTitle]    - Title for list
+ * @param {Buffer|string} [params.image]        - Image for header (Buffer or URL)
+ * @param {Buffer|string} [params.video]        - Video for header
+ * @param {object}        [params.contextInfo]  - Full contextInfo object (for adReply etc.)
+ * @param {object}        [params.quoted]       - WAMessage to quote
+ * @param {string}        [params.type]         - "buttons" | "list"
+ * @returns {Promise<object|null>}
+ */
+export async function sendRichInteractive(sock, jid, params) {
+  const {
+    header      = "",
+    body        = "",
+    footer      = "",
+    buttons     = [],
+    sections    = null,
+    buttonText  = "Open",
+    listTitle   = "",
+    image       = null,
+    video       = null,
+    contextInfo = {},
+    quoted      = null,
+    type        = "buttons",
+  } = params;
+
+  const isListMode    = type === "list" || (sections && sections.length > 0);
+  const hasContextInfo = contextInfo && Object.keys(contextInfo).length > 0;
+
+  // ── GKTW path ──────────────────────────────────────────────────────────────
+  const gktw = await getGktw();
+  if (gktw) {
+    const mod = gktw.default || gktw;
+
+    // List mode via GKTW
+    if (isListMode) {
+      const listFn = mod?.sendList || gktw.sendList;
+      if (typeof listFn === "function") {
+        try {
+          return await listFn(sock, jid, {
+            body,
+            buttonText,
+            title:    listTitle || header,
+            footer,
+            sections: sections || [],
+            quoted,
+          });
+        } catch {}
+      }
+    }
+
+    // Button mode via GKTW sendInteractive
+    const fn = mod?.sendInteractive || gktw.sendInteractive;
+    if (typeof fn === "function") {
+      try {
+        return await fn(sock, jid, {
+          body, footer, header, buttons, contextInfo, quoted, image, video,
+        });
+      } catch {}
+    }
+  }
+
+  // ── Baileys proto path ─────────────────────────────────────────────────────
+  try {
+    const B     = await getBaileys();
+    const proto = B.proto;
+
+    // ── List message via Baileys proto ─────────────────────────────────────
+    if (isListMode && sections?.length) {
+      try {
+        const rows = sections.flatMap(s =>
+          (s.rows || []).map(r =>
+            proto.Message.ListMessage.Row.create({
+              rowId:       r.id,
+              title:       r.title,
+              description: r.description || "",
+            })
+          )
+        );
+
+        const listMsg = {
+          list: {
+            title:       listTitle || header,
+            description: body,
+            buttonText:  buttonText,
+            listType:    proto.Message.ListMessage.ListType.SINGLE_SELECT,
+            sections:    sections.map(s => ({
+              title: s.title,
+              rows:  (s.rows || []).map(r => ({
+                rowId:       r.id,
+                title:       r.title,
+                description: r.description || "",
+              })),
+            })),
+            footer: footer,
+          },
+        };
+        if (hasContextInfo) listMsg.contextInfo = contextInfo;
+
+        const sendOpts = {};
+        if (quoted) sendOpts.quoted = quoted;
+        return await sock.sendMessage(jid, listMsg, sendOpts);
+      } catch {}
+    }
+
+    // ── Button message via Baileys proto + optional image/video header ─────
+    const NF = proto?.Message?.InteractiveMessage?.NativeFlowMessage?.NativeFlowButton;
+    if (!NF) throw new Error("NativeFlowButton proto not available");
+
+    const builtButtons = await _buildNativeButtons(NF, buttons);
+
+    // Build the header — with or without media
+    let headerProto;
+    const mediaSrc  = video || image;
+    const isVideo   = !!video && !image;
+
+    if (mediaSrc) {
+      const mediaBuf = await _resolveMediaBuffer(mediaSrc);
+      if (mediaBuf) {
+        try {
+          // Upload the media so WhatsApp can serve it
+          const mediaPayload = isVideo
+            ? { video:    mediaBuf, mimetype: "video/mp4" }
+            : { image:    mediaBuf, mimetype: "image/jpeg" };
+
+          const prepared = await B.prepareWAMessageMedia(mediaPayload, {
+            upload: sock.waUploadToServer,
+          });
+
+          if (isVideo && prepared.videoMessage) {
+            headerProto = proto.Message.InteractiveMessage.Header.create({
+              title:              header,
+              videoMessage:       proto.Message.VideoMessage.create(prepared.videoMessage),
+              hasMediaAttachment: true,
+            });
+          } else if (!isVideo && prepared.imageMessage) {
+            headerProto = proto.Message.InteractiveMessage.Header.create({
+              title:              header,
+              imageMessage:       proto.Message.ImageMessage.create(prepared.imageMessage),
+              hasMediaAttachment: true,
+            });
+          }
+        } catch {
+          // Media upload failed — fall back to text header
+        }
+      }
+    }
+
+    if (!headerProto) {
+      headerProto = proto.Message.InteractiveMessage.Header.create({
+        title:              header,
+        hasMediaAttachment: false,
+      });
+    }
+
+    const interactiveMsg = proto.Message.InteractiveMessage.create({
+      body:   proto.Message.InteractiveMessage.Body.create({ text: body }),
+      footer: proto.Message.InteractiveMessage.Footer.create({ text: footer }),
+      header: headerProto,
+      nativeFlowMessage: proto.Message.InteractiveMessage.NativeFlowMessage.create({
+        buttons: builtButtons,
+      }),
+      ...(hasContextInfo ? { contextInfo: proto.ContextInfo.create(contextInfo) } : {}),
+    });
+
+    const fullContent = proto.Message.create({ interactiveMessage: interactiveMsg });
+    const genOpts     = { userJid: sock.user?.id };
+    if (quoted) genOpts.quoted = quoted;
+
+    const generated = await B.generateWAMessageFromContent(jid, fullContent, genOpts);
+    return await sock.relayMessage(jid, generated.message, { messageId: generated.key.id });
+
+  } catch {
+    // ── Graceful degradation: image+caption then buttons (two sends) ──────
+    if (image || video) {
+      try {
+        const mediaBuf = await _resolveMediaBuffer(image || video);
+        if (mediaBuf) {
+          const mediaContent = image
+            ? { image: mediaBuf, caption: body || header, mimetype: "image/jpeg" }
+            : { video: mediaBuf, caption: body || header, mimetype: "video/mp4"  };
+
+          if (hasContextInfo) mediaContent.contextInfo = contextInfo;
+
+          const mediaOpts = {};
+          if (quoted) mediaOpts.quoted = quoted;
+          await sock.sendMessage(jid, mediaContent, mediaOpts);
+
+          // Now send buttons separately (best we can do in degraded mode)
+          if (buttons.length) {
+            const btnText = _textFallbackInteractive("", body, buttons, footer);
+            await sock.sendMessage(jid, { text: btnText }, {});
+          }
+          return;
+        }
+      } catch {}
+    }
+
+    // ── Last resort: plain text ────────────────────────────────────────────
+    const text = _textFallbackInteractive(header, body, buttons, footer);
     const sendOpts = {};
     if (quoted) sendOpts.quoted = quoted;
     return sock.sendMessage(jid, { text }, sendOpts);

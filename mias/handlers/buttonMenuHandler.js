@@ -13,7 +13,7 @@
  * Architecture:  .menu → Home → Categories → Commands → Wizard → Execute
  */
 
-import { sendButtons, sendList, sendHeroCard } from "./interactiveHandler.js";
+import { sendButtons, sendList, sendHeroCard, sendRichInteractive } from "./interactiveHandler.js";
 import { sendText }                            from "./messageHandler.js";
 import { buildVCard, fetchProfilePic }         from "./contactHandler.js";
 import { formatUptime }                        from "./utilityHandler.js";
@@ -29,6 +29,7 @@ import {
   getCategoryById,
   getTotalCommandCount,
 }                                              from "./menuConfig.js";
+import { MenuBuilder }                         from "./builders/MenuBuilder.js";
 
 // ─── Visual constants ─────────────────────────────────────────────────────────
 
@@ -65,16 +66,16 @@ function _cmdCount() {
 
 /**
  * Send the Button Mode home screen.
- * Shows bot info + quick-action buttons + category list.
+ * Uses MenuBuilder → sendRichInteractive() to combine
+ * image + buttons + contextInfo in ONE sendMessage() call.
  */
 export async function sendButtonHomeScreen(sock, jid, msg, opts = {}) {
   const prefix   = _prefix();
   const botName  = _botName();
   const cmdCount = _cmdCount();
   const uptime   = formatUptime(process.uptime?.() || 0);
-  const caps     = await getCapabilities(sock);
 
-  // Try to get bot profile pic for header
+  // Try to get bot profile pic for image header
   let picBuffer = null;
   try {
     const sock_ = globalThis.__MIAS_SOCK__ || sock;
@@ -82,35 +83,49 @@ export async function sendButtonHomeScreen(sock, jid, msg, opts = {}) {
     if (botJid) picBuffer = await fetchProfilePic(sock_, botJid);
   } catch {}
 
-  const header = `${botName}`;
-  const body   = [
+  // ── ONE rich message: image + category buttons + adReply (via MenuBuilder) ──
+  try {
+    const mb = new MenuBuilder(sock, jid)
+      .botName(botName)
+      .cmdCount(cmdCount)
+      .uptime(uptime)
+      .prefix(prefix)
+      .categories(MENU_CATEGORIES)
+      .footer(`${prefix}help <cmd> for details`)
+      .quoted(msg);
+
+    if (picBuffer) mb.coverImage(picBuffer);
+
+    return await mb.send();
+  } catch {}
+
+  // ── Fallback: sendRichInteractive with image + quick-action buttons ─────────
+  const body = [
     `Commands : ${cmdCount}`,
     `Uptime   : ${uptime}`,
     LINE,
     `What would you like to do?`,
   ].join("\n");
 
-  // Hero card with image header (if capable)
-  if (caps.heroCards && picBuffer) {
-    try {
-      return await sendHeroCard(sock, jid, {
-        image:   picBuffer,
-        title:   header,
-        body,
-        footer:  `${prefix}help <cmd> for details`,
-        buttons: [
-          { text: "Browse Commands", id: "btn_openmenu" },
-          { text: "Close",           id: "btn_close"    },
-        ],
-        quoted:  msg,
-      });
-    } catch {}
-  }
+  try {
+    return await sendRichInteractive(sock, jid, {
+      header:  botName,
+      body,
+      footer:  `${prefix}help <cmd> for details`,
+      buttons: [
+        { text: "Browse Commands", id: "btn_openmenu" },
+        { text: "Close",           id: "btn_close"    },
+      ],
+      image:  picBuffer || undefined,
+      quoted: msg,
+    });
+  } catch {}
 
-  // Buttons fallback
+  // ── Plain-button fallback ───────────────────────────────────────────────────
+  const caps = await getCapabilities(sock).catch(() => ({}));
   if (caps.buttons) {
     try {
-      return await sendButtons(sock, jid, `*${header}*\n\n${body}`, [
+      return await sendButtons(sock, jid, `*${botName}*\n\n${body}`, [
         { text: "Browse Commands", id: "btn_openmenu" },
         { text: "Close",           id: "btn_close"    },
       ], {
