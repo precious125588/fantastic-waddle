@@ -1,0 +1,21 @@
+{
+  "id": "new-page",
+  "name": "New Page",
+  "tagline": "Next Generation • Beta",
+  "description": "The new-generation MIAS bot — same core engines, fresh design, modern architecture.",
+  "version": "2.0.0-beta",
+  "status": "beta",
+  "entry": "mias/index.js",
+  "env": {
+    "BOT_NAME": "New Page",
+    "BOT_VERSION": "2.0.0-beta",
+    "THEME": "minimal",
+    "MENU_STYLE": "native-flow"
+  },
+  "deploySteps": [
+    "Framework initialized",
+    "Services loaded",
+    "Session created",
+    "Deployment complete"
+  ]
+}

@@ -23,7 +23,7 @@ function _backoffMs(n) {
     return Math.min(8000 * Math.pow(2, n - 1), MAX_BACKOFF_MS);
 }
 
-async function launch(number, sessionDir) {
+async function launch(number, sessionDir, envOverrides = {}) {
     if (running.has(number) && isAlive(running.get(number).proc)) {
         console.log(chalk.gray(`↪ MAIS already running for ${number}`));
         return running.get(number);
@@ -35,6 +35,11 @@ async function launch(number, sessionDir) {
     const existing     = running.get(number);
     const restartCount = existing ? (existing.restartCount || 0) : 0;
 
+    // Resolve entry point from manifest (BOT_ENTRY) or default to mias/index.js
+    const { BOT_ENTRY: _botEntry, ...safeEnvOverrides } = envOverrides;
+    const botEntry = _botEntry ? path.join(__dirname, _botEntry) : MIAS_ENTRY;
+    if (!fs.existsSync(botEntry)) throw new Error(`Bot entry not found: ${botEntry}`);
+
     const env = {
         ...process.env,
         AUTH_DIR:     sessionDir,
@@ -45,11 +50,13 @@ async function launch(number, sessionDir) {
         LOG_DEDUP:    process.env.LOG_DEDUP     || '1',
         ZERO_API_KEY: process.env.ZERO_API_KEY  || 'ZERO-ADMIN-4e8a479a618e7a43d0a4edd1',
         PORT: '0',
+        // Bot-specific env from manifest (branding, theme, version)
+        ...safeEnvOverrides,
     };
 
     const proc = spawn(
         process.execPath,
-        ['--expose-gc', '--max-old-space-size=1050', MIAS_ENTRY],
+        ['--expose-gc', '--max-old-space-size=1050', botEntry],
         { cwd: path.join(__dirname,'mias'), env, stdio:['ignore','pipe','pipe'], detached:false }
     );
 

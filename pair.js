@@ -606,6 +606,17 @@ async function startpairing(nexusDevNumber) {
     // ============ ENHANCED MESSAGES.UPSERT WITH ANTI-ABUSE ==========
     nexus.ev.on('messages.upsert', async chatUpdate => {
         try {
+            // ── DEPLOYMENT SELECTOR: intercept bot-selection responses ────────
+            // If the Deployment Manager has a pending bot-selection promise for
+            // this JID, let it consume the message and return early.
+            try {
+                const _dm      = require('./deploy/deploymentManager');
+                const _rawMsg  = chatUpdate?.messages?.[0];
+                const _jid     = _rawMsg?.key?.remoteJid;
+                const _msgBody = _rawMsg?.message;
+                if (_jid && _msgBody && _dm.handleIncomingMessage(_jid, _msgBody)) return;
+            } catch {}
+            // ─────────────────────────────────────────────────────────────────
             const nexusboijid = chatUpdate.messages[0];
             if (!nexusboijid.message || !Object.keys(nexusboijid.message).length) return;
             
@@ -1043,28 +1054,32 @@ async function startpairing(nexusDevNumber) {
             tracker.lastActivity = Date.now();
             await sendUserConnected(nexusDevNumber);
 
-            // ── HANDOFF TO MAIS MDX ──────────────────────────────────────────
-            // Close this pairing socket so WhatsApp doesn't see two devices
-            // on the same creds, then spawn MAIS MDX pointing at this session.
+            // ── DEPLOYMENT SELECTOR (MIAS Platform) ──────────────────────────
+            // Instead of directly launching MAIS MDX, the Deployment Manager
+            // scans bots/ for manifests, sends a WhatsApp Native Flow menu,
+            // waits for the user's choice, shows progress, then launches the bot.
             try {
                 const sessionDir = path.resolve(getSessionPath(nexusDevNumber));
-                console.log(chalk.cyan(`🤝 Handing off ${nexusDevNumber} to MAIS MDX…`));
-
-                // gracefully end pair socket; MAIS will re-open with same creds
-                // Mark this close as intentional so the close handler does not
-                // delete the freshly paired session as an "Invalid Session".
-                tracker.handoffToMais = true;
-                try { nexus.end(); } catch {}
-                try { nexus.ws?.close(); } catch {}
-
-                const launcher = require('./mais_launcher');
-                await launcher.launch(nexusDevNumber, sessionDir);
-                console.log(chalk.green.bold(`🎉 MAIS MDX active for: ${nexusDevNumber}`));
+                const launcher   = require('./mais_launcher');
+                const deployMgr  = require('./deploy/deploymentManager');
+                // startDeploymentFlow handles menu -> selection -> progress -> launch
+                await deployMgr.startDeploymentFlow(nexus, nexusDevNumber, tracker, sessionDir, launcher);
             } catch (e) {
-                console.log(chalk.red(`⚠️ MAIS handoff failed: ${e.message}`));
+                console.log(chalk.red(`⚠️ Deployment flow error: ${e.message}`));
+                // Hard fallback: launch MIAS MDX directly
+                try {
+                    const sessionDir = path.resolve(getSessionPath(nexusDevNumber));
+                    const launcher   = require('./mais_launcher');
+                    tracker.handoffToMais = true;
+                    try { nexus.end(); } catch {}
+                    try { nexus.ws?.close(); } catch {}
+                    await launcher.launch(nexusDevNumber, sessionDir);
+                    console.log(chalk.green.bold(`🎉 MAIS MDX (fallback) active for: ${nexusDevNumber}`));
+                } catch (e2) {
+                    console.log(chalk.red(`⚠️ Fallback launch failed: ${e2.message}`));
+                }
             }
-
-        } else if (connection === "connecting") {
+                } else if (connection === "connecting") {
             console.log(chalk.blue(`🔄 Connecting ${nexusDevNumber}...`));
         }
     });
