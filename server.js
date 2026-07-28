@@ -148,7 +148,28 @@ app.post('/api/pair', rateLimit(60000,10), async (req,res) => {
     if (number.length<7||number.length>15) return res.status(400).json({ok:false,error:'Invalid phone number.'});
 
     const jid = `${number}@s.whatsapp.net`;
-    if (_pair.hasPairedSession(jid)) return res.status(409).json({ok:false,error:'This number is already paired.'});
+    const force = req.body?.force === true || req.body?.force === 'true';
+
+    // A number counts as "already paired" only when the stored session is
+    // complete AND still alive. A number that was unlinked from the phone (or
+    // killed by a 401) is cleaned up automatically so it can pair again.
+    if (_pair.hasPairedSession(jid)) {
+        const live = _pair.isSessionLive ? _pair.isSessionLive(jid) : true;
+        const botRunning = _launcher ? _launcher.list().some(r => r.number === jid && r.alive) : false;
+
+        if (force || (!live && !botRunning)) {
+            logger.log('pairing', `Re-pair requested for ${jid} (force=${force}, live=${live}, bot=${botRunning}) — clearing dead session`);
+            try { _pair.unpairSession ? _pair.unpairSession(jid) : _pair.forceCleanupSession(jid); } catch {}
+            try { registry.remove?.(jid); } catch {}
+            await _sleep(600);
+        } else {
+            return res.status(409).json({
+                ok: false,
+                canRepair: true,
+                error: 'This number is already connected. Tap "Re-pair anyway" to unlink it and get a new code.'
+            });
+        }
+    }
 
     const existing = _pair.readPairingCodeRecord(jid);
     if (existing?.code) {
@@ -265,13 +286,28 @@ app.post('/api/logout/delete-session', (req,res) => {
     res.json({ ok: true, deleted });
 });
 
+// ── Unpair / reset a number so it can be paired again ────────────────────────
+app.post('/api/pair/reset', rateLimit(60000,10), (req,res) => {
+    if (!_pair) return res.status(503).json({ok:false,error:'Server is still starting up.'});
+    let {number} = req.body || {};
+    if (!number) return res.status(400).json({ok:false,error:'Phone number required.'});
+    number = String(number).replace(/[^0-9]/g,'');
+    if (number.length<7||number.length>15) return res.status(400).json({ok:false,error:'Invalid phone number.'});
+    const jid = `${number}@s.whatsapp.net`;
+    try { _pair.unpairSession ? _pair.unpairSession(jid) : _pair.forceCleanupSession(jid); } catch {}
+    try { registry.remove?.(jid); } catch {}
+    logPair(jid,'reset','session cleared','web');
+    res.json({ok:true,message:'Session cleared. You can pair this number again.'});
+});
+
 app.get('/api/pair/status/:number', (req,res) => {
     const number = req.params.number.replace(/[^0-9]/g,'');
     const jid    = `${number}@s.whatsapp.net`;
     const paired = _pair?_pair.hasPairedSession(jid):false;
+    const live   = paired && _pair?.isSessionLive ? _pair.isSessionLive(jid) : false;
     const record = _pair?_pair.readPairingCodeRecord(jid):null;
     const botRunning = _launcher?_launcher.list().some(r=>r.number===jid&&r.alive):false;
-    res.json({ok:true,paired,code:record?.code||null,source:registry.get(jid)?.source||null,ready:_ready,botRunning});
+    res.json({ok:true,paired,live,code:record?.code||null,source:registry.get(jid)?.source||null,ready:_ready,botRunning});
 });
 
 // ── Admin: login / logout ─────────────────────────────────────────────────────

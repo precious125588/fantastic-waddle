@@ -62,8 +62,108 @@ function ensureSessionPath(nexusDevNumber) {
     return sessionPath;
 }
 
-function hasPairedSession(nexusDevNumber) {
-    return fs.existsSync(path.join(getSessionPath(nexusDevNumber), 'creds.json'));
+// ── Session liveness ─────────────────────────────────────────────────────────
+// A folder with a creds.json is NOT proof the number is still linked. When a
+// user unlinks the device from their phone (or WhatsApp kills the session with
+// a 401), the files stay on disk, so the old check answered "already paired"
+// forever and the number could never be paired again. Everything below treats
+// a session as paired only when the credentials are actually complete AND the
+// session has not been logged out.
+
+// Numbers purged in the last PURGE_GRACE_MS are never reported as paired, even
+// if a late creds.update write recreates the folder behind our back.
+const PURGE_GRACE_MS = 60 * 1000;
+const recentlyPurged = new Map();
+
+function markPurged(nexusDevNumber) {
+    recentlyPurged.set(nexusDevNumber, Date.now());
+}
+
+function wasRecentlyPurged(nexusDevNumber) {
+    const ts = recentlyPurged.get(nexusDevNumber);
+    if (!ts) return false;
+    if (Date.now() - ts > PURGE_GRACE_MS) {
+        recentlyPurged.delete(nexusDevNumber);
+        return false;
+    }
+    return true;
+}
+
+function readCredsFile(nexusDevNumber) {
+    const credsPath = path.join(getSessionPath(nexusDevNumber), 'creds.json');
+    if (!fs.existsSync(credsPath)) return null;
+    try {
+        return JSON.parse(fs.readFileSync(credsPath, 'utf8'));
+    } catch {
+        return null;
+    }
+}
+
+function credsAreComplete(creds) {
+    return !!(creds && creds.registered === true && creds.me && creds.me.id);
+}
+
+// Returns true only for a session that is genuinely still linked.
+// Invalid / logged-out leftovers are wiped so the number can pair again.
+function hasPairedSession(nexusDevNumber, options = {}) {
+    const { clean = true } = options;
+
+    if (wasRecentlyPurged(nexusDevNumber)) return false;
+
+    const credsPath = path.join(getSessionPath(nexusDevNumber), 'creds.json');
+    if (!fs.existsSync(credsPath)) return false;
+
+    const creds = readCredsFile(nexusDevNumber);
+    if (!credsAreComplete(creds)) {
+        if (clean) {
+            console.log(chalk.yellow(`🧹 Incomplete/expired session for ${nexusDevNumber} — clearing so it can pair again.`));
+            forceCleanupSession(nexusDevNumber);
+        }
+        return false;
+    }
+
+    const tracker = rentbotTracker.get(nexusDevNumber);
+    if (tracker && (tracker.loggedOut || tracker.sessionInvalid)) {
+        if (clean) {
+            console.log(chalk.yellow(`🧹 ${nexusDevNumber} was logged out — clearing session.`));
+            forceCleanupSession(nexusDevNumber);
+        }
+        return false;
+    }
+
+    return true;
+}
+
+// Is there a live websocket for this number right now?
+function isSessionLive(nexusDevNumber) {
+    const tracker = rentbotTracker.get(nexusDevNumber);
+    if (!tracker || tracker.disconnected || tracker.loggedOut) return false;
+    const ws = tracker.connection?.ws;
+    return ws?.readyState === 1 || ws?.socket?.readyState === 1;
+}
+
+function getSessionState(nexusDevNumber) {
+    const paired = hasPairedSession(nexusDevNumber);
+    return {
+        number: nexusDevNumber,
+        paired,
+        live: paired && isSessionLive(nexusDevNumber),
+        loggedOut: !paired && fs.existsSync(getSessionPath(nexusDevNumber))
+    };
+}
+
+// Explicit unlink — used by the web UI so a user can re-pair a dead number.
+function unpairSession(nexusDevNumber) {
+    forceCleanupSession(nexusDevNumber);
+    markPurged(nexusDevNumber);
+    try { fs.unlinkSync(getPairingCodePath(nexusDevNumber)); } catch {}
+    try {
+        if (fs.existsSync(LEGACY_PAIRING_FILE)) {
+            const payload = JSON.parse(fs.readFileSync(LEGACY_PAIRING_FILE, 'utf8'));
+            if (payload?.number === nexusDevNumber) fs.unlinkSync(LEGACY_PAIRING_FILE);
+        }
+    } catch {}
+    return true;
 }
 
 // WhatsApp pairing codes expire after a couple of minutes. Serving a cached
@@ -354,13 +454,19 @@ function forceCleanupSession(nexusDevNumber) {
         rentbotTracker.delete(nexusDevNumber);
     }
 
-    // 2) Defer folder delete one tick so any in-flight writeFile resolves
-    //    before its target disappears.
-    setTimeout(() => {
+
+    // Remember the purge: a straggler creds.update write can recreate the
+    // folder a moment later, and that leftover is what used to make the web
+    // page insist "this number is already paired" forever.
+    markPurged(nexusDevNumber);
+
+    // 2) Delete now, then sweep again a few times so any in-flight writeFile
+    //    that lands after the first delete does not resurrect the session.
+    const wipe = (label) => {
         try {
             if (fs.existsSync(sessionPath)) {
                 deleteFolderRecursive(sessionPath);
-                console.log(chalk.red(`🗑️ Force cleaned: ${nexusDevNumber}`));
+                console.log(chalk.red(`🗑️ Force cleaned${label}: ${nexusDevNumber}`));
             }
         } catch (e) {
             // ENOENT here is fine — already gone.
@@ -368,7 +474,12 @@ function forceCleanupSession(nexusDevNumber) {
                 console.log(chalk.red(`❌ Error force cleaning ${nexusDevNumber}: ${e.message}`));
             }
         }
-    }, 250);
+    };
+
+    wipe('');
+    setTimeout(() => wipe(' (sweep 1)'), 250);
+    setTimeout(() => wipe(' (sweep 2)'), 1500);
+    setTimeout(() => wipe(' (sweep 3)'), 5000);
 
     return true;
 }
@@ -488,6 +599,11 @@ async function startpairing(nexusDevNumber) {
     tracker.pairingCode = null;
     tracker.pairingError = null;
     tracker.pairingPromise = null;
+    tracker.loggedOut = false;
+    tracker.sessionInvalid = false;
+    // A fresh pairing attempt clears the purge tombstone, otherwise the freshly
+    // created session would still be reported as "not paired".
+    recentlyPurged.delete(nexusDevNumber);
 
     const version = await getWAVersion();
     
@@ -1101,6 +1217,7 @@ async function startpairing(nexusDevNumber) {
 
             if (reason === 405) {
                 console.log(chalk.red.bold(`❌ Error 405 for ${nexusDevNumber}: Session logged out or invalid`));
+                tracker.sessionInvalid = true;
                 console.log(chalk.yellow(`🗑️ Force cleaning session for ${nexusDevNumber}...`));
                 
                 forceCleanupSession(nexusDevNumber);
@@ -1129,6 +1246,10 @@ async function startpairing(nexusDevNumber) {
                 if (pairingStillPending) tracker.pairingError = 'Invalid pairing session. Please try again.';
             } else if (reason === DisconnectReason.loggedOut) {
                 console.log(chalk.bgRed(`❌ ${nexusDevNumber} logged out`));
+                // Real logout (device unlinked from the phone): mark it so the
+                // web UI stops claiming the number is still paired.
+                tracker.loggedOut = true;
+                markPurged(nexusDevNumber);
                 forceCleanupSession(nexusDevNumber);
                 tracker.disconnected = true;
                 if (pairingStillPending) tracker.pairingError = 'The device logged out before pairing completed. Please try again.';
@@ -1162,6 +1283,9 @@ async function startpairing(nexusDevNumber) {
             console.log(chalk.bgGreen.black(`✅ Paired: ${nexusDevNumber}`));
             tracker.retryCount = 0;
             tracker.disconnected = false;
+            tracker.loggedOut = false;
+            tracker.sessionInvalid = false;
+            recentlyPurged.delete(nexusDevNumber);
             tracker.lastActivity = Date.now();
             await sendUserConnected(nexusDevNumber);
 
@@ -1376,6 +1500,10 @@ module.exports = {
     waitForPairingResult,
     readPairingCodeRecord,
     hasPairedSession,
+    isSessionLive,
+    getSessionState,
+    unpairSession,
+    forceCleanupSession,
     listPairedDevices,
     antilinkGroups,
     antistickerGroups,
