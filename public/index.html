@@ -367,8 +367,16 @@ const logBody  = document.getElementById('logBody');
 // ═══════════════════════════════════════════════════════════════
 // UI HELPERS
 // ═══════════════════════════════════════════════════════════════
-function showAlert(msg, type='error') {
+function showAlert(msg, type='error', actionLabel, actionFn) {
   alertBox.textContent = msg;
+  if (actionLabel && actionFn) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.textContent = actionLabel;
+    btn.style.cssText = 'display:block;margin-top:10px;padding:8px 14px;border:0;border-radius:8px;cursor:pointer;font-weight:600;background:#111;color:#fff;';
+    btn.onclick = actionFn;
+    alertBox.appendChild(btn);
+  }
   alertBox.className = 'alert ' + type;
   alertBox.style.display = 'block';
   alertBox.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -447,7 +455,7 @@ checkServer();
 // ═══════════════════════════════════════════════════════════════
 // PAIRING FLOW
 // ═══════════════════════════════════════════════════════════════
-async function requestPairCode() {
+async function requestPairCode(force = false) {
   hideAlert();
   const raw = document.getElementById('phoneInput').value;
   const number = raw.replace(/[^0-9]/g, '');
@@ -464,14 +472,30 @@ async function requestPairCode() {
     const resp = await fetch('/api/pair', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ number })
+      body: JSON.stringify({ number, force: !!force })
     });
     let data;
     try { data = await resp.json(); } catch { data = { ok: false, error: 'Invalid server response.' }; }
     setLoading(false);
     if (!data.ok) {
       const type = (resp.status === 503 || resp.status === 429) ? 'warning' : 'error';
-      showAlert(data.error || 'Pairing failed. Please try again.', type);
+      if (resp.status === 409 && data.canRepair) {
+        showAlert(data.error || 'This number is already connected.', 'warning', 'Re-pair anyway', async () => {
+          hideAlert();
+          setLoading(true, 'Unlinking old session');
+          try {
+            await fetch('/api/pair/reset', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ number })
+            });
+          } catch {}
+          setLoading(false);
+          requestPairCode(true);
+        });
+      } else {
+        showAlert(data.error || 'Pairing failed. Please try again.', type);
+      }
       setStep(1);
       return;
     }
