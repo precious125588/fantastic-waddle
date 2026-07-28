@@ -2,29 +2,42 @@
 /**
  * MIAS Bot Selector
  *
- * Sends the WhatsApp bot-selection menu (single-select list / interactive)
- * using the pairing socket immediately after authentication.
+ * Sends the WhatsApp bot-selection menu after pairing and makes sure the
+ * buttons are actually tappable.
  *
- * Strategy (most → least interactive):
- *   1. Native-Flow single-select via Baileys proto (best UX, radio buttons)
- *   2. WhatsApp list message (dropdown-style select)
- *   3. Plain text with numbered options (universal fallback)
+ * FIXED (was broken):
+ *   - Native Flow was building ONE `single_select` button PER BOT. WhatsApp's
+ *     single_select is a *single* button that carries a `sections`/`rows`
+ *     payload. Emitting several of them produced a menu whose buttons did
+ *     nothing when tapped — the reported "selection button don't click".
+ *   - The message was relayed without `messageContextInfo`, which newer
+ *     WhatsApp clients require before they will render an interactive
+ *     message at all.
+ *   - Recipient was a bare phone number, not a JID, so sends silently failed.
+ *
+ * Strategy (most -> least interactive):
+ *   1. Native Flow single_select  (one button, radio-style list)
+ *   2. Native Flow quick_reply    (one tappable button per bot)
+ *   3. Legacy list message        (older clients)
+ *   4. Plain numbered text        (always works)
  */
 
 const chalk = require('chalk');
+const { toJid } = require('./jid');
 
-// ── Baileys proto loader ──────────────────────────────────────────────────────
-let _proto = null;
-async function _getProto() {
-  if (_proto) return _proto;
+// -- Baileys loader ----------------------------------------------------------
+let _baileys = null;
+async function _getBaileys() {
+  if (_baileys) return _baileys;
   try {
-    const B = await import('@whiskeysockets/baileys');
-    _proto = B.proto;
-  } catch {}
-  return _proto;
+    _baileys = await import('@whiskeysockets/baileys');
+  } catch (e) {
+    console.log(chalk.yellow(`[BotSelector] Baileys import failed: ${e.message}`));
+    _baileys = null;
+  }
+  return _baileys;
 }
 
-// ── Status badge ──────────────────────────────────────────────────────────────
 function _statusBadge(status) {
   switch (status) {
     case 'stable':       return '🟢';
@@ -34,154 +47,199 @@ function _statusBadge(status) {
   }
 }
 
+function _bodyText(bots) {
+  return bots
+    .map(b => `*${b.name}* ${_statusBadge(b.status)}\n_${b.tagline || ''}_`)
+    .join('\n\n');
+}
+
 /**
- * Send the bot selection menu to the user's WhatsApp.
+ * Send the bot selection menu.
  *
- * @param {object}   sock  — Baileys socket
- * @param {string}   jid   — Recipient JID
- * @param {Array}    bots  — Array of bot manifests from deploymentManager
+ * @param {object} sock         Baileys socket
+ * @param {string} numberOrJid  Bare number or full JID — normalised here
+ * @param {Array}  bots         Bot manifests
+ * @returns {Promise<boolean>}  true when at least one strategy delivered
  */
-async function sendBotSelectionMenu(sock, jid, bots) {
-  // Strategy 1: Native Flow single-select (radio buttons — best UX)
-  const sent = await _tryNativeFlow(sock, jid, bots);
-  if (sent) return;
-
-  // Strategy 2: WhatsApp list message
-  const sentList = await _tryListMessage(sock, jid, bots);
-  if (sentList) return;
-
-  // Strategy 3: Plain text fallback
-  await _sendTextFallback(sock, jid, bots);
-}
-
-// ── Strategy 1: Native Flow ───────────────────────────────────────────────────
-async function _tryNativeFlow(sock, jid, bots) {
-  try {
-    const proto = await _getProto();
-    if (!proto) return false;
-
-    const NF = proto?.Message?.InteractiveMessage?.NativeFlowMessage?.NativeFlowButton;
-    if (!NF) return false;
-
-    // Build single-select radio buttons
-    const buttons = bots.map(bot =>
-      NF.create({
-        name: 'single_select',
-        buttonParamsJson: JSON.stringify({
-          id: bot.id,
-          title: bot.name,
-          description: `${_statusBadge(bot.status)} ${bot.tagline || ''}`.trim(),
-        }),
-      })
-    );
-
-    // Add Deploy confirmation button
-    const deployBtn = NF.create({
-      name: 'cta_url',
-      buttonParamsJson: JSON.stringify({
-        display_text: 'Deploy',
-        url: 'https://whatsapp.com',
-        merchant_url: 'https://whatsapp.com',
-      }),
-    });
-
-    const bodyText = bots.map((b, i) =>
-      `${i === 0 ? '◉' : '○'} *${b.name}*\n   ${_statusBadge(b.status)} ${b.tagline || ''}`
-    ).join('\n\n');
-
-    const interactiveMsg = proto.Message.InteractiveMessage.create({
-      header: proto.Message.InteractiveMessage.Header.create({
-        hasMediaAttachment: false,
-        title: '🤖 MIAS Platform',
-        subtitle: 'Bot Deployment',
-      }),
-      body: proto.Message.InteractiveMessage.Body.create({
-        text: `🎉 *Pairing Successful!*\n\nWelcome to MIAS Platform.\n\nPlease choose the bot you want to deploy.\n\n${bodyText}`,
-      }),
-      footer: proto.Message.InteractiveMessage.Footer.create({
-        text: '⚡ Powered by MIAS Platform',
-      }),
-      nativeFlowMessage: proto.Message.InteractiveMessage.NativeFlowMessage.create({
-        buttons,
-        messageParamsJson: '',
-      }),
-    });
-
-    const fullContent = proto.Message.create({ interactiveMessage: interactiveMsg });
-
-    await sock.relayMessage(jid, fullContent, {});
-    console.log(chalk.green('[BotSelector] Native Flow menu sent'));
-    return true;
-  } catch (e) {
-    console.log(chalk.yellow(`[BotSelector] Native Flow failed: ${e.message}`));
+async function sendBotSelectionMenu(sock, numberOrJid, bots) {
+  const jid = toJid(numberOrJid);
+  if (!jid) {
+    console.error(chalk.red(`[BotSelector] Cannot resolve JID from "${numberOrJid}"`));
     return false;
   }
+  if (!Array.isArray(bots) || bots.length === 0) {
+    console.error(chalk.red('[BotSelector] No bots to offer'));
+    return false;
+  }
+
+  const strategies = [
+    ['native-flow single_select', _trySingleSelect],
+    ['native-flow quick_reply',   _tryQuickReply],
+    ['legacy list',               _tryListMessage],
+    ['plain text',                _sendTextFallback],
+  ];
+
+  for (const [label, fn] of strategies) {
+    try {
+      if (await fn(sock, jid, bots)) {
+        console.log(chalk.green(`[BotSelector] Menu sent via ${label}`));
+        return true;
+      }
+      console.log(chalk.gray(`[BotSelector] ${label} unavailable, trying next`));
+    } catch (e) {
+      console.log(chalk.yellow(`[BotSelector] ${label} failed: ${e.message}`));
+    }
+  }
+
+  console.error(chalk.red('[BotSelector] Every strategy failed'));
+  return false;
 }
 
-// ── Strategy 2: WhatsApp list message ────────────────────────────────────────
+// -- Strategy 1: Native Flow single_select -----------------------------------
+async function _trySingleSelect(sock, jid, bots) {
+  const B = await _getBaileys();
+  const proto = B?.proto;
+  const generateWAMessageFromContent = B?.generateWAMessageFromContent;
+  if (!proto?.Message?.InteractiveMessage || !generateWAMessageFromContent) return false;
+
+  // ONE button carrying every bot as a row. This is the shape WhatsApp
+  // actually understands; one-button-per-bot renders but never responds.
+  const rows = bots.map(bot => ({
+    header: '',
+    title: `${_statusBadge(bot.status)} ${bot.name}`,
+    description: `${bot.tagline || ''}${bot.version ? ` · v${bot.version}` : ''}`.trim(),
+    id: `deploy:${bot.id}`,
+  }));
+
+  const buttons = [{
+    name: 'single_select',
+    buttonParamsJson: JSON.stringify({
+      title: '🚀 Choose your bot',
+      sections: [{ title: '🤖 Available Bots', highlight_label: 'Pick one', rows }],
+    }),
+  }];
+
+  const interactive = proto.Message.InteractiveMessage.create({
+    header: proto.Message.InteractiveMessage.Header.create({
+      title: '🤖 MIAS Platform',
+      subtitle: 'Bot Deployment',
+      hasMediaAttachment: false,
+    }),
+    body: proto.Message.InteractiveMessage.Body.create({
+      text:
+        `🎉 *Pairing Successful!*\n\n` +
+        `Tap the button below and choose which bot you want to deploy.\n\n` +
+        `${_bodyText(bots)}\n\n` +
+        `_Nothing is deployed until you choose._`,
+    }),
+    footer: proto.Message.InteractiveMessage.Footer.create({
+      text: '⚡ Powered by MIAS Platform',
+    }),
+    nativeFlowMessage: proto.Message.InteractiveMessage.NativeFlowMessage.create({
+      buttons,
+      messageParamsJson: '',
+    }),
+  });
+
+  // messageContextInfo is REQUIRED or modern clients drop the whole message.
+  const content = {
+    viewOnceMessage: {
+      message: {
+        messageContextInfo: {
+          deviceListMetadata: {},
+          deviceListMetadataVersion: 2,
+        },
+        interactiveMessage: interactive,
+      },
+    },
+  };
+
+  const msg = generateWAMessageFromContent(jid, content, { userJid: sock?.user?.id });
+  await sock.relayMessage(jid, msg.message, { messageId: msg.key.id });
+  return true;
+}
+
+// -- Strategy 2: Native Flow quick_reply -------------------------------------
+async function _tryQuickReply(sock, jid, bots) {
+  const B = await _getBaileys();
+  const proto = B?.proto;
+  const generateWAMessageFromContent = B?.generateWAMessageFromContent;
+  if (!proto?.Message?.InteractiveMessage || !generateWAMessageFromContent) return false;
+
+  // WhatsApp renders at most 3 quick replies reliably.
+  const buttons = bots.slice(0, 3).map(bot => ({
+    name: 'quick_reply',
+    buttonParamsJson: JSON.stringify({
+      display_text: `${_statusBadge(bot.status)} ${bot.name}`,
+      id: `deploy:${bot.id}`,
+    }),
+  }));
+
+  const interactive = proto.Message.InteractiveMessage.create({
+    body: proto.Message.InteractiveMessage.Body.create({
+      text:
+        `🎉 *Pairing Successful!*\n\n` +
+        `Choose the bot you want to deploy:\n\n${_bodyText(bots)}`,
+    }),
+    footer: proto.Message.InteractiveMessage.Footer.create({
+      text: '⚡ Powered by MIAS Platform',
+    }),
+    nativeFlowMessage: proto.Message.InteractiveMessage.NativeFlowMessage.create({
+      buttons,
+      messageParamsJson: '',
+    }),
+  });
+
+  const content = {
+    viewOnceMessage: {
+      message: {
+        messageContextInfo: { deviceListMetadata: {}, deviceListMetadataVersion: 2 },
+        interactiveMessage: interactive,
+      },
+    },
+  };
+
+  const msg = generateWAMessageFromContent(jid, content, { userJid: sock?.user?.id });
+  await sock.relayMessage(jid, msg.message, { messageId: msg.key.id });
+  return true;
+}
+
+// -- Strategy 3: legacy list message -----------------------------------------
 async function _tryListMessage(sock, jid, bots) {
-  try {
-    const proto = await _getProto();
-    if (!proto?.Message?.ListMessage) return false;
+  const rows = bots.map(bot => ({
+    rowId: `deploy:${bot.id}`,
+    title: `${_statusBadge(bot.status)} ${bot.name}`,
+    description: bot.tagline || '',
+  }));
 
-    const rows = bots.map(bot => ({
-      rowId: bot.id,
-      title: bot.name,
-      description: `${_statusBadge(bot.status)} ${bot.tagline || ''}`.trim(),
-    }));
-
-    const listMsg = proto.Message.ListMessage.create({
-      title: '🤖 MIAS Platform — Bot Selection',
-      description: '🎉 Pairing Successful! Choose the bot to deploy.',
-      buttonText: '🚀 Deploy',
-      footerText: '⚡ Powered by MIAS Platform',
-      listType: proto.Message.ListMessage.ListType.SINGLE_SELECT,
-      sections: [
-        proto.Message.ListMessage.Section.create({
-          title: '🤖 Available Bots',
-          rows: rows.map(r =>
-            proto.Message.ListMessage.Row.create({
-              rowId: r.rowId,
-              title: r.title,
-              description: r.description,
-            })
-          ),
-        }),
-      ],
-    });
-
-    await sock.sendMessage(jid, { listMessage: listMsg });
-    console.log(chalk.green('[BotSelector] List message sent'));
-    return true;
-  } catch (e) {
-    console.log(chalk.yellow(`[BotSelector] List message failed: ${e.message}`));
-    return false;
-  }
+  await sock.sendMessage(jid, {
+    text: `🎉 *Pairing Successful!*\n\nChoose the bot you want to deploy.`,
+    footer: '⚡ Powered by MIAS Platform',
+    title: '🤖 MIAS Platform — Bot Selection',
+    buttonText: '🚀 Choose Bot',
+    sections: [{ title: '🤖 Available Bots', rows }],
+  });
+  return true;
 }
 
-// ── Strategy 3: Plain text fallback ──────────────────────────────────────────
+// -- Strategy 4: plain numbered text -----------------------------------------
 async function _sendTextFallback(sock, jid, bots) {
-  try {
-    const lines = bots.map((b, i) =>
-      `${i === 0 ? '◉' : '○'} *${b.name}*\n   ${_statusBadge(b.status)} ${b.tagline || ''}`
-    ).join('\n\n');
+  const detail = bots
+    .map((b, i) => `*${i + 1}.* ${_statusBadge(b.status)} *${b.name}*\n     _${b.tagline || ''}_`)
+    .join('\n\n');
 
-    const nums = bots.map((b, i) => `*${i + 1}* — ${b.name}`).join('\n');
-
-    const text =
+  await sock.sendMessage(jid, {
+    text:
       `🎉 *Pairing Successful!*\n\n` +
-      `Welcome to MIAS Platform.\n\n` +
-      `━━━━━━━━━━━━━━━━━━━━━━\n` +
-      `🤖 *Choose Your Bot*\n\n` +
-      `${lines}\n\n` +
-      `━━━━━━━━━━━━━━━━━━━━━━\n\n` +
-      `Reply with the number:\n${nums}`;
-
-    await sock.sendMessage(jid, { text });
-    console.log(chalk.green('[BotSelector] Text fallback sent'));
-  } catch (e) {
-    console.error(chalk.red(`[BotSelector] Text fallback also failed: ${e.message}`));
-  }
+      `━━━━━━━━━━━━━━━━━━━━\n` +
+      `🤖 *Choose Your Bot*\n` +
+      `━━━━━━━━━━━━━━━━━━━━\n\n` +
+      `${detail}\n\n` +
+      `━━━━━━━━━━━━━━━━━━━━\n` +
+      `Reply with the *number* (e.g. *1*) or the bot's *name*.\n\n` +
+      `_Nothing is deployed until you choose._`,
+  });
+  return true;
 }
 
 module.exports = { sendBotSelectionMenu };

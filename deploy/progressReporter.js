@@ -2,18 +2,23 @@
 /**
  * MIAS Deployment Progress Reporter
  *
- * For New Page: sends ONE message and edits it live, counting 1 → 100
- * with what's happening in the background as the bot gets ready.
+ * Sends ONE message and edits it live as the chosen bot boots.
  *
- * For MIAS MDX and other bots: step-by-step progress messages.
+ * FIXED: the New Page reporter previously issued 100 message edits spaced
+ * 40–120 ms apart. That is ~100 outbound WhatsApp writes in under 8 seconds,
+ * which reliably trips rate limiting and can get the linked number flagged.
+ * The counter still runs 1 → 100 visually, but it is now delivered in a small
+ * number of throttled edits.
  */
 
 const chalk = require('chalk');
 
-const BAR_LENGTH = 20;
+const BAR_LENGTH  = 20;
+const MAX_EDITS   = 18;    // hard ceiling on outbound edits per deployment
+const EDIT_GAP_MS = 850;   // minimum spacing between edits
 
 function _bar(pct) {
-  const filled = Math.round((pct / 100) * BAR_LENGTH);
+  const filled = Math.max(0, Math.min(BAR_LENGTH, Math.round((pct / 100) * BAR_LENGTH)));
   return '█'.repeat(filled) + '░'.repeat(BAR_LENGTH - filled);
 }
 
@@ -22,163 +27,95 @@ function _sleep(ms) {
 }
 
 /**
- * New Page: live-edit a single message counting 1 → 100.
- * Shows a progress bar, count, and what's happening at each milestone.
+ * Edit `msgKey` if we have one, otherwise send a fresh message.
+ * Never throws — progress reporting must not break a deployment.
  */
-async function _reportNewPage(sock, jid, bot) {
-  const botName = bot.name || 'New Page';
-  const steps = bot.deploySteps || [];
-  const totalSteps = steps.length || 20;
-
-  // Milestones: which step shows at which count
-  const milestoneInterval = Math.max(1, Math.floor(100 / totalSteps));
-  const getMilestone = (count) => {
-    const idx = Math.min(Math.floor((count - 1) / milestoneInterval), steps.length - 1);
-    return steps[idx] || 'Processing...';
-  };
-
-  // ── Send initial message ──────────────────────────────────────────────────
-  let msgKey = null;
+async function _emit(sock, jid, text, msgKey) {
   try {
-    const sent = await sock.sendMessage(jid, {
-      text:
-        `⚡ *Deploying ${botName}...*\n\n` +
-        `${_bar(0)}\n` +
-        `0 / 100\n\n` +
-        `_Starting up..._`,
-    });
-    msgKey = sent?.key;
-  } catch {}
-
-  if (!msgKey) {
-    // Fallback — no edit support, just send start msg
-    console.log(chalk.yellow('[ProgressReporter] Could not send initial message'));
-    return;
+    if (msgKey) await sock.sendMessage(jid, { text, edit: msgKey });
+    else        await sock.sendMessage(jid, { text });
+  } catch (e) {
+    console.warn(chalk.yellow(`[ProgressReporter] emit failed: ${e.message}`));
   }
-
-  // ── Count 1 → 100, editing the message live ───────────────────────────────
-  let lastMilestone = '';
-  for (let count = 1; count <= 100; count++) {
-    const milestone = getMilestone(count);
-    const bar = _bar(count);
-
-    // Build multi-line progress text
-    const lines = [];
-    lines.push(`⚡ *Deploying ${botName}...*`);
-    lines.push('');
-    lines.push(bar);
-    lines.push(`*${count} / 100*`);
-    lines.push('');
-    lines.push(`⚙️ _${milestone}_`);
-
-    if (lastMilestone && lastMilestone !== milestone) {
-      lines.push(`✅ ${lastMilestone}`);
-    }
-
-    try {
-      await sock.sendMessage(jid, {
-        text: lines.join('\n'),
-        edit: msgKey,
-      });
-    } catch {}
-
-    if (milestone !== lastMilestone) lastMilestone = milestone;
-
-    // Pacing: fast at start, slight pause at milestones
-    const isMilestone = count % milestoneInterval === 0;
-    await _sleep(isMilestone ? 120 : 40);
-  }
-
-  // ── Done ─────────────────────────────────────────────────────────────────
-  await _sleep(300);
-  try {
-    await sock.sendMessage(jid, {
-      text:
-        `🎉 *${botName} is Ready!*\n\n` +
-        `${'█'.repeat(BAR_LENGTH)}\n` +
-        `*100 / 100*\n\n` +
-        `✅ All systems go!\n` +
-        `⚡ 100 commands loaded\n` +
-        `🟢 Always-online: ON\n` +
-        `👁 Auto-view status: ON\n` +
-        `❤️ Auto-like status: ON\n\n` +
-        `_Send any message to get started!_\n\n` +
-        `⚡ _Powered by MIAS Platform_`,
-      edit: msgKey,
-    });
-  } catch {}
-
-  console.log(chalk.green(`[ProgressReporter] New Page 1→100 complete for ${jid}`));
 }
 
 /**
- * MIAS MDX / generic: step-by-step progress with bar.
+ * Live 1 → 100 counter, delivered in MAX_EDITS throttled updates.
  */
-async function _reportGeneric(sock, jid, bot) {
-  const steps = bot.deploySteps || ['Session created', 'Services loaded', 'Deployment complete'];
+async function _reportCounter(sock, jid, bot) {
   const botName = bot.name || 'Bot';
+  const steps   = (bot.deploySteps && bot.deploySteps.length)
+    ? bot.deploySteps
+    : ['Starting up', 'Loading modules', 'Connecting', 'Deployment complete'];
 
   let msgKey = null;
   try {
     const sent = await sock.sendMessage(jid, {
-      text: `🚀 *Deploying ${botName}...*\n\n${_bar(0)}\n\n_Please wait_`,
+      text: `⚡ *Deploying ${botName}…*\n\n${_bar(0)}\n*0 / 100*\n\n_Starting up…_`,
     });
-    msgKey = sent?.key;
-  } catch {}
-
-  const checkmarks = [];
-  for (let i = 0; i < steps.length; i++) {
-    await _sleep(700);
-    checkmarks.push(`✓ ${steps[i]}`);
-    const pct = Math.round(((i + 1) / steps.length) * 100);
-
-    const text =
-      `🚀 *Deploying ${botName}...*\n\n` +
-      `${_bar(pct)}\n\n` +
-      checkmarks.join('\n');
-
-    if (msgKey) {
-      try { await sock.sendMessage(jid, { text, edit: msgKey }); } catch {}
-    } else {
-      try { await sock.sendMessage(jid, { text }); } catch {}
-    }
+    msgKey = sent?.key || null;
+  } catch (e) {
+    console.warn(chalk.yellow(`[ProgressReporter] initial send failed: ${e.message}`));
   }
 
-  await _sleep(600);
+  const edits = Math.min(MAX_EDITS, 100);
+  const done  = [];
 
-  const statusBadge = bot.status === 'stable' ? '🟢 Stable' : bot.status === 'beta' ? '🟡 Beta' : '⚪';
-  const doneText =
+  for (let i = 1; i <= edits; i++) {
+    const count    = Math.round((i / edits) * 100);
+    const stepIdx  = Math.min(steps.length - 1, Math.floor(((i - 1) / edits) * steps.length));
+    const current  = steps[stepIdx];
+
+    if (done[done.length - 1] !== current) {
+      if (done.length) { /* previous step is finished */ }
+      done.push(current);
+    }
+
+    const finished = done.slice(0, -1).map(s => `✅ ${s}`).join('\n');
+
+    const text = [
+      `⚡ *Deploying ${botName}…*`,
+      '',
+      _bar(count),
+      `*${count} / 100*`,
+      '',
+      `⚙️ _${current}_`,
+      finished ? `\n${finished}` : '',
+    ].join('\n');
+
+    await _emit(sock, jid, text, msgKey);
+    await _sleep(EDIT_GAP_MS);
+  }
+
+  const statusBadge =
+    bot.status === 'stable' ? '🟢 Stable' :
+    bot.status === 'beta'   ? '🟡 Beta'   : '⚪';
+
+  await _emit(
+    sock,
+    jid,
     `🎉 *${botName} is ready!*\n\n` +
+    `${'█'.repeat(BAR_LENGTH)}\n*100 / 100*\n\n` +
     `━━━━━━━━━━━━━━━━━━\n` +
     `🤖 Bot: *${botName}*\n` +
     `📦 Version: *${bot.version || 'latest'}*\n` +
     `🏷 Status: *${statusBadge}*\n` +
     `━━━━━━━━━━━━━━━━━━\n\n` +
-    `Your bot is now active. Send any message to get started!\n\n` +
-    `⚡ _Powered by MIAS Platform_`;
+    `Send any message to get started!\n\n` +
+    `⚡ _Powered by MIAS Platform_`,
+    msgKey
+  );
 
-  if (msgKey) {
-    try { await sock.sendMessage(jid, { text: doneText, edit: msgKey }); } catch {}
-  } else {
-    try { await sock.sendMessage(jid, { text: doneText }); } catch {}
-  }
-
-  console.log(chalk.green(`[ProgressReporter] Deployment complete for ${jid} → ${botName}`));
+  console.log(chalk.green(`[ProgressReporter] ${botName} deployment reported for ${jid}`));
 }
 
 /**
- * Main export — routes to New Page live counter or generic step reporter.
- *
- * @param {object} sock  — Baileys socket
- * @param {string} jid   — Recipient JID
- * @param {object} bot   — Bot manifest (name, deploySteps, status)
+ * @param {object} sock Baileys socket
+ * @param {string} jid  Full recipient JID
+ * @param {object} bot  Chosen bot manifest
  */
 async function reportDeployProgress(sock, jid, bot) {
-  const isNewPage = (bot.id === 'new-page') || (bot.name || '').toLowerCase().includes('new page');
-  if (isNewPage) {
-    return _reportNewPage(sock, jid, bot);
-  }
-  return _reportGeneric(sock, jid, bot);
+  return _reportCounter(sock, jid, bot || {});
 }
 
 module.exports = { reportDeployProgress };
