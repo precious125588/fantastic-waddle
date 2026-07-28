@@ -12,7 +12,8 @@ export function buildMenu() {
 ║  ⚡  *${BOT}*  ║
 ╚${LINE}╝
 
-${greet}! I have *100 commands* ready.
+${greet}! I have *120+ commands* ready.
+Type *${P}menu <category>* for details.
 
 ${THIN}
 📥 *DOWNLOADS*
@@ -37,6 +38,26 @@ ${THIN}
 🤖 *AI*
   › ${P}gpt  ${P}gemini  ${P}imagine  ${P}ask
   › ${P}codeai  ${P}rewrite  ${P}summarize  ${P}poem
+
+${THIN}
+👁 *VIEW ONCE*
+  › ${P}vv — unlock view-once image/video
+  › ${P}vvid — convert video to view-once
+  › ${P}vvimg — convert image to view-once
+
+${THIN}
+🛠 *TOOLS*
+  › ${P}ss  ${P}calc  ${P}qr  ${P}b64e  ${P}b64d
+  › ${P}ip  ${P}define  ${P}country  ${P}colorhex
+  › ${P}morse  ${P}unmorse  ${P}binary  ${P}unbinary
+  › ${P}pass  ${P}uuid  ${P}hash  ${P}short
+  › ${P}ocr  ${P}tts  ${P}font  ${P}temp  ${P}unit
+
+${THIN}
+🎯 *FUN & EXTRAS*
+  › ${P}leet  ${P}rev  ${P}fake
+  › ${P}lyrics  ${P}anime  ${P}meme
+  › ${P}cat  ${P}dog  ${P}coin  ${P}dice  ${P}random
 
 ${THIN}
 👥 *GROUP*
@@ -66,7 +87,7 @@ ${THIN}
   › ${P}balance  ${P}daily  ${P}transfer  ${P}gamble  ${P}work
 
 ${THIN}
-🛠 *UTILITY*
+🔧 *UTILITY*
   › ${P}ping  ${P}runtime  ${P}speed  ${P}alive  ${P}info
   › ${P}time  ${P}weather  ${P}translate  ${P}help
 
@@ -77,7 +98,8 @@ ${THIN}
   › ${P}botstat  ${P}setname
 
 ${LINE}
-⚡ _Powered by NEW PAGE — 100 cmds_`;
+⚡ _Powered by NEW PAGE v2 — 120+ cmds_
+🔧 _Baileys + GKTW Helper + All Engines_`;
 }
 
 export function buildCategoryMenu(cat) {
@@ -86,6 +108,9 @@ export function buildCategoryMenu(cat) {
     sticker:  `🎨 *STICKER*\n${P}sticker — reply to image/video\n${P}toimage — reply to sticker\n${P}stickertext <text>\n${P}stickeranim — reply to gif\n${P}stickercrop — reply to sticker`,
     img:      `🖼 *IMAGE TOOLS*\n${P}enhance — reply to image\n${P}cartoonify — reply to image\n${P}removebg — reply to image\n${P}blur — reply to image\n${P}flip — reply to image\n${P}rotate <deg> — reply to image\n${P}compress — reply to image\n${P}waifu`,
     ai:       `🤖 *AI*\n${P}gpt <prompt>\n${P}gemini <prompt>\n${P}imagine <prompt>\n${P}ask <question>\n${P}codeai <code question>\n${P}rewrite <text>\n${P}summarize <text>\n${P}poem <topic>`,
+    vv:       `👁 *VIEW ONCE*\n${P}vv — reply to view-once to unlock it\n${P}vvid — reply to video to send as view-once\n${P}vvimg — reply to image to send as view-once`,
+    tools:    `🛠 *TOOLS*\n${P}ss <url> — screenshot website\n${P}calc <expr> — calculator (e.g. 2+2*10)\n${P}qr <text> — generate QR code\n${P}b64e <text> — base64 encode\n${P}b64d <base64> — base64 decode\n${P}ip <address> — IP info lookup\n${P}define <word> — dictionary\n${P}country <name> — country info\n${P}colorhex <#hex> — color info\n${P}morse <text> — encode to morse\n${P}unmorse <morse> — decode from morse\n${P}binary <text> — encode to binary\n${P}unbinary <binary> — decode from binary\n${P}pass [length] — password generator\n${P}uuid [count] — UUID generator\n${P}hash <text> — SHA-256 hash\n${P}short <url> — URL shortener\n${P}ocr — reply to image to read text\n${P}tts [lang] <text> — text to speech\n${P}font <text> — text styler\n${P}temp <val> <C|F|K> — temperature\n${P}unit <val> <from> <to> — unit converter`,
+    extra:    `🎯 *EXTRAS*\n${P}leet <text> — leet speak\n${P}rev <text> — reverse text\n${P}fake — fake identity generator\n${P}lyrics <artist song> — song lyrics\n${P}anime <title> — anime info\n${P}meme — random meme\n${P}cat — random cat image\n${P}dog — random dog image\n${P}coin — coin flip\n${P}dice [sides] — roll dice\n${P}random [min max] — random number`,
     group:    `👥 *GROUP*\n${P}kick @user\n${P}add <number>\n${P}promote @user\n${P}demote @user\n${P}mute\n${P}unmute\n${P}kickall\n${P}tagall <msg>\n${P}hidetag <msg>\n${P}antilink on|off\n${P}antispam on|off\n${P}setgdesc <text>`,
     wa:       `📱 *WHATSAPP*\n${P}block @user|<number>\n${P}unblock <number>\n${P}setstatus <text>\n${P}sendstatus <text>\n${P}autostatus on|off\n${P}autolikestatus on|off\n${P}online\n${P}offline\n${P}typing <number>\n${P}recording <number>\n${P}readall\n${P}bio <text>`,
     fun:      `🎲 *FUN*\n${P}joke\n${P}quote\n${P}roast @user\n${P}compliment @user\n${P}ship @user1 @user2\n${P}truthdare\n${P}8ball <question>\n${P}wouldyou\n${P}trivia\n${P}riddle`,

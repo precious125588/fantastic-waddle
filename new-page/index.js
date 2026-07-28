@@ -1,6 +1,7 @@
 /**
  * NEW PAGE BOT — Next-gen WhatsApp bot
- * 100 commands · Fast · Clean · ESM
+ * 120+ commands · Baileys + GKTW Helper · All Engines · ESM
+ * v2.0
  */
 import 'dotenv/config';
 import { Boom } from '@hapi/boom';
@@ -22,9 +23,20 @@ import { handleFun }      from './commands/fun.js';
 import { handleStalk }    from './commands/stalk.js';
 import { handleEconomy }  from './commands/economy.js';
 import { handleOwner }    from './commands/owner.js';
+import { handleExtra }    from './commands/extra.js';
 import { buildMenu }      from './menu.js';
 import { getAutoFeat, getSetting, setSetting } from './lib/db.js';
-import { sleep, senderNum, isOwnerOrSudo, isBotOwner, isGroup, msgText, mentionedJids as getMentioned, quoted as getQuoted, quotedSender as getQuotedSender } from './lib/utils.js';
+import {
+  sleep, senderNum, isOwnerOrSudo, isBotOwner, isGroup,
+  msgText, mentionedJids as getMentioned,
+  quoted as getQuoted, quotedSender as getQuotedSender,
+} from './lib/utils.js';
+
+// ── GKTW helper — loaded once ─────────────────────────────────────────────────
+import { isGktwAvailable, gktwDiagnostics } from './lib/gktw.js';
+
+// ── Engines — loaded once ─────────────────────────────────────────────────────
+import { getAllEngines } from './lib/engines.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
@@ -34,11 +46,12 @@ const DATA_DIR = path.join(__dirname, 'data');
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
 // ── Auth dir from env ────────────────────────────────────────────────────────
-const AUTH_DIR = process.env.AUTH_DIR || path.join(__dirname, '..', 'nexstore', 'pairing', 'new-page-session');
+const AUTH_DIR = process.env.AUTH_DIR
+  || path.join(__dirname, '..', 'nexstore', 'pairing', 'new-page-session');
 if (!fs.existsSync(AUTH_DIR)) fs.mkdirSync(AUTH_DIR, { recursive: true });
 
-const PREFIX = getSetting('prefix', null) || process.env.PREFIX || '.';
-const BOT_NAME = process.env.BOT_NAME || 'NEW PAGE';
+const PREFIX       = getSetting('prefix', null) || process.env.PREFIX || '.';
+const BOT_NAME     = process.env.BOT_NAME || 'NEW PAGE';
 const OWNER_NUMBER = (process.env.OWNER_NUMBER || '').replace(/[^0-9]/g, '');
 
 const logger = pino({ level: 'silent' });
@@ -99,14 +112,19 @@ async function handleStatusUpdate(sock, statusMsg) {
     const num = senderNum(sender);
 
     // Auto-view
-    if (getSetting('globalAutoStatus', true) !== false || getAutoFeat(num, 'autostatus') || getAutoFeat(OWNER_NUMBER, 'autostatus')) {
-      try {
-        await sock.readMessages([statusMsg.key]);
-      } catch {}
+    if (
+      getSetting('globalAutoStatus', true) !== false ||
+      getAutoFeat(num, 'autostatus') ||
+      getAutoFeat(OWNER_NUMBER, 'autostatus')
+    ) {
+      try { await sock.readMessages([statusMsg.key]); } catch {}
     }
 
     // Auto-like
-    if (getSetting('globalAutoLike', true) !== false || getAutoFeat(OWNER_NUMBER, 'autolikestatus')) {
+    if (
+      getSetting('globalAutoLike', true) !== false ||
+      getAutoFeat(OWNER_NUMBER, 'autolikestatus')
+    ) {
       try {
         const reactions = ['❤️', '🔥', '👍', '😍', '🎉'];
         const emoji = reactions[Math.floor(Math.random() * reactions.length)];
@@ -135,7 +153,7 @@ async function checkAntilink(sock, msg, jid) {
 // ── Main connect function ────────────────────────────────────────────────────
 async function connectToWhatsApp() {
   const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
-  const { version } = await fetchLatestBaileysVersion();
+  const { version }          = await fetchLatestBaileysVersion();
 
   const sock = makeWASocket({
     version,
@@ -197,14 +215,20 @@ async function connectToWhatsApp() {
     if (connection === 'open') {
       console.log(chalk.green(`[NP] ✅ ${BOT_NAME} connected as ${sock.user?.name}`));
       startOnlineHeartbeat();
-      // Set always online immediately
       try { await sock.sendPresenceUpdate('available'); } catch {}
+
+      // Log GKTW + engine status
+      const gktwOk = await isGktwAvailable();
+      const engines = getAllEngines();
+      const enginesLoaded = Object.entries(engines).filter(([,v])=>v).map(([k])=>k).join(', ');
+      console.log(chalk.cyan(`[NP] GKTW helper: ${gktwOk ? '✅ loaded' : '⚠️  fallback mode (Baileys only)'}`));
+      console.log(chalk.cyan(`[NP] Engines: ${enginesLoaded || 'none (fallback mode)'}`));
     }
   });
 
   sock.ev.on('creds.update', saveCreds);
 
-  // ── Status updates ────────────────────────────────────────────────────────
+  // ── Message handler ───────────────────────────────────────────────────────
   sock.ev.on('messages.upsert', async ({ messages, type }) => {
     if (type !== 'notify') return;
 
@@ -218,11 +242,11 @@ async function connectToWhatsApp() {
 
         if (!msg.message || msg.key?.fromMe) continue;
 
-        const jid    = msg.key.remoteJid;
-        const sender = isGroup(jid) ? (msg.key.participant || msg.pushName) : jid;
-        const body   = msgText(msg);
-        const quotedMsg    = getQuoted(msg);
-        const quotedSender = getQuotedSender(msg);
+        const jid           = msg.key.remoteJid;
+        const sender        = isGroup(jid) ? (msg.key.participant || msg.pushName) : jid;
+        const body          = msgText(msg);
+        const quotedMsg     = getQuoted(msg);
+        const quotedSender  = getQuotedSender(msg);
         const mentionedJids = getMentioned(msg);
 
         // Antilink
@@ -242,16 +266,23 @@ async function connectToWhatsApp() {
           return sock.sendMessage(jid, content, { quoted: msg });
         };
 
-        const ctx = { command, args, jid, sender, text, reply, quotedMsg, quotedSender, mentionedJids, quotedType: null };
+        const ctx = {
+          command, args, jid, sender, text, reply,
+          quotedMsg, quotedSender, mentionedJids, quotedType: null,
+        };
 
-        // Owner check for owner commands
-        const OWNER_CMDS = ['broadcast', 'setsudo', 'addsudo', 'delsudo', 'removesudo', 'listsudo', 'getsudo', 'restart', 'eval', 'exec', 'setprefix', 'cleartmp', 'botstat', 'stats', 'setname', 'botname'];
+        // Owner-only guard
+        const OWNER_CMDS = [
+          'broadcast','setsudo','addsudo','delsudo','removesudo','listsudo','getsudo',
+          'restart','eval','exec','setprefix','cleartmp','botstat','stats','setname','botname',
+        ];
         if (OWNER_CMDS.includes(command) && !isOwnerOrSudo(sender)) {
           await reply(`⛔ *${BOT_NAME}*\nThis command requires owner/sudo access.`);
           continue;
         }
 
         // Route to handlers in priority order
+        // handleExtra is last so existing handlers take precedence on any overlap
         let handled = false;
         for (const handler of [
           handleOwner,
@@ -264,6 +295,7 @@ async function connectToWhatsApp() {
           handleFun,
           handleStalk,
           handleEconomy,
+          handleExtra,
           handleUtility,
         ]) {
           try {
@@ -320,12 +352,12 @@ async function connectToWhatsApp() {
 }
 
 // ── Start ─────────────────────────────────────────────────────────────────────
-console.log(chalk.cyan(`\n⚡ Starting ${BOT_NAME}...\n`));
+console.log(chalk.cyan(`\n⚡ Starting ${BOT_NAME} v2.0...\n`));
 
 // Set global auto-status defaults on first start
 if (getSetting('globalAutoStatus', null) === null) setSetting('globalAutoStatus', true);
-if (getSetting('globalAutoLike', null) === null) setSetting('globalAutoLike', true);
-if (getSetting('alwaysOnline', null) === null) setSetting('alwaysOnline', true);
+if (getSetting('globalAutoLike',   null) === null) setSetting('globalAutoLike', true);
+if (getSetting('alwaysOnline',     null) === null) setSetting('alwaysOnline', true);
 
 connectToWhatsApp().catch((e) => {
   console.error(chalk.red('[NP] Fatal:'), e.message);
