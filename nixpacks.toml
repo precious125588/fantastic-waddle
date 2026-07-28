@@ -26,10 +26,15 @@ cmds = [
 
 # Install mias bot deps + gktw in a separate phase so each npm run starts
 # with a clean memory state instead of stacking on top of the root install.
+# The final `npm rebuild sharp` runs sharp's install script (which was skipped
+# by --ignore-scripts above) so its prebuilt native binary is downloaded for
+# both the top-level sharp and the nested wa-sticker-formatter/node_modules/sharp.
+# Without it the sticker engine gets disabled at boot.
 [phases.mias]
 cmds = [
   "cd mias && NODE_OPTIONS='--max-old-space-size=512' npm install --ignore-scripts --no-audit --no-fund --loglevel=error || true",
-  "cd mias && npm install @itsreimau/gktw --no-audit --no-fund --save-optional 2>/dev/null || npm install github:itsreimau/gktw --no-audit --no-fund --save-optional 2>/dev/null || echo '[nixpacks] gktw unavailable — Baileys fallback active'"
+  "cd mias && npm install @itsreimau/gktw --no-audit --no-fund --save-optional 2>/dev/null || npm install github:itsreimau/gktw --no-audit --no-fund --save-optional 2>/dev/null || echo '[nixpacks] gktw unavailable — Baileys fallback active'",
+  "cd mias && npm rebuild sharp --no-audit --no-fund"
 ]
 
 [start]

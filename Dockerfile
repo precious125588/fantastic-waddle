@@ -41,6 +41,12 @@ RUN cd mias && \
     npm install github:itsreimau/gktw --no-audit --no-fund --save-optional 2>/dev/null || \
     echo "[docker] gktw unavailable — Baileys fallback active"
 
+# Sharp's postinstall was skipped by --ignore-scripts above. Run it explicitly
+# so the prebuilt native binary (sharp-linux-x64.node) is downloaded for every
+# copy of sharp under mias/node_modules — including the nested one inside
+# wa-sticker-formatter. Without this the sticker engine gets disabled at boot.
+RUN cd mias && npm rebuild sharp --no-audit --no-fund
+
 EXPOSE 3000
 
 # npm start runs: node fix_all.cjs && node server.js
