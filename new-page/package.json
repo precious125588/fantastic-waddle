@@ -1,0 +1,10 @@
+{
+  "name": "new-page-bot",
+  "version": "1.0.0",
+  "description": "New Page — Next-gen WhatsApp bot with 100 commands",
+  "type": "module",
+  "main": "index.js",
+  "engines": {
+    "node": ">=22.12.0"
+  }
+}

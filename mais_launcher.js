@@ -57,7 +57,7 @@ async function launch(number, sessionDir, envOverrides = {}) {
     const proc = spawn(
         process.execPath,
         ['--expose-gc', '--max-old-space-size=1050', botEntry],
-        { cwd: path.join(__dirname,'mias'), env, stdio:['ignore','pipe','pipe'], detached:false }
+        { cwd: path.dirname(botEntry), env, stdio:['ignore','pipe','pipe'], detached:false }
     );
 
     const tag = chalk.magenta(`[MAIS:${number.split('@')[0]}]`);
