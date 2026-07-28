@@ -66,13 +66,27 @@ function hasPairedSession(nexusDevNumber) {
     return fs.existsSync(path.join(getSessionPath(nexusDevNumber), 'creds.json'));
 }
 
+// WhatsApp pairing codes expire after a couple of minutes. Serving a cached
+// code from an old attempt is exactly what made users type a dead code and
+// immediately get "Reason: 401", so anything older than PAIRING_CODE_TTL is
+// treated as non-existent (and deleted).
+const PAIRING_CODE_TTL = 2 * 60 * 1000;
+
+function isFreshPairingRecord(payload) {
+    if (!payload?.code) return false;
+    const ts = Date.parse(payload.timestamp || '');
+    if (!ts || Number.isNaN(ts)) return false;
+    return Date.now() - ts < PAIRING_CODE_TTL;
+}
+
 function readPairingCodeRecord(nexusDevNumber) {
     const sessionFile = getPairingCodePath(nexusDevNumber);
 
     try {
         if (fs.existsSync(sessionFile)) {
             const payload = JSON.parse(fs.readFileSync(sessionFile, 'utf8'));
-            if (payload?.code) return payload;
+            if (isFreshPairingRecord(payload)) return payload;
+            try { fs.unlinkSync(sessionFile); } catch {}
         }
     } catch (error) {
         console.log(chalk.yellow(`⚠️ Failed to read session pairing code for ${nexusDevNumber}: ${error.message}`));
@@ -81,7 +95,10 @@ function readPairingCodeRecord(nexusDevNumber) {
     try {
         if (fs.existsSync(LEGACY_PAIRING_FILE)) {
             const payload = JSON.parse(fs.readFileSync(LEGACY_PAIRING_FILE, 'utf8'));
-            if (payload?.code && payload?.number === nexusDevNumber) return payload;
+            if (payload?.number === nexusDevNumber) {
+                if (isFreshPairingRecord(payload)) return payload;
+                try { fs.unlinkSync(LEGACY_PAIRING_FILE); } catch {}
+            }
         }
     } catch (error) {
         console.log(chalk.yellow(`⚠️ Failed to read legacy pairing file for ${nexusDevNumber}: ${error.message}`));
@@ -406,6 +423,51 @@ function ensureDirectoryExists(dirPath) {
     }
 }
 
+// ── FAST / CACHED WHATSAPP VERSION ───────────────────────────────────
+// fetchLatestBaileysVersion() hits the network with no timeout. On a weak
+// connection it could hang 60s+ before a pairing code was even requested
+// (this is why the site "counted for 60 seconds"). We now cache the result
+// for 6 hours, cap the lookup at 6 seconds, and fall back to a known-good
+// version instead of failing the whole pairing.
+const FALLBACK_WA_VERSION = [2, 3000, 1023223821];
+let _waVersionCache = { version: null, at: 0 };
+const WA_VERSION_TTL = 6 * 60 * 60 * 1000;
+
+async function getWAVersion() {
+    if (_waVersionCache.version && Date.now() - _waVersionCache.at < WA_VERSION_TTL) {
+        return _waVersionCache.version;
+    }
+    try {
+        const result = await Promise.race([
+            fetchLatestBaileysVersion(),
+            new Promise((_, rej) => setTimeout(() => rej(new Error('version lookup timeout')), 6000))
+        ]);
+        if (result?.version) {
+            _waVersionCache = { version: result.version, at: Date.now() };
+            return result.version;
+        }
+    } catch (err) {
+        console.log(chalk.yellow(`⚠️ WA version lookup failed (${err.message}) — using cached/fallback version`));
+    }
+    return _waVersionCache.version || FALLBACK_WA_VERSION;
+}
+
+// Resolves as soon as the underlying websocket is actually open, so we never
+// request a pairing code against a socket that is not ready (a common source
+// of instant 401 / stale codes).
+function waitForSocketOpen(sock, timeoutMs = 20000) {
+    return new Promise((resolve) => {
+        const done = (ok) => { clearTimeout(timer); try { sock.ev.off('connection.update', onUpd); } catch {} resolve(ok); };
+        const timer = setTimeout(() => done(false), timeoutMs);
+        const ready = () => sock?.ws?.readyState === 1 || sock?.ws?.socket?.readyState === 1;
+        if (ready()) return done(true);
+        const onUpd = () => { if (ready()) done(true); };
+        try { sock.ev.on('connection.update', onUpd); } catch {}
+        const poll = setInterval(() => { if (ready()) { clearInterval(poll); done(true); } }, 250);
+        setTimeout(() => clearInterval(poll), timeoutMs);
+    });
+}
+
 async function startpairing(nexusDevNumber) {
     await _baileysReady; // ensure ESM baileys is loaded before use
     ensureDirectoryExists(PAIRING_ROOT);
@@ -427,14 +489,7 @@ async function startpairing(nexusDevNumber) {
     tracker.pairingError = null;
     tracker.pairingPromise = null;
 
-    let version;
-    try {
-        const result = await fetchLatestBaileysVersion();
-        version = result.version;
-    } catch (err) {
-        tracker.pairingError = 'Could not reach WhatsApp servers. Check internet connection and try again.';
-        throw new Error(tracker.pairingError);
-    }
+    const version = await getWAVersion();
     
     const sessionPath = ensureSessionPath(nexusDevNumber);
 
@@ -455,7 +510,7 @@ async function startpairing(nexusDevNumber) {
         printQRInTerminal: false,
         auth: state,
         version,
-        browser: Browsers.ubuntu("Edge"),
+        browser: Browsers.macOS("Safari"), // pairing-code registration is most reliable on the macOS/Safari signature
         getMessage: async key => {
             if (!store) return { conversation: '' };
             const jid = key.remoteJid;
@@ -496,12 +551,22 @@ async function startpairing(nexusDevNumber) {
         }
 
         tracker.pairingPromise = (async () => {
-            const startedAt = Date.now();
             let lastError;
 
-            await sleep(2500);
+            // Wait for the websocket to actually be open instead of a blind
+            // sleep. On a weak network the old 2.5s sleep fired too early and
+            // every request failed, burning the 120s window.
+            const opened = await waitForSocketOpen(nexus, 25000);
+            if (!opened) {
+                tracker.pairingError = 'Could not reach WhatsApp servers. Please retry.';
+                throw new Error(tracker.pairingError);
+            }
+            await sleep(1200);
 
-            while (Date.now() - startedAt < 120000) {
+            // Only a couple of attempts: asking WhatsApp for a new pairing code
+            // over and over on the same socket invalidates the previous codes
+            // and is what triggered the instant "Reason: 401" disconnects.
+            for (let attempt = 1; attempt <= 3; attempt++) {
                 try {
                     let code = await nexus.requestPairingCode(phoneNumber);
                     code = code?.match(/.{1,4}/g)?.join("-") || code;
@@ -522,12 +587,12 @@ async function startpairing(nexusDevNumber) {
                 } catch (err) {
                     lastError = err;
                     tracker.pairingError = null;
-                    console.log(chalk.yellow(`⚠️ Pair request retry for ${nexusDevNumber}: ${err.message}`));
-                    await sleep(3000);
+                    console.log(chalk.yellow(`⚠️ Pair request attempt ${attempt}/3 for ${nexusDevNumber}: ${err.message}`));
+                    if (attempt < 3) await sleep(4000);
                 }
             }
 
-            tracker.pairingError = lastError?.message || 'Pairing code timeout. Please try again.';
+            tracker.pairingError = lastError?.message || 'Could not get a pairing code. Please try again.';
             throw new Error(tracker.pairingError);
         })();
 
@@ -994,7 +1059,46 @@ async function startpairing(nexusDevNumber) {
             }
 
             console.log(chalk.yellow(`🔌 Connection closed for ${nexusDevNumber}, reason: ${reason}`));
-            await sendUserDisconnected(nexusDevNumber, `Reason: ${reason}`);
+
+            // Don't spam the "USER DISCONNECTED" card while the user is still
+            // trying to pair — those closes are part of the normal handshake
+            // (401/515) and the bot retries by itself.
+            if (!pairingStillPending) {
+                await sendUserDisconnected(nexusDevNumber, `Reason: ${reason}`);
+            }
+
+            // ── 401 DURING PAIRING ───────────────────────────────────────
+            // A 401 before the device is registered is NOT a real logout: the
+            // pairing attempt was rejected (stale code / half-written session).
+            // Wipe the half session and start a clean pairing instead of
+            // dead-ending the user.
+            if (reason === 401 && pairingStillPending) {
+                tracker.pairRestarts = (tracker.pairRestarts || 0) + 1;
+                if (tracker.pairRestarts <= 2) {
+                    console.log(chalk.yellow(`🔁 401 while pairing ${nexusDevNumber} — restarting with a fresh session (${tracker.pairRestarts}/2)`));
+                    const restarts = tracker.pairRestarts;
+                    forceCleanupSession(nexusDevNumber);
+                    await sleep(2500);
+                    queuePairing(nexusDevNumber).catch(() => {});
+                    const t2 = rentbotTracker.get(nexusDevNumber);
+                    if (t2) t2.pairRestarts = restarts;
+                    return;
+                }
+                console.log(chalk.red(`❌ Pairing rejected repeatedly for ${nexusDevNumber}`));
+                forceCleanupSession(nexusDevNumber);
+                return;
+            }
+
+            // 515: WhatsApp always asks for a restart right after a successful
+            // pairing — reconnect, never wipe the session.
+            if (reason === 515) {
+                console.log(chalk.blue(`🔄 Restart required (515) for ${nexusDevNumber}`));
+                tracker.connection = null;
+                await sleep(2000);
+                queuePairing(nexusDevNumber).catch(() => {});
+                return;
+            }
+
             if (reason === 405) {
                 console.log(chalk.red.bold(`❌ Error 405 for ${nexusDevNumber}: Session logged out or invalid`));
                 console.log(chalk.yellow(`🗑️ Force cleaning session for ${nexusDevNumber}...`));
@@ -1181,7 +1285,7 @@ async function waitForPairingResult(nexusDevNumber, timeoutMs = 120000) {
             throw new Error(tracker.pairingError);
         }
 
-        await sleep(1000);
+        await sleep(300);
     }
 
     throw new Error('Pairing code timeout. Please try again.');
