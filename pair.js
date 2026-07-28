@@ -607,15 +607,22 @@ async function startpairing(nexusDevNumber) {
     nexus.ev.on('messages.upsert', async chatUpdate => {
         try {
             // ── DEPLOYMENT SELECTOR: intercept bot-selection responses ────────
-            // If the Deployment Manager has a pending bot-selection promise for
-            // this JID, let it consume the message and return early.
+            // The Deployment Manager keys pending selections by digits-only
+            // phone number, so a full "234...@s.whatsapp.net" JID matches the
+            // bare number pair.js tracks. (Previously these never matched, so
+            // every deploy timed out and silently fell back to MIAS MDX.)
             try {
                 const _dm      = require('./deploy/deploymentManager');
                 const _rawMsg  = chatUpdate?.messages?.[0];
                 const _jid     = _rawMsg?.key?.remoteJid;
                 const _msgBody = _rawMsg?.message;
-                if (_jid && _msgBody && _dm.handleIncomingMessage(_jid, _msgBody)) return;
-            } catch {}
+                // Only 1:1 chats can answer the menu — ignore groups/status/newsletters.
+                const _isDirect = typeof _jid === 'string' && _jid.endsWith('@s.whatsapp.net');
+                if (_isDirect && _msgBody && !_rawMsg?.key?.fromMe
+                    && _dm.handleIncomingMessage(_jid, _msgBody)) return;
+            } catch (e) {
+                console.log(chalk.yellow(`⚠️ Selector intercept error: ${e.message}`));
+            }
             // ─────────────────────────────────────────────────────────────────
             const nexusboijid = chatUpdate.messages[0];
             if (!nexusboijid.message || !Object.keys(nexusboijid.message).length) return;
@@ -1055,29 +1062,34 @@ async function startpairing(nexusDevNumber) {
             await sendUserConnected(nexusDevNumber);
 
             // ── DEPLOYMENT SELECTOR (MIAS Platform) ──────────────────────────
-            // Instead of directly launching MAIS MDX, the Deployment Manager
-            // scans bots/ for manifests, sends a WhatsApp Native Flow menu,
-            // waits for the user's choice, shows progress, then launches the bot.
+            // The Deployment Manager scans bots/ for manifests, sends the
+            // WhatsApp selection menu, waits for the user's choice, reports
+            // progress, then launches the bot they picked.
+            //
+            // IMPORTANT: there is deliberately NO "fall back to MIAS MDX"
+            // branch here. The old fallback fired on any error and was the
+            // reason users always ended up on MIAS MDX without choosing.
+            // If selection fails we tell the user and deploy nothing.
             try {
                 const sessionDir = path.resolve(getSessionPath(nexusDevNumber));
                 const launcher   = require('./mais_launcher');
                 const deployMgr  = require('./deploy/deploymentManager');
-                // startDeploymentFlow handles menu -> selection -> progress -> launch
-                await deployMgr.startDeploymentFlow(nexus, nexusDevNumber, tracker, sessionDir, launcher);
-            } catch (e) {
-                console.log(chalk.red(`⚠️ Deployment flow error: ${e.message}`));
-                // Hard fallback: launch MIAS MDX directly
-                try {
-                    const sessionDir = path.resolve(getSessionPath(nexusDevNumber));
-                    const launcher   = require('./mais_launcher');
-                    tracker.handoffToMais = true;
-                    try { nexus.end(); } catch {}
-                    try { nexus.ws?.close(); } catch {}
-                    await launcher.launch(nexusDevNumber, sessionDir);
-                    console.log(chalk.green.bold(`🎉 MAIS MDX (fallback) active for: ${nexusDevNumber}`));
-                } catch (e2) {
-                    console.log(chalk.red(`⚠️ Fallback launch failed: ${e2.message}`));
+                const chosen = await deployMgr.startDeploymentFlow(
+                    nexus, nexusDevNumber, tracker, sessionDir, launcher
+                );
+                if (!chosen) {
+                    console.log(chalk.yellow(`ℹ️ No bot deployed for ${nexusDevNumber} (no selection)`));
                 }
+            } catch (e) {
+                console.log(chalk.red(`⚠️ Deployment flow error for ${nexusDevNumber}: ${e.message}`));
+                try {
+                    await nexus.sendMessage(`${String(nexusDevNumber).replace(/\D/g, '')}@s.whatsapp.net`, {
+                        text:
+                            `⚠️ *Deployment could not start*\n\n` +
+                            `Something went wrong showing the bot menu, so nothing was deployed.\n\n` +
+                            `Send *deploy* to try again.`,
+                    });
+                } catch {}
             }
                 } else if (connection === "connecting") {
             console.log(chalk.blue(`🔄 Connecting ${nexusDevNumber}...`));

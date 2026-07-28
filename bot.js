@@ -18,17 +18,85 @@ if (!BOT_TOKEN || BOT_TOKEN.trim() === '') {
   // Exit gracefully so the WhatsApp bot (index.js) keeps running
   process.exit(0);
 }
-const bot = new TelegramBot(BOT_TOKEN, { polling: { interval: 1000, autoStart: true, params: { timeout: 10 } } });
+// ── SINGLE-POLLER GUARD (fixes Telegram 409 Conflict) ────────────────────────
+// Telegram allows exactly ONE getUpdates poller per bot token. A 409
+// "terminated by other getUpdates request" happened because:
+//   1. /api/admin/settings/bot-token did `require('./bot')` again after busting
+//      the cache, spawning a SECOND poller while the first kept running, and
+//   2. on Railway redeploys the old container polls until it is reaped.
+// We keep one poller per process on a global, stop any previous one before
+// starting a new one, and drop webhooks + pending updates on startup.
+if (global._miasTelegramBot) {
+  try { global._miasTelegramBot.stopPolling({ cancel: true }); } catch {}
+  console.warn(chalk.yellow('⚠️  [Telegram] Stopped previous poller before restart (prevents 409).'));
+  global._miasTelegramBot = null;
+}
+
+const bot = new TelegramBot(BOT_TOKEN, {
+  polling: { interval: 1000, autoStart: false, params: { timeout: 10 } },
+});
+global._miasTelegramBot = bot;
+
+// A webhook and getUpdates are mutually exclusive; drop_pending_updates also
+// clears the backlog the dead container left behind.
+(async () => {
+  try { await bot.deleteWebHook({ drop_pending_updates: true }); } catch {}
+  try {
+    await bot.startPolling();
+    console.log(chalk.green('✅ [Telegram] Polling started.'));
+  } catch (e) {
+    console.error(chalk.red('[Telegram] Could not start polling:'), e.message);
+  }
+})();
+
+// Stop cleanly on shutdown so a redeploy releases the token immediately.
+let _tgClosing = false;
+const _tgShutdown = () => {
+  if (_tgClosing) return;
+  _tgClosing = true;
+  try { bot.stopPolling({ cancel: true }); } catch {}
+};
+process.once('SIGTERM', _tgShutdown);
+process.once('SIGINT',  _tgShutdown);
 
 // Suppress poll errors — stop on 401 (invalid token), ignore EFATAL blips
 let _tgPollWarnedOnce = false;
+let _tg409Count = 0;
 bot.on('polling_error', (err) => {
+  if (_tgClosing) return;
+
   // Network blip — retry silently
   if (err.code === 'EFATAL' || (err.message && err.message.includes('EFATAL'))) return;
 
+  const msg = String(err.message || '');
+
+  // 409 Conflict — another poller holds the token (usually the old Railway
+  // container during a rolling redeploy). Back off and let it die, then
+  // reclaim the token instead of hammering Telegram in a tight loop.
+  if (msg.includes('409') || msg.includes('terminated by other getUpdates')) {
+    _tg409Count++;
+    if (_tg409Count === 1) {
+      console.warn(chalk.yellow('⚠️  [Telegram] 409 Conflict — another instance is polling this token.'));
+      console.warn(chalk.yellow('    Backing off 15s, then reclaiming (normal during a redeploy).'));
+    }
+    if (_tg409Count > 20) {
+      console.error(chalk.red('❌ [Telegram] Still conflicting after 20 tries — stopping poller.'));
+      console.error(chalk.red('    Make sure only ONE deployment/instance uses this bot token.'));
+      try { bot.stopPolling(); } catch {}
+      return;
+    }
+    try { bot.stopPolling({ cancel: true }); } catch {}
+    setTimeout(async () => {
+      if (_tgClosing) return;
+      try { await bot.deleteWebHook({ drop_pending_updates: true }); } catch {}
+      try { await bot.startPolling(); _tg409Count = 0; console.log(chalk.green('✅ [Telegram] Token reclaimed, polling resumed.')); } catch {}
+    }, 15000);
+    return;
+  }
+
   // 401 Unauthorized — token is invalid or revoked; stop spam-polling immediately
   const is401 = (err.response && err.response.statusCode === 401)
-             || (err.code === 'ETELEGRAM' && String(err.message || '').includes('401'));
+             || (err.code === 'ETELEGRAM' && msg.includes('401'));
   if (is401) {
     if (!_tgPollWarnedOnce) {
       _tgPollWarnedOnce = true;

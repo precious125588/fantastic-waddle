@@ -29,16 +29,22 @@ async function launch(number, sessionDir, envOverrides = {}) {
         return running.get(number);
     }
     if (running.size >= MAX_INSTANCES) throw new Error(`MAX_INSTANCES (${MAX_INSTANCES}) reached`);
-    if (!fs.existsSync(MIAS_ENTRY))   throw new Error(`mias/index.js not found at ${MIAS_ENTRY}`);
     if (!fs.existsSync(sessionDir))   throw new Error(`Session dir missing: ${sessionDir}`);
 
     const existing     = running.get(number);
     const restartCount = existing ? (existing.restartCount || 0) : 0;
 
-    // Resolve entry point from manifest (BOT_ENTRY) or default to mias/index.js
-    const { BOT_ENTRY: _botEntry, ...safeEnvOverrides } = envOverrides;
-    const botEntry = _botEntry ? path.join(__dirname, _botEntry) : MIAS_ENTRY;
+    // Resolve entry point from the manifest (BOT_ENTRY), default to mias/index.js.
+    // NOTE: the old code hard-required mias/index.js to exist even when the user
+    // picked New Page, so a missing MIAS install blocked every other bot.
+    const { BOT_ENTRY: _botEntry, BOT_CWD: _botCwd, ...safeEnvOverrides } = envOverrides;
+    const botEntry = _botEntry ? path.resolve(__dirname, _botEntry) : MIAS_ENTRY;
     if (!fs.existsSync(botEntry)) throw new Error(`Bot entry not found: ${botEntry}`);
+
+    // Working directory: manifest cwd wins, else the entry's own folder, so each
+    // bot resolves its own node_modules and relative asset paths correctly.
+    const botCwd = _botCwd ? path.resolve(__dirname, _botCwd) : path.dirname(botEntry);
+    if (!fs.existsSync(botCwd)) throw new Error(`Bot cwd not found: ${botCwd}`);
 
     const env = {
         ...process.env,
@@ -57,7 +63,7 @@ async function launch(number, sessionDir, envOverrides = {}) {
     const proc = spawn(
         process.execPath,
         ['--expose-gc', '--max-old-space-size=1050', botEntry],
-        { cwd: path.dirname(botEntry), env, stdio:['ignore','pipe','pipe'], detached:false }
+        { cwd: botCwd, env, stdio:['ignore','pipe','pipe'], detached:false }
     );
 
     const tag = chalk.magenta(`[MAIS:${number.split('@')[0]}]`);

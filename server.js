@@ -467,7 +467,13 @@ app.post('/api/admin/settings/bot-token', async (req, res) => {
     adminSettings.telegramBotToken = newToken;
     writeJson(ADMIN_SETTINGS_FILE, adminSettings);
     try {
-        // Uncache and reload the telegram bot module
+        // Stop the currently-running poller BEFORE loading a new one, otherwise
+        // both poll the same token and Telegram answers every request with
+        // 409 Conflict. bot.js also guards this via global._miasTelegramBot.
+        if (global._miasTelegramBot) {
+            try { global._miasTelegramBot.stopPolling({ cancel: true }); } catch {}
+            global._miasTelegramBot = null;
+        }
         try { delete require.cache[require.resolve('./bot')]; } catch {}
         global._telegramBotLoaded = false;
         require('./bot');
@@ -485,6 +491,13 @@ app.delete('/api/admin/settings/bot-token', (req, res) => {
     delete process.env.TELEGRAM_BOT_TOKEN;
     delete adminSettings.telegramBotToken;
     writeJson(ADMIN_SETTINGS_FILE, adminSettings);
+    // Actually stop polling — previously the token was only removed from the
+    // config file while the old poller kept holding the Telegram token.
+    if (global._miasTelegramBot) {
+        try { global._miasTelegramBot.stopPolling({ cancel: true }); } catch {}
+        global._miasTelegramBot = null;
+    }
+    try { delete require.cache[require.resolve('./bot')]; } catch {}
     global._telegramBotLoaded = false;
     logger.log('admin', 'Telegram bot token removed');
     res.json({ok:true, message:'Token removed. Telegram bot stopped.'});
