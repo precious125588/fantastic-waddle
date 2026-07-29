@@ -37,6 +37,21 @@ const bot = new TelegramBot(BOT_TOKEN, {
 });
 global._miasTelegramBot = bot;
 
+function redactSecrets(value = '') {
+  let text = String(value);
+  if (BOT_TOKEN) text = text.split(BOT_TOKEN).join('<TELEGRAM_BOT_TOKEN>');
+  return text.replace(/bot\d+:[A-Za-z0-9_-]+/g, 'bot<TELEGRAM_BOT_TOKEN>');
+}
+
+function safeErrorMessage(err) {
+  const raw = err?.response?.body?.description || err?.message || err?.code || String(err || 'Unknown error');
+  return redactSecrets(raw);
+}
+
+function logSafeError(label, err) {
+  console.error(label, safeErrorMessage(err));
+}
+
 // A webhook and getUpdates are mutually exclusive; drop_pending_updates also
 // clears the backlog the dead container left behind.
 (async () => {
@@ -45,7 +60,7 @@ global._miasTelegramBot = bot;
     await bot.startPolling();
     console.log(chalk.green('✅ [Telegram] Polling started.'));
   } catch (e) {
-    console.error(chalk.red('[Telegram] Could not start polling:'), e.message);
+    logSafeError(chalk.red('[Telegram] Could not start polling:'), e);
   }
 })();
 
@@ -68,7 +83,7 @@ bot.on('polling_error', (err) => {
   // Network blip — retry silently
   if (err.code === 'EFATAL' || (err.message && err.message.includes('EFATAL'))) return;
 
-  const msg = String(err.message || '');
+  const msg = safeErrorMessage(err);
 
   // 409 Conflict — another poller holds the token (usually the old Railway
   // container during a rolling redeploy). Back off and let it die, then
@@ -109,7 +124,7 @@ bot.on('polling_error', (err) => {
   }
 
   // Other errors — log once per message to avoid flooding
-  console.error(chalk.red('[Telegram] polling error:'), err.message || err.code || err);
+  logSafeError(chalk.red('[Telegram] polling error:'), err);
 });
 
 // File paths
@@ -273,7 +288,7 @@ const loadAdminIDs = async () => {
                 ? [...new Set(fileAdmins.map(id => String(id).trim()).filter(Boolean))]
                 : [];
         } catch (err) {
-            console.error(chalk.red('✗ Error loading admin.json:'), err);
+            logSafeError(chalk.red('✗ Error loading admin.json:'), err);
             adminIDs = [];
         }
     }
@@ -289,7 +304,7 @@ const loadUserIDs = async () => {
             userIDs = new Set(users);
             console.log(chalk.cyan(`📥 Loaded ${userIDs.size} user(s)`));
         } catch (err) {
-            console.error(chalk.red('✗ Error loading users.json:'), err);
+            logSafeError(chalk.red('✗ Error loading users.json:'), err);
             userIDs = new Set();
         }
     }
@@ -299,7 +314,7 @@ const saveUserIDs = async () => {
     try {
         await fs.writeFile(userFilePath, JSON.stringify([...userIDs], null, 2));
     } catch (err) {
-        console.error(chalk.red('✗ Error saving users.json:'), err);
+        logSafeError(chalk.red('✗ Error saving users.json:'), err);
     }
 };
 
@@ -318,7 +333,7 @@ const saveUserStats = async () => {
     try {
         await fs.writeFile(userStatsPath, JSON.stringify(userStats, null, 2));
     } catch (err) {
-        console.error('Error saving user stats:', err);
+        logSafeError('Error saving user stats:', err);
     }
 };
 
@@ -337,7 +352,7 @@ const saveWelcomeSettings = async () => {
     try {
         await fs.writeFile(welcomeSettingsPath, JSON.stringify(welcomeSettings, null, 2));
     } catch (err) {
-        console.error('Error saving welcome settings:', err);
+        logSafeError('Error saving welcome settings:', err);
     }
 };
 
@@ -356,7 +371,7 @@ const saveGoodbyeSettings = async () => {
     try {
         await fs.writeFile(goodbyeSettingsPath, JSON.stringify(goodbyeSettings, null, 2));
     } catch (err) {
-        console.error('Error saving goodbye settings:', err);
+        logSafeError('Error saving goodbye settings:', err);
     }
 };
 
@@ -375,7 +390,7 @@ const saveGroupVerifySettings = async () => {
     try {
         await fs.writeFile(groupVerifySettingsPath, JSON.stringify(groupVerifySettings, null, 2));
     } catch (err) {
-        console.error('Error saving group verify settings:', err);
+        logSafeError('Error saving group verify settings:', err);
     }
 };
 
@@ -393,7 +408,7 @@ const saveGroupWarnings = async () => {
     try {
         await fs.writeFile(groupWarningsPath, JSON.stringify(groupWarnings, null, 2));
     } catch (err) {
-        console.error('Error saving group warnings:', err);
+        logSafeError('Error saving group warnings:', err);
     }
 };
 
@@ -403,11 +418,45 @@ const sendSafePhoto = async (chatId, photo, options = {}) => {
     try {
         return await bot.sendPhoto(chatId, photo, options);
     } catch (err) {
+        console.warn('[Telegram] sendPhoto fallback:', safeErrorMessage(err));
         const text = options.caption || 'Done';
         return bot.sendMessage(chatId, text, {
             parse_mode: options.parse_mode,
             reply_markup: options.reply_markup
-        });
+        }).catch(sendErr => logSafeError('[Telegram] sendMessage fallback failed:', sendErr));
+    }
+};
+
+const editSafeMessageText = async (text, options = {}) => {
+    try {
+        return await bot.editMessageText(text, options);
+    } catch (err) {
+        console.warn('[Telegram] editMessageText fallback:', safeErrorMessage(err));
+        if (!options.chat_id) return null;
+        return bot.sendMessage(options.chat_id, text, {
+            parse_mode: options.parse_mode,
+            reply_markup: options.reply_markup,
+        }).catch(sendErr => logSafeError('[Telegram] sendMessage fallback failed:', sendErr));
+    }
+};
+
+const editSafeMessageMedia = async (media, options = {}) => {
+    try {
+        return await bot.editMessageMedia(media, options);
+    } catch (err) {
+        console.warn('[Telegram] editMessageMedia fallback:', safeErrorMessage(err));
+        if (!options.chat_id) return null;
+        if (media?.type === 'photo' && media?.media) {
+            return sendSafePhoto(options.chat_id, media.media, {
+                caption: media.caption || '',
+                parse_mode: media.parse_mode,
+                reply_markup: options.reply_markup,
+            });
+        }
+        return bot.sendMessage(options.chat_id, media?.caption || 'Done', {
+            parse_mode: media?.parse_mode,
+            reply_markup: options.reply_markup,
+        }).catch(sendErr => logSafeError('[Telegram] sendMessage fallback failed:', sendErr));
     }
 };
 
@@ -785,7 +834,7 @@ ${ZUKO.line}
 ┃  ⚡ MAIS MDX ONLINE ⚡      
 ${ZUKO.lineEnd}`;
     
-    await bot.editMessageMedia({
+    await editSafeMessageMedia({
         type: 'photo',
         media: IMAGES.success,
         caption: caption,
@@ -1143,15 +1192,26 @@ bot.onText(/^\/pair(?:@\w+)?\s*$/, requireMembership(async (msg) => {
         const waitForPairingResult = pairModule.waitForPairingResult;
         const startpairing = typeof pairModule === 'function' ? pairModule : pairModule.startpairing;
         const hasPairedSession = pairModule.hasPairedSession;
+        const isSessionLive = pairModule.isSessionLive;
+        const unpairSession = pairModule.unpairSession || pairModule.forceCleanupSession;
         if (typeof startpairing !== 'function') throw new Error('Pairing module is not loaded correctly');
         if (typeof waitForPairingResult !== 'function') throw new Error('Pairing result helper is not available');
 
         const jid = `${senderNumber}@s.whatsapp.net`;
         if (typeof hasPairedSession === 'function' && hasPairedSession(jid)) {
+            const live = typeof isSessionLive === 'function' ? isSessionLive(jid) : true;
+            if (!live && typeof unpairSession === 'function') {
+                try { unpairSession(jid); } catch {}
+                await sendSafePhoto(msg.chat.id, IMAGES.error, {
+                    caption: `🧹 *OLD SESSION CLEARED*\n\n📱 Number: ${senderNumber}\nGenerating a fresh pairing code now...`,
+                    parse_mode: 'Markdown'
+                });
+            } else {
             return sendSafePhoto(msg.chat.id, IMAGES.success, {
                 caption: `✅ *ALREADY PAIRED*\n\n📱 Number: ${senderNumber}`,
                 parse_mode: 'Markdown'
             });
+            }
         }
 
         await sendSafePhoto(msg.chat.id, IMAGES.bot, {
@@ -1181,13 +1241,13 @@ bot.onText(/^\/pair(?:@\w+)?\s+(.+)/, requireMembership(withCooldown('pair', 10)
     try {
         const senderNumber = resolvePairTarget(msg, number);
         if (!senderNumber || /[a-z]/i.test(number) || !/^\d{7,15}$/.test(senderNumber) || senderNumber.startsWith('0')) {
-            return bot.sendPhoto(chatId, IMAGES.error, {
+            return sendSafePhoto(chatId, IMAGES.error, {
                 caption: `⚠️ *INVALID NUMBER*\n\nUse: /pair 234XXXXXXXXX`,
                 parse_mode: 'Markdown'
             });
         }
 
-        await bot.sendPhoto(chatId, IMAGES.bot, {
+        await sendSafePhoto(chatId, IMAGES.bot, {
             caption: `⏳ *Processing...*`,
             parse_mode: 'Markdown'
         });
@@ -1196,6 +1256,8 @@ bot.onText(/^\/pair(?:@\w+)?\s+(.+)/, requireMembership(withCooldown('pair', 10)
         const startpairing = typeof pairModule === 'function' ? pairModule : pairModule.startpairing;
         const waitForPairingResult = pairModule.waitForPairingResult;
         const hasPairedSession = pairModule.hasPairedSession;
+        const isSessionLive = pairModule.isSessionLive;
+        const unpairSession = pairModule.unpairSession || pairModule.forceCleanupSession;
         if (typeof startpairing !== 'function') throw new Error('Pairing module is not loaded correctly');
         if (typeof waitForPairingResult !== 'function') throw new Error('Pairing result helper is not available');
 
@@ -1216,10 +1278,19 @@ bot.onText(/^\/pair(?:@\w+)?\s+(.+)/, requireMembership(withCooldown('pair', 10)
         }
 
         if (typeof hasPairedSession === 'function' && hasPairedSession(jid)) {
-            return sendSafePhoto(chatId, IMAGES.success, {
-                caption: `✅ *ALREADY PAIRED*\n\n📱 Number: ${senderNumber}`,
-                parse_mode: 'Markdown'
-            });
+            const live = typeof isSessionLive === 'function' ? isSessionLive(jid) : true;
+            if (!live && typeof unpairSession === 'function') {
+                try { unpairSession(jid); } catch {}
+                await sendSafePhoto(chatId, IMAGES.error, {
+                    caption: `🧹 *OLD SESSION CLEARED*\n\n📱 Number: ${senderNumber}\nGenerating a fresh pairing code now...`,
+                    parse_mode: 'Markdown'
+                });
+            } else {
+                return sendSafePhoto(chatId, IMAGES.success, {
+                    caption: `✅ *ALREADY PAIRED*\n\n📱 Number: ${senderNumber}`,
+                    parse_mode: 'Markdown'
+                });
+            }
         }
         const pairingFile = path.join(__dirname, 'nexstore', 'pairing', 'pairing.json');
         await fs.unlink(pairingFile).catch(() => {});
@@ -1241,9 +1312,9 @@ bot.onText(/^\/pair(?:@\w+)?\s+(.+)/, requireMembership(withCooldown('pair', 10)
         });
 
     } catch (error) {
-        console.error(chalk.red('Pair error:'), error);
-        bot.sendPhoto(chatId, IMAGES.error, {
-            caption: `❌ *FAILED*\n\n${error.message || 'Please try again'}`,
+        logSafeError(chalk.red('Pair error:'), error);
+        sendSafePhoto(chatId, IMAGES.error, {
+            caption: `❌ *FAILED*\n\n${safeErrorMessage(error) || 'Please try again'}`,
             parse_mode: 'Markdown'
         });
     }
@@ -1291,7 +1362,14 @@ bot.onText(/^\/delpair(?:@\w+)?\s+(.+)/, requireMembership(async (msg, match) =>
         }
 
         const targetPath = path.join(pairingPath, matched.name);
-        await fs.rm(targetPath, { recursive: true, force: true });
+        try {
+            const pairModule = require('./pair.js');
+            if (typeof pairModule.unpairSession === 'function') pairModule.unpairSession(jidSuffix);
+            else await fs.rm(targetPath, { recursive: true, force: true });
+        } catch {
+            await fs.rm(targetPath, { recursive: true, force: true });
+        }
+        try { require('./deploy/botSelectionStore').clearSelection(senderNumber); } catch {}
 
         bot.sendPhoto(chatId, IMAGES.success, {
             caption: `✅ *DELETED*\n\n📱 Number: ${senderNumber}`,
@@ -1300,9 +1378,9 @@ bot.onText(/^\/delpair(?:@\w+)?\s+(.+)/, requireMembership(async (msg, match) =>
         
         console.log(chalk.green(`🗑️ Deleted: ${number}`));
     } catch (err) {
-        console.error(chalk.red('Delpair error:'), err);
-        bot.sendPhoto(chatId, IMAGES.error, {
-            caption: `❌ *Failed*\n\n${err.message}`,
+        logSafeError(chalk.red('Delpair error:'), err);
+        sendSafePhoto(chatId, IMAGES.error, {
+            caption: `❌ *Failed*\n\n${safeErrorMessage(err)}`,
             parse_mode: 'Markdown'
         });
     }
@@ -1359,8 +1437,8 @@ bot.onText(/^\/listpair(?:@\w+)?\s+confirm$/i, async (msg) => {
             parse_mode: 'Markdown'
         });
     } catch (err) {
-        console.error(chalk.red('Listpair error:'), err);
-        bot.sendPhoto(chatId, IMAGES.error, {
+        logSafeError(chalk.red('Listpair error:'), err);
+        sendSafePhoto(chatId, IMAGES.error, {
             caption: `❌ *Error*`,
             parse_mode: 'Markdown'
         });
@@ -1636,16 +1714,16 @@ bot.on('callback_query', async (callbackQuery) => {
             });
 
             if (!res.ok) {
-                return bot.editMessageText(`⚠️ ${res.error}`, { chat_id: chatId, message_id: status.message_id });
+            return editSafeMessageText(`⚠️ ${res.error}`, { chat_id: chatId, message_id: status.message_id });
             }
 
-            return bot.editMessageText(
+            return editSafeMessageText(
                 `✅ *${res.bot.name}* is now the bot for \`${number}\`.\n\n` +
                 `🔒 This choice is locked. Unpair and pair again to switch.`,
                 { chat_id: chatId, message_id: status.message_id, parse_mode: 'Markdown' });
         } catch (err) {
-            console.error('bsel error:', err.message);
-            return bot.editMessageText(`❌ Deployment failed: ${err.message}`, { chat_id: chatId, message_id: status.message_id });
+            logSafeError('bsel error:', err);
+            return editSafeMessageText(`❌ Deployment failed: ${safeErrorMessage(err)}`, { chat_id: chatId, message_id: status.message_id });
         }
     }
 

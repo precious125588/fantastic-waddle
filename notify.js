@@ -20,7 +20,7 @@ async function sendNotification(message, parseMode = 'Markdown') {
             }
         }
     } catch (e) {
-        console.error('Error loading admin IDs:', e);
+        console.error('Error loading admin IDs:', e && e.message ? e.message : String(e));
     }
 
     if (adminIDs.length === 0) {
@@ -92,9 +92,13 @@ async function sendUserConnected(userNumber) {
     await sendNotification(message);
 }
 
-async function sendUserDisconnected(userNumber, reason = 'Unknown') {
+async function sendUserDisconnected(userNumber, reason = 'Unknown', options = {}) {
     const BOT_NM = process.env.BOT_NAME || 'MAIS MDX';
     const date = new Date().toLocaleString('en-GB', { timeZone: 'Africa/Lagos' });
+    const reconnecting = options.reconnecting !== false;
+    const actionLine = reconnecting
+        ? '║ 🔄 Bot will attempt to reconnect'
+        : '║ 🧹 Session cleared — pair again';
 
     const message =
 `╔══════════════════════════════╗
@@ -106,7 +110,7 @@ async function sendUserDisconnected(userNumber, reason = 'Unknown') {
 ║ 📝 *Reason:*  ${reason}
 ║ 🤖 *Bot:*     ${BOT_NM}
 ╠══════════════════════════════╣
-║ 🔄 Bot will attempt to reconnect
+${actionLine}
 ║ ⚡ Powered by ${BOT_NM}
 ╚══════════════════════════════╝`;
 

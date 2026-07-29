@@ -1,10 +1,10 @@
 'use strict';
 // ══ CRASH SHIELD — registered first so nothing can kill the process ══════════
 process.on('uncaughtException', e => {
-    console.error('[SHIELD] uncaughtException:', e && e.message || e);
+    console.error('[SHIELD] uncaughtException:', safeErrorMessage(e));
 });
 process.on('unhandledRejection', r => {
-    console.error('[SHIELD] unhandledRejection:', r && r.message || String(r));
+    console.error('[SHIELD] unhandledRejection:', safeErrorMessage(r));
 });
 // ═════════════════════════════════════════════════════════════════════════════
 
@@ -19,6 +19,19 @@ const app  = express();
 const PORT = process.env.PORT || 3000;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'Ajanaku';
 const ADMIN_USERNAME = process.env.ADMIN_USERNAME || 'admin';
+
+function redactSecrets(value = '') {
+    let text = String(value);
+    for (const secret of [process.env.TELEGRAM_BOT_TOKEN, process.env.BOT_TOKEN]) {
+        if (secret) text = text.split(secret).join('<TELEGRAM_BOT_TOKEN>');
+    }
+    return text.replace(/bot\d+:[A-Za-z0-9_-]+/g, 'bot<TELEGRAM_BOT_TOKEN>');
+}
+
+function safeErrorMessage(err) {
+    const raw = err?.response?.body?.description || err?.message || err?.code || String(err || 'Unknown error');
+    return redactSecrets(raw);
+}
 
 const NEXSTORE    = path.join(__dirname, 'nexstore');
 const PAIRING_DIR = path.join(NEXSTORE, 'pairing');
@@ -329,6 +342,8 @@ app.post('/api/logout/delete-session', (req,res) => {
     for (const d of possible) {
         try { if (fs.existsSync(d)) { fs.rmSync(d, { recursive: true, force: true }); deleted++; } } catch {}
     }
+    try { _pair?.unpairSession ? _pair.unpairSession(`${num}@s.whatsapp.net`) : _pair?.forceCleanupSession?.(`${num}@s.whatsapp.net`); } catch {}
+    try { _selectionStore?.clearSelection(num); } catch {}
     // Remove any pending notification files for this number
     try {
         const NOTIF_DIR = path.join(__dirname, 'nexstore', 'logout_notifications');
@@ -548,8 +563,10 @@ app.delete('/api/admin/user/:jid', (req,res) => {
     const jid=decodeURIComponent(req.params.jid), sp=path.join(PAIRING_DIR,jid);
     if(_launcher){_launcher.pause(jid);_launcher.stop(jid);}
     registry.unregister(jid);
+    try { _pair?.unpairSession ? _pair.unpairSession(jid) : _pair?.forceCleanupSession?.(jid); } catch {}
+    try { _selectionStore?.clearSelection(jid); } catch {}
     if (fs.existsSync(sp)) { _delDir(sp);pairLog=pairLog.filter(p=>p.number!==jid&&p.number!==jid.replace('@s.whatsapp.net',''));writeJson(PAIR_FILE,pairLog);logger.log('admin',`Deleted: ${jid}`);return res.json({ok:true}); }
-    res.status(404).json({ok:false,error:'Session not found.'});
+    res.json({ok:true,message:'Session cleared.'});
 });
 
 // ── Admin: errors / logs / analytics ─────────────────────────────────────────
@@ -704,5 +721,5 @@ async function _autoLoadPairs() {
 }
 
 process.on('SIGTERM',()=>{ registry.flush();httpServer.close(()=>process.exit(0));setTimeout(()=>process.exit(0),5000); });
-process.on('uncaughtException',e=>{ console.error('[uncaughtException]',e.message);logger.error('system','Uncaught: '+e.message); });
-process.on('unhandledRejection',r=>{ console.error('[unhandledRejection]',r);logger.error('system','Rejection: '+String(r)); });
+process.on('uncaughtException',e=>{ const msg=safeErrorMessage(e); console.error('[uncaughtException]',msg);logger.error('system','Uncaught: '+msg); });
+process.on('unhandledRejection',r=>{ const msg=safeErrorMessage(r); console.error('[unhandledRejection]',msg);logger.error('system','Rejection: '+msg); });

@@ -234,7 +234,8 @@ function listPairedDevices(includePending = false) {
 
         try {
             if (!fs.statSync(fullPath).isDirectory()) return false;
-            return includePending || fs.existsSync(path.join(fullPath, 'creds.json'));
+            if (includePending) return true;
+            return hasPairedSession(entry);
         } catch {
             return false;
         }
@@ -1178,6 +1179,28 @@ async function startpairing(nexusDevNumber) {
             }
 
             console.log(chalk.yellow(`🔌 Connection closed for ${nexusDevNumber}, reason: ${reason}`));
+
+            // ── 401 AFTER PAIRING / NORMAL USE ────────────────────────────
+            // 401 means WhatsApp rejected the stored auth keys (usually the
+            // linked device was removed from the phone). This is not a
+            // temporary network drop, so do NOT keep reconnecting and do NOT
+            // leave creds.json behind making the web/Telegram UI say "paired"
+            // forever. Clear it immediately so the user can pair again.
+            if (reason === 401 && !pairingStillPending) {
+                console.log(chalk.red.bold(`❌ ${nexusDevNumber} logged out/unauthorized (401) — clearing session`));
+                try {
+                    await sendUserDisconnected(nexusDevNumber, 'Reason: 401 — logged out/unlinked', { reconnecting: false });
+                } catch {}
+                if (tracker) {
+                    tracker.loggedOut = true;
+                    tracker.sessionInvalid = true;
+                    tracker.disconnected = true;
+                }
+                markPurged(nexusDevNumber);
+                forceCleanupSession(nexusDevNumber);
+                try { require('./deploy/botSelectionStore').clearSelection(nexusDevNumber); } catch {}
+                return;
+            }
 
             // Don't spam the "USER DISCONNECTED" card while the user is still
             // trying to pair — those closes are part of the normal handshake
