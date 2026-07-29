@@ -583,9 +583,49 @@ function waitForSocketOpen(sock, timeoutMs = 20000) {
     });
 }
 
+// ── ROOT-CAUSE FIX ────────────────────────────────────────────────────
+// Every previous socket for a number MUST be fully retired before a new one
+// is created. Reason 515 ("restart required") fires right after a successful
+// pairing and we immediately reconnect — but the OLD socket was only
+// dereferenced (`tracker.connection = null`), never closed. Its
+// `creds.update` listener stayed alive and kept writing its own STALE creds
+// on top of the freshly registered ones, and two live sockets shared one
+// identity. WhatsApp reacts to that ~60s later with reason 401, which the
+// 401 branch then treated as a real logout and wiped the session.
+function retireSocket(nexusDevNumber, reason = 'retired') {
+    const tracker = rentbotTracker.get(nexusDevNumber);
+    const conn = tracker && tracker.connection;
+    if (!conn) return;
+    try { (conn.__timers || []).forEach(clearInterval); } catch {}
+    conn.__timers = [];
+    try { conn.ev?.removeAllListeners?.('creds.update'); } catch {}
+    try { conn.ev?.removeAllListeners?.('connection.update'); } catch {}
+    try { conn.ev?.removeAllListeners?.('messaging-history.set'); } catch {}
+    try { conn.ev?.removeAllListeners?.(); } catch {}
+    try { conn.end?.(new Error(reason)); } catch {}
+    try { conn.ws?.close?.(); } catch {}
+    tracker.connection = null;
+    console.log(chalk.gray(`♻️ Retired old socket for ${nexusDevNumber} (${reason})`));
+}
+
+// Prevents two startpairing() runs racing for the same number (the queue can
+// be fed from the web UI, Telegram and the 515 reconnect at the same time).
+const pairingInFlight = new Set();
+
 async function startpairing(nexusDevNumber) {
     await _baileysReady; // ensure ESM baileys is loaded before use
     ensureDirectoryExists(PAIRING_ROOT);
+
+    if (pairingInFlight.has(nexusDevNumber)) {
+        console.log(chalk.gray(`⏳ Pairing already starting for ${nexusDevNumber} — skipping duplicate run.`));
+        const t = rentbotTracker.get(nexusDevNumber);
+        return t && t.connection;
+    }
+    pairingInFlight.add(nexusDevNumber);
+    setTimeout(() => pairingInFlight.delete(nexusDevNumber), 15000);
+
+    // Never stack sockets on the same identity.
+    retireSocket(nexusDevNumber, 'starting new connection');
     
     if (!rentbotTracker.has(nexusDevNumber)) {
         rentbotTracker.set(nexusDevNumber, {
@@ -638,8 +678,13 @@ async function startpairing(nexusDevNumber) {
             return msg?.message || '';
         },
         shouldSyncHistoryMessage: msg => {
-            console.log(`\x1b[32mLoading Chat [${msg.progress}%]\x1b[39m`);
-            return !!msg.syncType;
+            // msg.progress is undefined for most sync chunks — logging it
+            // unconditionally produced the endless "Loading Chat [undefined%]"
+            // spam that buried every real line in the deploy logs.
+            if (typeof msg?.progress === 'number') {
+                console.log(`\x1b[32mLoading Chat [${msg.progress}%]\x1b[39m`);
+            }
+            return !!msg?.syncType;
         },
         connectTimeoutMs: 60000,
         defaultQueryTimeoutMs: 60000,
@@ -656,7 +701,9 @@ async function startpairing(nexusDevNumber) {
     }
     
     tracker.connection = nexus;
-    
+    nexus.__timers = [];
+    pairingInFlight.delete(nexusDevNumber);
+
     if (store) store.bind(nexus.ev);
 
     if (pairingCode && !state.creds.registered) {
@@ -1187,6 +1234,19 @@ async function startpairing(nexusDevNumber) {
             // leave creds.json behind making the web/Telegram UI say "paired"
             // forever. Clear it immediately so the user can pair again.
             if (reason === 401 && !pairingStillPending) {
+                // A 401 in the first couple of minutes after pairing is almost
+                // never a real unlink — it is a duplicate/stale connection
+                // being kicked. Reconnect once with the saved creds before
+                // destroying a session the user just created.
+                const sincePair = Date.now() - (tracker?.pairedAt || 0);
+                if (tracker && !tracker.reauthTried && sincePair < 180000) {
+                    tracker.reauthTried = true;
+                    console.log(chalk.yellow(`⚠️ 401 soon after pairing for ${nexusDevNumber} — reconnecting once before clearing.`));
+                    retireSocket(nexusDevNumber, '401 grace reconnect');
+                    await sleep(4000);
+                    queuePairing(nexusDevNumber).catch(() => {});
+                    return;
+                }
                 console.log(chalk.red.bold(`❌ ${nexusDevNumber} logged out/unauthorized (401) — clearing session`));
                 try {
                     await sendUserDisconnected(nexusDevNumber, 'Reason: 401 — logged out/unlinked', { reconnecting: false });
@@ -1235,7 +1295,10 @@ async function startpairing(nexusDevNumber) {
             // pairing — reconnect, never wipe the session.
             if (reason === 515) {
                 console.log(chalk.blue(`🔄 Restart required (515) for ${nexusDevNumber}`));
-                tracker.connection = null;
+                // Fully retire this socket first, otherwise its creds.update
+                // listener overwrites the new session's creds -> 401 later.
+                retireSocket(nexusDevNumber, '515 restart required');
+                tracker.pairedAt = Date.now();
                 await sleep(2000);
                 queuePairing(nexusDevNumber).catch(() => {});
                 return;
@@ -1308,6 +1371,7 @@ async function startpairing(nexusDevNumber) {
                 }
             }
         } else if (connection === "open") {
+            if (tracker) { tracker.pairedAt = Date.now(); tracker.reauthTried = false; }
             console.log(chalk.bgGreen.black(`✅ Paired: ${nexusDevNumber}`));
             tracker.retryCount = 0;
             tracker.disconnected = false;
@@ -1384,6 +1448,7 @@ async function startpairing(nexusDevNumber) {
         } catch (_) {}
         _syncRunning = false;
     }, 2 * 60 * 1000);
+    nexus.__timers.push(syncInterval);
 
     // Clean up sync interval when session disconnects
     nexus.ev.on('connection.update', ({ connection: _conn2 }) => {
@@ -1402,6 +1467,7 @@ async function startpairing(nexusDevNumber) {
             nexus.sendPresenceUpdate('available').catch(() => {});
         }
     }, 60000);
+    nexus.__timers.push(healthCheckInterval);
 
     return nexus;
 }

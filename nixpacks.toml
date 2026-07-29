@@ -34,7 +34,9 @@ cmds = [
 cmds = [
   "cd mias && NODE_OPTIONS='--max-old-space-size=512' npm install --ignore-scripts --no-audit --no-fund --loglevel=error || true",
   "cd mias && npm install @itsreimau/gktw --no-audit --no-fund --save-optional 2>/dev/null || npm install github:itsreimau/gktw --no-audit --no-fund --save-optional 2>/dev/null || echo '[nixpacks] gktw unavailable — Baileys fallback active'",
-  "cd mias && npm rebuild sharp --no-audit --no-fund"
+  "cd mias && npm rebuild sharp --no-audit --no-fund || true",
+  "find /app/mias/node_modules -type d -name sharp | while read -r d; do (cd \"$d\" && npm run install --if-present --foreground-scripts) || (cd \"$d\" && npx --yes prebuild-install --runtime=napi --platform=linux --arch=x64) || echo \"[nixpacks] WARN could not build $d\"; done",
+  "cd mias && node -e \"require('sharp');console.log('[nixpacks] sharp OK')\" || echo '[nixpacks] WARN sharp unavailable — sticker engine disabled'"
 ]
 
 [start]
