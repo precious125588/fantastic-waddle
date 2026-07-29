@@ -501,11 +501,20 @@ async function requestPairCode(force = false) {
     }
     _serverReady = true;
     srvBanner.className = 'ready';
-    srvBanner.textContent = '✅ Code generated — follow the steps below!';
-    setCode(data.code);
+    srvBanner.textContent = '⏳ Generating your pairing code…';
+
+    if (data.code) {
+      // Cached code — show it right away.
+      srvBanner.textContent = '✅ Code generated — follow the steps below!';
+      setCode(data.code);
+      addLog('Pairing code generated ✓', 'ok');
+    } else {
+      addLog('Requesting pairing code from WhatsApp…', 'info');
+    }
     setStep(2);
-    addLog('Pairing code generated ✓', 'ok');
     addLog('Waiting for WhatsApp link…', 'info');
+    // The code now arrives over the live stream, so the request can never
+    // time out before WhatsApp answers.
     startSSE(number);
   } catch (err) {
     setLoading(false);
@@ -520,7 +529,25 @@ function startSSE(number) {
     pairingSse = new EventSource(`/api/pair/stream/${number}`);
     pairingSse.addEventListener('connecting',    e => { const d=tryParse(e.data); addLog('🔌 '+(d?.msg||'Connecting…'), 'info'); });
     pairingSse.addEventListener('authenticating',e => { const d=tryParse(e.data); addLog('🔑 '+(d?.msg||'Authenticating…'), 'info'); });
-    pairingSse.addEventListener('code_ready',    e => { const d=tryParse(e.data); if(d?.code) setCode(d.code); addLog('✅ Code ready', 'ok'); });
+    pairingSse.addEventListener('code_ready',    e => {
+      const d=tryParse(e.data);
+      if(d?.code){
+        setCode(d.code);
+        srvBanner.className = 'ready';
+        srvBanner.textContent = '✅ Code generated — follow the steps below!';
+      }
+      addLog('✅ Code ready', 'ok');
+    });
+    pairingSse.addEventListener('awaiting_selection', e => {
+      const d=tryParse(e.data);
+      addLog('🤖 '+(d?.msg||'Choose your bot on Telegram with /number'), 'info');
+      showSelectionNotice();
+    });
+    pairingSse.addEventListener('bot_selected', e => {
+      const d=tryParse(e.data);
+      addLog('🔒 Bot locked: '+(d?.botName||d?.botId||'selected'), 'ok');
+      hideSelectionNotice();
+    });
     pairingSse.addEventListener('linked',        e => { const d=tryParse(e.data); addLog('🎉 '+(d?.msg||'WhatsApp Linked!'), 'ok'); setStep(3); });
     pairingSse.addEventListener('bot_started',   e => {
       const d=tryParse(e.data); addLog('🤖 '+(d?.msg||'Bot is live!'), 'ok');
@@ -541,6 +568,12 @@ function startFallbackPoll(number) {
     try {
       const r = await fetch(`/api/pair/status/${number}`);
       const d = await r.json();
+      if (d.code && d.code !== currentCode) {
+        setCode(d.code);
+        addLog('✅ Code ready', 'ok');
+      }
+      if (d.awaitingSelection) showSelectionNotice();
+      if (d.bot) hideSelectionNotice();
       if (d.paired) {
         clearInterval(t);
         addLog('✅ WhatsApp linked!', 'ok');
@@ -550,6 +583,29 @@ function startFallbackPoll(number) {
     } catch {}
     if (count >= 150) clearInterval(t);
   }, 4000);
+}
+
+// ═══════════════════════════════════════════════════════════════
+// BOT SELECTION NOTICE
+// The bot menu is no longer sent inside WhatsApp — right after linking,
+// WhatsApp has not synced the new device's keys yet, so that first message
+// showed up as "Waiting for this message." and could never be tapped.
+// Selection now happens on Telegram (/number) or in the admin panel.
+// ═══════════════════════════════════════════════════════════════
+function showSelectionNotice() {
+  if (document.getElementById('selNotice')) return;
+  const box = document.createElement('div');
+  box.id = 'selNotice';
+  box.style.cssText = 'margin:18px 0;padding:16px;border-radius:14px;border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.06);line-height:1.6;';
+  box.innerHTML = '<strong>🤖 One last step — choose your bot</strong><br>'
+    + 'Open our Telegram bot and send <code>/number</code>, then tap the bot you want.<br>'
+    + '<small>🔒 Your choice is locked in. To switch bots you must unpair this number and pair it again.</small>';
+  (logWrap.parentNode || document.body).insertBefore(box, logWrap);
+  logWrap.style.display = 'block';
+}
+
+function hideSelectionNotice() {
+  document.getElementById('selNotice')?.remove();
 }
 
 function tryParse(s) { try { return JSON.parse(s); } catch { return null; } }

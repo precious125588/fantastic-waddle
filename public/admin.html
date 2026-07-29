@@ -257,6 +257,7 @@ tr:hover td{background:color-mix(in srgb,var(--accent) 3%,transparent);}
     <nav>
       <button type="button" class="nav-item active" data-tab="dashboard" onclick="showTab('dashboard')"><span class="nav-icon">📊</span>Dashboard</button>
       <button type="button" class="nav-item" data-tab="users" onclick="showTab('users')"><span class="nav-icon">👥</span>Users / Bots</button>
+      <button type="button" class="nav-item" data-tab="bots" onclick="showTab('bots')"><span class="nav-icon">🤖</span>Bot Choices</button>
       <button type="button" class="nav-item" data-tab="logs" onclick="showTab('logs')"><span class="nav-icon">📋</span>Live Logs</button>
       <button type="button" class="nav-item" data-tab="system" onclick="showTab('system')"><span class="nav-icon">⚙️</span>System</button>
       <button type="button" class="nav-item" data-tab="settings" onclick="showTab('settings')"><span class="nav-icon">🔧</span>Settings</button>
@@ -313,6 +314,30 @@ tr:hover td{background:color-mix(in srgb,var(--accent) 3%,transparent);}
             <table>
               <thead><tr><th>Number</th><th>Status</th><th>Source</th><th>Paired At</th><th>Uptime</th><th>↺</th><th>Actions</th></tr></thead>
               <tbody id="usersTbody"><tr><td colspan="7"><div class="empty"><div class="empty-icon">👥</div><div class="empty-text">No users yet</div></div></td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── BOT CHOICES ── -->
+    <div id="tab-bots" class="tab-pane">
+      <div class="page-header">
+        <div class="page-title">Bot Choices</div>
+        <div class="page-sub">Every paired number and the bot it is locked to. A choice is final until the number is unpaired.</div>
+      </div>
+      <div class="section">
+        <div class="section-hd">
+          <div class="section-title">🤖 Number → Bot</div>
+          <div class="section-actions">
+            <button type="button" class="btn btn-outline" onclick="loadSelections()">↻ Refresh</button>
+          </div>
+        </div>
+        <div class="section-body" style="padding:0">
+          <div class="tbl-wrap">
+            <table>
+              <thead><tr><th>Number</th><th>Bot</th><th>Status</th><th>Chosen via</th><th>Telegram</th><th>Actions</th></tr></thead>
+              <tbody id="selTbody"><tr><td colspan="6"><div class="empty"><div class="empty-icon">🤖</div><div class="empty-text">No paired numbers yet</div></div></td></tr></tbody>
             </table>
           </div>
         </div>
@@ -501,6 +526,7 @@ function showTab(id){
   document.getElementById('tab-'+id).classList.add('active');
   const btn=document.querySelector(`.nav-item[data-tab="${id}"]`);if(btn)btn.classList.add('active');
   if(id==='users')loadUsers();
+  if(id==='bots')loadSelections();
   if(id==='system')loadSystem();
   if(id==='settings')loadSettings();
   if(id==='logs'&&!logSse)startLogStream();
@@ -840,6 +866,59 @@ async function confirmPauseAll(){
 }
 
 // ══════════════════════════════════════════════════════
+// BOT CHOICES
+// ══════════════════════════════════════════════════════
+let _availableBots=[];
+
+async function loadBotCatalog(){
+  try{ const d=await fetch('/api/bots').then(r=>r.json()); if(d.ok)_availableBots=d.bots||[]; }catch{}
+}
+
+async function loadSelections(){
+  await loadBotCatalog();
+  const tb=document.getElementById('selTbody');
+  let d;
+  try{ d=await api('/api/admin/selections'); }catch{ d={ok:false}; }
+  if(!d.ok){ tb.innerHTML='<tr><td colspan="6"><div class="empty"><div class="empty-text">Could not load choices</div></div></td></tr>'; return; }
+
+  const rows=d.selections||[];
+  if(!rows.length){ tb.innerHTML='<tr><td colspan="6"><div class="empty"><div class="empty-icon">🤖</div><div class="empty-text">No paired numbers yet</div></div></td></tr>'; return; }
+
+  tb.innerHTML=rows.map(r=>{
+    const tg=r.telegram?('@'+(r.telegram.username||r.telegram.id)):'—';
+    const status=r.locked
+      ? (r.botRunning?'🟢 Running':'🔒 Locked')
+      : '⏳ Awaiting choice';
+    const picker=r.locked
+      ? '<span class="muted">Locked</span>'
+      : `<select id="pick-${r.number}">${_availableBots.map(b=>`<option value="${b.id}">${b.name}</option>`).join('')}</select>
+         <button type="button" class="btn btn-outline" onclick="assignBot('${r.number}')">Deploy</button>`;
+    const unlock=r.locked
+      ? `<button type="button" class="btn btn-outline" onclick="unlockSelection('${r.number}')">Unlock</button>`
+      : '';
+    return `<tr><td>${r.number}</td><td>${r.botName||'—'}</td><td>${status}</td><td>${r.source||'—'}</td><td>${tg}</td><td>${picker} ${unlock}</td></tr>`;
+  }).join('');
+}
+
+async function assignBot(number){
+  const sel=document.getElementById('pick-'+number);
+  const botId=sel&&sel.value;
+  if(!botId)return toast('Pick a bot first','error');
+  toast('Deploying…');
+  const d=await api('/api/admin/selections/'+number,{method:'POST',body:JSON.stringify({botId})});
+  if(d.ok){ toast(`${d.bot.name} deployed for ${number}`,'success'); }
+  else { toast(d.error||'Failed','error'); }
+  loadSelections();
+}
+
+async function unlockSelection(number){
+  if(!confirm(`Unlock ${number}? They will be able to choose a different bot after re-pairing.`))return;
+  const d=await api('/api/admin/selections/'+number,{method:'DELETE'});
+  toast(d.ok?'Unlocked':(d.error||'Failed'),d.ok?'success':'error');
+  loadSelections();
+}
+
+// ══════════════════════════════════════════════════════
 // STARTUP
 // ══════════════════════════════════════════════════════
 function onLoggedIn(){
@@ -853,6 +932,7 @@ function onLoggedIn(){
   <nav class="mob-nav" id="mobNav">
     <button type="button" class="active" data-tab="dashboard" onclick="showTab('dashboard');_mobActive(this)"><span class="mn-icon">📊</span>Dashboard</button>
     <button type="button" data-tab="users" onclick="showTab('users');_mobActive(this)"><span class="mn-icon">👥</span>Bots</button>
+    <button type="button" data-tab="bots" onclick="showTab('bots');_mobActive(this)"><span class="mn-icon">🤖</span>Choices</button>
     <button type="button" data-tab="logs" onclick="showTab('logs');_mobActive(this)"><span class="mn-icon">📋</span>Logs</button>
     <button type="button" data-tab="settings" onclick="showTab('settings');_mobActive(this)"><span class="mn-icon">🔧</span>Settings</button>
     <button type="button" data-tab="system" onclick="showTab('system');_mobActive(this)"><span class="mn-icon">⚙️</span>System</button>
