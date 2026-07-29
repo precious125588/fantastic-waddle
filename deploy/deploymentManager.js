@@ -157,6 +157,13 @@ function _extractSelection(rawMessage) {
     } catch {}
   }
 
+  // 2b. Some clients answer a native flow with a plain body text or a
+  //     `interactiveResponseMessage.body.text` holding the row title.
+  const irBody = message.interactiveResponseMessage?.body?.text;
+  if (irBody) candidates.push(irBody);
+  const nfName = message.interactiveResponseMessage?.nativeFlowResponseMessage?.name;
+  if (nfName && nfName !== 'single_select' && nfName !== 'quick_reply') candidates.push(nfName);
+
   // 3. Buttons / template replies
   if (message.buttonsResponseMessage?.selectedButtonId) {
     candidates.push(message.buttonsResponseMessage.selectedButtonId);
@@ -169,6 +176,11 @@ function _extractSelection(rawMessage) {
   for (const c of candidates) {
     const bot = getBotById(c);
     if (bot) return bot.id;
+    const lcc = String(c).replace(/^deploy:/, '').trim().toLowerCase();
+    const byName = bots.find(
+      b => b.name.toLowerCase() === lcc || lcc.includes(b.id.toLowerCase()) || lcc.includes(b.name.toLowerCase()),
+    );
+    if (byName) return byName.id;
   }
 
   // 4. Typed reply — strict, and never matches empty/blank input.
@@ -216,7 +228,17 @@ function handleIncomingMessage(numberOrJid, rawMessage) {
   if (!entry) return false;
 
   const selectedId = _extractSelection(rawMessage);
-  if (!selectedId) return false; // let the normal command pipeline handle it
+  if (!selectedId) {
+    // Visible diagnostics: previously a tap that we failed to parse looked
+    // exactly like "the user never answered".
+    try {
+      const m = _unwrap(rawMessage) || {};
+      console.log(chalk.gray(
+        `[DeployMgr] ${key} sent "${Object.keys(m)[0] || 'unknown'}" while awaiting selection — not a valid choice`,
+      ));
+    } catch {}
+    return false; // let the normal command pipeline handle it
+  }
 
   clearTimeout(entry.timer);
   clearInterval(entry.reminder);
