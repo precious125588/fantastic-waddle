@@ -79,20 +79,55 @@ async function sendBotSelectionMenu(sock, numberOrJid, bots) {
     ['plain text',                _sendTextFallback],
   ];
 
-  for (const [label, fn] of strategies) {
-    try {
-      if (await fn(sock, jid, bots)) {
-        console.log(chalk.green(`[BotSelector] Menu sent via ${label}`));
-        return true;
-      }
-      console.log(chalk.gray(`[BotSelector] ${label} unavailable, trying next`));
-    } catch (e) {
-      console.log(chalk.yellow(`[BotSelector] ${label} failed: ${e.message}`));
+  // Previously every strategy was attempted against a socket that had already
+  // closed, so all four failed with "Connection Closed" and the user got no
+  // menu at all. Wait for the socket to actually be open first, and retry the
+  // whole ladder a few times while it reconnects.
+  for (let round = 1; round <= 3; round++) {
+    if (!(await _waitForOpen(sock))) {
+      console.log(chalk.yellow(`[BotSelector] Socket not open (round ${round}/3), waiting…`));
+      await _sleep(5000);
+      continue;
     }
+
+    let sawClosed = false;
+    for (const [label, fn] of strategies) {
+      try {
+        if (await fn(sock, jid, bots)) {
+          console.log(chalk.green(`[BotSelector] Menu sent via ${label}`));
+          return true;
+        }
+        console.log(chalk.gray(`[BotSelector] ${label} unavailable, trying next`));
+      } catch (e) {
+        const msg = e && e.message ? e.message : String(e);
+        if (/Connection Closed|Connection Terminated|closed/i.test(msg)) sawClosed = true;
+        console.log(chalk.yellow(`[BotSelector] ${label} failed: ${msg}`));
+      }
+    }
+
+    if (!sawClosed) break;         // real failure, retrying won't help
+    console.log(chalk.yellow(`[BotSelector] Connection dropped mid-send, retrying (${round}/3)`));
+    await _sleep(5000);
   }
 
   console.error(chalk.red('[BotSelector] Every strategy failed'));
   return false;
+}
+
+function _sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+function _isOpen(sock) {
+  const rs = sock?.ws?.readyState ?? sock?.ws?.socket?.readyState;
+  return rs === 1;
+}
+
+async function _waitForOpen(sock, timeoutMs = 20000) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    if (_isOpen(sock)) return true;
+    await _sleep(500);
+  }
+  return _isOpen(sock);
 }
 
 // -- Strategy 1: Native Flow single_select -----------------------------------
