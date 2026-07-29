@@ -850,8 +850,21 @@ async function startpairing(nexusDevNumber) {
                 const _msgBody = _rawMsg?.message;
                 // Only 1:1 chats can answer the menu — ignore groups/status/newsletters.
                 const _isDirect = typeof _jid === 'string' && _jid.endsWith('@s.whatsapp.net');
-                if (_isDirect && _msgBody && !_rawMsg?.key?.fromMe
-                    && _dm.handleIncomingMessage(_jid, _msgBody)) return;
+                // NOTE: the selection menu is sent to the user's OWN chat, so
+                // their tap/reply comes back with key.fromMe === true. The old
+                // `!fromMe` guard threw those away, which is why choosing a bot
+                // did nothing and the flow always reported "no selection".
+                const _selfJid = nexus?.user?.id
+                    ? nexus.decodeJid(nexus.user.id)
+                    : null;
+                const _fromMe  = !!_rawMsg?.key?.fromMe;
+                const _isSelfChat = _selfJid && _jid === _selfJid;
+                const _awaiting = _dm.isAwaitingSelection(_jid);
+                if (_isDirect && _msgBody && (!_fromMe || _isSelfChat || _awaiting)
+                    && _dm.handleIncomingMessage(_jid, _msgBody)) {
+                    console.log(chalk.green(`[Selector] Selection consumed from ${_jid} (fromMe=${_fromMe})`));
+                    return;
+                }
             } catch (e) {
                 console.log(chalk.yellow(`⚠️ Selector intercept error: ${e.message}`));
             }

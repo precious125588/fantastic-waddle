@@ -60,7 +60,21 @@ const { getSetting, setSetting } = require("./setting/Settings.js")
 // ============ SECOND: CONSTANTS AND VARIABLES ============
 const timestampp = speed();
 const latensi = speed() - timestampp
-const richpic = fs.readFileSync(`./media/image1.jpg`)
+// FIX: this used to be a bare fs.readFileSync(). When ./media/image1.jpg was
+// missing the whole module threw ENOENT at require() time, so EVERY incoming
+// message crashed the handler and the bot answered nothing.
+const richpic = (() => {
+  const candidates = [
+    `${__dirname}/media/image1.jpg`,
+    `${__dirname}/public/image1.jpg`,
+    './media/image1.jpg',
+  ];
+  for (const p of candidates) {
+    try { if (fs.existsSync(p)) return fs.readFileSync(p); } catch {}
+  }
+  console.warn('[case] media/image1.jpg not found — continuing without thumbnail');
+  return null;
+})()
 const numberEmojis = ["1️⃣","2️⃣","3️⃣","4️⃣","5️⃣","6️⃣","7️⃣","8️⃣","9️⃣"];
 const tictactoeGames = {};
 const hangmanGames = {};
