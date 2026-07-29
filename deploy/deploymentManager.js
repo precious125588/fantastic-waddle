@@ -98,27 +98,21 @@ function getBotById(id) {
   return scanBots().find(b => b.id.toLowerCase() === wanted) || null;
 }
 
-// ── Persisted selections ─────────────────────────────────────────────────────
-function _readSelections() {
-  try {
-    if (fs.existsSync(SELECTIONS_FILE)) return JSON.parse(fs.readFileSync(SELECTIONS_FILE, 'utf8'));
-  } catch {}
-  return {};
-}
+// ── Persisted selections (delegated to the shared, lockable store) ───────────
+const store = require('./botSelectionStore');
 
-function _writeSelection(userKey, botId) {
-  try {
-    const data = _readSelections();
-    data[userKey] = { botId, chosenAt: new Date().toISOString() };
-    fs.mkdirSync(path.dirname(SELECTIONS_FILE), { recursive: true });
-    fs.writeFileSync(SELECTIONS_FILE, JSON.stringify(data, null, 2), 'utf8');
-  } catch (e) {
-    console.warn(chalk.yellow(`[DeployMgr] Could not persist selection: ${e.message}`));
-  }
+function _writeSelection(userKey, botId, opts = {}) {
+  const bot = getBotById(botId);
+  if (!bot) return { ok: false, error: `Unknown bot "${botId}"` };
+  return store.setSelection(userKey, bot, opts);
 }
 
 function getStoredSelection(numberOrJid) {
-  return _readSelections()[jidKey(numberOrJid)]?.botId || null;
+  return store.getSelection(numberOrJid)?.botId || null;
+}
+
+function getSelectionRecord(numberOrJid) {
+  return store.getSelection(numberOrJid);
 }
 
 // ── Message unwrapping ───────────────────────────────────────────────────────
@@ -271,8 +265,134 @@ function _waitForSelection(userKey, onRemind) {
   });
 }
 
-// ── Core deployment flow ─────────────────────────────────────────────────────
+
+// ── Live deploy context, so any surface can deploy after the socket is gone ──
+// key -> { sessionDir, launcher, nexus, tracker }
+const _deployContext = new Map();
+
+function rememberContext(numberOrJid, ctx) {
+  const key = jidKey(numberOrJid);
+  if (!key) return;
+  _deployContext.set(key, { ...(_deployContext.get(key) || {}), ...ctx });
+}
+
+function _resolveContext(numberOrJid) {
+  const key = jidKey(numberOrJid);
+  const ctx = _deployContext.get(key) || {};
+
+  let sessionDir = ctx.sessionDir;
+  if (!sessionDir) {
+    try {
+      const pairMod = require('../pair.js');
+      if (typeof pairMod.getSessionPath === 'function') {
+        sessionDir = path.resolve(pairMod.getSessionPath(`${key}@s.whatsapp.net`));
+      }
+    } catch {}
+  }
+  if (!sessionDir) {
+    sessionDir = path.join(__dirname, '..', 'nexstore', 'pairing', `${key}@s.whatsapp.net`);
+  }
+
+  let launcher = ctx.launcher;
+  if (!launcher) {
+    try { launcher = require('../mais_launcher'); } catch {}
+  }
+
+  return { ...ctx, sessionDir, launcher };
+}
+
+// ── Launch a bot for a number (surface-agnostic) ─────────────────────────────
 /**
+ * Records the choice (respecting the lock) and boots the bot.
+ * Safe to call from Telegram, the admin panel, or the WhatsApp menu.
+ *
+ * @returns {Promise<{ok:boolean, bot?:object, locked?:boolean, error?:string}>}
+ */
+async function deployBotForNumber(numberOrJid, botId, opts = {}) {
+  const key = jidKey(numberOrJid);
+  if (!key) return { ok: false, error: 'Invalid number.' };
+
+  const bot = getBotById(botId);
+  if (!bot) return { ok: false, error: `Unknown bot "${botId}".` };
+
+  const written = store.setSelection(key, bot, {
+    source:   opts.source || 'unknown',
+    chosenBy: opts.chosenBy || null,
+    force:    !!opts.force,
+  });
+
+  if (!written.ok) return written; // locked — caller shows the message
+
+  // A pending WhatsApp waiter (if any) must be released so the old flow does
+  // not keep re-sending its menu after the choice was made elsewhere.
+  const pending = _pendingSelections.get(key);
+  if (pending) {
+    clearTimeout(pending.timer);
+    clearInterval(pending.reminder);
+    _pendingSelections.delete(key);
+    pending.resolve(bot.id);
+    // The pairing socket owner performs the launch in that case.
+    return { ok: true, bot, handedOff: true, record: written.record };
+  }
+
+  const { sessionDir, launcher, nexus, tracker } = _resolveContext(key);
+  if (!launcher || typeof launcher.launch !== 'function') {
+    return { ok: false, error: 'Launcher unavailable on this instance.' };
+  }
+
+  if (!fs.existsSync(sessionDir)) {
+    return { ok: false, error: `No WhatsApp session found for ${key}. Pair the number first.` };
+  }
+
+  try {
+    if (typeof opts.onProgress === 'function') {
+      await opts.onProgress(bot);
+    }
+    if (tracker) tracker.handoffToMais = true;
+    if (nexus) {
+      try { nexus.end(); } catch {}
+      try { nexus.ws?.close(); } catch {}
+    }
+
+    const envOverrides = {
+      ...(bot.env || {}),
+      BOT_ENTRY: bot.entry || 'mias/index.js',
+      BOT_ID: bot.id,
+    };
+    if (bot.cwd) envOverrides.BOT_CWD = bot.cwd;
+
+    await launcher.launch(`${key}@s.whatsapp.net`, sessionDir, envOverrides);
+    store.markDeployed(key, true);
+    console.log(chalk.green.bold(`🎉 ${bot.name} active for ${key}`));
+    return { ok: true, bot, record: written.record };
+  } catch (e) {
+    console.error(chalk.red(`[DeployMgr] Launch failed for ${key}: ${e.message}`));
+    return { ok: false, bot, error: e.message };
+  }
+}
+
+/**
+ * Submit a choice from Telegram / admin panel.
+ * Thin wrapper that keeps the lock semantics in one place.
+ */
+async function submitSelection(numberOrJid, botId, opts = {}) {
+  return deployBotForNumber(numberOrJid, botId, opts);
+}
+
+// ── Core deployment flow (called by pair.js on `connection: open`) ───────────
+/**
+ * IMPORTANT BEHAVIOUR CHANGE
+ * --------------------------
+ * The WhatsApp selection menu is now BEST EFFORT ONLY. Immediately after a new
+ * device is linked, WhatsApp has not finished syncing that device's encryption
+ * keys, so the very first self-message frequently renders as
+ *   "Waiting for this message. This may take a while."
+ * and is impossible to tap. Blocking deployment on it meant nothing deployed.
+ *
+ * The number is instead marked as AWAITING SELECTION and the user picks their
+ * bot from Telegram with /number (or an admin picks it in the web panel).
+ * If the WhatsApp menu does happen to arrive and gets tapped, that still works.
+ *
  * @param {object} nexus        Baileys pairing socket
  * @param {string} numberOrJid  Bare number (pair.js) or full JID
  * @param {object} tracker      rentbotTracker entry
@@ -284,59 +404,96 @@ async function startDeploymentFlow(nexus, numberOrJid, tracker, sessionDir, laun
   const userKey = jidKey(numberOrJid);
   const jid     = toJid(numberOrJid);
 
-  const { sendBotSelectionMenu } = require('./botSelector');
-  const { reportDeployProgress } = require('./progressReporter');
-
   if (!userKey || !jid) {
     console.error(chalk.red(`[DeployMgr] Bad recipient "${numberOrJid}" — aborting`));
     return null;
   }
 
-  console.log(chalk.cyan(`[DeployMgr] Bot selection started for ${jid}`));
+  rememberContext(userKey, { sessionDir, launcher, nexus, tracker });
 
-  // Register the waiter BEFORE sending the menu, otherwise a very fast tap
-  // arrives while no listener exists and the reply is dropped.
-  const selectionPromise = _waitForSelection(userKey, async () => {
-    console.log(chalk.gray(`[DeployMgr] Re-sending menu to ${jid}`));
-    await sendBotSelectionMenu(nexus, jid, bots);
-  });
+  const { sendBotSelectionMenu } = require('./botSelector');
+  const { reportDeployProgress } = require('./progressReporter');
 
-  const delivered = await sendBotSelectionMenu(nexus, jid, bots).catch(e => {
-    console.error(chalk.red(`[DeployMgr] Menu send failed: ${e.message}`));
-    return false;
-  });
-
-  if (!delivered) {
-    // Could not show any menu at all — do not silently deploy something.
-    console.error(chalk.red(`[DeployMgr] No menu delivered to ${jid}; not deploying`));
-    cancelSelection(userKey);
-    return null;
+  // ── 1. Already locked to a bot? Re-deploy it, never ask again. ────────────
+  const locked = store.getSelection(userKey);
+  if (locked?.botId) {
+    const bot = getBotById(locked.botId);
+    if (bot) {
+      console.log(chalk.cyan(`[DeployMgr] ${userKey} is locked to ${bot.name} — deploying without a menu`));
+      try {
+        await nexus.sendMessage(jid, {
+          text:
+            `🔒 *${bot.name}* is already your bot.\n\n` +
+            `Starting it up now. To switch bots you must unpair this number and pair again.`,
+        });
+      } catch {}
+      const res = await deployBotForNumber(userKey, bot.id, { source: 'auto-relaunch' , force: true });
+      return res.ok ? bot : null;
+    }
   }
+
+  // ── 2. Mark awaiting + tell every surface ────────────────────────────────
+  store.markPending(userKey, { sessionDir, source: 'pairing' });
+  console.log(chalk.cyan(`[DeployMgr] ${userKey} paired — awaiting bot selection (Telegram /number)`));
+
+  try {
+    const notifier = require('../notify');
+    if (typeof notifier.sendSelectionRequired === 'function') {
+      await notifier.sendSelectionRequired(userKey, bots);
+      store.markNotified(userKey);
+    }
+  } catch (e) {
+    console.warn(chalk.yellow(`[DeployMgr] Telegram notify failed: ${e.message}`));
+  }
+
+  // ── 3. Best-effort WhatsApp menu — never blocks, never required ──────────
+  const selectionPromise = _waitForSelection(userKey, async () => {
+    if (store.getSelection(userKey)) { cancelSelection(userKey); return; }
+    console.log(chalk.gray(`[DeployMgr] Re-sending menu to ${jid}`));
+    await sendBotSelectionMenu(nexus, jid, bots).catch(() => {});
+  });
+
+  sendBotSelectionMenu(nexus, jid, bots).catch(e => {
+    console.warn(chalk.yellow(`[DeployMgr] WhatsApp menu unavailable (${e.message}) — Telegram /number still works`));
+  });
 
   const selectedId = await selectionPromise;
 
-  // ── No choice made: stop here. Never auto-pick. ────────────────────────────
+  // ── 4. Nobody tapped the WhatsApp menu ───────────────────────────────────
   if (!selectedId) {
-    console.log(chalk.yellow(`[DeployMgr] ${jid} never chose a bot — nothing deployed`));
+    // The choice may have arrived through Telegram while we waited; if it did,
+    // deployBotForNumber already launched the bot.
+    const now = store.getSelection(userKey);
+    if (now?.botId) {
+      console.log(chalk.green(`[DeployMgr] ${userKey} chose ${now.botName} elsewhere`));
+      return getBotById(now.botId);
+    }
+    console.log(chalk.yellow(`[DeployMgr] ${userKey} has not chosen a bot yet — still pending`));
     try {
       await nexus.sendMessage(jid, {
         text:
-          `⌛ *Deployment cancelled*\n\n` +
-          `You didn't choose a bot, so nothing was deployed.\n\n` +
-          `Send *deploy* whenever you're ready and I'll show the menu again.`,
+          `⌛ *No bot chosen yet*\n\n` +
+          `Open Telegram and send *\/number* to pick your bot.\n` +
+          `Nothing is deployed until you choose.`,
       });
     } catch {}
     return null;
   }
 
+  // ── 5. WhatsApp menu worked ──────────────────────────────────────────────
   const chosen = getBotById(selectedId);
   if (!chosen) {
     console.error(chalk.red(`[DeployMgr] Unknown bot id "${selectedId}" — not deploying`));
     return null;
   }
 
-  console.log(chalk.green(`[DeployMgr] ${jid} chose: ${chosen.name} (${chosen.id})`));
-  _writeSelection(userKey, chosen.id);
+  const written = _writeSelection(userKey, chosen.id, { source: 'whatsapp' });
+  if (!written.ok && written.locked) {
+    try { await nexus.sendMessage(jid, { text: `🔒 ${written.error}` }); } catch {}
+    return null;
+  }
+
+  console.log(chalk.green(`[DeployMgr] ${userKey} chose: ${chosen.name} (${chosen.id})`));
 
   try {
     await nexus.sendMessage(jid, { text: `✅ You chose *${chosen.name}*. Deploying now…` });
@@ -348,7 +505,6 @@ async function startDeploymentFlow(nexus, numberOrJid, tracker, sessionDir, laun
     console.warn(chalk.yellow(`[DeployMgr] Progress report failed: ${e.message}`));
   }
 
-  // ── Hand off: close the pairing socket, launch the chosen bot ─────────────
   try {
     console.log(chalk.cyan(`[DeployMgr] Handing ${jid} over to ${chosen.name}…`));
     if (tracker) tracker.handoffToMais = true;
@@ -363,6 +519,7 @@ async function startDeploymentFlow(nexus, numberOrJid, tracker, sessionDir, laun
     if (chosen.cwd) envOverrides.BOT_CWD = chosen.cwd;
 
     await launcher.launch(numberOrJid, sessionDir, envOverrides);
+    store.markDeployed(userKey, true);
     console.log(chalk.green.bold(`🎉 ${chosen.name} active for ${jid}`));
     return chosen;
   } catch (e) {
@@ -376,8 +533,14 @@ module.exports = {
   clearBotCache,
   getBotById,
   getStoredSelection,
+  getSelectionRecord,
   handleIncomingMessage,
   isAwaitingSelection,
   cancelSelection,
   startDeploymentFlow,
+  // new, surface-agnostic API
+  store,
+  submitSelection,
+  deployBotForNumber,
+  rememberContext,
 };
