@@ -156,6 +156,9 @@ function getSessionState(nexusDevNumber) {
 function unpairSession(nexusDevNumber) {
     forceCleanupSession(nexusDevNumber);
     markPurged(nexusDevNumber);
+    // Unpairing is the ONLY thing that unlocks the bot choice, so the number
+    // can pick a different bot on its next pairing.
+    try { require('./deploy/botSelectionStore').clearSelection(nexusDevNumber); } catch {}
     try { fs.unlinkSync(getPairingCodePath(nexusDevNumber)); } catch {}
     try {
         if (fs.existsSync(LEGACY_PAIRING_FILE)) {
@@ -1251,6 +1254,8 @@ async function startpairing(nexusDevNumber) {
                 tracker.loggedOut = true;
                 markPurged(nexusDevNumber);
                 forceCleanupSession(nexusDevNumber);
+                // Device unlinked from the phone == unpaired: release the lock.
+                try { require('./deploy/botSelectionStore').clearSelection(nexusDevNumber); } catch {}
                 tracker.disconnected = true;
                 if (pairingStillPending) tracker.pairingError = 'The device logged out before pairing completed. Please try again.';
             } else if (reason === DisconnectReason.connectionClosed || 

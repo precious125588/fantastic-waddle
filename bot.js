@@ -691,6 +691,7 @@ ${ZUKO.line}
 ┃  ➤ /pair <number> - Connect WhatsApp
 ┃  ➤ /delpair <number> - Remove device
 ┃  ➤ /listpair confirm - List devices
+┃  ➤ /number - Choose your bot 🤖
 ┃  ➤ /ping - Check latency
 ┃  ➤ /runtime - Bot uptime
 ┃  ➤ /profile - Your profile
@@ -731,6 +732,7 @@ ${ZUKO.line}
 ┃  ➤ /pair <number> - Pair WhatsApp device
 ┃  ➤ /delpair <number> - Remove paired device
 ┃  ➤ /listpair confirm - List devices (admin)
+┃  ➤ /number - Choose the bot for a paired number
 ┃  ➤ /ping - Check bot latency
 ┃  ➤ /profile - View your profile
 ┃  ➤ /leaderboard - Top command users
@@ -1198,6 +1200,21 @@ bot.onText(/^\/pair(?:@\w+)?\s+(.+)/, requireMembership(withCooldown('pair', 10)
         if (typeof waitForPairingResult !== 'function') throw new Error('Pairing result helper is not available');
 
         const jid = senderNumber + "@s.whatsapp.net";
+
+        // Remember who paired this number so the bot-selection prompt can be
+        // delivered straight to them instead of only to admins.
+        try {
+            require('./deploy/botSelectionStore').setOwner(senderNumber, {
+                id: msg.from.id,
+                username: msg.from.username || null,
+                first_name: msg.from.first_name || null,
+                firstName: msg.from.first_name || null,
+                chatId: chatId,
+            });
+        } catch (e) {
+            console.warn('[bot] Could not record pair owner:', e.message);
+        }
+
         if (typeof hasPairedSession === 'function' && hasPairedSession(jid)) {
             return sendSafePhoto(chatId, IMAGES.success, {
                 caption: `✅ *ALREADY PAIRED*\n\n📱 Number: ${senderNumber}`,
@@ -1491,6 +1508,95 @@ bot.on('left_chat_member', async (msg) => {
 // ========================
 // CALLBACK QUERY HANDLER
 // ========================
+// ========================
+// BOT SELECTION (/number)
+// ========================
+const selStore = (() => { try { return require('./deploy/botSelectionStore'); } catch { return null; } })();
+const deployMgr = (() => { try { return require('./deploy/deploymentManager'); } catch { return null; } })();
+
+const isAdminUser = (userId) => adminIDs.includes(String(userId));
+
+function selectionKeyboard(number, bots) {
+    return {
+        inline_keyboard: bots.map(b => ([{
+            text: b.name,
+            callback_data: `bsel|${number}|${b.id}`,
+        }])),
+    };
+}
+
+/**
+ * /number            -> your paired numbers + their bot status
+ * /number 234XXXX    -> choose (or view) the bot for that number
+ * Admins see every number, users only their own.
+ */
+bot.onText(/^\/number(?:@\w+)?(?:\s+(.+))?$/, requireMembership(async (msg, match) => {
+    const chatId = msg.chat.id;
+    const userId = msg.from.id;
+    const arg = (match[1] || '').replace(/\D/g, '');
+
+    if (!selStore || !deployMgr) {
+        return bot.sendMessage(chatId, '⚠️ Bot selection is unavailable on this instance.');
+    }
+
+    const bots = deployMgr.scanBots();
+    if (!bots.length) {
+        return bot.sendMessage(chatId, '⚠️ No bots are installed on this server yet.');
+    }
+
+    const admin = isAdminUser(userId);
+    const rows = selStore.overview().filter(r => admin || String(r.telegram?.id || '') === String(userId));
+
+    // ── No argument: list the numbers this user may act on ───────────────
+    if (!arg) {
+        if (!rows.length) {
+            return bot.sendMessage(chatId,
+                `📭 *NO PAIRED NUMBERS*\n\nPair one first with \`/pair 234XXXXXXXXX\`, then run /number to choose your bot.`,
+                { parse_mode: 'Markdown' });
+        }
+
+        const lines = rows.map(r => {
+            const status = r.botId
+                ? `🔒 ${r.botName}${r.deployed ? ' (running)' : ' (chosen)'}`
+                : '⏳ no bot chosen';
+            return `📱 \`${r.number}\` — ${status}`;
+        });
+
+        const pending = rows.filter(r => !r.botId);
+        const keyboard = pending.length === 1
+            ? selectionKeyboard(pending[0].number, bots)
+            : undefined;
+
+        return bot.sendMessage(chatId,
+            `🤖 *YOUR NUMBERS*\n\n${lines.join('\n')}\n\n` +
+            (pending.length
+                ? (pending.length === 1
+                    ? `Pick the bot for \`${pending[0].number}\` below.`
+                    : `Choose one with \`/number <number>\`.`)
+                : `All numbers are locked to a bot. Unpair and pair again to change.`),
+            { parse_mode: 'Markdown', reply_markup: keyboard });
+    }
+
+    // ── With a number ────────────────────────────────────────────────────
+    const record = selStore.get(arg);
+    const owner = record?.telegram;
+    if (!admin && String(owner?.id || '') !== String(userId)) {
+        return bot.sendMessage(chatId, `🚫 \`${arg}\` is not paired to your account.`, { parse_mode: 'Markdown' });
+    }
+
+    if (record?.botId) {
+        return bot.sendMessage(chatId,
+            `🔒 *LOCKED*\n\n📱 \`${arg}\`\n🤖 ${record.botName}\n\n` +
+            `You cannot switch bots. Unpair this number (\`/delpair ${arg}\`) and pair it again to choose a different one.`,
+            { parse_mode: 'Markdown' });
+    }
+
+    return bot.sendMessage(chatId,
+        `🤖 *CHOOSE A BOT*\n\n📱 \`${arg}\`\n\n🔒 Your choice is final until you unpair.`,
+        { parse_mode: 'Markdown', reply_markup: selectionKeyboard(arg, bots) });
+}));
+
+
 bot.on('callback_query', async (callbackQuery) => {
     const msg = callbackQuery.message;
     const data = callbackQuery.data;
@@ -1498,6 +1604,50 @@ bot.on('callback_query', async (callbackQuery) => {
     const chatId = msg.chat.id;
     
     await trackUser(userId);
+
+    // ── Bot selection: bsel|<number>|<botId> ─────────────────────────────
+    if (data && data.startsWith('bsel|')) {
+        const [, number, botId] = data.split('|');
+
+        if (!selStore || !deployMgr) {
+            return bot.answerCallbackQuery(callbackQuery.id, { text: 'Selection unavailable.', show_alert: true });
+        }
+
+        const record = selStore.get(number);
+        const admin = isAdminUser(userId);
+        if (!admin && String(record?.telegram?.id || '') !== String(userId)) {
+            return bot.answerCallbackQuery(callbackQuery.id, { text: 'This number is not yours.', show_alert: true });
+        }
+
+        if (record?.botId) {
+            await bot.answerCallbackQuery(callbackQuery.id, { text: `Locked to ${record.botName}.`, show_alert: true });
+            return bot.sendMessage(chatId,
+                `🔒 \`${number}\` is already locked to *${record.botName}*.\nUnpair and pair again to change it.`,
+                { parse_mode: 'Markdown' });
+        }
+
+        await bot.answerCallbackQuery(callbackQuery.id, { text: 'Deploying…' });
+        const status = await bot.sendMessage(chatId, `⏳ Starting your bot for \`${number}\`…`, { parse_mode: 'Markdown' });
+
+        try {
+            const res = await deployMgr.submitSelection(number, botId, {
+                source: 'telegram',
+                chosenBy: { id: userId, username: callbackQuery.from.username || null },
+            });
+
+            if (!res.ok) {
+                return bot.editMessageText(`⚠️ ${res.error}`, { chat_id: chatId, message_id: status.message_id });
+            }
+
+            return bot.editMessageText(
+                `✅ *${res.bot.name}* is now the bot for \`${number}\`.\n\n` +
+                `🔒 This choice is locked. Unpair and pair again to switch.`,
+                { chat_id: chatId, message_id: status.message_id, parse_mode: 'Markdown' });
+        } catch (err) {
+            console.error('bsel error:', err.message);
+            return bot.editMessageText(`❌ Deployment failed: ${err.message}`, { chat_id: chatId, message_id: status.message_id });
+        }
+    }
 
     if (data && data.startsWith('gc_verify:')) {
         const targetUserId = Number(data.split(':')[1]);
@@ -1687,7 +1837,7 @@ bot.on('message', async (msg) => {
         const userId = msg.from.id;
         
         const validCommands = [
-            '/start', '/pair', '/delpair', '/listpair', '/ping', '/runtime',
+            '/start', '/pair', '/delpair', '/listpair', '/number', '/ping', '/runtime',
             '/help', '/report', '/welcome', '/goodbye', '/stats', '/profile',
             '/leaderboard', '/verifygc', '/gcverify', '/kick', '/ban', '/unban',
             '/mute', '/unmute', '/warn', '/resetwarn'

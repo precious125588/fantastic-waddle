@@ -41,6 +41,15 @@ try { logger = require('./nexstore/logger'); } catch(e) {
   logger = { log:()=>{}, warn:()=>{}, error:()=>{}, readLog:()=>[], clearLog:()=>{}, emitter:_em };
 }
 
+// ── Bot-selection store / deploy manager (optional, never fatal) ─────────────
+let _selectionStore = null, _deployMgr = null;
+try { _selectionStore = require('./deploy/botSelectionStore'); } catch(e) {
+  console.error('[server] botSelectionStore unavailable:', e.message);
+}
+try { _deployMgr = require('./deploy/deploymentManager'); } catch(e) {
+  console.error('[server] deploymentManager unavailable:', e.message);
+}
+
 // ── SSE broadcast sets ────────────────────────────────────────────────────────
 const logSseClients = new Set();
 const pairingSseMap = new Map();
@@ -180,6 +189,12 @@ app.post('/api/pair', rateLimit(60000,10), async (req,res) => {
     logger.log('pairing',`Web pair request: ${jid}`);
     broadcastPairingEvent(jid,'connecting',{msg:'Connecting to WhatsApp servers...'});
 
+    // IMPORTANT: never block the HTTP response on the WhatsApp handshake.
+    // Waiting ~90s here exceeded proxy/gateway timeouts, so the browser saw a
+    // 502/timeout and the user never received a pairing code even though the
+    // code had actually been generated. The request now returns immediately
+    // and the code is pushed over the SSE stream (and readable via
+    // /api/pair/status/:number as a fallback).
     try {
         _pair.startpairing(jid).catch(err => {
             logError(jid,err.message,'pairing-init');
@@ -187,11 +202,20 @@ app.post('/api/pair', rateLimit(60000,10), async (req,res) => {
             broadcastPairingEvent(jid,'failed',{msg:err.message});
         });
         broadcastPairingEvent(jid,'authenticating',{msg:'Authenticating session...'});
-        const result = await _pair.waitForPairingResult(jid,90000);
-        registry.register(jid,'web');
-        logPair(jid,'code-sent',result.code,'web');
-        broadcastPairingEvent(jid,'code_ready',{code:result.code});
-        return res.json({ok:true,code:result.code});
+
+        _pair.waitForPairingResult(jid,120000)
+            .then(result => {
+                try { registry.register(jid,'web'); } catch {}
+                logPair(jid,'code-sent',result.code,'web');
+                broadcastPairingEvent(jid,'code_ready',{code:result.code});
+            })
+            .catch(err => {
+                logError(jid,err.message,'pairing');
+                logPair(jid,'failed',err.message,'web');
+                broadcastPairingEvent(jid,'failed',{msg:err.message||'Pairing failed. Try again.'});
+            });
+
+        return res.status(202).json({ok:true,pending:true,msg:'Generating your pairing code…'});
     } catch(err) {
         logError(jid,err.message,'pairing');
         logPair(jid,'failed',err.message,'web');
@@ -216,8 +240,38 @@ app.get('/api/pair/stream/:number', (req,res) => {
 
     const hb = setInterval(()=>{ try{res.write(': ping\n\n');}catch{clearInterval(hb);} },10000);
     let linked = false;
+    let codeSent = false;
+    let selectionSent = false;
+
+    // If a code already exists (or arrives while this stream is open) push it
+    // straight away — the POST no longer carries the code in its response.
+    const sendExistingCode = () => {
+        if (codeSent || !_pair) return;
+        try {
+            const rec = _pair.readPairingCodeRecord(jid);
+            if (rec?.code) {
+                codeSent = true;
+                res.write(`event: code_ready\ndata: ${JSON.stringify({code:rec.code})}\n\n`);
+            }
+        } catch {}
+    };
+    sendExistingCode();
+
     const poll = setInterval(async ()=>{
         if (!_pair){res.write(`event: waiting\ndata: ${JSON.stringify({msg:'Warming up...'})}\n\n`);return;}
+        sendExistingCode();
+        try {
+            if (!selectionSent && _selectionStore) {
+                const rec = _selectionStore.get(number);
+                if (rec?.awaiting) {
+                    selectionSent = true;
+                    res.write(`event: awaiting_selection\ndata: ${JSON.stringify({number,msg:'Choose your bot on Telegram with /number'})}\n\n`);
+                } else if (rec?.botId) {
+                    selectionSent = true;
+                    res.write(`event: bot_selected\ndata: ${JSON.stringify({number,botId:rec.botId,botName:rec.botName})}\n\n`);
+                }
+            }
+        } catch {}
         try {
             if (_pair.hasPairedSession(jid)&&!linked) {
                 linked=true;
@@ -296,6 +350,7 @@ app.post('/api/pair/reset', rateLimit(60000,10), (req,res) => {
     const jid = `${number}@s.whatsapp.net`;
     try { _pair.unpairSession ? _pair.unpairSession(jid) : _pair.forceCleanupSession(jid); } catch {}
     try { registry.remove?.(jid); } catch {}
+    try { _selectionStore?.clearSelection(number); } catch {}
     logPair(jid,'reset','session cleared','web');
     res.json({ok:true,message:'Session cleared. You can pair this number again.'});
 });
@@ -307,7 +362,67 @@ app.get('/api/pair/status/:number', (req,res) => {
     const live   = paired && _pair?.isSessionLive ? _pair.isSessionLive(jid) : false;
     const record = _pair?_pair.readPairingCodeRecord(jid):null;
     const botRunning = _launcher?_launcher.list().some(r=>r.number===jid&&r.alive):false;
-    res.json({ok:true,paired,live,code:record?.code||null,source:registry.get(jid)?.source||null,ready:_ready,botRunning});
+    const selection = _selectionStore ? _selectionStore.get(number) : null;
+    res.json({
+        ok:true,paired,live,
+        code:record?.code||null,
+        source:registry.get(jid)?.source||null,
+        ready:_ready,botRunning,
+        awaitingSelection: !!selection?.awaiting,
+        bot: selection?.botId ? {id:selection.botId,name:selection.botName,locked:true} : null,
+    });
+});
+
+// ── Bots & selections ────────────────────────────────────────────────────────
+// Public: which bots this deployment offers.
+app.get('/api/bots', (_req,res) => {
+    if (!_deployMgr) return res.json({ok:true,bots:[]});
+    try {
+        const bots = _deployMgr.scanBots().map(b => ({id:b.id,name:b.name,tagline:b.tagline||null}));
+        res.json({ok:true,bots});
+    } catch(e){ res.status(500).json({ok:false,error:e.message}); }
+});
+
+// Admin: every paired number and the bot it is locked to.
+app.get('/api/admin/selections', (req,res) => {
+    if(!isAdmin(req)) return res.status(403).json({ok:false,error:'Unauthorized'});
+    if(!_selectionStore) return res.json({ok:true,selections:[]});
+    try {
+        const rows = _selectionStore.overview().map(r => ({
+            ...r,
+            botRunning: _launcher ? _launcher.list().some(x=>x.number===`${r.number}@s.whatsapp.net`&&x.alive) : false,
+        }));
+        res.json({ok:true,selections:rows});
+    } catch(e){ res.status(500).json({ok:false,error:e.message}); }
+});
+
+// Admin: choose the bot for a number (respects the one-shot lock).
+app.post('/api/admin/selections/:number', async (req,res) => {
+    if(!isAdmin(req)) return res.status(403).json({ok:false,error:'Unauthorized'});
+    if(!_deployMgr) return res.status(503).json({ok:false,error:'Deployment manager unavailable.'});
+
+    const number = String(req.params.number).replace(/[^0-9]/g,'');
+    const botId  = String(req.body?.botId||'').trim();
+    if(!number||!botId) return res.status(400).json({ok:false,error:'number and botId are required.'});
+
+    try {
+        const result = await _deployMgr.submitSelection(number,botId,{source:'admin-web',chosenBy:{id:'admin'}});
+        if(!result.ok) return res.status(result.locked?409:400).json(result);
+        logPair(`${number}@s.whatsapp.net`,'bot-selected',result.bot.id,'admin-web');
+        res.json({ok:true,bot:{id:result.bot.id,name:result.bot.name}});
+    } catch(e){ res.status(500).json({ok:false,error:e.message}); }
+});
+
+// Admin: unlock a number (only ever done together with an unpair).
+app.delete('/api/admin/selections/:number', (req,res) => {
+    if(!isAdmin(req)) return res.status(403).json({ok:false,error:'Unauthorized'});
+    if(!_selectionStore) return res.status(503).json({ok:false,error:'Selection store unavailable.'});
+    const number = String(req.params.number).replace(/[^0-9]/g,'');
+    try {
+        _selectionStore.clearSelection(number);
+        logPair(`${number}@s.whatsapp.net`,'bot-unlocked','selection cleared','admin-web');
+        res.json({ok:true,message:'Selection unlocked. The number can choose again after re-pairing.'});
+    } catch(e){ res.status(500).json({ok:false,error:e.message}); }
 });
 
 // ── Admin: login / logout ─────────────────────────────────────────────────────

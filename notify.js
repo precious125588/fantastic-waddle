@@ -151,8 +151,73 @@ async function sendBotStartMessage() {
     await sendNotification(message);
 }
 
+
+// ── Bot selection required (new pairing, no bot chosen yet) ──────────────────
+// Sent to the Telegram user who paired the number (when known) and to admins.
+// The inline keyboard is answered by the polling bot in bot.js.
+async function sendSelectionRequired(userNumber, bots = []) {
+    const number = String(userNumber).replace(/\D/g, '');
+    if (!number) return;
+
+    let store = null;
+    try { store = require('./deploy/botSelectionStore'); } catch {}
+
+    const keyboard = {
+        inline_keyboard: (bots.length ? bots : [{ id: 'mias-mdx', name: 'MIAS MDX' }]).map(b => ([{
+            text: `${b.name}${b.tagline ? ' — ' + b.tagline : ''}`,
+            callback_data: `bsel|${number}|${b.id}`,
+        }])),
+    };
+
+    const text =
+`🤖 *CHOOSE YOUR BOT*
+
+📱 Number: \`${number}\`
+✅ WhatsApp linked successfully.
+
+Nothing is deployed until you pick a bot below.
+You can also send /number any time.
+
+🔒 *Your choice is final* — to change bots you must unpair this number and pair it again.`;
+
+    const targets = new Set();
+
+    const owner = store?.getOwner?.(number);
+    if (owner?.id) targets.add(String(owner.id));
+
+    const envAdmins = (process.env.ADMIN_IDS || '').split(',').map(x => x.trim()).filter(Boolean);
+    if (envAdmins.length) {
+        envAdmins.forEach(a => targets.add(a));
+    } else {
+        try {
+            if (fs.existsSync(adminFilePath)) {
+                const fileAdmins = JSON.parse(fs.readFileSync(adminFilePath, 'utf8'));
+                if (Array.isArray(fileAdmins)) fileAdmins.forEach(a => targets.add(String(a).trim()));
+            }
+        } catch {}
+    }
+
+    if (!targets.size) {
+        console.warn('[notify] No Telegram target for bot selection of ' + number);
+        return;
+    }
+
+    // Reuse the already-polling bot when it exists so we do not open a second
+    // Telegram client for a single send.
+    const client = global._miasTelegramBot || new TelegramBot(BOT_TOKEN, { polling: false });
+
+    for (const chatId of targets) {
+        try {
+            await client.sendMessage(chatId, text, { parse_mode: 'Markdown', reply_markup: keyboard });
+        } catch (err) {
+            console.error(`[notify] Selection prompt failed for ${chatId}:`, err.message);
+        }
+    }
+}
+
 module.exports = {
     sendNotification,
+    sendSelectionRequired,
     sendUserConnected,
     sendUserDisconnected,
     sendBotStartMessage
