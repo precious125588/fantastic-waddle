@@ -24,6 +24,7 @@ const path  = require('path');
 const chalk = require('chalk');
 
 const { jidKey, toJid } = require('./jid');
+const selectorRegistry  = require('./selectorRegistry');
 
 const BOTS_DIR        = path.join(__dirname, '..', 'bots');
 const SELECTIONS_FILE = path.join(__dirname, '..', 'nexstore', 'bot_selections.json');
@@ -31,6 +32,12 @@ const SELECTIONS_FILE = path.join(__dirname, '..', 'nexstore', 'bot_selections.j
 // How often to re-send the menu while waiting, and when to give up entirely.
 const REMINDER_MS = 3 * 60 * 1000;   // re-prompt every 3 minutes
 const GIVE_UP_MS  = 30 * 60 * 1000;  // stop waiting after 30 minutes
+
+// The chosen bot must be up this fast after the user picks it.
+const SPAWN_DELAY_MS = 3000;
+
+function _sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
 
 // digitsOnlyKey -> { resolve, timer, reminder }
 const _pendingSelections = new Map();
@@ -345,6 +352,16 @@ async function deployBotForNumber(numberOrJid, botId, opts = {}) {
 
   if (!written.ok) return written; // locked — caller shows the message
 
+  // ── The choice is made: kill every selector on EVERY platform right now ──
+  // (WhatsApp menu + Telegram menus sent to the owner and to each admin.)
+  try {
+    await selectorRegistry.revokeAll(key, {
+      replacement: `✅ Bot chosen: *${bot.name}* for \`${key}\`.`,
+    });
+  } catch (e) {
+    console.warn(chalk.yellow(`[DeployMgr] Selector cleanup failed: ${e.message}`));
+  }
+
   // A pending WhatsApp waiter (if any) must be released so the old flow does
   // not keep re-sending its menu after the choice was made elsewhere.
   const pending = _pendingSelections.get(key);
@@ -370,10 +387,26 @@ async function deployBotForNumber(numberOrJid, botId, opts = {}) {
     if (typeof opts.onProgress === 'function') {
       await opts.onProgress(bot);
     }
+
+    // Tell the user on WhatsApp that their bot is coming up, then hand over.
+    const jid = toJid(key);
+    if (nexus) {
+      try {
+        const { reportQuickDeploy, sendReadyMessage } = require('./progressReporter');
+        const msgKey = await reportQuickDeploy(nexus, jid, bot);
+        await sendReadyMessage(nexus, jid, bot, key, msgKey);
+      } catch (e) {
+        console.warn(chalk.yellow(`[DeployMgr] Progress report failed: ${e.message}`));
+      }
+    } else {
+      await _sleep(SPAWN_DELAY_MS);
+    }
+
     if (tracker) tracker.handoffToMais = true;
     if (nexus) {
       try { nexus.end(); } catch {}
       try { nexus.ws?.close(); } catch {}
+      selectorRegistry.detachSocket(key);
     }
 
     const envOverrides = {
@@ -383,6 +416,11 @@ async function deployBotForNumber(numberOrJid, botId, opts = {}) {
     };
     if (bot.cwd) envOverrides.BOT_CWD = bot.cwd;
 
+    // ALWAYS launch under the canonical "<digits>@s.whatsapp.net" key. The old
+    // code used the raw caller value in one path and this form in another, so
+    // the launcher's `running` map held two entries for the same number and
+    // spawned a SECOND bot process — duplicate/《double》replies and session
+    // fights ("connection replaced") that ended in a silent bot.
     await launcher.launch(`${key}@s.whatsapp.net`, sessionDir, envOverrides);
     store.markDeployed(key, true);
     console.log(chalk.green.bold(`🎉 ${bot.name} active for ${key}`));
@@ -392,6 +430,7 @@ async function deployBotForNumber(numberOrJid, botId, opts = {}) {
     return { ok: false, bot, error: e.message };
   }
 }
+
 
 /**
  * Submit a choice from Telegram / admin panel.
@@ -432,9 +471,11 @@ async function startDeploymentFlow(nexus, numberOrJid, tracker, sessionDir, laun
   }
 
   rememberContext(userKey, { sessionDir, launcher, nexus, tracker });
+  selectorRegistry.attachSocket(userKey, nexus);
 
   const { sendBotSelectionMenu } = require('./botSelector');
-  const { reportDeployProgress } = require('./progressReporter');
+  const { reportQuickDeploy, sendReadyMessage } = require('./progressReporter');
+
 
   // ── 1. Already locked to a bot? Re-deploy it, never ask again. ────────────
   const locked = store.getSelection(userKey);
@@ -517,14 +558,30 @@ async function startDeploymentFlow(nexus, numberOrJid, tracker, sessionDir, laun
 
   console.log(chalk.green(`[DeployMgr] ${userKey} chose: ${chosen.name} (${chosen.id})`));
 
+  // ── 5a. Delete the selector EVERYWHERE, immediately ──────────────────────
   try {
-    await nexus.sendMessage(jid, { text: `✅ You chose *${chosen.name}*. Deploying now…` });
-  } catch {}
+    await selectorRegistry.revokeAll(userKey, {
+      sock: nexus,
+      replacement: `✅ Bot chosen: *${chosen.name}* for \`${userKey}\`.`,
+    });
+  } catch (e) {
+    console.warn(chalk.yellow(`[DeployMgr] Selector cleanup failed: ${e.message}`));
+  }
 
+  // ── 5b. 3-second spawn: confirm, count down, announce, launch ────────────
+  let progressKey = null;
   try {
-    await reportDeployProgress(nexus, jid, chosen);
+    progressKey = await reportQuickDeploy(nexus, jid, chosen);
   } catch (e) {
     console.warn(chalk.yellow(`[DeployMgr] Progress report failed: ${e.message}`));
+  }
+
+  try {
+    // The "connected / ready to use" card must go out on the pairing socket,
+    // because the socket is closed a moment later for the handoff.
+    await sendReadyMessage(nexus, jid, chosen, userKey, progressKey);
+  } catch (e) {
+    console.warn(chalk.yellow(`[DeployMgr] Ready message failed: ${e.message}`));
   }
 
   try {
@@ -532,6 +589,7 @@ async function startDeploymentFlow(nexus, numberOrJid, tracker, sessionDir, laun
     if (tracker) tracker.handoffToMais = true;
     try { nexus.end(); } catch {}
     try { nexus.ws?.close(); } catch {}
+    selectorRegistry.detachSocket(userKey);
 
     const envOverrides = {
       ...(chosen.env || {}),
@@ -540,7 +598,10 @@ async function startDeploymentFlow(nexus, numberOrJid, tracker, sessionDir, laun
     };
     if (chosen.cwd) envOverrides.BOT_CWD = chosen.cwd;
 
-    await launcher.launch(numberOrJid, sessionDir, envOverrides);
+    // Canonical launcher key — see the note in deployBotForNumber(). Using the
+    // raw `numberOrJid` here was spawning a duplicate process for numbers that
+    // had already been launched from Telegram/web.
+    await launcher.launch(`${userKey}@s.whatsapp.net`, sessionDir, envOverrides);
     store.markDeployed(userKey, true);
     console.log(chalk.green.bold(`🎉 ${chosen.name} active for ${jid}`));
     return chosen;
@@ -549,6 +610,7 @@ async function startDeploymentFlow(nexus, numberOrJid, tracker, sessionDir, laun
     return null;
   }
 }
+
 
 module.exports = {
   scanBots,

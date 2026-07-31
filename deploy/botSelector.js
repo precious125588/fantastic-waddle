@@ -8,12 +8,12 @@
  * FIXED (was broken):
  *   - Native Flow was building ONE `single_select` button PER BOT. WhatsApp's
  *     single_select is a *single* button that carries a `sections`/`rows`
- *     payload. Emitting several of them produced a menu whose buttons did
- *     nothing when tapped — the reported "selection button don't click".
- *   - The message was relayed without `messageContextInfo`, which newer
- *     WhatsApp clients require before they will render an interactive
- *     message at all.
- *   - Recipient was a bare phone number, not a JID, so sends silently failed.
+ *     payload.
+ *   - The message was relayed without `messageContextInfo`.
+ *   - Recipient was a bare phone number, not a JID.
+ *   - NEW: every menu we send is registered in deploy/selectorRegistry so it
+ *     can be deleted the instant the user picks a bot anywhere. Re-sends now
+ *     revoke the previous menu first, so a number never has two live menus.
  *
  * Strategy (most -> least interactive):
  *   1. Native Flow single_select  (one button, radio-style list)
@@ -24,6 +24,7 @@
 
 const chalk = require('chalk');
 const { toJid } = require('./jid');
+const selectorRegistry = require('./selectorRegistry');
 
 // -- Baileys loader ----------------------------------------------------------
 let _baileys = null;
@@ -72,6 +73,13 @@ async function sendBotSelectionMenu(sock, numberOrJid, bots) {
     return false;
   }
 
+  // Keep the socket available to the registry so a choice made on Telegram can
+  // still delete this WhatsApp menu.
+  selectorRegistry.attachSocket(jid, sock);
+
+  // Never leave two live menus in the chat: drop any previous one first.
+  try { await selectorRegistry.revokeAll(jid, { sock }); } catch {}
+
   const strategies = [
     ['native-flow single_select', _trySingleSelect],
     ['native-flow quick_reply',   _tryQuickReply],
@@ -79,10 +87,8 @@ async function sendBotSelectionMenu(sock, numberOrJid, bots) {
     ['plain text',                _sendTextFallback],
   ];
 
-  // Previously every strategy was attempted against a socket that had already
-  // closed, so all four failed with "Connection Closed" and the user got no
-  // menu at all. Wait for the socket to actually be open first, and retry the
-  // whole ladder a few times while it reconnects.
+  // Wait for the socket to actually be open first, and retry the whole ladder
+  // a few times while it reconnects.
   for (let round = 1; round <= 3; round++) {
     if (!(await _waitForOpen(sock))) {
       console.log(chalk.yellow(`[BotSelector] Socket not open (round ${round}/3), waiting…`));
@@ -93,7 +99,9 @@ async function sendBotSelectionMenu(sock, numberOrJid, bots) {
     let sawClosed = false;
     for (const [label, fn] of strategies) {
       try {
-        if (await fn(sock, jid, bots)) {
+        const sentKey = await fn(sock, jid, bots);
+        if (sentKey) {
+          if (sentKey !== true) selectorRegistry.registerWhatsApp(jid, sentKey, sock);
           console.log(chalk.green(`[BotSelector] Menu sent via ${label}`));
           return true;
         }
@@ -135,10 +143,8 @@ async function _trySingleSelect(sock, jid, bots) {
   const B = await _getBaileys();
   const proto = B?.proto;
   const generateWAMessageFromContent = B?.generateWAMessageFromContent;
-  if (!proto?.Message?.InteractiveMessage || !generateWAMessageFromContent) return false;
+  if (!proto?.Message?.InteractiveMessage || !generateWAMessageFromContent) return null;
 
-  // ONE button carrying every bot as a row. This is the shape WhatsApp
-  // actually understands; one-button-per-bot renders but never responds.
   const rows = bots.map(bot => ({
     header: '',
     title: `${_statusBadge(bot.status)} ${bot.name}`,
@@ -165,7 +171,7 @@ async function _trySingleSelect(sock, jid, bots) {
         `🎉 *Pairing Successful!*\n\n` +
         `Tap the button below and choose which bot you want to deploy.\n\n` +
         `${_bodyText(bots)}\n\n` +
-        `_Nothing is deployed until you choose._`,
+        `_Your bot starts within 3 seconds of choosing._`,
     }),
     footer: proto.Message.InteractiveMessage.Footer.create({
       text: '⚡ Powered by MIAS Platform',
@@ -191,7 +197,7 @@ async function _trySingleSelect(sock, jid, bots) {
 
   const msg = generateWAMessageFromContent(jid, content, { userJid: sock?.user?.id });
   await sock.relayMessage(jid, msg.message, { messageId: msg.key.id });
-  return true;
+  return msg.key;
 }
 
 // -- Strategy 2: Native Flow quick_reply -------------------------------------
@@ -199,7 +205,7 @@ async function _tryQuickReply(sock, jid, bots) {
   const B = await _getBaileys();
   const proto = B?.proto;
   const generateWAMessageFromContent = B?.generateWAMessageFromContent;
-  if (!proto?.Message?.InteractiveMessage || !generateWAMessageFromContent) return false;
+  if (!proto?.Message?.InteractiveMessage || !generateWAMessageFromContent) return null;
 
   // WhatsApp renders at most 3 quick replies reliably.
   const buttons = bots.slice(0, 3).map(bot => ({
@@ -236,7 +242,7 @@ async function _tryQuickReply(sock, jid, bots) {
 
   const msg = generateWAMessageFromContent(jid, content, { userJid: sock?.user?.id });
   await sock.relayMessage(jid, msg.message, { messageId: msg.key.id });
-  return true;
+  return msg.key;
 }
 
 // -- Strategy 3: legacy list message -----------------------------------------
@@ -247,14 +253,14 @@ async function _tryListMessage(sock, jid, bots) {
     description: bot.tagline || '',
   }));
 
-  await sock.sendMessage(jid, {
+  const sent = await sock.sendMessage(jid, {
     text: `🎉 *Pairing Successful!*\n\nChoose the bot you want to deploy.`,
     footer: '⚡ Powered by MIAS Platform',
     title: '🤖 MIAS Platform — Bot Selection',
     buttonText: '🚀 Choose Bot',
     sections: [{ title: '🤖 Available Bots', rows }],
   });
-  return true;
+  return sent?.key || true;
 }
 
 // -- Strategy 4: plain numbered text -----------------------------------------
@@ -263,7 +269,7 @@ async function _sendTextFallback(sock, jid, bots) {
     .map((b, i) => `*${i + 1}.* ${_statusBadge(b.status)} *${b.name}*\n     _${b.tagline || ''}_`)
     .join('\n\n');
 
-  await sock.sendMessage(jid, {
+  const sent = await sock.sendMessage(jid, {
     text:
       `🎉 *Pairing Successful!*\n\n` +
       `━━━━━━━━━━━━━━━━━━━━\n` +
@@ -272,9 +278,9 @@ async function _sendTextFallback(sock, jid, bots) {
       `${detail}\n\n` +
       `━━━━━━━━━━━━━━━━━━━━\n` +
       `Reply with the *number* (e.g. *1*) or the bot's *name*.\n\n` +
-      `_Nothing is deployed until you choose._`,
+      `_Your bot starts within 3 seconds of choosing._`,
   });
-  return true;
+  return sent?.key || true;
 }
 
 module.exports = { sendBotSelectionMenu };
