@@ -1591,6 +1591,8 @@ bot.on('left_chat_member', async (msg) => {
 // ========================
 const selStore = (() => { try { return require('./deploy/botSelectionStore'); } catch { return null; } })();
 const deployMgr = (() => { try { return require('./deploy/deploymentManager'); } catch { return null; } })();
+const selRegistry = (() => { try { return require('./deploy/selectorRegistry'); } catch { return null; } })();
+
 
 const isAdminUser = (userId) => adminIDs.includes(String(userId));
 
@@ -1645,7 +1647,7 @@ bot.onText(/^\/number(?:@\w+)?(?:\s+(.+))?$/, requireMembership(async (msg, matc
             ? selectionKeyboard(pending[0].number, bots)
             : undefined;
 
-        return bot.sendMessage(chatId,
+        const listMsg = await bot.sendMessage(chatId,
             `🤖 *YOUR NUMBERS*\n\n${lines.join('\n')}\n\n` +
             (pending.length
                 ? (pending.length === 1
@@ -1653,6 +1655,12 @@ bot.onText(/^\/number(?:@\w+)?(?:\s+(.+))?$/, requireMembership(async (msg, matc
                     : `Choose one with \`/number <number>\`.`)
                 : `All numbers are locked to a bot. Unpair and pair again to change.`),
             { parse_mode: 'Markdown', reply_markup: keyboard });
+        // Register so this selector disappears when the user chooses on ANY
+        // platform (WhatsApp menu, another Telegram chat, the web panel).
+        if (keyboard && listMsg?.message_id) {
+            selRegistry?.registerTelegram?.(pending[0].number, chatId, listMsg.message_id);
+        }
+        return listMsg;
     }
 
     // ── With a number ────────────────────────────────────────────────────
@@ -1669,10 +1677,13 @@ bot.onText(/^\/number(?:@\w+)?(?:\s+(.+))?$/, requireMembership(async (msg, matc
             { parse_mode: 'Markdown' });
     }
 
-    return bot.sendMessage(chatId,
-        `🤖 *CHOOSE A BOT*\n\n📱 \`${arg}\`\n\n🔒 Your choice is final until you unpair.`,
+    const selMsg = await bot.sendMessage(chatId,
+        `🤖 *CHOOSE A BOT*\n\n📱 \`${arg}\`\n\n🔒 Your choice is final until you unpair.\n⚡ Your bot spawns 3 seconds after you tap.`,
         { parse_mode: 'Markdown', reply_markup: selectionKeyboard(arg, bots) });
+    if (selMsg?.message_id) selRegistry?.registerTelegram?.(arg, chatId, selMsg.message_id);
+    return selMsg;
 }));
+
 
 
 bot.on('callback_query', async (callbackQuery) => {
@@ -1705,7 +1716,14 @@ bot.on('callback_query', async (callbackQuery) => {
         }
 
         await bot.answerCallbackQuery(callbackQuery.id, { text: 'Deploying…' });
-        const status = await bot.sendMessage(chatId, `⏳ Starting your bot for \`${number}\`…`, { parse_mode: 'Markdown' });
+
+        // Remove the tapped selector straight away, then every other copy of
+        // it (WhatsApp + other Telegram chats) via the deploy manager below.
+        try { await bot.deleteMessage(chatId, msg.message_id); } catch {}
+        try { await selRegistry?.revokeAll?.(number, { telegram: bot }); } catch {}
+
+        const status = await bot.sendMessage(chatId, `⏳ Starting your bot for \`${number}\`… (3s)`, { parse_mode: 'Markdown' });
+
 
         try {
             const res = await deployMgr.submitSelection(number, botId, {

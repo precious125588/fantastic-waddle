@@ -206,18 +206,31 @@ You can also send /number any time.
         return;
     }
 
+    // Already chose a bot (e.g. tapped the WhatsApp menu a second earlier)?
+    // Never post another selector — that is where the duplicates came from.
+    if (store?.getSelection?.(number)?.botId) {
+        console.log(`[notify] ${number} already locked to a bot — no Telegram selector sent.`);
+        return;
+    }
+
+    let registry = null;
+    try { registry = require('./deploy/selectorRegistry'); } catch {}
+
     // Reuse the already-polling bot when it exists so we do not open a second
     // Telegram client for a single send.
     const client = global._miasTelegramBot || new TelegramBot(BOT_TOKEN, { polling: false });
 
     for (const chatId of targets) {
         try {
-            await client.sendMessage(chatId, text, { parse_mode: 'Markdown', reply_markup: keyboard });
+            const sent = await client.sendMessage(chatId, text, { parse_mode: 'Markdown', reply_markup: keyboard });
+            // Registered so it is deleted the moment the user chooses anywhere.
+            if (sent?.message_id) registry?.registerTelegram?.(number, chatId, sent.message_id);
         } catch (err) {
             console.error(`[notify] Selection prompt failed for ${chatId}:`, err.message);
         }
     }
 }
+
 
 module.exports = {
     sendNotification,
