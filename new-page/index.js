@@ -95,14 +95,74 @@ let _sock = null;
 const ONLINE_INTERVAL = 30000;
 let _onlineTimer = null;
 
+// Reconnect / liveness state. Kept at module scope so repeated `close` events
+// can never start more than one socket at a time.
+let _connecting        = false;
+let _reconnectTimer    = null;
+let _reconnectAttempts = 0;
+let _watchdogTimer     = null;
+let _lastEventAt       = Date.now();
+let _announcedOnline   = false;
+const WATCHDOG_INTERVAL = 60000;   // check every minute
+const SILENCE_LIMIT     = 300000;  // 5 min with no traffic AND no live socket
+
 function startOnlineHeartbeat() {
   if (_onlineTimer) clearInterval(_onlineTimer);
   _onlineTimer = setInterval(async () => {
     if (!_sock) return;
     if (getSetting('alwaysOnline', true) === false) return;
-    try { await _sock.sendPresenceUpdate('available'); } catch {}
+    try {
+      await _sock.sendPresenceUpdate('available');
+      _lastEventAt = Date.now();
+    } catch {}
   }, ONLINE_INTERVAL);
 }
+
+/** Single-flight reconnect with capped exponential backoff. */
+function scheduleReconnect() {
+  if (_reconnectTimer || _connecting) return;
+  _reconnectAttempts += 1;
+  const delay = Math.min(30000, 2000 * _reconnectAttempts);
+  console.log(chalk.yellow(`[NP] Reconnecting in ${Math.round(delay / 1000)}s (attempt ${_reconnectAttempts})`));
+  _reconnectTimer = setTimeout(async () => {
+    _reconnectTimer = null;
+    _connecting = true;
+    try {
+      await connectToWhatsApp();
+    } catch (e) {
+      console.error(chalk.red(`[NP] Reconnect failed: ${e.message}`));
+      _connecting = false;
+      scheduleReconnect();
+    }
+  }, delay);
+}
+
+function stopConnectionWatchdog() {
+  if (_watchdogTimer) clearInterval(_watchdogTimer);
+  _watchdogTimer = null;
+}
+
+/**
+ * Watchdog: the bot used to sit "online" for hours while its websocket was
+ * actually dead, so nothing ever replied. If the socket is gone and we have
+ * seen no traffic for SILENCE_LIMIT, force a fresh connection.
+ */
+function startConnectionWatchdog() {
+  stopConnectionWatchdog();
+  _lastEventAt = Date.now();
+  _watchdogTimer = setInterval(() => {
+    const silentFor = Date.now() - _lastEventAt;
+    const socketDead = !_sock || _sock.ws?.readyState === 3 || _sock.ws?.readyState === 2;
+    if (socketDead || silentFor > SILENCE_LIMIT) {
+      console.log(chalk.yellow(`[NP] Watchdog: socket ${socketDead ? 'dead' : 'silent'} (${Math.round(silentFor / 1000)}s) — reconnecting`));
+      try { _sock?.end?.(new Error('watchdog restart')); } catch {}
+      _sock = null;
+      stopConnectionWatchdog();
+      scheduleReconnect();
+    }
+  }, WATCHDOG_INTERVAL);
+}
+
 
 // ── Auto-view + auto-like status ─────────────────────────────────────────────
 async function handleStatusUpdate(sock, statusMsg) {
@@ -152,7 +212,9 @@ async function checkAntilink(sock, msg, jid) {
 
 // ── Main connect function ────────────────────────────────────────────────────
 async function connectToWhatsApp() {
+  _connecting = true;
   const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
+
   const { version }          = await fetchLatestBaileysVersion();
 
   const sock = makeWASocket({
@@ -193,6 +255,8 @@ async function connectToWhatsApp() {
   // ── Connection events ────────────────────────────────────────────────────
   sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect, qr } = update;
+    _lastEventAt = Date.now();
+
 
     if (qr) {
       console.log(chalk.yellow('[NP] QR code received — scan with WhatsApp'));
@@ -202,9 +266,12 @@ async function connectToWhatsApp() {
       const code = new Boom(lastDisconnect?.error)?.output?.statusCode;
       const shouldReconnect = code !== DisconnectReason.loggedOut;
       console.log(chalk.yellow(`[NP] Disconnected (code=${code}). Reconnect: ${shouldReconnect}`));
+      stopConnectionWatchdog();
       if (shouldReconnect) {
-        await sleep(3000);
-        connectToWhatsApp();
+        // Guarded reconnect: a stream error used to fire `close` several times
+        // in a row, each one starting ANOTHER socket. The extra sockets kicked
+        // each other off (conflict/440) and the bot looked "online but mute".
+        scheduleReconnect();
       } else {
         console.log(chalk.red('[NP] Logged out — clearing session'));
         try { fs.rmSync(AUTH_DIR, { recursive: true, force: true }); } catch {}
@@ -213,8 +280,11 @@ async function connectToWhatsApp() {
     }
 
     if (connection === 'open') {
+      _reconnectAttempts = 0;
+      _connecting = false;
       console.log(chalk.green(`[NP] ✅ ${BOT_NAME} connected as ${sock.user?.name}`));
       startOnlineHeartbeat();
+      startConnectionWatchdog();
       try { await sock.sendPresenceUpdate('available'); } catch {}
 
       // Log GKTW + engine status
@@ -223,6 +293,24 @@ async function connectToWhatsApp() {
       const enginesLoaded = Object.entries(engines).filter(([,v])=>v).map(([k])=>k).join(', ');
       console.log(chalk.cyan(`[NP] GKTW helper: ${gktwOk ? '✅ loaded' : '⚠️  fallback mode (Baileys only)'}`));
       console.log(chalk.cyan(`[NP] Engines: ${enginesLoaded || 'none (fallback mode)'}`));
+
+      // Tell the owner the bot is alive — this is the "connection message"
+      // that should land a few seconds after the bot is chosen.
+      if (!_announcedOnline) {
+        _announcedOnline = true;
+        const selfJid = sock.user?.id?.split(':')[0];
+        if (selfJid) {
+          setTimeout(() => {
+            sock.sendMessage(`${selfJid}@s.whatsapp.net`, {
+              text:
+                `✅ *${BOT_NAME} IS ONLINE*\n\n` +
+                `🔑 Prefix: *${PREFIX}*\n` +
+                `📖 Send *${PREFIX}menu* to see every command.\n\n` +
+                `_This chat works too — commands you send to yourself are handled._`,
+            }).catch(() => {});
+          }, 1500);
+        }
+      }
     }
   });
 
@@ -231,6 +319,7 @@ async function connectToWhatsApp() {
   // ── Message handler ───────────────────────────────────────────────────────
   sock.ev.on('messages.upsert', async ({ messages, type }) => {
     if (type !== 'notify') return;
+    _lastEventAt = Date.now();
 
     for (const msg of messages) {
       try {
@@ -240,7 +329,15 @@ async function connectToWhatsApp() {
           continue;
         }
 
-        if (!msg.message || msg.key?.fromMe) continue;
+        if (!msg.message) continue;
+
+        // IMPORTANT: do NOT drop `fromMe`. Most people test the bot by
+        // messaging their own number, and the old `|| msg.key.fromMe` check
+        // silently swallowed every one of those commands — the bot showed as
+        // online and never answered. Self/owner messages are still filtered by
+        // the prefix check below, so the bot never replies to its own output.
+        if (msg.key?.fromMe && !msgText(msg).startsWith(PREFIX)) continue;
+
 
         const jid           = msg.key.remoteJid;
         const sender        = isGroup(jid) ? (msg.key.participant || msg.pushName) : jid;
