@@ -9,6 +9,8 @@ const chalk = require('chalk');
 let registry;
 try { registry = require('./nexstore/sessionRegistry'); } catch { registry = null; }
 
+const ownership = require('./sessionOwnership');
+
 const MIAS_ENTRY    = path.join(__dirname, 'mias', 'index.js');
 const MAX_INSTANCES = parseInt(process.env.MAX_INSTANCES || '50', 10);
 const MAX_BACKOFF_MS = 5 * 60 * 1000;
@@ -117,6 +119,22 @@ async function launch(number, sessionDir, envOverrides = {}) {
             return;
         }
         const isClean = (code === 0 && !sig);
+
+        // A bot whose session was genuinely unlinked must NOT be respawned in a
+        // loop — each restart opened a socket with dead creds, got 401, and the
+        // pairing side reported "disconnected / session cleared" all over again.
+        if (!fs.existsSync(path.join(sessionDir, 'creds.json'))) {
+            console.log(chalk.yellow(`${tag} session is gone — not restarting. The number must be paired again.`));
+            try { ownership.release(number); } catch {}
+            return;
+        }
+
+        const MAX_AUTO_RESTARTS = parseInt(process.env.MAX_AUTO_RESTARTS || '8', 10);
+        if ((r?.restartCount || 0) >= MAX_AUTO_RESTARTS) {
+            console.log(chalk.red(`${tag} hit ${MAX_AUTO_RESTARTS} auto-restarts — giving up to avoid a crash loop.`));
+            return;
+        }
+
         if (!isClean && fs.existsSync(sessionDir)) {
             const prev  = r ? (r.restartCount||0) : 0;
             const newCt = prev + 1;
@@ -134,6 +152,10 @@ async function launch(number, sessionDir, envOverrides = {}) {
             }, delay);
         }
     });
+
+    // The child now owns this auth folder: the pairing side must not reconnect
+    // it or delete its creds while this process is alive.
+    try { ownership.handOffToBot(number, safeEnvOverrides.BOT_ID || null); } catch {}
 
     const entry = { proc, sessionDir, startedAt: Date.now(), restartCount, envOverrides };
     running.set(number, entry);
