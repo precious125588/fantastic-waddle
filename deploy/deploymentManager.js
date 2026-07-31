@@ -20,6 +20,7 @@
  */
 
 const fs    = require('fs');
+const ownership = require('../sessionOwnership');
 const path  = require('path');
 const chalk = require('chalk');
 
@@ -414,14 +415,18 @@ async function deployBotForNumber(numberOrJid, botId, opts = {}) {
       await _sleep(SPAWN_DELAY_MS);
     }
 
-    if (tracker) tracker.handoffToMais = true;
+    // Record the handoff BEFORE the socket is closed. The 401 that WhatsApp
+    // sends for the replaced connection arrives within a second or two, and the
+    // pairing side must already know the bot owns this identity by then.
+    ownership.handOffToBot(key, bot.id);
+    if (tracker) { tracker.handoffToMais = true; tracker.handedOffAt = Date.now(); }
     if (nexus) {
       try { nexus.end(); } catch {}
       try { nexus.ws?.close(); } catch {}
       selectorRegistry.detachSocket(key);
       // Give Baileys time to flush the final auth-key updates and fully release
       // the websocket before the selected child opens the same session.
-      await _sleep(1500);
+      await _sleep(6000);
     }
 
     const envOverrides = {
@@ -610,7 +615,8 @@ async function startDeploymentFlow(nexus, numberOrJid, tracker, sessionDir, laun
 
   try {
     console.log(chalk.cyan(`[DeployMgr] Handing ${jid} over to ${chosen.name}…`));
-    if (tracker) tracker.handoffToMais = true;
+    ownership.handOffToBot(userKey, chosen.id);
+    if (tracker) { tracker.handoffToMais = true; tracker.handedOffAt = Date.now(); }
     try { nexus.end(); } catch {}
     try { nexus.ws?.close(); } catch {}
     selectorRegistry.detachSocket(userKey);
@@ -618,7 +624,7 @@ async function startDeploymentFlow(nexus, numberOrJid, tracker, sessionDir, laun
     // Starting the child in the same tick as closing the pairing socket makes
     // both sockets briefly use one Signal session. That causes "closed session"
     // decrypt errors and can get the newly selected bot replaced immediately.
-    await _sleep(1500);
+    await _sleep(6000);
 
     const envOverrides = {
       ...(chosen.env || {}),
