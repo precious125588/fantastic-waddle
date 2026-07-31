@@ -845,25 +845,24 @@ async function startpairing(nexusDevNumber) {
             // every deploy timed out and silently fell back to MIAS MDX.)
             try {
                 const _dm      = require('./deploy/deploymentManager');
-                const _rawMsg  = chatUpdate?.messages?.[0];
-                const _jid     = _rawMsg?.key?.remoteJid;
-                const _msgBody = _rawMsg?.message;
-                // Only 1:1 chats can answer the menu — ignore groups/status/newsletters.
-                const _isDirect = typeof _jid === 'string' && _jid.endsWith('@s.whatsapp.net');
-                // NOTE: the selection menu is sent to the user's OWN chat, so
-                // their tap/reply comes back with key.fromMe === true. The old
-                // `!fromMe` guard threw those away, which is why choosing a bot
-                // did nothing and the flow always reported "no selection".
                 const _selfJid = nexus?.user?.id
                     ? nexus.decodeJid(nexus.user.id)
                     : null;
-                const _fromMe  = !!_rawMsg?.key?.fromMe;
-                const _isSelfChat = _selfJid && _jid === _selfJid;
-                const _awaiting = _dm.isAwaitingSelection(_jid);
-                if (_isDirect && _msgBody && (!_fromMe || _isSelfChat || _awaiting)
-                    && _dm.handleIncomingMessage(_jid, _msgBody)) {
-                    console.log(chalk.green(`[Selector] Selection consumed from ${_jid} (fromMe=${_fromMe})`));
-                    return;
+                // WhatsApp can put the protocol acknowledgement first and the
+                // actual interactive/extended-text selection later in the same
+                // upsert batch. Inspect every message, not only messages[0].
+                for (const _rawMsg of (chatUpdate?.messages || [])) {
+                    const _jid     = _rawMsg?.key?.remoteJid;
+                    const _msgBody = _rawMsg?.message;
+                    const _isDirect = typeof _jid === 'string' && _jid.endsWith('@s.whatsapp.net');
+                    const _fromMe  = !!_rawMsg?.key?.fromMe;
+                    const _isSelfChat = _selfJid && nexus.decodeJid(_jid) === _selfJid;
+                    const _awaiting = _dm.isAwaitingSelection(_jid);
+                    if (_isDirect && _msgBody && (!_fromMe || _isSelfChat || _awaiting)
+                        && _dm.handleIncomingMessage(_jid, _msgBody)) {
+                        console.log(chalk.green(`[Selector] Selection consumed from ${_jid} (fromMe=${_fromMe})`));
+                        return;
+                    }
                 }
             } catch (e) {
                 console.log(chalk.yellow(`⚠️ Selector intercept error: ${e.message}`));

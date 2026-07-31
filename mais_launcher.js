@@ -16,6 +16,29 @@ const MAX_BACKOFF_MS = 5 * 60 * 1000;
 const running = new Map(); // jid -> { proc, sessionDir, startedAt, restartCount }
 const paused  = new Set(); // jids that are intentionally paused (no auto-restart)
 
+function selectedBotEnv(number, supplied = {}) {
+    if (supplied.BOT_ENTRY) return supplied;
+    try {
+        const selectionStore = require('./deploy/botSelectionStore');
+        const selected = selectionStore.getSelection(number);
+        if (!selected?.botId) return supplied;
+
+        const manifestPath = path.join(__dirname, 'bots', selected.botId, 'manifest.json');
+        if (!fs.existsSync(manifestPath)) return supplied;
+        const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+        return {
+            ...(manifest.env || {}),
+            ...supplied,
+            BOT_ENTRY: manifest.entry,
+            BOT_ID: manifest.id,
+            ...(manifest.cwd ? { BOT_CWD: manifest.cwd } : {}),
+        };
+    } catch (error) {
+        console.warn(chalk.yellow(`[Launcher] Could not restore selected bot for ${number}: ${error.message}`));
+        return supplied;
+    }
+}
+
 function isAlive(p) {
     try { return p && !p.killed && p.exitCode === null; } catch { return false; }
 }
@@ -33,6 +56,10 @@ async function launch(number, sessionDir, envOverrides = {}) {
 
     const existing     = running.get(number);
     const restartCount = existing ? (existing.restartCount || 0) : 0;
+
+    // Restore the locked bot choice when this launch comes from server startup,
+    // reconnect, resume, or an automatic child restart.
+    envOverrides = selectedBotEnv(number, envOverrides);
 
     // Resolve entry point from the manifest (BOT_ENTRY), default to mias/index.js.
     // NOTE: the old code hard-required mias/index.js to exist even when the user
@@ -98,7 +125,7 @@ async function launch(number, sessionDir, envOverrides = {}) {
             setTimeout(async () => {
                 try {
                     if (!fs.existsSync(path.join(sessionDir,'creds.json'))) return;
-                    const e = await launch(number, sessionDir);
+                    const e = await launch(number, sessionDir, r?.envOverrides || envOverrides);
                     e.restartCount = newCt;
                     console.log(chalk.green(`✅ Auto-restart done for ${number}`));
                 } catch (e) {
@@ -108,11 +135,12 @@ async function launch(number, sessionDir, envOverrides = {}) {
         }
     });
 
-    const entry = { proc, sessionDir, startedAt: Date.now(), restartCount };
+    const entry = { proc, sessionDir, startedAt: Date.now(), restartCount, envOverrides };
     running.set(number, entry);
     paused.delete(number); // clear paused flag on fresh launch
     if (registry) { try { registry.updateStatus(number,'connected'); } catch {} }
-    console.log(chalk.green(`✓ Spawned MAIS MDX for ${number} (pid=${proc.pid})`));
+    const launchedName = safeEnvOverrides.BOT_NAME || safeEnvOverrides.BOT_ID || 'MIAS MDX';
+    console.log(chalk.green(`✓ Spawned ${launchedName} for ${number} (pid=${proc.pid})`));
     return entry;
 }
 
@@ -155,7 +183,7 @@ async function resume(number) {
         return false;
     }
     try {
-        await launch(number, sessionDir);
+        await launch(number, sessionDir, last?.envOverrides || {});
         console.log(chalk.green(`▶️ Resumed MAIS for ${number}`));
         return true;
     } catch (e) {
@@ -171,7 +199,7 @@ async function restart(number) {
     console.log(chalk.cyan(`🔄 Restarting MAIS for ${number}…`));
     stop(number);
     await new Promise(res => setTimeout(res, 3000));
-    try { await launch(number, sessionDir); return true; }
+    try { await launch(number, sessionDir, r?.envOverrides || {}); return true; }
     catch (e) { console.error(chalk.red(`Restart failed: ${e.message}`)); return false; }
 }
 
