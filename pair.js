@@ -41,6 +41,7 @@ let themeemoji = "😇";
 const chalk = require('chalk')
 const { writeExif, imageToWebp, videoToWebp, writeExifImg, writeExifVid } = require('./allfunc/exif')
 const { isUrl, generateMessageTag, getBuffer, getSizeMedia, fetch } = require('./allfunc/myfunc')
+const ownership = require('./sessionOwnership')
 
 // Define sleep function directly here to avoid import issues
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
@@ -113,6 +114,10 @@ function hasPairedSession(nexusDevNumber, options = {}) {
     const credsPath = path.join(getSessionPath(nexusDevNumber), 'creds.json');
     if (!fs.existsSync(credsPath)) return false;
 
+    // A session that a bot process is actively running must never be judged
+    // (or cleaned) by the pairing side.
+    if (ownership.isOwnedByBot(nexusDevNumber)) return true;
+
     const creds = readCredsFile(nexusDevNumber);
     if (!credsAreComplete(creds)) {
         if (clean) {
@@ -154,7 +159,8 @@ function getSessionState(nexusDevNumber) {
 
 // Explicit unlink — used by the web UI so a user can re-pair a dead number.
 function unpairSession(nexusDevNumber) {
-    forceCleanupSession(nexusDevNumber);
+    ownership.release(nexusDevNumber);
+    forceCleanupSession(nexusDevNumber, { force: true });
     markPurged(nexusDevNumber);
     // Unpairing is the ONLY thing that unlocks the bot choice, so the number
     // can pick a different bot on its next pairing.
@@ -433,8 +439,18 @@ async function validateSession(nexusDevNumber) {
     }
 }
 
-function forceCleanupSession(nexusDevNumber) {
+function forceCleanupSession(nexusDevNumber, opts = {}) {
     const sessionPath = getSessionPath(nexusDevNumber);
+
+    // ── OWNERSHIP GUARD (root-cause fix for the pair→401→"session cleared" loop) ─
+    // Once a number has been handed over to its bot process, that child owns the
+    // creds. The pairing side receiving a 401 only means "your socket was
+    // replaced by the bot you just launched" — deleting the folder here wiped a
+    // perfectly good session out from under a running bot and forced a re-pair.
+    if (!opts.force && !ownership.mayWipe(nexusDevNumber, ownership.OWNER_PAIRING)) {
+        console.log(chalk.gray(`🛡️ Not clearing ${nexusDevNumber}: session is owned by its running bot.`));
+        return false;
+    }
 
     // 1) Tear down the socket + ALL listeners FIRST so no further
     //    creds.update / keys.set events can fire writeFile() into the
@@ -502,6 +518,7 @@ function cleanupExpiredSessions() {
         if (fs.lstatSync(folderPath).isDirectory()) {
             const credsPath = path.join(folderPath, 'creds.json');
             const tracker = rentbotTracker.get(folder);
+            if (ownership.isOwnedByBot(folder)) return; // a bot is running on it
             if (tracker && tracker.disconnected) {
                 console.log(chalk.yellow(`🗑️ Cleaning up disconnected session: ${folder}`));
                 deleteFolderRecursive(folderPath);
@@ -624,6 +641,20 @@ async function startpairing(nexusDevNumber) {
     pairingInFlight.add(nexusDevNumber);
     setTimeout(() => pairingInFlight.delete(nexusDevNumber), 15000);
 
+    // ── NEVER open a pairing socket on an identity a bot already owns ────────
+    // This was the actual killer: every reconnect path (the 401 "grace
+    // reconnect", 515 restart, 440 retry, the generic unknown-reason retry)
+    // called queuePairing() again — even after the number had been handed over
+    // to its bot. Two live sockets on one linked-device identity make WhatsApp
+    // 401 one of them within seconds, which is exactly the connect/disconnect
+    // flap the user saw.
+    if (ownership.isOwnedByBot(nexusDevNumber) && fs.existsSync(path.join(getSessionPath(nexusDevNumber), 'creds.json'))) {
+        console.log(chalk.gray(`🛡️ ${nexusDevNumber} is already running as a bot — not opening a second pairing socket.`));
+        pairingInFlight.delete(nexusDevNumber);
+        const t = rentbotTracker.get(nexusDevNumber);
+        return (t && t.connection) || null;
+    }
+
     // Never stack sockets on the same identity.
     retireSocket(nexusDevNumber, 'starting new connection');
     
@@ -703,6 +734,7 @@ async function startpairing(nexusDevNumber) {
     tracker.connection = nexus;
     nexus.__timers = [];
     pairingInFlight.delete(nexusDevNumber);
+    ownership.claimForPairing(nexusDevNumber);
 
     if (store) store.bind(nexus.ev);
 
@@ -1230,10 +1262,16 @@ async function startpairing(nexusDevNumber) {
             let reason = new Boom(lastDisconnect?.error)?.output.statusCode;
             const pairingStillPending = !state.creds.registered && !tracker?.pairingCode;
 
-            if (tracker?.handoffToMais) {
-                console.log(chalk.gray(`🤝 Pairing socket closed after MAIS handoff for ${nexusDevNumber}; keeping session.`));
+            // ── HANDOFF IS STICKY ────────────────────────────────────────
+            // The flag used to be cleared on the first close. But closing a
+            // Baileys socket during a handoff produces MORE than one close
+            // event (a local close, then WhatsApp's 401 for the replaced
+            // connection). The second one fell through to the "logged out"
+            // branch and wiped the session the child bot was using.
+            if (tracker?.handoffToMais || ownership.isOwnedByBot(nexusDevNumber)) {
+                console.log(chalk.gray(`🤝 Pairing socket closed after bot handoff for ${nexusDevNumber} (reason: ${reason}); keeping session.`));
                 tracker.connection = null;
-                tracker.handoffToMais = false;
+                tracker.disconnected = true;
                 return;
             }
 
@@ -1250,6 +1288,14 @@ async function startpairing(nexusDevNumber) {
                 // never a real unlink — it is a duplicate/stale connection
                 // being kicked. Reconnect once with the saved creds before
                 // destroying a session the user just created.
+                // Belt and braces: if the identity belongs to a bot process,
+                // or the handoff is still settling, a 401 here is expected.
+                if (ownership.isOwnedByBot(nexusDevNumber) || ownership.isHandoffSettling(nexusDevNumber)) {
+                    console.log(chalk.gray(`🛡️ Ignoring 401 for ${nexusDevNumber}: its bot owns this session.`));
+                    if (tracker) { tracker.connection = null; tracker.disconnected = true; }
+                    return;
+                }
+
                 const sincePair = Date.now() - (tracker?.pairedAt || 0);
                 if (tracker && !tracker.reauthTried && sincePair < 180000) {
                     tracker.reauthTried = true;
@@ -1269,7 +1315,8 @@ async function startpairing(nexusDevNumber) {
                     tracker.disconnected = true;
                 }
                 markPurged(nexusDevNumber);
-                forceCleanupSession(nexusDevNumber);
+                ownership.release(nexusDevNumber);
+                forceCleanupSession(nexusDevNumber, { force: true });
                 try { require('./deploy/botSelectionStore').clearSelection(nexusDevNumber); } catch {}
                 return;
             }
@@ -1307,6 +1354,10 @@ async function startpairing(nexusDevNumber) {
             // pairing — reconnect, never wipe the session.
             if (reason === 515) {
                 console.log(chalk.blue(`🔄 Restart required (515) for ${nexusDevNumber}`));
+                if (ownership.isOwnedByBot(nexusDevNumber)) {
+                    console.log(chalk.gray(`🛡️ Bot owns ${nexusDevNumber} — leaving the restart to it.`));
+                    return;
+                }
                 // Fully retire this socket first, otherwise its creds.update
                 // listener overwrites the new session's creds -> 401 later.
                 retireSocket(nexusDevNumber, '515 restart required');
@@ -1351,7 +1402,8 @@ async function startpairing(nexusDevNumber) {
                 // web UI stops claiming the number is still paired.
                 tracker.loggedOut = true;
                 markPurged(nexusDevNumber);
-                forceCleanupSession(nexusDevNumber);
+                ownership.release(nexusDevNumber);
+                forceCleanupSession(nexusDevNumber, { force: true });
                 // Device unlinked from the phone == unpaired: release the lock.
                 try { require('./deploy/botSelectionStore').clearSelection(nexusDevNumber); } catch {}
                 tracker.disconnected = true;
