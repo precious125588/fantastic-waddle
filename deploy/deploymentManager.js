@@ -183,7 +183,11 @@ function _extractSelection(rawMessage) {
   for (const c of candidates) {
     const bot = getBotById(c);
     if (bot) return bot.id;
-    const lcc = String(c).replace(/^deploy:/, '').trim().toLowerCase();
+    const lcc = String(c)
+      .replace(/^deploy:/i, '')
+      .replace(/^[^a-z0-9]+/i, '')
+      .trim()
+      .toLowerCase();
     const byName = bots.find(
       b => b.name.toLowerCase() === lcc || lcc.includes(b.id.toLowerCase()) || lcc.includes(b.name.toLowerCase()),
     );
@@ -210,6 +214,14 @@ function _extractSelection(rawMessage) {
   // Exact id or exact name
   const exact = bots.find(b => b.id.toLowerCase() === lc || b.name.toLowerCase() === lc);
   if (exact) return exact.id;
+
+  // Native-flow fallbacks on some WhatsApp versions send the visible row
+  // title (for example "🟢 New Page") as extended text instead of the row id.
+  const undecorated = lc.replace(/^[^a-z0-9]+/i, '').trim();
+  const visibleTitle = bots.find(
+    b => b.id.toLowerCase() === undecorated || b.name.toLowerCase() === undecorated,
+  );
+  if (visibleTitle) return visibleTitle.id;
 
   // Whole-word-ish partial: require at least 3 characters so stray chatter
   // cannot silently pick a bot.
@@ -407,6 +419,9 @@ async function deployBotForNumber(numberOrJid, botId, opts = {}) {
       try { nexus.end(); } catch {}
       try { nexus.ws?.close(); } catch {}
       selectorRegistry.detachSocket(key);
+      // Give Baileys time to flush the final auth-key updates and fully release
+      // the websocket before the selected child opens the same session.
+      await _sleep(1500);
     }
 
     const envOverrides = {
@@ -550,8 +565,17 @@ async function startDeploymentFlow(nexus, numberOrJid, tracker, sessionDir, laun
     return null;
   }
 
-  const written = _writeSelection(userKey, chosen.id, { source: 'whatsapp' });
-  if (!written.ok && written.locked) {
+  // A Telegram/admin choice resolves the same pending waiter after it has
+  // already persisted and locked the selection. Do not treat that expected
+  // handoff as a conflicting second choice or return before launcher.launch().
+  const existingSelection = store.getSelection(userKey);
+  let written;
+  if (existingSelection?.botId === chosen.id) {
+    written = { ok: true, record: existingSelection, handedOff: true };
+  } else {
+    written = _writeSelection(userKey, chosen.id, { source: 'whatsapp' });
+  }
+  if (!written.ok) {
     try { await nexus.sendMessage(jid, { text: `🔒 ${written.error}` }); } catch {}
     return null;
   }
@@ -590,6 +614,11 @@ async function startDeploymentFlow(nexus, numberOrJid, tracker, sessionDir, laun
     try { nexus.end(); } catch {}
     try { nexus.ws?.close(); } catch {}
     selectorRegistry.detachSocket(userKey);
+
+    // Starting the child in the same tick as closing the pairing socket makes
+    // both sockets briefly use one Signal session. That causes "closed session"
+    // decrypt errors and can get the newly selected bot replaced immediately.
+    await _sleep(1500);
 
     const envOverrides = {
       ...(chosen.env || {}),
