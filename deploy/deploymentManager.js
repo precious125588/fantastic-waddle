@@ -350,9 +350,26 @@ function _resolveContext(numberOrJid) {
  *
  * @returns {Promise<{ok:boolean, bot?:object, locked?:boolean, error?:string}>}
  */
+const _deployInFlight = new Map();
+
 async function deployBotForNumber(numberOrJid, botId, opts = {}) {
   const key = jidKey(numberOrJid);
   if (!key) return { ok: false, error: 'Invalid number.' };
+
+  // Serialise per number: the WhatsApp selector, a Telegram admin and the web
+  // panel can all fire within the same second for one number. Without this the
+  // second call ran the whole handoff again while the first was still sleeping.
+  const busy = _deployInFlight.get(key);
+  if (busy) {
+    console.log(chalk.gray(`[DeployMgr] Deployment already in progress for ${key} — joining it`));
+    return busy;
+  }
+  const run = _deployBotForNumber(key, botId, opts).finally(() => _deployInFlight.delete(key));
+  _deployInFlight.set(key, run);
+  return run;
+}
+
+async function _deployBotForNumber(key, botId, opts = {}) {
 
   const bot = getBotById(botId);
   if (!bot) return { ok: false, error: `Unknown bot "${botId}".` };

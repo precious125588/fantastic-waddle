@@ -43,7 +43,11 @@ function _read(file, fallback) {
 function _write(file, data) {
   try {
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, JSON.stringify(data, null, 2), 'utf8');
+    // Atomic write: two surfaces choosing at the same moment used to be able to
+    // read a half-written selections file and lose a lock.
+    const tmp = `${file}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf8');
+    fs.renameSync(tmp, file);
     return true;
   } catch (e) {
     console.warn(`[SelectionStore] write failed (${path.basename(file)}): ${e.message}`);
@@ -81,6 +85,13 @@ function setSelection(numberOrJid, bot, opts = {}) {
 
   const data = allSelections();
   const current = data[key];
+
+  // Re-picking the SAME bot is not a conflict — it is a redeploy. Returning an
+  // error here made the second tap of an identical selector look like a
+  // failure even though nothing was wrong.
+  if (current && current.botId === bot.id && !opts.force) {
+    return { ok: true, alreadyLocked: true, record: { number: key, ...current } };
+  }
 
   if (current && current.botId && current.locked !== false && !opts.force) {
     return {
