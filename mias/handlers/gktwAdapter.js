@@ -43,32 +43,53 @@ export async function getBaileys() {
   return _baileys;
 }
 
+// Candidate helper package names, in priority order.
+// NOTE: "@itsreimau/gktw" does NOT exist on npm (404) and github.com/itsreimau/gktw
+// is 404 too, so it can never resolve — it is kept only so a future release
+// under that name would light up automatically. Set GKTW_PACKAGE=<name> to point
+// the adapter at any drop-in helper. Nothing here is required: every feature has
+// a raw Baileys fallback below.
+export const GKTW_CANDIDATES = [
+  process.env.GKTW_PACKAGE,
+  "@itsreimau/gktw",
+  "@mengkodingan/ckptw",
+].filter(Boolean);
+
+let _gktwPkgName = null;
+
+const GKTW_FNS = [
+  "sendInteractive", "sendHeroCard", "sendCarousel",
+  "sendList", "createInteractiveMessage",
+];
+
 async function getGktw() {
   if (_gktwAvailable === null) {
-    try {
-      _gktw = await import("@itsreimau/gktw");
-      // Verify at least one known GKTW function exists
-      const mod = _gktw?.default || _gktw;
-      const hasAny = [
-        "sendInteractive", "sendHeroCard", "sendCarousel",
-        "sendList", "createInteractiveMessage",
-      ].some(fn => typeof mod?.[fn] === "function" || typeof _gktw?.[fn] === "function");
-
-      if (hasAny) {
-        _gktwAvailable = true;
-      } else {
-        _gktw = null;
-        _gktwAvailable = false;
-        _gktwLoadErr = new Error("GKTW package loaded but no expected functions found");
+    _gktwAvailable = false;
+    for (const name of GKTW_CANDIDATES) {
+      try {
+        const mod = await import(/* @vite-ignore */ name);
+        const api = mod?.default || mod;
+        const hasAny = GKTW_FNS.some(
+          fn => typeof api?.[fn] === "function" || typeof mod?.[fn] === "function",
+        );
+        if (hasAny) {
+          _gktw = mod;
+          _gktwPkgName = name;
+          _gktwAvailable = true;
+          break;
+        }
+        _gktwLoadErr = new Error(`${name} loaded but exposes no expected helper functions`);
+      } catch (err) {
+        _gktwLoadErr = err;
       }
-    } catch (err) {
-      _gktwAvailable = false;
-      _gktw = null;
-      _gktwLoadErr = err;
     }
+    if (!_gktwAvailable) _gktw = null;
   }
   return _gktw;
 }
+
+/** Name of the helper package that actually loaded, or null. */
+export function gktwPackageName() { return _gktwPkgName; }
 
 // ─── Public: capability detection ─────────────────────────────────────────────
 
@@ -98,8 +119,9 @@ export async function gktwVersion() {
     const mod = _gktw?.default || _gktw;
     if (mod?.version) return String(mod.version);
     // Try reading package.json
-    const pkg = await import("@itsreimau/gktw/package.json", { assert: { type: "json" } })
-      .catch(() => null);
+    const pkg = _gktwPkgName
+      ? await import(/* @vite-ignore */ `${_gktwPkgName}/package.json`, { with: { type: "json" } }).catch(() => null)
+      : null;
     return pkg?.default?.version || pkg?.version || "unknown";
   } catch {
     return "unknown";
