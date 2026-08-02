@@ -33,25 +33,37 @@ async function loadBaileys() {
   throw new Error('No Baileys package found');
 }
 
+// See mias/handlers/gktwAdapter.js: "@itsreimau/gktw" does not exist on npm,
+// so this resolves to nothing and the raw Baileys fallback stays active.
+// Set GKTW_PACKAGE=<name> to plug in any drop-in helper package.
+const GKTW_CANDIDATES = [
+  process.env.GKTW_PACKAGE,
+  '@itsreimau/gktw',
+  '@mengkodingan/ckptw',
+].filter(Boolean);
+
+let _gktwPkgName = null;
+
 async function loadGktw() {
   if (_gktwAvailable !== null) return _gktw;
-  try {
-    _gktw = await import('@itsreimau/gktw');
-    const mod = _gktw?.default || _gktw;
-    const hasFns = ['sendInteractive', 'sendHeroCard', 'sendCarousel', 'sendList', 'createInteractiveMessage']
-      .some(fn => typeof mod?.[fn] === 'function' || typeof _gktw?.[fn] === 'function');
-    if (hasFns) {
-      _gktwAvailable = true;
-    } else {
-      _gktwAvailable = false;
-      _gktw = null;
-      _gktwErr = new Error('GKTW loaded but no expected functions found');
+  _gktwAvailable = false;
+  const fns = ['sendInteractive', 'sendHeroCard', 'sendCarousel', 'sendList', 'createInteractiveMessage'];
+  for (const name of GKTW_CANDIDATES) {
+    try {
+      const mod = await import(/* @vite-ignore */ name);
+      const api = mod?.default || mod;
+      if (fns.some(fn => typeof api?.[fn] === 'function' || typeof mod?.[fn] === 'function')) {
+        _gktw = mod;
+        _gktwPkgName = name;
+        _gktwAvailable = true;
+        break;
+      }
+      _gktwErr = new Error(`${name} loaded but exposes no expected helper functions`);
+    } catch (err) {
+      _gktwErr = err;
     }
-  } catch (err) {
-    _gktwAvailable = false;
-    _gktw = null;
-    _gktwErr = err;
   }
+  if (!_gktwAvailable) _gktw = null;
   return _gktw;
 }
 
@@ -65,6 +77,7 @@ export async function isGktwAvailable() {
 export function gktwDiagnostics() {
   return {
     available: _gktwAvailable,
+    package: _gktwPkgName,
     error: _gktwErr?.message || null,
     baileysLoaded: !!_baileys,
   };
