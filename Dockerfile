@@ -48,21 +48,40 @@ WORKDIR /app
 #    instead of at runtime in front of your users.
 # ─────────────────────────────────────────────────────────────────────────────
 
+# 6. The 2026-08-02 build failure ("Exit handler never called!" x2, then
+#    ENOTEMPTY on /app/mias/node_modules/axios) was a killed npm leaving a
+#    half-written node_modules that the next retry could not overwrite.
+#    scripts/robust-install.sh now fully deletes node_modules between
+#    attempts and de-escalates the heap instead of raising it. Every
+#    dependency install below therefore runs in its OWN layer, with only the
+#    manifests copied first, so a source-only change never re-runs them.
+
+# Serialize npm and keep peer resolution consistent in every workspace.
+ENV npm_config_legacy_peer_deps=true \
+    npm_config_fund=false \
+    npm_config_audit=false \
+    npm_config_maxsockets=2
+
 # Root deps first so the layer caches
 COPY package.json .npmrc ./
 COPY scripts/robust-install.sh ./scripts/robust-install.sh
 RUN bash scripts/robust-install.sh .
 
-# Copy all source files (including mias/ and new-page/)
-COPY . .
-
-# MIAS bot deps
+# MIAS bot deps — manifest only, so editing bot source does not reinstall.
+COPY mias/package.json mias/.npmrc* ./mias/
 RUN bash scripts/robust-install.sh mias
 
 # New Page bot deps — separate ESM package with its own node_modules.
 # Without this the "New Page" option in the deploy menu dies with
 # ERR_MODULE_NOT_FOUND on launch.
+COPY new-page/package.json new-page/.npmrc* ./new-page/
 RUN bash scripts/robust-install.sh new-page
+
+# Copy all source files last (node_modules are excluded via .dockerignore,
+# so the installs above survive this COPY).
+COPY . .
+
+
 
 # Verify the sticker engine really works in every workspace. A build that
 # can't make a sticker should fail here, not silently disable the feature.

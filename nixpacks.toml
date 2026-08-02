@@ -33,14 +33,14 @@ nixPkgs = [
 
 [phases.install]
 cmds = [
-  "NODE_OPTIONS='--max-old-space-size=768' npm install --no-audit --no-fund --loglevel=warn"
+  "bash scripts/robust-install.sh ."
 ]
 
 [phases.bots]
 dependsOn = ["install"]
 cmds = [
-  "cd mias && NODE_OPTIONS='--max-old-space-size=768' npm install --no-audit --no-fund --loglevel=warn",
-  "cd new-page && NODE_OPTIONS='--max-old-space-size=768' npm install --no-audit --no-fund --loglevel=warn",
+  "bash scripts/robust-install.sh mias",
+  "bash scripts/robust-install.sh new-page",
   "cd mias && node -e \"const s=require('sharp');require('wa-sticker-formatter');console.log('[nixpacks] mias sticker engine OK, sharp '+s.versions.sharp)\"",
   "cd new-page && node -e \"const s=require('sharp');require('wa-sticker-formatter');console.log('[nixpacks] new-page sticker engine OK, sharp '+s.versions.sharp)\""
 ]

@@ -2537,7 +2537,7 @@ ${_lmBotAdmin ? "✅ Message deleted." : "⚠️ Make me admin to auto-delete."}
             }
           } catch (e) { console.error("[antilink/antisticker]", e?.message); }
 
-          //    Auto-Tag: tag all members invisibly on every group message   
+          //  Auto-Tag: tag all members invisibly on every group message 
           try {
             if ((msg.key.remoteJid || "").endsWith("@g.us") && !msg.key.fromMe) {
               const _atjid = msg.key.remoteJid;
@@ -2644,7 +2644,7 @@ ${_lmBotAdmin ? "✅ Message deleted." : "⚠️ Make me admin to auto-delete."}
                   // Detect mass-mention: mentioned 4+ people OR @everyone/@all in body
                   const _mentions = msg.message?.extendedTextMessage?.contextInfo?.mentionedJid || [];
                   const _bodyText = String(body || "").toLowerCase();
-                  const _hasEveryoneTag = /@(everyone|all|group|here)/i.test(_bodyText);
+                  const _hasEveryoneTag = /@(everyone|all|group|here)\b/i.test(_bodyText);
                   const _isMassMention = _mentions.length >= (_atSet.antiTagThreshold || 4);
                   if (_hasEveryoneTag || _isMassMention) {
                     const _atAction = _atSet.antiTagAction || "delete";
@@ -5477,7 +5477,7 @@ async function isGroupAdmin(sock, gid, jid) {
       }).catch(() => {});
       return _checkMeta(cached);
     }
-    // 2) No cache yet  fetch live, store in cache
+    // 2) No cache yet  fetch live, store in cache
     const live = await sock.groupMetadata(gid);
     if (live) { updateLidMappingsFromMeta(live); _groupMetaCache.set(gid, live); }
     return _checkMeta(live);
@@ -19546,66 +19546,66 @@ async function _resolvePageToMp4(pageUrl) {
   const _isXmast   = _pu.includes("xmaster.com");
   const _isMrDoPorn= _pu.includes("mrdoporn.com") || _pu.includes("porn.com");
   const resolvers = [
-    //    PREXZYVILLA FIRST (most reliable, site-aware)   
+    //  PREXZYVILLA FIRST (most reliable, site-aware) 
     async () => { const r = await prexzyGet("/nsfw/xnxx-dl", { url: pageUrl }, 45000); const d = r.data?.data || r.data; return d?.downloadUrl || d?.url || d?.video || d?.download || d?.mp4; },
     async () => { const r = await prexzyGet("/nsfw/xvideos-dl", { url: pageUrl }, 45000); const d = r.data?.data || r.data; return d?.downloadUrl || d?.url || d?.video || d?.download || d?.mp4; },
     async () => { const r = await prexzyGet("/download/phdl", { url: pageUrl }, 45000); const d = r.data?.data || r.data; return d?.downloadUrl || d?.url || d?.video || d?.download || d?.mp4; },
     async () => { const r = await prexzyGet("/download/xhamsterdl", { url: pageUrl }, 45000); const d = r.data?.data || r.data; return d?.downloadUrl || d?.url || d?.video || d?.download || d?.mp4; },
     async () => { const r = await prexzyGet("/download/xhamster", { url: pageUrl }, 45000); const d = r.data?.data || r.data; return d?.downloadUrl || d?.url || d?.video || d?.download || d?.mp4; },
-    //    Ryzen + Siputzx (fixed template literals)   
+    //  Ryzen + Siputzx (fixed template literals) 
     async () => { const { data } = await axios.get(`https://api.ryzendesu.vip/api/downloader/xhamster?url=${encodeURIComponent(pageUrl)}`, { timeout: 30000 }); const d = data?.data || data; return d?.url || d?.download || d?.video || d?.mp4; },
     async () => { const { data } = await axios.get(`https://api.siputzx.my.id/api/d/xhamster?url=${encodeURIComponent(pageUrl)}`, { timeout: 30000 }); return data?.data?.url || data?.url || data?.download; },
-    //    Gifted API fallbacks   
+    //  Gifted API fallbacks 
     async () => (await axios.get(`${CONFIG.GIFTED_API}/api/download/phdl?apikey=${CONFIG.GIFTED_KEY}&url=${encodeURIComponent(pageUrl)}`, { timeout: 30000 })).data,
     async () => (await axios.get(`${CONFIG.GIFTED_API}/api/download/xnxxdl?apikey=${CONFIG.GIFTED_KEY}&url=${encodeURIComponent(pageUrl)}`, { timeout: 30000 })).data,
     async () => (await axios.get(`${CONFIG.GIFTED_API}/api/download/xvideosdl?apikey=${CONFIG.GIFTED_KEY}&url=${encodeURIComponent(pageUrl)}`, { timeout: 30000 })).data,
     async () => (await axios.get(`${CONFIG.GIFTED_API}/api/download/xhamsterdl?apikey=${CONFIG.GIFTED_KEY}&url=${encodeURIComponent(pageUrl)}`, { timeout: 30000 })).data,
-    //    Siputzx   
+    //  Siputzx 
     async () => (await axios.get(`https://api.siputzx.my.id/api/d/pornhub?url=${encodeURIComponent(pageUrl)}`, { timeout: 30000 })).data,
     async () => (await axios.get(`https://api.siputzx.my.id/api/d/xnxx?url=${encodeURIComponent(pageUrl)}`, { timeout: 30000 })).data,
     async () => (await axios.get(`https://api.siputzx.my.id/api/d/xvideos?url=${encodeURIComponent(pageUrl)}`, { timeout: 30000 })).data,
     async () => (await axios.get(`https://api.siputzx.my.id/api/d/xhamster?url=${encodeURIComponent(pageUrl)}`, { timeout: 30000 })).data,
-    //    Ryzen   
+    //  Ryzen 
     async () => (await axios.get(`https://api.ryzendesu.vip/api/downloader/xnxx?url=${encodeURIComponent(pageUrl)}`, { timeout: 30000 })).data,
     async () => (await axios.get(`https://api.ryzendesu.vip/api/downloader/xvideos?url=${encodeURIComponent(pageUrl)}`, { timeout: 30000 })).data,
     async () => (await axios.get(`https://api.ryzendesu.vip/api/downloader/pornhub?url=${encodeURIComponent(pageUrl)}`, { timeout: 30000 })).data,
-    //    Nexoracle   
+    //  Nexoracle 
     async () => (await axios.get(`https://api.nexoracle.com/downloader/xnxx?apikey=free_key@maher_apis&url=${encodeURIComponent(pageUrl)}`, { timeout: 30000 })).data,
     async () => (await axios.get(`https://api.nexoracle.com/downloader/pornhub?apikey=free_key@maher_apis&url=${encodeURIComponent(pageUrl)}`, { timeout: 30000 })).data,
     async () => (await axios.get(`https://api.nexoracle.com/downloader/xvideos?apikey=free_key@maher_apis&url=${encodeURIComponent(pageUrl)}`, { timeout: 30000 })).data,
-    //    Widipe   
+    //  Widipe 
     async () => (await axios.get(`https://widipe.com/download/xnxxdl?url=${encodeURIComponent(pageUrl)}`, { timeout: 30000 })).data,
     async () => (await axios.get(`https://widipe.com/download/xvideosdl?url=${encodeURIComponent(pageUrl)}`, { timeout: 30000 })).data,
     async () => (await axios.get(`https://widipe.com/download/pornhubdl?url=${encodeURIComponent(pageUrl)}`, { timeout: 30000 })).data,
-    //    More public APIs   
+    //  More public APIs 
     async () => (await axios.get(`https://api.davidcyriltech.my.id/xnxx/download?url=${encodeURIComponent(pageUrl)}`, { timeout: 30000 })).data,
     async () => (await axios.get(`https://bk9.fun/download/xvideosdl?url=${encodeURIComponent(pageUrl)}`, { timeout: 30000 })).data,
     async () => (await axios.get(`https://bk9.fun/download/xnxxdl?url=${encodeURIComponent(pageUrl)}`, { timeout: 30000 })).data,
     async () => (await axios.get(`https://api.diioffc.web.id/api/download/xnxx?url=${encodeURIComponent(pageUrl)}`, { timeout: 30000 })).data,
     async () => (await axios.get(`https://aemt.me/download/xnxx?url=${encodeURIComponent(pageUrl)}`, { timeout: 30000 })).data,
     async () => (await axios.get(`https://api.fasturl.cloud/download/xnxx?url=${encodeURIComponent(pageUrl)}`, { timeout: 30000 })).data,
-    //    SpankBang   
+    //  SpankBang 
     async () => { const { data } = await axios.get(`https://api.siputzx.my.id/api/d/spankbang?url=${encodeURIComponent(pageUrl)}`, { timeout: 30000 }); return data?.data?.url || data?.url || data?.download || data?.result?.url; },
     async () => { const { data } = await axios.get(`https://api.ryzendesu.vip/api/downloader/spankbang?url=${encodeURIComponent(pageUrl)}`, { timeout: 30000 }); const d = data?.result || data?.data || data; return d?.url || d?.download || d?.video; },
-    //    RedTube   
+    //  RedTube 
     async () => { const { data } = await axios.get(`https://api.siputzx.my.id/api/d/redtube?url=${encodeURIComponent(pageUrl)}`, { timeout: 30000 }); return data?.data?.url || data?.url || data?.download; },
     async () => { const { data } = await axios.get(`https://api.nexoracle.com/downloader/redtube?apikey=free_key@maher_apis&url=${encodeURIComponent(pageUrl)}`, { timeout: 30000 }); const d = data?.result || data?.data || data; return d?.url || d?.download; },
-    //    Eporner   
+    //  Eporner 
     async () => { const { data } = await axios.get(`https://api.siputzx.my.id/api/d/eporner?url=${encodeURIComponent(pageUrl)}`, { timeout: 30000 }); return data?.data?.url || data?.url || data?.download; },
     async () => { const { data } = await axios.get(`https://api.ryzendesu.vip/api/downloader/eporner?url=${encodeURIComponent(pageUrl)}`, { timeout: 30000 }); const d = data?.result || data?.data || data; return d?.url || d?.download || d?.video; },
-    //    Tube8   
+    //  Tube8 
     async () => { const { data } = await axios.get(`https://api.ryzendesu.vip/api/downloader/tube8?url=${encodeURIComponent(pageUrl)}`, { timeout: 30000 }); const d = data?.result || data?.data || data; return d?.url || d?.download || d?.video; },
-    //    Youjizz   
+    //  Youjizz 
     async () => { const { data } = await axios.get(`https://api.ryzendesu.vip/api/downloader/youjizz?url=${encodeURIComponent(pageUrl)}`, { timeout: 30000 }); const d = data?.result || data?.data || data; return d?.url || d?.download || d?.video; },
-    //    Generic cobalt/universal fallback   
+    //  Generic cobalt/universal fallback 
     async () => { const { data } = await axios.post("https://api.cobalt.tools/", { url: pageUrl, downloadMode: "auto" }, { headers: { Accept: "application/json", "Content-Type": "application/json" }, timeout: 30000 }); return data?.url || data?.download || null; },
-    //    Delirius (xvideos)   
+    //  Delirius (xvideos) 
     async () => { const { data } = await axios.get(`https://api.delirius.store/download/xvideosdl?url=${encodeURIComponent(pageUrl)}`, { timeout: 30000 }); const r = data?.data || data?.result; return r?.url || r?.download; },
     async () => { const { data } = await axios.get(`https://api.delirius.store/search/xvideos?q=${encodeURIComponent(pageUrl)}`, { timeout: 30000 }); const r = (data?.data || data?.result || [])[0]; return r?.url || r?.download; },
     async () => { const { data } = await axios.get(`https://widipe.com/download/pornhub?url=${encodeURIComponent(pageUrl)}`, { timeout: 30000 }); return data?.result?.url || data?.result?.download; },
     async () => { const { data } = await axios.get(`https://widipe.com/download/xvideos?url=${encodeURIComponent(pageUrl)}`, { timeout: 30000 }); return data?.result?.url || data?.result?.download; },
   ];
-  // Field extractor  exhaustive list of response shapes across all known APIs
+  // Field extractor  exhaustive list of response shapes across all known APIs
   function _extractUrl(d) {
     if (!d || typeof d !== "object") return null;
     const cands = [
