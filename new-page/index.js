@@ -273,9 +273,25 @@ async function connectToWhatsApp() {
         // each other off (conflict/440) and the bot looked "online but mute".
         scheduleReconnect();
       } else {
-        console.log(chalk.red('[NP] Logged out — clearing session'));
-        try { fs.rmSync(AUTH_DIR, { recursive: true, force: true }); } catch {}
-        process.exit(1);
+        // __MAIS_GUARDED_SESSION_WIPE__ — do not wipe a session the pairing handoff is still settling.
+        let __MAIS_GUARDED_SESSION_WIPE___ok = true;
+        try {
+          const _ownerPath = path.join(AUTH_DIR, '.owner.json');
+          if (fs.existsSync(_ownerPath)) {
+            const _own = JSON.parse(fs.readFileSync(_ownerPath, 'utf8')) || {};
+            const _handedOffAt = _own.handedOffAt || _own.at || 0;
+            if (Date.now() - _handedOffAt < 90 * 1000) __MAIS_GUARDED_SESSION_WIPE___ok = false;
+          }
+        } catch {}
+        if (__MAIS_GUARDED_SESSION_WIPE___ok) {
+          console.log(chalk.red('[NP] Logged out — clearing session'));
+          try { fs.rmSync(AUTH_DIR, { recursive: true, force: true }); } catch {}
+          process.exit(1);
+        } else {
+          console.log(chalk.yellow('[NP] 🛡️ Ignoring logout kick: this session was just handed over to me. Reconnecting instead of wiping.'));
+          scheduleReconnect();
+          return;
+        }
       }
     }
 
