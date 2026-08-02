@@ -3,6 +3,10 @@
  * 120+ commands · Baileys + GKTW Helper · All Engines · ESM
  * v2.0
  */
+// ══ CRASH SHIELD — must be first so a bad handler can't kill the bot ════════
+import { install as installCrashShield } from '../lib/crash-shield.mjs';
+installCrashShield({ name: process.env.SHIELD_NAME || 'new-page' });
+// ════════════════════════════════════════════════════════════════════════════
 import 'dotenv/config';
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
