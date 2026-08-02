@@ -48,7 +48,7 @@ function _backoffMs(n) {
     return Math.min(8000 * Math.pow(2, n - 1), MAX_BACKOFF_MS);
 }
 
-async function launch(number, sessionDir, envOverrides = {}) {
+async function _launch(number, sessionDir, envOverrides = {}) {
     if (running.has(number) && isAlive(running.get(number).proc)) {
         console.log(chalk.gray(`↪ MAIS already running for ${number}`));
         return running.get(number);
@@ -62,6 +62,22 @@ async function launch(number, sessionDir, envOverrides = {}) {
     // Restore the locked bot choice when this launch comes from server startup,
     // reconnect, resume, or an automatic child restart.
     envOverrides = selectedBotEnv(number, envOverrides);
+
+    // ── Locked selection always wins ─────────────────────────────────────────
+    // Two surfaces (WhatsApp menu, Telegram, web panel) could each pass their
+    // own BOT_ENTRY for the same number. Whatever is persisted in
+    // bot_selections.json is the single source of truth, so a stale/racing
+    // caller can never boot the *other* bot against the same session.
+    try {
+        const selectionStore = require('./deploy/botSelectionStore');
+        const locked = selectionStore.getSelection(number);
+        if (locked?.botId && envOverrides.BOT_ID && envOverrides.BOT_ID !== locked.botId) {
+            console.warn(chalk.yellow(
+                `[Launcher] ${number} is locked to ${locked.botId} — ignoring conflicting request for ${envOverrides.BOT_ID}`
+            ));
+            envOverrides = selectedBotEnv(number, {});
+        }
+    } catch {}
 
     // Resolve entry point from the manifest (BOT_ENTRY), default to mias/index.js.
     // NOTE: the old code hard-required mias/index.js to exist even when the user
@@ -243,6 +259,26 @@ function listAll() {
         if (!inBase.has(jid)) base.push({ number:jid, pid:null, alive:false, uptimeMs:0, restarts:0, paused:true });
     }
     return base;
+}
+
+// ── Single-flight launches ──────────────────────────────────────────────────
+// launch() awaits (progress messages, the 6s socket-handover sleep, spawn).
+// Two selector taps that land inside that window both passed the `running`
+// check and spawned TWO children for one number: duplicate replies and
+// "connection replaced" session fights. Concurrent callers now share one
+// in-flight promise, so exactly one process is ever created per number.
+const _inFlight = new Map();
+
+function launch(number, sessionDir, envOverrides = {}) {
+    const pending = _inFlight.get(number);
+    if (pending) {
+        console.log(chalk.gray(`↪ Launch already in progress for ${number} — joining it`));
+        return pending;
+    }
+    const p = _launch(number, sessionDir, envOverrides)
+        .finally(() => { _inFlight.delete(number); });
+    _inFlight.set(number, p);
+    return p;
 }
 
 process.on('exit', () => { for (const [,r] of running) { try { r.proc.kill('SIGTERM'); } catch {} } });

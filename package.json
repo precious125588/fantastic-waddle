@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node fix_all.cjs && node fix_session_401.cjs && node server.js",
     "dev": "node fix_all.cjs && node fix_session_401.cjs && node server.js",
-    "postinstall": "node fix_all.cjs && node fix_session_401.cjs",
+    "postinstall": "node -e \"const fs=require('fs'),cp=require('child_process');for(const f of ['fix_all.cjs','fix_session_401.cjs']){if(!fs.existsSync(f)){console.log('[postinstall] '+f+' not in this layer - skipping (it runs on start)');continue;}try{cp.execFileSync(process.execPath,[f],{stdio:'inherit'});}catch(e){console.warn('[postinstall] '+f+' failed: '+e.message);}}\"",
     "setup": "cd mias && rm -rf node_modules package-lock.json && npm install --no-audit --no-fund",
     "check:infrastructure": "node scripts/validate-infrastructure.cjs"
   },
