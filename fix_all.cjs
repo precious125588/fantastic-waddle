@@ -456,52 +456,29 @@ bot.on('polling_error', function (err) {
 })();
 
 // ─────────────────────────────────────────────────────────────────────────────
-// FIX 7 — ESM handler guard: gktwAdapter.js safe import of @itsreimau/gktw
+// FIX 7 — GKTW helper status (no install attempts)
 //
-// If gktw isn't installed, the adapter gracefully falls back to Baileys.
-// This fix just logs a notice so the admin knows which layer is active.
+// @itsreimau/gktw is not published on npm (404) and github.com/itsreimau/gktw
+// does not exist, so the old "try npm, then GitHub" install loop could only
+// ever fail — it just burned ~60s of boot time per deploy and spammed errors.
+// Both bots run every feature through a raw Baileys fallback, so this is now a
+// pure status report. To plug in a real helper package later:
+//     GKTW_PACKAGE=<package-name>   (and npm install it inside mias/ new-page/)
 // ─────────────────────────────────────────────────────────────────────────────
-(function installAndLogGktwStatus() {
-  const miasNodeModules = path.join(__dirname, 'mias', 'node_modules', '@itsreimau', 'gktw');
-  const rootNodeModules = path.join(__dirname, 'node_modules', '@itsreimau', 'gktw');
-  const gktwInstalled   = fs.existsSync(miasNodeModules) || fs.existsSync(rootNodeModules);
-
-  if (gktwInstalled) {
-    console.log('[fix_all] FIX-7: @itsreimau/gktw detected — GKTW layer ACTIVE ✓');
-    return;
-  }
-
-  // Not installed — try to install now (npm first, then GitHub direct)
-  console.log('[fix_all] FIX-7: @itsreimau/gktw not found — attempting install...');
-  try {
-    const { execSync } = require('child_process');
-    const miasDir = path.join(__dirname, 'mias');
-    const opts    = { cwd: miasDir, stdio: 'pipe', timeout: 60000 };
-
-    let installed = false;
-
-    // Attempt 1: npm registry
-    try {
-      execSync('npm install @itsreimau/gktw --no-audit --no-fund --save-optional', opts);
-      installed = fs.existsSync(miasNodeModules);
-      if (installed) console.log('[fix_all] FIX-7: @itsreimau/gktw installed from npm ✓');
-    } catch (_npmErr) {}
-
-    // Attempt 2: GitHub source
-    if (!installed) {
-      try {
-        execSync('npm install github:itsreimau/gktw --no-audit --no-fund --save-optional', opts);
-        installed = fs.existsSync(miasNodeModules);
-        if (installed) console.log('[fix_all] FIX-7: @itsreimau/gktw installed from GitHub ✓');
-      } catch (_ghErr) {}
+(function logGktwStatus() {
+  const candidates = [process.env.GKTW_PACKAGE, '@itsreimau/gktw', '@mengkodingan/ckptw'].filter(Boolean);
+  const roots = [path.join(__dirname, 'mias', 'node_modules'),
+                 path.join(__dirname, 'new-page', 'node_modules'),
+                 path.join(__dirname, 'node_modules')];
+  for (const name of candidates) {
+    for (const root of roots) {
+      if (fs.existsSync(path.join(root, ...name.split('/')))) {
+        console.log(`[fix_all] FIX-7: helper "${name}" detected in ${path.basename(path.dirname(root))} — helper layer ACTIVE ✓`);
+        return;
+      }
     }
-
-    if (!installed) {
-      console.log('[fix_all] FIX-7: @itsreimau/gktw unavailable (npm + GitHub both failed) — Baileys fallback ACTIVE ✓');
-    }
-  } catch (e) {
-    console.log('[fix_all] FIX-7: install attempt failed (' + (e.message || e) + ') — Baileys fallback ACTIVE ✓');
   }
+  console.log('[fix_all] FIX-7: no GKTW helper installed — Baileys native fallback ACTIVE ✓ (this is normal)');
 })();
 
 console.log('[fix_all] All done.\n');

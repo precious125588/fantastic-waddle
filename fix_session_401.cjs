@@ -27,8 +27,9 @@
 const fs   = require('fs');
 const path = require('path');
 
-const TARGET = path.join(__dirname, 'mias', 'index.js');
-const MARKER = '__MAIS_GUARDED_SESSION_WIPE__';
+const TARGET    = path.join(__dirname, 'mias', 'index.js');
+const NP_TARGET = path.join(__dirname, 'new-page', 'index.js');
+const MARKER    = '__MAIS_GUARDED_SESSION_WIPE__';
 
 const OLD = 'try { fs.rmSync(AUTH_DIR, { recursive: true, force: true }); } catch {}';
 
@@ -76,9 +77,61 @@ function main() {
   console.log('[fix_session_401] mias/index.js — session wipe is now guarded. ✓');
 }
 
+// ── New Page bot: same guard ────────────────────────────────────────────────
+// new-page/index.js had the identical unguarded wipe, so picking "New Page" in
+// the deploy menu reproduced the exact pair -> 401 -> "session cleared" flap
+// that was already fixed for MIAS.
+const NP_OLD = `        console.log(chalk.red('[NP] Logged out — clearing session'));
+        try { fs.rmSync(AUTH_DIR, { recursive: true, force: true }); } catch {}
+        process.exit(1);`;
+
+const NP_NEW = `        // ${MARKER} — do not wipe a session the pairing handoff is still settling.
+        let ${MARKER}_ok = true;
+        try {
+          const _ownerPath = path.join(AUTH_DIR, '.owner.json');
+          if (fs.existsSync(_ownerPath)) {
+            const _own = JSON.parse(fs.readFileSync(_ownerPath, 'utf8')) || {};
+            const _handedOffAt = _own.handedOffAt || _own.at || 0;
+            if (Date.now() - _handedOffAt < 90 * 1000) ${MARKER}_ok = false;
+          }
+        } catch {}
+        if (${MARKER}_ok) {
+          console.log(chalk.red('[NP] Logged out — clearing session'));
+          try { fs.rmSync(AUTH_DIR, { recursive: true, force: true }); } catch {}
+          process.exit(1);
+        } else {
+          console.log(chalk.yellow('[NP] 🛡️ Ignoring logout kick: this session was just handed over to me. Reconnecting instead of wiping.'));
+          scheduleReconnect();
+          return;
+        }`;
+
+function patchNewPage() {
+  if (!fs.existsSync(NP_TARGET)) {
+    console.log('[fix_session_401] new-page/index.js not found — skip.');
+    return;
+  }
+  const src = fs.readFileSync(NP_TARGET, 'utf8');
+  if (src.indexOf(MARKER) !== -1) {
+    console.log('[fix_session_401] new-page/index.js already patched — skip. \u2713');
+    return;
+  }
+  if (src.indexOf(NP_OLD) === -1) {
+    console.log('[fix_session_401] new-page wipe statement not found — nothing to patch.');
+    return;
+  }
+  fs.writeFileSync(NP_TARGET, src.replace(NP_OLD, NP_NEW), 'utf8');
+  console.log('[fix_session_401] new-page/index.js — session wipe is now guarded. \u2713');
+}
+
 try {
   main();
 } catch (e) {
   // Never block startup over a patch failure.
-  console.error('[fix_session_401] patch error (continuing):', e && e.message);
+  console.error('[fix_session_401] mias patch error (continuing):', e && e.message);
+}
+
+try {
+  patchNewPage();
+} catch (e) {
+  console.error('[fix_session_401] new-page patch error (continuing):', e && e.message);
 }

@@ -1,4 +1,18 @@
 # nixpacks.toml — Railway build configuration
+#
+# NOTE: railway.toml / railway.json select the DOCKERFILE builder, so this file
+# is only used if you switch the service back to Nixpacks. It is kept in sync
+# with Dockerfile on purpose.
+#
+# Key points (same reasoning as Dockerfile):
+#  • each workspace has its own .npmrc with legacy-peer-deps=true — npm does not
+#    read a parent folder's .npmrc, and without it the jimp peer conflict from
+#    @itsliaaa/baileys kills `cd mias && npm install` with ERESOLVE.
+#  • installs run WITH scripts so sharp downloads its prebuilt linux-x64 binary.
+#  • package.json `overrides` pin wa-sticker-formatter -> sharp ^0.35.3, so
+#    there is a single sharp copy and no source build.
+#  • no gktw steps: @itsreimau/gktw does not exist on npm (404) and both bots
+#    fall back to raw Baileys.
 
 [phases.setup]
 nixPkgs = [
@@ -11,32 +25,24 @@ nixPkgs = [
   "giflib",
   "librsvg",
   "pixman",
+  "vips",
   "python3",
   "gcc",
   "gnumake"
 ]
 
 [phases.install]
-# npm ci reads the lockfile exactly — no resolution, much less memory than npm install.
-# --ignore-scripts stops fix_all.cjs from spawning a nested npm install (the original crash).
-# NODE_OPTIONS caps the V8 heap so Railway's build container isn't OOM-killed.
 cmds = [
-  "NODE_OPTIONS='--max-old-space-size=512' npm ci --ignore-scripts --no-audit --no-fund"
+  "NODE_OPTIONS='--max-old-space-size=768' npm install --no-audit --no-fund --loglevel=warn"
 ]
 
-# Install mias bot deps + gktw in a separate phase so each npm run starts
-# with a clean memory state instead of stacking on top of the root install.
-# The final `npm rebuild sharp` runs sharp's install script (which was skipped
-# by --ignore-scripts above) so its prebuilt native binary is downloaded for
-# both the top-level sharp and the nested wa-sticker-formatter/node_modules/sharp.
-# Without it the sticker engine gets disabled at boot.
-[phases.mias]
+[phases.bots]
+dependsOn = ["install"]
 cmds = [
-  "cd mias && NODE_OPTIONS='--max-old-space-size=512' npm install --ignore-scripts --no-audit --no-fund --loglevel=error || true",
-  "cd mias && npm install @itsreimau/gktw --no-audit --no-fund --save-optional 2>/dev/null || npm install github:itsreimau/gktw --no-audit --no-fund --save-optional 2>/dev/null || echo '[nixpacks] gktw unavailable — Baileys fallback active'",
-  "cd mias && npm rebuild sharp --no-audit --no-fund || true",
-  "find /app/mias/node_modules -type d -name sharp | while read -r d; do (cd \"$d\" && npm run install --if-present --foreground-scripts) || (cd \"$d\" && npx --yes prebuild-install --runtime=napi --platform=linux --arch=x64) || echo \"[nixpacks] WARN could not build $d\"; done",
-  "cd mias && node -e \"require('sharp');console.log('[nixpacks] sharp OK')\" || echo '[nixpacks] WARN sharp unavailable — sticker engine disabled'"
+  "cd mias && NODE_OPTIONS='--max-old-space-size=768' npm install --no-audit --no-fund --loglevel=warn",
+  "cd new-page && NODE_OPTIONS='--max-old-space-size=768' npm install --no-audit --no-fund --loglevel=warn",
+  "cd mias && node -e \"const s=require('sharp');require('wa-sticker-formatter');console.log('[nixpacks] mias sticker engine OK, sharp '+s.versions.sharp)\"",
+  "cd new-page && node -e \"const s=require('sharp');require('wa-sticker-formatter');console.log('[nixpacks] new-page sticker engine OK, sharp '+s.versions.sharp)\""
 ]
 
 [start]

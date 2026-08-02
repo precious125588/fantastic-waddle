@@ -4,31 +4,45 @@ cd "$(dirname "$0")"
 
 # ── Install main (root) dependencies ────────────────────────────────────────
 if [ ! -d node_modules ] || [ ! -d node_modules/chalk ]; then
-  echo "[MIAS] Installing main dependencies..."
+  echo "[MAIS] Installing main dependencies..."
   npm install --no-audit --no-fund --loglevel=error
 fi
 
 # ── Install mias dependencies ────────────────────────────────────────────────
+# Each workspace has its own .npmrc (legacy-peer-deps=true). npm does NOT read
+# the parent folder's .npmrc, and without it this install fails with ERESOLVE
+# on the jimp peer dependency of @itsliaaa/baileys.
 if [ -d mias ] && [ ! -d mias/node_modules ]; then
-  echo "[MIAS] Installing bot dependencies..."
-  (cd mias && npm install --no-audit --no-fund --loglevel=error || true)
+  echo "[MAIS] Installing MIAS bot dependencies..."
+  (cd mias && npm install --no-audit --no-fund --loglevel=error)
 fi
 
-# ── Try to install GKTW (optional — gracefully skipped if unavailable) ───────
-# Tries npm first, then GitHub source directly.
-# The gktwAdapter auto-detects whichever succeeds — zero code changes needed.
-if [ -d mias/node_modules ]; then
-  if [ ! -d mias/node_modules/@itsreimau/gktw ]; then
-    echo "[MIAS] Attempting to install @itsreimau/gktw..."
-    (cd mias && npm install @itsreimau/gktw --no-audit --no-fund --save-optional 2>/dev/null && \
-      echo "[MIAS] GKTW installed from npm." ) || \
-    (cd mias && npm install github:itsreimau/gktw --no-audit --no-fund --save-optional 2>/dev/null && \
-      echo "[MIAS] GKTW installed from GitHub." ) || \
-    echo "[MIAS] GKTW not available yet — Baileys fallback active."
-  else
-    echo "[MIAS] GKTW already installed."
-  fi
+# ── Install New Page dependencies ────────────────────────────────────────────
+if [ -d new-page ] && [ ! -d new-page/node_modules ]; then
+  echo "[MAIS] Installing New Page bot dependencies..."
+  (cd new-page && npm install --no-audit --no-fund --loglevel=error)
 fi
 
-echo "[MIAS] Starting bot..."
+# ── Sticker engine self-check (non-fatal, just tells you the truth) ──────────
+for d in mias new-page; do
+  [ -d "$d/node_modules/wa-sticker-formatter" ] || continue
+  (cd "$d" && node -e "const s=require('sharp');require('wa-sticker-formatter');console.log('[MAIS] $d sticker engine OK (sharp '+s.versions.sharp+')')") \
+    || echo "[MAIS] WARN: $d sticker engine unavailable"
+done
+
+# ── GKTW helper ──────────────────────────────────────────────────────────────
+# @itsreimau/gktw does not exist on npm and its GitHub repo is 404, so there is
+# nothing to install. Both bots run on raw Baileys through their adapters.
+# If you ever get a real helper package, set GKTW_PACKAGE=<name> and install it
+# into mias/ and/or new-page/ — the adapters pick it up with zero code changes.
+if [ -n "$GKTW_PACKAGE" ]; then
+  for d in mias new-page; do
+    [ -d "$d" ] || continue
+    echo "[MAIS] Installing helper $GKTW_PACKAGE into $d..."
+    (cd "$d" && npm install "$GKTW_PACKAGE" --no-audit --no-fund --save-optional) \
+      || echo "[MAIS] helper $GKTW_PACKAGE unavailable in $d — Baileys fallback active."
+  done
+fi
+
+echo "[MAIS] Starting..."
 exec node index.js
