@@ -1902,7 +1902,26 @@ async function connectToWA(force = false) {
               authDir: AUTH_DIR,
             }));
           } catch {}
-          try { fs.rmSync(AUTH_DIR, { recursive: true, force: true }); } catch {}
+          // __MAIS_GUARDED_SESSION_WIPE__ — do not wipe a session the pairing handoff is still settling.
+          let __MAIS_GUARDED_SESSION_WIPE___allowed = true;
+          try {
+            const _ownerPath = path.join(AUTH_DIR, '.owner.json');
+            if (fs.existsSync(_ownerPath)) {
+              const _own = JSON.parse(fs.readFileSync(_ownerPath, 'utf8')) || {};
+              const _handedOffAt = _own.handedOffAt || _own.at || 0;
+              // 90s settle window: the kick we get in here is the pairing
+              // socket being replaced by this very process, not a logout.
+              if (Date.now() - _handedOffAt < 90 * 1000) __MAIS_GUARDED_SESSION_WIPE___allowed = false;
+            }
+          } catch {}
+          if (__MAIS_GUARDED_SESSION_WIPE___allowed) {
+            try { fs.rmSync(AUTH_DIR, { recursive: true, force: true }); } catch {}
+            console.log('🧹 Session credentials removed after a confirmed logout.');
+          } else {
+            console.log('🛡️ Ignoring logout kick: this session was just handed over to me. Reconnecting instead of wiping.');
+            scheduleReconnect('post-handoff-401', 8000);
+            return;
+          }
           return;
         }
         if (isLoggedOut && earlyKick) {

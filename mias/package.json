@@ -1,13 +1,12 @@
 {
   "name": "draxen-ai-bot",
   "version": "5.3.1",
-  "description": "MIAS MDX Bot — powered by @itsliaaa/baileys (aliased as @whiskeysockets/baileys)",
+  "description": "MIAS MDX Bot \u2014 powered by @itsliaaa/baileys (aliased as @whiskeysockets/baileys)",
   "private": true,
   "type": "module",
   "scripts": {
     "start": "node --expose-gc --max-old-space-size=896 index.js",
-    "dev": "node --expose-gc --max-old-space-size=896 --watch index.js",
-    "postinstall": "npm install @itsreimau/gktw --no-audit --no-fund --save-optional 2>/dev/null || npm install github:itsreimau/gktw --no-audit --no-fund --save-optional 2>/dev/null || true"
+    "dev": "node --expose-gc --max-old-space-size=896 --watch index.js"
   },
   "dependencies": {
     "@distube/ytdl-core": "^4.16.10",
@@ -44,10 +43,13 @@
     "ws": "^8.18.1",
     "yt-search": "^2.13.1"
   },
-  "optionalDependencies": {
-    "@itsreimau/gktw": "npm:null@*"
-  },
   "engines": {
     "node": ">=20.0.0"
+  },
+  "overrides": {
+    "wa-sticker-formatter": {
+      "sharp": "^0.35.3"
+    },
+    "sharp": "^0.35.3"
   }
 }
