@@ -1,11 +1,6 @@
 'use strict';
-// ══ CRASH SHIELD — registered first so nothing can kill the process ══════════
-process.on('uncaughtException', e => {
-    console.error('[SHIELD] uncaughtException:', safeErrorMessage(e));
-});
-process.on('unhandledRejection', r => {
-    console.error('[SHIELD] unhandledRejection:', safeErrorMessage(r));
-});
+// ══ CRASH SHIELD — registered first so nothing can kill the web server ══════
+require('./lib/crash-shield.cjs').install({ name: 'server' });
 // ═════════════════════════════════════════════════════════════════════════════
 
 require('dotenv').config();

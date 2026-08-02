@@ -99,6 +99,7 @@ async function _launch(number, sessionDir, envOverrides = {}) {
         OWNER_NUMBER: process.env.OWNER_NUMBER  || '',
         MARK_ONLINE:  process.env.MARK_ONLINE   || '1',
         LOG_DEDUP:    process.env.LOG_DEDUP     || '1',
+        SHIELD_NAME:  `bot:${String(number).split('@')[0]}`,
         ZERO_API_KEY: process.env.ZERO_API_KEY  || 'ZERO-ADMIN-4e8a479a618e7a43d0a4edd1',
         PORT: '0',
         // Bot-specific env from manifest (branding, theme, version)
@@ -107,7 +108,15 @@ async function _launch(number, sessionDir, envOverrides = {}) {
 
     const proc = spawn(
         process.execPath,
-        ['--expose-gc', '--max-old-space-size=1050', botEntry],
+        [
+            '--expose-gc',
+            '--max-old-space-size=1050',
+            // Crash shield is preloaded here too, so ANY bot entry (even one
+            // that forgets to import it) survives uncaught errors instead of
+            // dying and triggering a respawn storm.
+            '--require', path.join(__dirname, 'lib', 'crash-shield.cjs'),
+            botEntry,
+        ],
         { cwd: botCwd, env, stdio:['ignore','pipe','pipe'], detached:false }
     );
 

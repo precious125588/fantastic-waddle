@@ -50,21 +50,19 @@ WORKDIR /app
 
 # Root deps first so the layer caches
 COPY package.json .npmrc ./
-RUN NODE_OPTIONS="--max-old-space-size=768" \
-    npm install --no-audit --no-fund --loglevel=warn
+COPY scripts/robust-install.sh ./scripts/robust-install.sh
+RUN bash scripts/robust-install.sh .
 
 # Copy all source files (including mias/ and new-page/)
 COPY . .
 
 # MIAS bot deps
-RUN cd mias && NODE_OPTIONS="--max-old-space-size=768" \
-    npm install --no-audit --no-fund --loglevel=warn
+RUN bash scripts/robust-install.sh mias
 
 # New Page bot deps — separate ESM package with its own node_modules.
 # Without this the "New Page" option in the deploy menu dies with
 # ERR_MODULE_NOT_FOUND on launch.
-RUN cd new-page && NODE_OPTIONS="--max-old-space-size=768" \
-    npm install --no-audit --no-fund --loglevel=warn
+RUN bash scripts/robust-install.sh new-page
 
 # Verify the sticker engine really works in every workspace. A build that
 # can't make a sticker should fail here, not silently disable the feature.

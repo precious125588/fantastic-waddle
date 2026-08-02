@@ -5,7 +5,7 @@ cd "$(dirname "$0")"
 # ── Install main (root) dependencies ────────────────────────────────────────
 if [ ! -d node_modules ] || [ ! -d node_modules/chalk ]; then
   echo "[MAIS] Installing main dependencies..."
-  npm install --no-audit --no-fund --loglevel=error
+  bash scripts/robust-install.sh .
 fi
 
 # ── Install mias dependencies ────────────────────────────────────────────────
@@ -14,13 +14,13 @@ fi
 # on the jimp peer dependency of @itsliaaa/baileys.
 if [ -d mias ] && [ ! -d mias/node_modules ]; then
   echo "[MAIS] Installing MIAS bot dependencies..."
-  (cd mias && npm install --no-audit --no-fund --loglevel=error)
+  bash scripts/robust-install.sh mias
 fi
 
 # ── Install New Page dependencies ────────────────────────────────────────────
 if [ -d new-page ] && [ ! -d new-page/node_modules ]; then
   echo "[MAIS] Installing New Page bot dependencies..."
-  (cd new-page && npm install --no-audit --no-fund --loglevel=error)
+  bash scripts/robust-install.sh new-page
 fi
 
 # ── Sticker engine self-check (non-fatal, just tells you the truth) ──────────
