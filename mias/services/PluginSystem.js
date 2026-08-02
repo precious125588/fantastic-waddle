@@ -11,6 +11,7 @@ import { readdirSync, existsSync } from "fs";
 import { join, extname, basename } from "path";
 import { fileURLToPath } from "url";
 import { emit, EVENTS } from "./EventBus.js";
+import { createRequire as _createRequire } from "module";
 
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
 const PLUGINS_DIR = join(__dirname, "..", "plugins");
@@ -34,8 +35,9 @@ function _loadDisabledList() {
   } catch {}
 }
 
+// FIXED: `await` in a non-async function is a SyntaxError — see PermissionService.js.
 function await_require() {
-  try { return { createRequire: (await import("module")).createRequire }; }
+  try { return { createRequire: _createRequire }; }
   catch { return {}; }
 }
 

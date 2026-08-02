@@ -8,6 +8,7 @@
  */
 
 import { isGroupJid } from "../handlers/utilityHandler.js";
+import { createRequire as _createRequire } from "module";
 
 // ─── Cooldown store (in-memory) ───────────────────────────────────────────────
 
@@ -44,7 +45,10 @@ function _getPremiumJids() {
   return [];
 }
 
-function await_import_sync() { try { return { createRequire: (await import("module")).createRequire }; } catch { return {}; } }
+// FIXED: `await` inside a non-async function is a hard SyntaxError, which made
+// the whole service barrel fail to load ("Service layer load error: Unexpected
+// reserved word") and silently disabled the MIAS service layer.
+function await_import_sync() { try { return { createRequire: _createRequire }; } catch { return {}; } }
 
 function _getBannedJids() {
   try {

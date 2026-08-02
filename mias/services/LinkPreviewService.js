@@ -14,7 +14,7 @@
  *   await sendPreview(sock, jid, "https://example.com", { quoted: msg });
  */
 
-import { cacheGetOrSet } from "./CacheService.js";
+import { getOrSet as cacheGetOrSet } from "./CacheService.js";
 import { enqueueBackground } from "./QueueService.js";
 import { warn, debug } from "./LoggerService.js";
 import { buildAdReply } from "./ContextService.js";
