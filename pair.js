@@ -76,6 +76,36 @@ function ensureSessionPath(nexusDevNumber) {
 const PURGE_GRACE_MS = 60 * 1000;
 const recentlyPurged = new Map();
 
+// ── PAIRING WINDOW GUARD ─────────────────────────────────────────────────────
+// While a number is actively pairing, its session folder legitimately contains
+// an INCOMPLETE creds.json (registered !== true) — that is what the pairing
+// handshake writes before the user types the code. Any status poll from the
+// web UI / Telegram used to run hasPairedSession() on it, decide "incomplete /
+// expired" and forceCleanupSession() the very keys the handshake needs. That
+// is exactly the deploy log: pairing code issued -> "Incomplete/expired
+// session ... clearing" -> "Force cleaned" -> the typed code never works.
+// Nothing may wipe a session inside this window unless it is forced.
+const PAIRING_WINDOW_MS = 5 * 60 * 1000;
+const pairingWindow = new Map();
+
+function beginPairingWindow(nexusDevNumber) {
+    pairingWindow.set(nexusDevNumber, Date.now());
+}
+
+function endPairingWindow(nexusDevNumber) {
+    pairingWindow.delete(nexusDevNumber);
+}
+
+function isPairingInProgress(nexusDevNumber) {
+    const ts = pairingWindow.get(nexusDevNumber);
+    if (!ts) return false;
+    if (Date.now() - ts > PAIRING_WINDOW_MS) {
+        pairingWindow.delete(nexusDevNumber);
+        return false;
+    }
+    return true;
+}
+
 function markPurged(nexusDevNumber) {
     recentlyPurged.set(nexusDevNumber, Date.now());
 }
@@ -120,6 +150,8 @@ function hasPairedSession(nexusDevNumber, options = {}) {
 
     const creds = readCredsFile(nexusDevNumber);
     if (!credsAreComplete(creds)) {
+        // Mid-pairing: incomplete creds are expected, never a reason to wipe.
+        if (isPairingInProgress(nexusDevNumber)) return false;
         if (clean) {
             console.log(chalk.yellow(`🧹 Incomplete/expired session for ${nexusDevNumber} — clearing so it can pair again.`));
             forceCleanupSession(nexusDevNumber);
@@ -159,6 +191,7 @@ function getSessionState(nexusDevNumber) {
 
 // Explicit unlink — used by the web UI so a user can re-pair a dead number.
 function unpairSession(nexusDevNumber) {
+    endPairingWindow(nexusDevNumber);
     ownership.release(nexusDevNumber);
     forceCleanupSession(nexusDevNumber, { force: true });
     markPurged(nexusDevNumber);
@@ -181,7 +214,26 @@ function unpairSession(nexusDevNumber) {
 // treated as non-existent (and deleted).
 const PAIRING_CODE_TTL = 2 * 60 * 1000;
 
+// A pairing code is only usable while the socket that requested it is still
+// alive. Records survive process restarts (and outlive dead sockets), so a
+// cached code from a previous run was handed to users who then typed a code
+// that no live handshake was listening for — WhatsApp answers that with
+// "couldn't link device" / an instant 401. Codes are therefore scoped to this
+// process AND to a still-connected socket.
+const PAIRING_INSTANCE_ID = `${process.pid}-${Date.now()}`;
+
+function hasLiveHandshake(nexusDevNumber) {
+    const tracker = rentbotTracker.get(nexusDevNumber);
+    if (!tracker || tracker.disconnected || tracker.loggedOut) return false;
+    const conn = tracker.connection;
+    if (!conn) return false;
+    const rs = conn.ws?.readyState ?? conn.ws?.socket?.readyState;
+    return rs === 0 || rs === 1 || rs === undefined;
+}
+
 function isFreshPairingRecord(payload) {
+    if (payload && payload.instance && payload.instance !== PAIRING_INSTANCE_ID) return false;
+    if (payload && !payload.instance) return false; // written by an older run
     if (!payload?.code) return false;
     const ts = Date.parse(payload.timestamp || '');
     if (!ts || Number.isNaN(ts)) return false;
@@ -194,7 +246,7 @@ function readPairingCodeRecord(nexusDevNumber) {
     try {
         if (fs.existsSync(sessionFile)) {
             const payload = JSON.parse(fs.readFileSync(sessionFile, 'utf8'));
-            if (isFreshPairingRecord(payload)) return payload;
+            if (isFreshPairingRecord(payload) && hasLiveHandshake(nexusDevNumber)) return payload;
             try { fs.unlinkSync(sessionFile); } catch {}
         }
     } catch (error) {
@@ -205,7 +257,7 @@ function readPairingCodeRecord(nexusDevNumber) {
         if (fs.existsSync(LEGACY_PAIRING_FILE)) {
             const payload = JSON.parse(fs.readFileSync(LEGACY_PAIRING_FILE, 'utf8'));
             if (payload?.number === nexusDevNumber) {
-                if (isFreshPairingRecord(payload)) return payload;
+                if (isFreshPairingRecord(payload) && hasLiveHandshake(nexusDevNumber)) return payload;
                 try { fs.unlinkSync(LEGACY_PAIRING_FILE); } catch {}
             }
         }
@@ -220,6 +272,7 @@ function writePairingCodeRecord(nexusDevNumber, code) {
     const payload = {
         number: nexusDevNumber,
         code,
+        instance: PAIRING_INSTANCE_ID,
         timestamp: new Date().toISOString()
     };
 
@@ -447,6 +500,11 @@ function forceCleanupSession(nexusDevNumber, opts = {}) {
     // creds. The pairing side receiving a 401 only means "your socket was
     // replaced by the bot you just launched" — deleting the folder here wiped a
     // perfectly good session out from under a running bot and forced a re-pair.
+    if (!opts.force && isPairingInProgress(nexusDevNumber)) {
+        console.log(chalk.gray(`\u{1F6E1}\uFE0F Not clearing ${nexusDevNumber}: a pairing attempt is in progress.`));
+        return false;
+    }
+
     if (!opts.force && !ownership.mayWipe(nexusDevNumber, ownership.OWNER_PAIRING)) {
         console.log(chalk.gray(`🛡️ Not clearing ${nexusDevNumber}: session is owned by its running bot.`));
         return false;
@@ -519,6 +577,7 @@ function cleanupExpiredSessions() {
             const credsPath = path.join(folderPath, 'creds.json');
             const tracker = rentbotTracker.get(folder);
             if (ownership.isOwnedByBot(folder)) return; // a bot is running on it
+            if (isPairingInProgress(folder)) return;    // mid-handshake, hands off
             if (tracker && tracker.disconnected) {
                 console.log(chalk.yellow(`🗑️ Cleaning up disconnected session: ${folder}`));
                 deleteFolderRecursive(folderPath);
@@ -679,6 +738,8 @@ async function startpairing(nexusDevNumber) {
     // A fresh pairing attempt clears the purge tombstone, otherwise the freshly
     // created session would still be reported as "not paired".
     recentlyPurged.delete(nexusDevNumber);
+    // Protect the half-written session for the whole handshake.
+    beginPairingWindow(nexusDevNumber);
 
     const version = await getWAVersion();
     
@@ -1315,6 +1376,7 @@ async function startpairing(nexusDevNumber) {
                     tracker.disconnected = true;
                 }
                 markPurged(nexusDevNumber);
+                endPairingWindow(nexusDevNumber);
                 ownership.release(nexusDevNumber);
                 forceCleanupSession(nexusDevNumber, { force: true });
                 try { require('./deploy/botSelectionStore').clearSelection(nexusDevNumber); } catch {}
@@ -1338,7 +1400,8 @@ async function startpairing(nexusDevNumber) {
                 if (tracker.pairRestarts <= 2) {
                     console.log(chalk.yellow(`🔁 401 while pairing ${nexusDevNumber} — restarting with a fresh session (${tracker.pairRestarts}/2)`));
                     const restarts = tracker.pairRestarts;
-                    forceCleanupSession(nexusDevNumber);
+                    endPairingWindow(nexusDevNumber);
+                    forceCleanupSession(nexusDevNumber, { force: true });
                     await sleep(2500);
                     queuePairing(nexusDevNumber).catch(() => {});
                     const t2 = rentbotTracker.get(nexusDevNumber);
@@ -1346,7 +1409,8 @@ async function startpairing(nexusDevNumber) {
                     return;
                 }
                 console.log(chalk.red(`❌ Pairing rejected repeatedly for ${nexusDevNumber}`));
-                forceCleanupSession(nexusDevNumber);
+                endPairingWindow(nexusDevNumber);
+                forceCleanupSession(nexusDevNumber, { force: true });
                 return;
             }
 
@@ -1372,7 +1436,8 @@ async function startpairing(nexusDevNumber) {
                 tracker.sessionInvalid = true;
                 console.log(chalk.yellow(`🗑️ Force cleaning session for ${nexusDevNumber}...`));
                 
-                forceCleanupSession(nexusDevNumber);
+                endPairingWindow(nexusDevNumber);
+                forceCleanupSession(nexusDevNumber, { force: true });
                 
                 tracker.disconnected = true;
                 tracker.connection = null;
@@ -1402,6 +1467,7 @@ async function startpairing(nexusDevNumber) {
                 // web UI stops claiming the number is still paired.
                 tracker.loggedOut = true;
                 markPurged(nexusDevNumber);
+                endPairingWindow(nexusDevNumber);
                 ownership.release(nexusDevNumber);
                 forceCleanupSession(nexusDevNumber, { force: true });
                 // Device unlinked from the phone == unpaired: release the lock.
@@ -1435,6 +1501,7 @@ async function startpairing(nexusDevNumber) {
                 }
             }
         } else if (connection === "open") {
+            endPairingWindow(nexusDevNumber);
             if (tracker) { tracker.pairedAt = Date.now(); tracker.reauthTried = false; }
             console.log(chalk.bgGreen.black(`✅ Paired: ${nexusDevNumber}`));
             tracker.retryCount = 0;
@@ -1658,6 +1725,9 @@ module.exports = {
     waitForPairingResult,
     readPairingCodeRecord,
     hasPairedSession,
+    isPairingInProgress,
+    beginPairingWindow,
+    endPairingWindow,
     isSessionLive,
     getSessionState,
     unpairSession,
