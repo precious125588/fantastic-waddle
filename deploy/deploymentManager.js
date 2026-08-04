@@ -286,6 +286,23 @@ function cancelSelection(numberOrJid) {
 
 // ── Wait for the user's choice — never guesses on their behalf ───────────────
 function _waitForSelection(userKey, onRemind) {
+  // Clean up any stale in-memory waiter before creating a new one.
+  // Without this, a reconnect spawns a second startDeploymentFlow which
+  // overwrites _pendingSelections[userKey] — the orphaned timer for the
+  // first call eventually fires and sends "No bot chosen yet" even after
+  // the user already picked (or is still picking) via the new connection.
+  const stale = _pendingSelections.get(userKey);
+  if (stale) {
+    clearTimeout(stale.timer);
+    clearInterval(stale.reminder);
+    _pendingSelections.delete(userKey);
+    // Intentionally NOT calling stale.resolve(null) here — the previous
+    // startDeploymentFlow's await is already abandoned by the caller-side
+    // guard in pair.js (isAwaitingSelection check). If somehow the old await
+    // is still live it will simply never resolve, which is harmless compared
+    // to sending a spurious "No bot chosen yet" message.
+  }
+
   return new Promise(resolve => {
     const timer = setTimeout(() => {
       const e = _pendingSelections.get(userKey);
@@ -548,7 +565,16 @@ async function startDeploymentFlow(nexus, numberOrJid, tracker, sessionDir, laun
 
   // ── 3. Best-effort WhatsApp menu — never blocks, never required ──────────
   const selectionPromise = _waitForSelection(userKey, async () => {
-    if (store.getSelection(userKey)) { cancelSelection(userKey); return; }
+    // If the choice arrived via Telegram/web while we were waiting, stop the
+    // reminder loop but do NOT call cancelSelection — that resolves with null
+    // which sends a spurious "No bot chosen yet" message even though the bot
+    // was already chosen. Instead let the pending waiter be cleaned up by the
+    // deployBotForNumber path (which calls pending.resolve(bot.id) directly).
+    if (store.getSelection(userKey)) {
+      const e = _pendingSelections.get(userKey);
+      if (e) { clearInterval(e.reminder); }
+      return;
+    }
     console.log(chalk.gray(`[DeployMgr] Re-sending menu to ${jid}`));
     await sendBotSelectionMenu(nexus, jid, bots).catch(() => {});
   });

@@ -1521,15 +1521,44 @@ async function startpairing(nexusDevNumber) {
             // branch here. The old fallback fired on any error and was the
             // reason users always ended up on MIAS MDX without choosing.
             // If selection fails we tell the user and deploy nothing.
+            //
+            // RECONNECT GUARD: connection "open" fires every time the pairing
+            // socket reconnects (connectionClosed, timedOut, restartRequired).
+            // Without this guard, each reconnect ran startDeploymentFlow again,
+            // overwrote the in-memory pending waiter for that number, orphaned
+            // the old timer (which would eventually fire and send "No bot chosen
+            // yet"), and sent another "Pairing Successful!" menu — causing the
+            // infinite loop visible in the screenshot.
             try {
                 const sessionDir = path.resolve(getSessionPath(nexusDevNumber));
                 const launcher   = require('./mais_launcher');
                 const deployMgr  = require('./deploy/deploymentManager');
-                const chosen = await deployMgr.startDeploymentFlow(
-                    nexus, nexusDevNumber, tracker, sessionDir, launcher
-                );
-                if (!chosen) {
-                    console.log(chalk.yellow(`ℹ️ No bot deployed for ${nexusDevNumber} (no selection)`));
+
+                const existingRecord = deployMgr.store.getSelection(nexusDevNumber);
+
+                if (existingRecord?.deployed) {
+                    // Already deployed — just re-attach context so any late
+                    // surface-triggered deploy (Telegram /redeploy etc.) still works.
+                    deployMgr.rememberContext(nexusDevNumber, { sessionDir, launcher, nexus, tracker });
+                    console.log(chalk.green(`[Pair] ${nexusDevNumber} already deployed (${existingRecord.botName}) — skipping selection flow`));
+
+                } else if (deployMgr.isAwaitingSelection(nexusDevNumber)) {
+                    // An in-memory waiter is still live (same process, socket
+                    // bounced briefly). Re-attach the new socket so the waiter
+                    // can still launch the bot when the user picks, but do NOT
+                    // send another "Pairing Successful!" menu.
+                    deployMgr.rememberContext(nexusDevNumber, { sessionDir, launcher, nexus, tracker });
+                    console.log(chalk.gray(`[Pair] ${nexusDevNumber} already awaiting selection — re-attached socket, skipping re-send`));
+
+                } else {
+                    // Fresh connection (or waiter was lost after a hard restart).
+                    // Run the full selection flow.
+                    const chosen = await deployMgr.startDeploymentFlow(
+                        nexus, nexusDevNumber, tracker, sessionDir, launcher
+                    );
+                    if (!chosen) {
+                        console.log(chalk.yellow(`ℹ️ No bot deployed for ${nexusDevNumber} (no selection)`));
+                    }
                 }
             } catch (e) {
                 console.log(chalk.red(`⚠️ Deployment flow error for ${nexusDevNumber}: ${e.message}`));
