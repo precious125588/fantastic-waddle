@@ -700,6 +700,22 @@ async function startpairing(nexusDevNumber) {
     pairingInFlight.add(nexusDevNumber);
     setTimeout(() => pairingInFlight.delete(nexusDevNumber), 15000);
 
+    // ── Clear any stale in-memory pairing code BEFORE the early-return guards ──
+    // Bug: when startpairing() returned early (isOwnedByBot guard below), the
+    // tracker's pairingCode was never reset to null. waitForPairingResult()
+    // then found the old dead code still in tracker.pairingCode and returned
+    // it immediately — user entered that stale code → WhatsApp "Couldn't link".
+    // Clearing it here ensures waitForPairingResult waits for a FRESH code
+    // regardless of which branch is taken below.
+    const _earlyTracker = rentbotTracker.get(nexusDevNumber);
+    if (_earlyTracker) {
+        _earlyTracker.pairingCode  = null;
+        _earlyTracker.pairingError = null;
+    }
+    // Also delete the on-disk pairing code record; it belongs to the previous
+    // socket session and is invalid regardless of TTL.
+    try { fs.unlinkSync(getPairingCodePath(nexusDevNumber)); } catch {}
+
     // ── NEVER open a pairing socket on an identity a bot already owns ────────
     // This was the actual killer: every reconnect path (the 401 "grace
     // reconnect", 515 restart, 440 retry, the generic unknown-reason retry)
@@ -707,11 +723,31 @@ async function startpairing(nexusDevNumber) {
     // to its bot. Two live sockets on one linked-device identity make WhatsApp
     // 401 one of them within seconds, which is exactly the connect/disconnect
     // flap the user saw.
+    //
+    // ADDED: also verify the bot process is actually alive before blocking.
+    // If the launch failed or the child crashed, .owner.json still says "bot"
+    // but nothing is running. Blocking re-pair permanently strands the user —
+    // they can never pair again without manually deleting .owner.json on the
+    // server. Instead, detect the dead process and release the stale claim.
     if (ownership.isOwnedByBot(nexusDevNumber) && fs.existsSync(path.join(getSessionPath(nexusDevNumber), 'creds.json'))) {
-        console.log(chalk.gray(`🛡️ ${nexusDevNumber} is already running as a bot — not opening a second pairing socket.`));
-        pairingInFlight.delete(nexusDevNumber);
-        const t = rentbotTracker.get(nexusDevNumber);
-        return (t && t.connection) || null;
+        let botAlive = false;
+        try {
+            const _launcher = require('./mais_launcher');
+            const _jid = `${String(nexusDevNumber).replace(/\D/g, '')}@s.whatsapp.net`;
+            botAlive = (_launcher.list() || []).some(b => b.number === _jid && b.alive);
+        } catch {}
+
+        if (botAlive) {
+            console.log(chalk.gray(`🛡️ ${nexusDevNumber} is already running as a bot — not opening a second pairing socket.`));
+            pairingInFlight.delete(nexusDevNumber);
+            const t = rentbotTracker.get(nexusDevNumber);
+            return (t && t.connection) || null;
+        }
+
+        // Bot process is dead (launch failed, crash, PM2 restart, etc.) but
+        // ownership was never released. Release it so fresh pairing can proceed.
+        console.log(chalk.yellow(`⚠️ ${nexusDevNumber} ownership says "bot" but no live process — releasing for re-pair`));
+        ownership.release(nexusDevNumber);
     }
 
     // Never stack sockets on the same identity.
