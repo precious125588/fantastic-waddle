@@ -316,7 +316,7 @@ const { spawn, exec } = require('child_process')
 
 // ── Robust AI helper: ZeroAPI → Pollinations → Public APIs ──────────────────
 async function callAI(prompt, systemPrompt = '') {
-    const ZERO_KEY = process.env.ZERO_API_KEY || 'ZERO-ADMIN-4e8a479a618e7a43d0a4edd1';
+    const ZERO_KEY = process.env.ZERO_API_KEY || '';
     
     // 1. ZeroAPI (primary)
     try {

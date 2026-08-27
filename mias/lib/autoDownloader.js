@@ -37,7 +37,7 @@ try {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const ZERO_BASE   = "https://zeroapi2-production.up.railway.app";
-const ZERO_KEY    = process.env.ZERO_API_KEY || "ZERO-ADMIN-4e8a479a618e7a43d0a4edd1";
+const ZERO_KEY    = process.env.ZERO_API_KEY || "";
 const DC_BASE     = "https://apis.davidcyril.name.ng";
 const PREXZY_BASE = "https://apis.prexzyvilla.site";
 

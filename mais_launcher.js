@@ -19,26 +19,20 @@ const running = new Map(); // jid -> { proc, sessionDir, startedAt, restartCount
 const paused  = new Set(); // jids that are intentionally paused (no auto-restart)
 
 function selectedBotEnv(number, supplied = {}) {
-    if (supplied.BOT_ENTRY) return supplied;
-    try {
-        const selectionStore = require('./deploy/botSelectionStore');
-        const selected = selectionStore.getSelection(number);
-        if (!selected?.botId) return supplied;
-
-        const manifestPath = path.join(__dirname, 'bots', selected.botId, 'manifest.json');
-        if (!fs.existsSync(manifestPath)) return supplied;
-        const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-        return {
-            ...(manifest.env || {}),
-            ...supplied,
-            BOT_ENTRY: manifest.entry,
-            BOT_ID: manifest.id,
-            ...(manifest.cwd ? { BOT_CWD: manifest.cwd } : {}),
-        };
-    } catch (error) {
-        console.warn(chalk.yellow(`[Launcher] Could not restore selected bot for ${number}: ${error.message}`));
-        return supplied;
-    }
+    // A paired MD is always MIAS. Legacy bot-selection records are ignored so
+    // stale Telegram/web choices can never boot a second runtime.
+    const {
+        BOT_ENTRY: _ignoredEntry,
+        BOT_CWD: _ignoredCwd,
+        BOT_ID: _ignoredId,
+        ...safeSupplied
+    } = supplied || {};
+    return {
+        ...safeSupplied,
+        BOT_ENTRY: 'mias/index.js',
+        BOT_ID: 'mias-mdx',
+        BOT_NAME: process.env.BOT_NAME || 'MIAS MDX',
+    };
 }
 
 function isAlive(p) {
@@ -59,25 +53,8 @@ async function _launch(number, sessionDir, envOverrides = {}) {
     const existing     = running.get(number);
     const restartCount = existing ? (existing.restartCount || 0) : 0;
 
-    // Restore the locked bot choice when this launch comes from server startup,
-    // reconnect, resume, or an automatic child restart.
+    // Normalize every launch (startup, reconnect, resume, auto-restart) to MIAS.
     envOverrides = selectedBotEnv(number, envOverrides);
-
-    // ── Locked selection always wins ─────────────────────────────────────────
-    // Two surfaces (WhatsApp menu, Telegram, web panel) could each pass their
-    // own BOT_ENTRY for the same number. Whatever is persisted in
-    // bot_selections.json is the single source of truth, so a stale/racing
-    // caller can never boot the *other* bot against the same session.
-    try {
-        const selectionStore = require('./deploy/botSelectionStore');
-        const locked = selectionStore.getSelection(number);
-        if (locked?.botId && envOverrides.BOT_ID && envOverrides.BOT_ID !== locked.botId) {
-            console.warn(chalk.yellow(
-                `[Launcher] ${number} is locked to ${locked.botId} — ignoring conflicting request for ${envOverrides.BOT_ID}`
-            ));
-            envOverrides = selectedBotEnv(number, {});
-        }
-    } catch {}
 
     // Resolve entry point from the manifest (BOT_ENTRY), default to mias/index.js.
     // NOTE: the old code hard-required mias/index.js to exist even when the user
@@ -100,7 +77,7 @@ async function _launch(number, sessionDir, envOverrides = {}) {
         MARK_ONLINE:  process.env.MARK_ONLINE   || '1',
         LOG_DEDUP:    process.env.LOG_DEDUP     || '1',
         SHIELD_NAME:  `bot:${String(number).split('@')[0]}`,
-        ZERO_API_KEY: process.env.ZERO_API_KEY  || 'ZERO-ADMIN-4e8a479a618e7a43d0a4edd1',
+        ZERO_API_KEY: process.env.ZERO_API_KEY || '',
         PORT: '0',
         // Bot-specific env from manifest (branding, theme, version)
         ...safeEnvOverrides,

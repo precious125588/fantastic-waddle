@@ -740,7 +740,7 @@ ${ZUKO.line}
 ┃  ➤ /pair <number> - Connect WhatsApp
 ┃  ➤ /delpair <number> - Remove device
 ┃  ➤ /listpair confirm - List devices
-┃  ➤ /number - Choose your bot 🤖
+┃  ➤ /number - View paired numbers
 ┃  ➤ /ping - Check latency
 ┃  ➤ /runtime - Bot uptime
 ┃  ➤ /profile - Your profile
@@ -1612,76 +1612,8 @@ function selectionKeyboard(number, bots) {
  */
 bot.onText(/^\/number(?:@\w+)?(?:\s+(.+))?$/, requireMembership(async (msg, match) => {
     const chatId = msg.chat.id;
-    const userId = msg.from.id;
-    const arg = (match[1] || '').replace(/\D/g, '');
-
-    if (!selStore || !deployMgr) {
-        return bot.sendMessage(chatId, '⚠️ Bot selection is unavailable on this instance.');
-    }
-
-    const bots = deployMgr.scanBots();
-    if (!bots.length) {
-        return bot.sendMessage(chatId, '⚠️ No bots are installed on this server yet.');
-    }
-
-    const admin = isAdminUser(userId);
-    const rows = selStore.overview().filter(r => admin || String(r.telegram?.id || '') === String(userId));
-
-    // ── No argument: list the numbers this user may act on ───────────────
-    if (!arg) {
-        if (!rows.length) {
-            return bot.sendMessage(chatId,
-                `📭 *NO PAIRED NUMBERS*\n\nPair one first with \`/pair 234XXXXXXXXX\`, then run /number to choose your bot.`,
-                { parse_mode: 'Markdown' });
-        }
-
-        const lines = rows.map(r => {
-            const status = r.botId
-                ? `🔒 ${r.botName}${r.deployed ? ' (running)' : ' (chosen)'}`
-                : '⏳ no bot chosen';
-            return `📱 \`${r.number}\` — ${status}`;
-        });
-
-        const pending = rows.filter(r => !r.botId);
-        const keyboard = pending.length === 1
-            ? selectionKeyboard(pending[0].number, bots)
-            : undefined;
-
-        const listMsg = await bot.sendMessage(chatId,
-            `🤖 *YOUR NUMBERS*\n\n${lines.join('\n')}\n\n` +
-            (pending.length
-                ? (pending.length === 1
-                    ? `Pick the bot for \`${pending[0].number}\` below.`
-                    : `Choose one with \`/number <number>\`.`)
-                : `All numbers are locked to a bot. Unpair and pair again to change.`),
-            { parse_mode: 'Markdown', reply_markup: keyboard });
-        // Register so this selector disappears when the user chooses on ANY
-        // platform (WhatsApp menu, another Telegram chat, the web panel).
-        if (keyboard && listMsg?.message_id) {
-            selRegistry?.registerTelegram?.(pending[0].number, chatId, listMsg.message_id);
-        }
-        return listMsg;
-    }
-
-    // ── With a number ────────────────────────────────────────────────────
-    const record = selStore.get(arg);
-    const owner = record?.telegram;
-    if (!admin && String(owner?.id || '') !== String(userId)) {
-        return bot.sendMessage(chatId, `🚫 \`${arg}\` is not paired to your account.`, { parse_mode: 'Markdown' });
-    }
-
-    if (record?.botId) {
-        return bot.sendMessage(chatId,
-            `🔒 *LOCKED*\n\n📱 \`${arg}\`\n🤖 ${record.botName}\n\n` +
-            `You cannot switch bots. Unpair this number (\`/delpair ${arg}\`) and pair it again to choose a different one.`,
-            { parse_mode: 'Markdown' });
-    }
-
-    const selMsg = await bot.sendMessage(chatId,
-        `🤖 *CHOOSE A BOT*\n\n📱 \`${arg}\`\n\n🔒 Your choice is final until you unpair.\n⚡ Your bot spawns 3 seconds after you tap.`,
-        { parse_mode: 'Markdown', reply_markup: selectionKeyboard(arg, bots) });
-    if (selMsg?.message_id) selRegistry?.registerTelegram?.(arg, chatId, selMsg.message_id);
-    return selMsg;
+    return bot.sendMessage(chatId,
+        'Every paired number runs MIAS MDX automatically. No bot selection is required.');
 }));
 
 
@@ -1696,6 +1628,9 @@ bot.on('callback_query', async (callbackQuery) => {
 
     // ── Bot selection: bsel|<number>|<botId> ─────────────────────────────
     if (data && data.startsWith('bsel|')) {
+        await bot.answerCallbackQuery(callbackQuery.id, { text: 'Bot selection has been removed.', show_alert: true });
+        return;
+        /*
         const [, number, botId] = data.split('|');
 
         if (!selStore || !deployMgr) {
@@ -1743,6 +1678,7 @@ bot.on('callback_query', async (callbackQuery) => {
             logSafeError('bsel error:', err);
             return editSafeMessageText(`❌ Deployment failed: ${safeErrorMessage(err)}`, { chat_id: chatId, message_id: status.message_id });
         }
+        */
     }
 
     if (data && data.startsWith('gc_verify:')) {

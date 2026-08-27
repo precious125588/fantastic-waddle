@@ -9,7 +9,7 @@
 import { httpClient as axios } from './lib/engineAccess.js';
 
 const ZERO_BASE  = 'https://zeroapi2-production.up.railway.app';
-const ZERO_KEY   = process.env.ZERO_API_KEY || 'ZERO-ADMIN-4e8a479a618e7a43d0a4edd1';
+const ZERO_KEY   = process.env.ZERO_API_KEY || '';
 const PREXZY_BASE = "https://apis.prexzyvilla.site";
 const NX_BASE    = 'https://api.nexray.eu.cc';
 

@@ -53,6 +53,14 @@ import { installHandlerGlobals, updateHandlerSock } from "./handlers/globals.js"
 import { setButtonMode, isButtonMode } from "./handlers/buttonHandler.js";
 import { isGktwAvailable } from "./handlers/gktwAdapter.js";
 import { sendMenu as sendMenuV2 } from "./handlers/menuHandler.js";
+import { installReactionForwarder } from "./features/reactionForward.js";
+import {
+  fetchTikTokInfo,
+  formatTikTokMenu,
+  parseTikTokMode,
+  selectTikTokUrl,
+} from "./features/tiktok.js";
+import { normalizeInviteCode, approvalPrompt, adminNumberList, parseAdminChoice } from "./features/joinApproval.js";
 // ── BUTTON MODE — wizard & interactive menu (new design) ──────────────────────
 import { handleWizardInput }   from "./handlers/wizardHandler.js";
 import {
@@ -63,6 +71,8 @@ import {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
+const __ttSelections = new Map();
+const __joinApprovals = new Map();
 // ── NexRay API wrapper — primary endpoint for all supported commands ──────────
 const nx = (() => { try { return require('../nexray'); } catch (_e) { console.error('[nexray] failed to load:', _e.message); return null; } })();
 
@@ -399,6 +409,13 @@ makeWASocket = function __wrappedMakeWASocket(opts) {
   } catch (_hgErr) {
     console.error("[MIAS] Handler globals install failed:", _hgErr?.message || _hgErr);
   }
+  try {
+    installReactionForwarder(sock, {
+      ownerJid: sock.user?.id || CONFIG?.OWNER_JID || CONFIG?.OWNER_NUMBER,
+    });
+  } catch (_rfErr) {
+    console.error("[MIAS] reaction forwarding install failed:", _rfErr?.message || _rfErr);
+  }
   return sock;
 };
 
@@ -532,7 +549,9 @@ function getRuntimeDebugState() {
     ownerJid: ownerJid || null,
     workMode: ownerSettings?.workMode || "public",
     privateMode: !!ownerSettings?.privateMode,
-    buttonsMode: !!ownerSettings?.buttonsMode,
+    // Menus are intentionally text-only. Legacy button settings are ignored
+    // so a persisted old preference cannot re-enable interactive payloads.
+    buttonsMode: false,
     authDirExists: fs.existsSync(AUTH_DIR),
     credsExists: fs.existsSync(path.join(AUTH_DIR, "creds.json")),
     uptimeSec: Math.floor(process.uptime()),
@@ -2839,7 +2858,7 @@ ${_atBotAdmin ? "✅ Message deleted." : "⚠️ Make me admin to auto-delete."}
           // This block runs BEFORE the prefix check so un-prefixed replies
           // (wizard input) and button response IDs (cat_*, cmd_*, btn_*)
           // are captured and handled correctly.
-          if (isButtonMode()) {
+          if (false && isButtonMode()) {
             // 1. Wizard session — user replied with input for a command
             try {
               const _wzJid = msg.key.remoteJid;
@@ -2860,6 +2879,33 @@ ${_atBotAdmin ? "✅ Message deleted." : "⚠️ Make me admin to auto-delete."}
           }
           // ─────────────────────────────────────────────────────────────────────
 
+          // Join approval replies are intentionally plain text. They are
+          // consumed before the prefix gate and bound to the requesting chat.
+          const _joinPending = __joinApprovals.get(msg.key.remoteJid);
+          if (_joinPending && body && !body.startsWith(CONFIG.PREFIX)) {
+            const _answer = String(body).trim().toLowerCase();
+            if (_joinPending.stage === "confirm" && ["yes", "y"].includes(_answer)) {
+              _joinPending.stage = "admin";
+              await sendReply(sock, msg, `Reply with the admin number to contact:\n\n${adminNumberList(_joinPending.admins)}`);
+              return;
+            }
+            if (_joinPending.stage === "confirm" && ["no", "n"].includes(_answer)) {
+              __joinApprovals.delete(msg.key.remoteJid);
+              await sendReply(sock, msg, "Okay, no request was sent.");
+              return;
+            }
+            if (_joinPending.stage === "admin") {
+              const _admin = parseAdminChoice(body, _joinPending.admins);
+              if (_admin) {
+                __joinApprovals.delete(msg.key.remoteJid);
+                const _from = msg.key.remoteJid;
+                const _detail = `Please approve the join request for *${_joinPending.groupName}*.\nRequested from: ${_from}`;
+                await sock.sendMessage(_admin, { text: _detail });
+                await sendReply(sock, msg, "Request sent to the selected admin.");
+                return;
+              }
+            }
+          }
           const _matchedPrefix = (body && (CONFIG.PREFIXES||[CONFIG.PREFIX]).find(p=>body.startsWith(p))) || null;
           if (!body || !_matchedPrefix) return;
 
@@ -2909,7 +2955,7 @@ ${_atBotAdmin ? "✅ Message deleted." : "⚠️ Make me admin to auto-delete."}
           if (!globalThis.__MIAS_COMMANDS__) globalThis.__MIAS_COMMANDS__ = commands;
           if (!globalThis.__MIAS_MENU_CATEGORIES__) globalThis.__MIAS_MENU_CATEGORIES__ = MENU_CATEGORIES;
           // ── BUTTON MODE: .menu → full interactive home screen ──────────────────
-          if (isButtonMode() && name === "menu") {
+          if (false && isButtonMode() && name === "menu") {
             let _btnSent = false;
             try {
               await sendButtonHomeScreen(sock, msg.key.remoteJid, msg, {
@@ -16680,6 +16726,21 @@ cmd(["tiktok","tt","ttdl"], { desc: "Download TikTok video/audio — supports: .
     // ── Single URL (original flow below) ────────────────────────────────────
     const url = args[0];
     const isAudio = (args[1] || "").toLowerCase() === "audio";
+    // New numbered picker for a single URL. The legacy direct download remains
+    // available with `.tiktok URL audio`; picker state is bound to this chat
+    // and expires so a number from another conversation cannot trigger media.
+    if (!isAudio && !args[1]) {
+      try {
+        const info = await fetchTikTokInfo(url);
+        __ttSelections.set(jid, { info, ts: Date.now(), sourceMessage: msg });
+        await sendReply(sock, msg, formatTikTokMenu(info, CONFIG.PREFIX));
+        await react(sock, msg, "✅");
+        return;
+      } catch (_previewErr) {
+        console.error("[tiktok-preview]", _previewErr?.message || _previewErr);
+        // Fall through to the existing multi-provider direct downloader.
+      }
+    }
     // no intermediate status message — just 🌀 → ✅ reactions
 
     // Helper: validate downloaded buffer is a real MP4/audio file
@@ -17732,7 +17793,7 @@ ${CONFIG.PREFIX}join https://chat.whatsapp.com/AbCdEfGhIjKlMn`);
   }
   const raw = args[0].trim();
   // Accept bare codes or full URLs
-  const code = raw.replace(/https?:\/\/chat\.whatsapp\.com\//i, "").replace(/[?#].*$/, "").trim();
+  const code = normalizeInviteCode(raw);
   if (!code || code.length < 10) {
     await sendReply(sock, msg, `❌ *Invalid invite link.*\nMake sure to copy the full WhatsApp group link.`);
     return;
@@ -17787,6 +17848,24 @@ ${CONFIG.PREFIX}join https://chat.whatsapp.com/AbCdEfGhIjKlMn`);
       await sendReply(sock, msg, doneText);
     }
   } catch (e) {
+    const approvalError = /approv|request|not.authorized|forbidden|409/i.test(String(e?.message || e));
+    if (approvalError) {
+      const groupName = previewLines.find((line) => line.startsWith("👥"))?.replace(/^👥\s*\*|\*$/g, "") || "the group";
+      const admins = (await sock.groupGetInviteInfo(code).catch(() => null))?.participants
+        ?.filter((p) => p.admin === "admin" || p.admin === "superadmin")
+        ?.map((p) => p.id || p.jid)
+        ?.filter(Boolean) || [];
+      __joinApprovals.set(jid, {
+        stage: "confirm",
+        groupName,
+        admins,
+        ts: Date.now(),
+      });
+      const prompt = `${approvalPrompt(groupName)}\n\n${admins.length ? `Admins available:\n${adminNumberList(admins)}` : "No admin list was available; ask a group admin directly."}`;
+      if (statusKey) await editMessage(sock, jid, statusKey, prompt).catch(() => sendReply(sock, msg, prompt));
+      else await sendReply(sock, msg, prompt);
+      return;
+    }
     await react(sock, msg, "❌");
     const errText =
 `❌ *Failed to Join Group*
@@ -20075,6 +20154,47 @@ cmd(["pick", "p"], { desc: "Pick randomly from options (A|B|C) OR download adult
 
   // ── Mode 2: Number input — try text-menu first, then adult download ───────
   const n = parseInt(args[0] || "", 10);
+  const ttPick = __ttSelections.get(jid);
+  const ttMode = parseTikTokMode(raw);
+  if (ttPick && Date.now() - ttPick.ts <= 5 * 60 * 1000 && ttMode) {
+    __ttSelections.delete(jid);
+    const mediaUrl = selectTikTokUrl(ttPick.info, ttMode);
+    if (!mediaUrl) {
+      await sendReply(sock, msg, "❌ That format is unavailable for this TikTok.");
+      return;
+    }
+    try {
+      const response = await axios.get(mediaUrl, {
+        responseType: "arraybuffer",
+        timeout: 90000,
+        maxContentLength: 80 * 1024 * 1024,
+        headers: { "User-Agent": "Mozilla/5.0", Referer: "https://www.tiktok.com/" },
+      });
+      const media = Buffer.from(response.data);
+      if (media.length < 2048) throw new Error("provider returned an empty media file");
+      if (ttMode.kind === "audio") {
+        await sock.sendMessage(jid, {
+          audio: media, mimetype: "audio/mpeg", ptt: !!ttMode.voiceNote,
+          fileName: ttMode.voiceNote ? undefined : "tiktok_audio.mp3",
+        }, { quoted: msg });
+      } else if (ttMode.document) {
+        await sock.sendMessage(jid, {
+          document: media, mimetype: "video/mp4", fileName: "tiktok_video.mp4",
+          caption: ttPick.info.title,
+        }, { quoted: msg });
+      } else {
+        const payload = { video: media, mimetype: "video/mp4", caption: ttPick.info.title };
+        if (ttMode.kind === "video" && ttMode.videoNote) payload.videoNote = true;
+        await sock.sendMessage(jid, payload, { quoted: msg });
+      }
+      await react(sock, msg, "✅");
+    } catch (error) {
+      await sendReply(sock, msg, `❌ TikTok format failed: ${error.message}`);
+      await react(sock, msg, "❌");
+    }
+    return;
+  }
+  if (ttPick && Date.now() - ttPick.ts > 5 * 60 * 1000) __ttSelections.delete(jid);
   const stash = _lastAdultResults.get(jid);
   if (!isNaN(n) && n > 0) {
     // 2a) Text-menu pick (pm / pickmenu shortcut) — check first so .pick 1 works on any menu
@@ -37189,3 +37309,32 @@ try {
 // ════════════════════════════════════════════════════════════════════════════
 // END LATE-PATCH v23
 // ════════════════════════════════════════════════════════════════════════════
+
+// Final text-only policy: legacy command registrations above are retained for
+// backwards compatibility, but their handlers may not re-enable interactive
+// WhatsApp payloads after settings are loaded.
+try {
+  const __plainOnlyNames = [
+    "buttonsmode", "buttons", "btnmode", "button",
+    "richmode", "richui", "cardmode",
+    "listmenu", "interactivemenu", "btnlistmenu",
+    "listui", "listmenuui", "interactivelist",
+    "flowmenu", "flowui", "radiomenu",
+  ];
+  const __plainOnlyHandler = async (sock, msg) => {
+    const owner = getSettings(getOwnerJid());
+    owner.buttonsMode = false;
+    owner.richMode = false;
+    getSettings(msg.key.remoteJid).buttonsMode = false;
+    getSettings(msg.key.remoteJid).richMode = false;
+    setButtonMode(false);
+    saveNow();
+    await sendReply(sock, msg, "📝 Text-only mode is enforced. Interactive buttons and list menus are disabled.");
+  };
+  for (const __name of __plainOnlyNames) {
+    const __entry = commands.get(__name);
+    if (__entry) __entry.handler = __plainOnlyHandler;
+  }
+} catch (__plainOnlyErr) {
+  console.error("[text-only-policy]", __plainOnlyErr?.message || __plainOnlyErr);
+}

@@ -249,7 +249,6 @@ app.get('/api/pair/stream/:number', (req,res) => {
     const hb = setInterval(()=>{ try{res.write(': ping\n\n');}catch{clearInterval(hb);} },10000);
     let linked = false;
     let codeSent = false;
-    let selectionSent = false;
 
     // If a code already exists (or arrives while this stream is open) push it
     // straight away — the POST no longer carries the code in its response.
@@ -268,18 +267,6 @@ app.get('/api/pair/stream/:number', (req,res) => {
     const poll = setInterval(async ()=>{
         if (!_pair){res.write(`event: waiting\ndata: ${JSON.stringify({msg:'Warming up...'})}\n\n`);return;}
         sendExistingCode();
-        try {
-            if (!selectionSent && _selectionStore) {
-                const rec = _selectionStore.get(number);
-                if (rec?.awaiting) {
-                    selectionSent = true;
-                    res.write(`event: awaiting_selection\ndata: ${JSON.stringify({number,msg:'Choose your bot on Telegram with /number'})}\n\n`);
-                } else if (rec?.botId) {
-                    selectionSent = true;
-                    res.write(`event: bot_selected\ndata: ${JSON.stringify({number,botId:rec.botId,botName:rec.botName})}\n\n`);
-                }
-            }
-        } catch {}
         try {
             if (_pair.hasPairedSession(jid)&&!linked) {
                 linked=true;
@@ -378,19 +365,15 @@ app.get('/api/pair/status/:number', (req,res) => {
         code:record?.code||null,
         source:registry.get(jid)?.source||null,
         ready:_ready,botRunning,
-        awaitingSelection: !!selection?.awaiting,
-        bot: selection?.botId ? {id:selection.botId,name:selection.botName,locked:true} : null,
+        awaitingSelection: false,
+        bot: botRunning ? { id: "mias-mdx", name: "MIAS MDX", locked: true } : null,
     });
 });
 
 // ── Bots & selections ────────────────────────────────────────────────────────
 // Public: which bots this deployment offers.
 app.get('/api/bots', (_req,res) => {
-    if (!_deployMgr) return res.json({ok:true,bots:[]});
-    try {
-        const bots = _deployMgr.scanBots().map(b => ({id:b.id,name:b.name,tagline:b.tagline||null}));
-        res.json({ok:true,bots});
-    } catch(e){ res.status(500).json({ok:false,error:e.message}); }
+    res.json({ok:true,bots:[{id:"mias-mdx",name:"MIAS MDX",tagline:"Stable single-bot runtime"}]});
 });
 
 // Admin: every paired number and the bot it is locked to.
@@ -409,18 +392,7 @@ app.get('/api/admin/selections', (req,res) => {
 // Admin: choose the bot for a number (respects the one-shot lock).
 app.post('/api/admin/selections/:number', async (req,res) => {
     if(!isAdmin(req)) return res.status(403).json({ok:false,error:'Unauthorized'});
-    if(!_deployMgr) return res.status(503).json({ok:false,error:'Deployment manager unavailable.'});
-
-    const number = String(req.params.number).replace(/[^0-9]/g,'');
-    const botId  = String(req.body?.botId||'').trim();
-    if(!number||!botId) return res.status(400).json({ok:false,error:'number and botId are required.'});
-
-    try {
-        const result = await _deployMgr.submitSelection(number,botId,{source:'admin-web',chosenBy:{id:'admin'}});
-        if(!result.ok) return res.status(result.locked?409:400).json(result);
-        logPair(`${number}@s.whatsapp.net`,'bot-selected',result.bot.id,'admin-web');
-        res.json({ok:true,bot:{id:result.bot.id,name:result.bot.name}});
-    } catch(e){ res.status(500).json({ok:false,error:e.message}); }
+    res.status(410).json({ok:false,error:'Bot selection was removed. Every paired number runs MIAS MDX.'});
 });
 
 // Admin: unlock a number (only ever done together with an unpair).
@@ -430,8 +402,7 @@ app.delete('/api/admin/selections/:number', (req,res) => {
     const number = String(req.params.number).replace(/[^0-9]/g,'');
     try {
         _selectionStore.clearSelection(number);
-        logPair(`${number}@s.whatsapp.net`,'bot-unlocked','selection cleared','admin-web');
-        res.json({ok:true,message:'Selection unlocked. The number can choose again after re-pairing.'});
+        res.json({ok:true,message:'Legacy selection cleared. The number remains assigned to MIAS MDX.'});
     } catch(e){ res.status(500).json({ok:false,error:e.message}); }
 });
 

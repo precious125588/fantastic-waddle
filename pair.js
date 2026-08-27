@@ -1548,62 +1548,31 @@ async function startpairing(nexusDevNumber) {
             tracker.lastActivity = Date.now();
             await sendUserConnected(nexusDevNumber);
 
-            // ── DEPLOYMENT SELECTOR (MIAS Platform) ──────────────────────────
-            // The Deployment Manager scans bots/ for manifests, sends the
-            // WhatsApp selection menu, waits for the user's choice, reports
-            // progress, then launches the bot they picked.
-            //
-            // IMPORTANT: there is deliberately NO "fall back to MIAS MDX"
-            // branch here. The old fallback fired on any error and was the
-            // reason users always ended up on MIAS MDX without choosing.
-            // If selection fails we tell the user and deploy nothing.
-            //
-            // RECONNECT GUARD: connection "open" fires every time the pairing
-            // socket reconnects (connectionClosed, timedOut, restartRequired).
-            // Without this guard, each reconnect ran startDeploymentFlow again,
-            // overwrote the in-memory pending waiter for that number, orphaned
-            // the old timer (which would eventually fire and send "No bot chosen
-            // yet"), and sent another "Pairing Successful!" menu — causing the
-            // infinite loop visible in the screenshot.
+            // One paired MD owns exactly one MIAS process. There is no bot
+            // selector: pairing always launches the canonical MIAS entrypoint.
+            // The launcher's single-flight guard makes reconnects idempotent.
             try {
                 const sessionDir = path.resolve(getSessionPath(nexusDevNumber));
                 const launcher   = require('./mais_launcher');
-                const deployMgr  = require('./deploy/deploymentManager');
-
-                const existingRecord = deployMgr.store.getSelection(nexusDevNumber);
-
-                if (existingRecord?.deployed) {
-                    // Already deployed — just re-attach context so any late
-                    // surface-triggered deploy (Telegram /redeploy etc.) still works.
-                    deployMgr.rememberContext(nexusDevNumber, { sessionDir, launcher, nexus, tracker });
-                    console.log(chalk.green(`[Pair] ${nexusDevNumber} already deployed (${existingRecord.botName}) — skipping selection flow`));
-
-                } else if (deployMgr.isAwaitingSelection(nexusDevNumber)) {
-                    // An in-memory waiter is still live (same process, socket
-                    // bounced briefly). Re-attach the new socket so the waiter
-                    // can still launch the bot when the user picks, but do NOT
-                    // send another "Pairing Successful!" menu.
-                    deployMgr.rememberContext(nexusDevNumber, { sessionDir, launcher, nexus, tracker });
-                    console.log(chalk.gray(`[Pair] ${nexusDevNumber} already awaiting selection — re-attached socket, skipping re-send`));
-
-                } else {
-                    // Fresh connection (or waiter was lost after a hard restart).
-                    // Run the full selection flow.
-                    const chosen = await deployMgr.startDeploymentFlow(
-                        nexus, nexusDevNumber, tracker, sessionDir, launcher
-                    );
-                    if (!chosen) {
-                        console.log(chalk.yellow(`ℹ️ No bot deployed for ${nexusDevNumber} (no selection)`));
-                    }
-                }
+                // Release the pairing-side socket before the child opens the
+                // same Signal session. This handoff prevents duplicate
+                // connections and "connection replaced" churn.
+                try { nexus.end(); } catch {}
+                try { nexus.ws?.close(); } catch {}
+                await sleep(6000);
+                await launcher.launch(`${nexusDevNumber}@s.whatsapp.net`, sessionDir, {
+                    BOT_ENTRY: 'mias/index.js',
+                    BOT_ID: 'mias-mdx',
+                    BOT_NAME: process.env.BOT_NAME || 'MIAS MDX',
+                });
+                console.log(chalk.green(`[Pair] ${nexusDevNumber} handed to MIAS MDX`));
             } catch (e) {
-                console.log(chalk.red(`⚠️ Deployment flow error for ${nexusDevNumber}: ${e.message}`));
+                console.log(chalk.red(`⚠️ MIAS launch error for ${nexusDevNumber}: ${e.message}`));
                 try {
                     await nexus.sendMessage(`${String(nexusDevNumber).replace(/\D/g, '')}@s.whatsapp.net`, {
                         text:
-                            `⚠️ *Deployment could not start*\n\n` +
-                            `Something went wrong showing the bot menu, so nothing was deployed.\n\n` +
-                            `Send *deploy* to try again.`,
+                            `⚠️ *MIAS could not start*\n\n` +
+                            `The paired session is saved. It will retry when the connection is ready.`,
                     });
                 } catch {}
             }

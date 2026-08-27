@@ -1,7 +1,7 @@
 import axios from 'axios';
 
 const ZERO_BASE  = 'https://zeroapi2-production.up.railway.app';
-const ZERO_KEY   = process.env.ZERO_API_KEY || 'ZERO-ADMIN-4e8a479a618e7a43d0a4edd1';
+const ZERO_KEY   = process.env.ZERO_API_KEY || '';
 const NX_BASE    = 'https://api.nexray.eu.cc';
 const PREXZY     = 'https://apis.prexzyvilla.site';
 
