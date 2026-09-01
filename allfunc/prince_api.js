@@ -57,4 +57,39 @@ async function princeFun(category) {
   return JSON.stringify(res).slice(0, 300);
 }
 
-module.exports = { princeGet, princeResult, princeFun, BASE, KEY };
+/**
+ * Pick a download URL out of a Prince API `result` object.
+ * The upstream API is inconsistent about the field name
+ * (`downloadUrl`, `download_url`, `dl_link`, `apkUrl`, ...), which is why a
+ * lot of download commands used to report failure on a successful response.
+ */
+function pickDownloadUrl(res) {
+  if (!res) return null;
+  if (typeof res === 'string') return /^https?:\/\//i.test(res) ? res : null;
+  const keys = [
+    'downloadUrl','download_url','download','dl_link','dllink','dl','url','link',
+    'directUrl','direct_url','direct','apkUrl','apk','audio','video','hd','sd',
+    'file','fileUrl','media','result',
+  ];
+  for (const k of keys) {
+    const v = res[k];
+    if (typeof v === 'string' && /^https?:\/\//i.test(v)) return v;
+  }
+  for (const k of ['variants','formats','links','medias']) {
+    const arr = res[k];
+    if (Array.isArray(arr)) {
+      const hit = arr.map(x => (typeof x === 'string' ? x : x?.url || x?.link || x?.downloadUrl))
+                     .find(u => typeof u === 'string' && /^https?:\/\//i.test(u));
+      if (hit) return hit;
+    }
+  }
+  return null;
+}
+
+/** Some endpoints answer 200 + success:true with an error payload inside result. */
+function isApiErrorResult(res) {
+  return !!(res && typeof res === 'object' && (res.error || res.Error) && !pickDownloadUrl(res));
+}
+
+module.exports = { princeGet, princeResult, princeFun, pickDownloadUrl, isApiErrorResult, BASE, KEY };
+

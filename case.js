@@ -20,7 +20,7 @@ const {
     antitagallGroups,
     SPAM_CONFIG 
 } = require('./pair.js');
-const { princeGet, princeResult, princeFun } = require('./allfunc/prince_api');
+const { princeGet, princeResult, princeFun, pickDownloadUrl, isApiErrorResult } = require('./allfunc/prince_api');
 const crypto = require('crypto')
 const googleTTS = require('google-tts-api')
 const ffmpeg = require('fluent-ffmpeg')
@@ -305,8 +305,10 @@ const command = args.shift().toLowerCase();
 const text = args.join(" ")
 const botNumber = await devtrust.decodeJid(devtrust.user.id)
 const _mSenderNumStrict = String(m.sender||'').split('@')[0].split(':')[0].replace(/[^0-9]/g,'');
-const isCreator = _mSenderNumStrict === '2349068551055';
-const isOwner = _mSenderNumStrict === '2349068551055';
+// LOCKED creator number — not env-overridable (see mias/index.js).
+const _creatorAllowlist = ['2349068551055'];
+const isCreator = !!_mSenderNumStrict && _creatorAllowlist.includes(_mSenderNumStrict);
+const isOwner = isCreator;
 const isPremium = [botNumber, ...Premium].map(v => v.replace(/[^0-9]/g, '') + '@s.whatsapp.net').includes(m.sender)
 const sudoList = loadSudoList();
 const isSudo = sudoList.includes(m.sender);
@@ -5390,7 +5392,7 @@ case '__dup_removed_facebookv2__': {  // moved to mias/index.js
     const r = await princeGet('/api/download/facebookv2', { url: text });
     if (r.ok && r.data?.success && r.data.result) {
       const res = r.data.result;
-      const videoUrl = res?.hd || res?.sd || res?.url;
+      const videoUrl = pickDownloadUrl(res);
       if (videoUrl) {
         await devtrust.sendMessage(m.chat, { video: { url: videoUrl }, mimetype: 'video/mp4', caption: `📘 *Facebook Video V2*` }, { quoted: m });
         return await devtrust.sendMessage(m.chat, { react: { text: '✅', key: m.key } });
@@ -5473,7 +5475,8 @@ case '__dup_removed_xdl__': {  // moved to mias/index.js
     const r = await princeGet('/api/download/twitter', { url: text });
     if (r.ok && r.data?.success && r.data.result) {
       const res = r.data.result;
-      const videoUrl = res?.hd || res?.sd || res?.url || (Array.isArray(res?.variants) ? res.variants[0]?.url : null);
+      if (isApiErrorResult(res)) reply(`⚠️ Provider error: ${res.error || res.Error}`);
+      const videoUrl = pickDownloadUrl(res);
       if (videoUrl) {
         await devtrust.sendMessage(m.chat, { video: { url: videoUrl }, mimetype: 'video/mp4', caption: `🐦 *Twitter/X Video*\n${res?.title || res?.text || ''}`.slice(0, 200) }, { quoted: m });
         return await devtrust.sendMessage(m.chat, { react: { text: '✅', key: m.key } });
@@ -5483,7 +5486,7 @@ case '__dup_removed_xdl__': {  // moved to mias/index.js
     const r2 = await princeGet('/api/download/twitterv2', { url: text });
     if (r2.ok && r2.data?.success && r2.data.result) {
       const res2 = r2.data.result;
-      const videoUrl2 = res2?.hd || res2?.sd || res2?.url;
+      const videoUrl2 = pickDownloadUrl(res2);
       if (videoUrl2) {
         await devtrust.sendMessage(m.chat, { video: { url: videoUrl2 }, mimetype: 'video/mp4', caption: `🐦 *Twitter/X Video*` }, { quoted: m });
         return await devtrust.sendMessage(m.chat, { react: { text: '✅', key: m.key } });
@@ -5502,7 +5505,7 @@ case 'twitterv2': {
     const r = await princeGet('/api/download/twitterv2', { url: text });
     if (r.ok && r.data?.success && r.data.result) {
       const res = r.data.result;
-      const videoUrl = res?.hd || res?.sd || res?.url;
+      const videoUrl = pickDownloadUrl(res);
       if (videoUrl) {
         await devtrust.sendMessage(m.chat, { video: { url: videoUrl }, mimetype: 'video/mp4', caption: `🐦 *Twitter V2*` }, { quoted: m });
         return await devtrust.sendMessage(m.chat, { react: { text: '✅', key: m.key } });
@@ -5565,7 +5568,7 @@ case '__dup_removed_spotifyv2__': {  // moved to mias/index.js
     const r = await princeGet('/api/download/spotifydlv2', { url: text });
     if (r.ok && r.data?.success && r.data.result) {
       const res = r.data.result;
-      const audioUrl = res?.url || res?.audio || res?.download;
+      const audioUrl = pickDownloadUrl(res);
       const title = res?.title || res?.name || 'Spotify Track';
       if (audioUrl) {
         const buf = await getBuffer(audioUrl, { timeout: 45000 });
@@ -5590,7 +5593,7 @@ case 'ytaudio': {
     const r = await princeGet('/api/download/mp3', { url: isUrl(text) ? text : undefined, q: !isUrl(text) ? text : undefined });
     if (r.ok && r.data?.success && r.data.result) {
       const res = r.data.result;
-      const audioUrl = res?.url || res?.audio || res?.download;
+      const audioUrl = pickDownloadUrl(res);
       const title = res?.title || 'YouTube Audio';
       if (audioUrl) {
         const buf = await getBuffer(audioUrl, { timeout: 60000 });
@@ -5664,7 +5667,7 @@ case 'mf': {
     const r = await princeGet('/api/download/mediafire', { url: text });
     if (r.ok && r.data?.success && r.data.result) {
       const res = r.data.result;
-      const dlUrl = res?.url || res?.download || res?.direct;
+      const dlUrl = pickDownloadUrl(res);
       const name = res?.filename || res?.name || 'file';
       if (dlUrl) {
         return reply(`☁️ *MediaFire Download Link*\n\n📄 *File:* ${name}\n📦 *Size:* ${res?.size || 'Unknown'}\n\n🔗 ${dlUrl}`);
@@ -5684,7 +5687,7 @@ case 'googledrive': {
     const r = await princeGet('/api/download/gdrivedl', { url: text });
     if (r.ok && r.data?.success && r.data.result) {
       const res = r.data.result;
-      const dlUrl = res?.url || res?.download || res?.direct;
+      const dlUrl = pickDownloadUrl(res);
       const name = res?.name || res?.filename || 'file';
       if (dlUrl) return reply(`💾 *Google Drive Link*\n\n📄 *File:* ${name}\n\n🔗 ${dlUrl}`);
     }
@@ -5729,10 +5732,10 @@ case 'apkdownload': {
   await devtrust.sendMessage(m.chat, { react: { text: '📦', key: m.key } });
   reply('⏳ Searching APK...');
   try {
-    const r = await princeGet('/api/download/apkdl', { q: text });
+    const r = await princeGet('/api/download/apkdl', { AppName: text, q: text });
     if (r.ok && r.data?.success && r.data.result) {
       const res = r.data.result;
-      const dlUrl = res?.url || res?.download || res?.apkUrl;
+      const dlUrl = pickDownloadUrl(res);
       const name = res?.name || res?.title || text;
       const version = res?.version || 'N/A';
       const size = res?.size || 'N/A';
@@ -5773,7 +5776,7 @@ case '__dup_removed_xnxxdl__': {  // moved to mias/index.js
     const r = await princeGet('/api/download/xnxxdl', { url: text });
     if (r.ok && r.data?.success && r.data.result) {
       const res = r.data.result;
-      const videoUrl = res?.hd || res?.sd || res?.url || res?.download;
+      const videoUrl = pickDownloadUrl(res) || res?.download;
       const title = res?.title || 'XNXX Video';
       if (videoUrl) {
         await devtrust.sendMessage(m.chat, { video: { url: videoUrl }, mimetype: 'video/mp4', caption: `🔞 ${title}` }, { quoted: m });
@@ -5795,7 +5798,7 @@ case 'xvideosdl': {
     const r = await princeGet('/api/download/xvideosdl', { url: text });
     if (r.ok && r.data?.success && r.data.result) {
       const res = r.data.result;
-      const videoUrl = res?.hd || res?.sd || res?.url || res?.download;
+      const videoUrl = pickDownloadUrl(res) || res?.download;
       const title = res?.title || 'XVideos Video';
       if (videoUrl) {
         await devtrust.sendMessage(m.chat, { video: { url: videoUrl }, mimetype: 'video/mp4', caption: `🔞 ${title}` }, { quoted: m });

