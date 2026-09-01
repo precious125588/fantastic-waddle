@@ -208,11 +208,13 @@ export async function blockContact(sock, msg, args) {
   let waBlocked = false;
   let waError = '';
   try {
-    await sock.updateBlockStatus(target, 'block');
-    waBlocked = true;
+    const { setBlockStatus } = await import('../../lib/blocklist.js');
+    const r = await setBlockStatus(sock, target, 'block');
+    waBlocked = r.ok;
+    if (!r.ok) waError = r.error;
   } catch (e) {
     waError = e.message || String(e);
-    console.error(`[Block] updateBlockStatus failed for ${target}:`, waError);
+    console.error(`[Block] block failed for ${target}:`, waError);
   }
 
   if (waBlocked) {
@@ -255,11 +257,13 @@ export async function unblockContact(sock, msg, args) {
   let waUnblocked = false;
   let waError = '';
   try {
-    await sock.updateBlockStatus(target, 'unblock');
-    waUnblocked = true;
+    const { setBlockStatus } = await import('../../lib/blocklist.js');
+    const r = await setBlockStatus(sock, target, 'unblock');
+    waUnblocked = r.ok;
+    if (!r.ok) waError = r.error;
   } catch (e) {
     waError = e.message || String(e);
-    console.error(`[Block] updateBlockStatus unblock failed for ${target}:`, waError);
+    console.error(`[Block] unblock failed for ${target}:`, waError);
   }
 
   // Always remove from local list

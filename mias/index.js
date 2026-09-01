@@ -1700,17 +1700,12 @@ async function connectToWA(force = false) {
             if (action === "block") {
               // Try every JID variant — caller could be addressable as @s.whatsapp.net,
               // @lid, or only via the raw caller string baileys gave us.
-              const callerNum = _cleanNum(caller || rawCaller || "");
-              const blockTries = Array.from(new Set([
-                callerNum ? `${callerNum}@s.whatsapp.net` : null,
-                caller,
-                rawCaller,
-                callerNum ? `${callerNum}@lid` : null,
-              ].filter(Boolean)));
-              let didBlock = false; let blockErr = "";
-              for (const v of blockTries) {
-                try { await sock.updateBlockStatus(v, "block"); didBlock = true; break; }
-                catch (e) { blockErr = e?.message || String(e); }
+              // v22: normalize to a real user jid and verify via fetchBlocklist.
+              const BL = globalThis.__MiasBlocklist;
+              let didBlock = false; let blockErr = "unavailable";
+              if (BL) {
+                const r = await BL.setBlockStatus(sock, caller || rawCaller, "block");
+                didBlock = r.ok; blockErr = r.error;
               }
               report += didBlock ? `\n✅ Caller blocked` : `\n❌ Block failed: ${blockErr}`;
             } else if (action === "warn") {
@@ -37444,3 +37439,178 @@ try {
 } catch (__plainOnlyErr) {
   console.error("[text-only-policy]", __plainOnlyErr?.message || __plainOnlyErr);
 }
+
+// ════════════════════════════════════════════════════════════════════════════
+// LATE-PATCH v22 — block / unblock correctness + global block enforcement
+// ════════════════════════════════════════════════════════════════════════════
+// Fixes:
+//   1. ".block" returned "Bad Request": raw @lid / device-suffixed / group /
+//      status jids were being pushed into the blocklist IQ. Targets are now
+//      normalized to a bare <digits>@s.whatsapp.net user jid (or refused).
+//   2. ".unblock" reported success without effect: the old helper returned as
+//      soon as a candidate stopped throwing. We now await the official
+//      updateBlockStatus() and verify against fetchBlocklist().
+//   3. Blocked users are ignored app-wide (messages dropped before command
+//      dispatch) and their calls are rejected via the documented rejectCall().
+// Authorization (locked creator + session owner) is unchanged.
+// ════════════════════════════════════════════════════════════════════════════
+import * as __MiasBlocklist from "./lib/blocklist.js";
+globalThis.__MiasBlocklist = __MiasBlocklist;
+(() => {
+  try {
+    const BL = __MiasBlocklist;
+
+    const _blockAuthorized = (sender) =>
+      (typeof isOwner === "function" && isOwner(sender)) ||
+      (typeof isCreator === "function" && isCreator(sender));
+
+    async function __v22Target(sock, msg, args) {
+      let raw = "";
+      try {
+        const r = await resolveCommandTarget(sock, msg, args);
+        raw = r?.targetJid || r?.resolved || r?.rawTarget || "";
+      } catch {}
+      const extra = [];
+      if (args?.[0]) extra.push(String(args[0]));
+      return BL.resolveBlockTarget(sock, [raw, ...extra]);
+    }
+
+    const __v22Block = async (sock, msg, args = []) => {
+      const sender = getSender(msg);
+      if (!_blockAuthorized(sender)) {
+        await sendReply(sock, msg, "❌ Only the bot owner can use this command.");
+        return;
+      }
+      const { jid, reason } = await __v22Target(sock, msg, args);
+      if (!jid) {
+        await sendReply(sock, msg, reason === "not-a-user"
+          ? "❌ Groups, status and channels can't be blocked — target an individual user."
+          : `Usage: *${CONFIG.PREFIX}block @user*  •  reply to them  •  *${CONFIG.PREFIX}block <number>*`);
+        return;
+      }
+      await react(sock, msg, "⏳");
+      const res = await BL.setBlockStatus(sock, jid, "block");
+      if (res.ok) {
+        await react(sock, msg, "🚫");
+        const verify = res.verified === true ? "\n✅ Confirmed on WhatsApp's blocklist."
+                     : res.verified === null ? "\n_Blocklist read-back unavailable on this build._" : "";
+        await sendReply(sock, msg, res.alreadyInState
+          ? `ℹ️ +${res.num} is *already blocked*.`
+          : `🚫 *Blocked* +${res.num}.${verify}`, [res.jid]);
+      } else {
+        await react(sock, msg, "❌");
+        await sendReply(sock, msg, `❌ Block failed for +${res.num || "?"}.\n📌 ${res.error}${res.code ? ` (${res.code})` : ""}`);
+      }
+    };
+
+    const __v22Unblock = async (sock, msg, args = []) => {
+      const sender = getSender(msg);
+      if (!_blockAuthorized(sender)) {
+        await sendReply(sock, msg, "❌ Only the bot owner can use this command.");
+        return;
+      }
+      const { jid, reason } = await __v22Target(sock, msg, args);
+      if (!jid) {
+        await sendReply(sock, msg, reason === "not-a-user"
+          ? "❌ That target isn't an individual WhatsApp user."
+          : `Usage: *${CONFIG.PREFIX}unblock @user*  •  *${CONFIG.PREFIX}unblock <number>*`);
+        return;
+      }
+      await react(sock, msg, "⏳");
+      const res = await BL.setBlockStatus(sock, jid, "unblock");
+      if (res.ok) {
+        await react(sock, msg, "✅");
+        const verify = res.verified === true ? "\n✅ Confirmed removed from WhatsApp's blocklist."
+                     : res.verified === null ? "\n_Blocklist read-back unavailable on this build._" : "";
+        await sendReply(sock, msg, res.alreadyInState
+          ? `ℹ️ +${res.num} was *not blocked* — nothing to undo.`
+          : `🔓 *Unblocked* +${res.num}.${verify}`, [res.jid]);
+      } else {
+        await react(sock, msg, "❌");
+        await sendReply(sock, msg, `❌ Unblock failed for +${res.num || "?"}.\n📌 ${res.error}${res.code ? ` (${res.code})` : ""}`);
+      }
+    };
+
+    const __v22Blocklist = async (sock, msg) => {
+      const sender = getSender(msg);
+      if (!_blockAuthorized(sender)) {
+        await sendReply(sock, msg, "❌ Only the bot owner can use this command.");
+        return;
+      }
+      const list = await BL.fetchBlocklist(sock, { force: true });
+      if (!list) { await sendReply(sock, msg, "❌ This build can't read the WhatsApp blocklist."); return; }
+      const arr = [...list];
+      await sendReply(sock, msg, arr.length
+        ? `🚫 *Blocked contacts (${arr.length})*\n\n` + arr.map((n, i) => `${i + 1}. +${n}`).join("\n")
+        : "✅ Your blocklist is empty.");
+    };
+
+    for (const [name, handler, desc] of [
+      ["block", __v22Block, "Block a user"],
+      ["unblock", __v22Unblock, "Unblock a user"],
+      ["blocklist", __v22Blocklist, "Show blocked contacts"],
+      ["blocked", __v22Blocklist, "Show blocked contacts"],
+    ]) {
+      const ex = commands.get(name) || { desc, category: "WHATSAPP", ownerOnly: true };
+      ex.handler = handler;
+      ex.ownerOnly = true;
+      commands.set(name, ex);
+    }
+
+    // ── Global enforcement: ignore everything from blocked users ────────────
+    globalThis.__miasInstallBlockGate = function (sock) {
+      if (!sock || !sock.ev || sock.__miasBlockGateOn) return;
+      sock.__miasBlockGateOn = true;
+      try { BL.attachBlocklistEvents(sock); } catch {}
+
+      const _origEmit = sock.ev.emit.bind(sock.ev);
+      sock.ev.emit = function (evt, payload, ...rest) {
+        try {
+          if (evt === "messages.upsert" && payload && Array.isArray(payload.messages)) {
+            const kept = payload.messages.filter((m) => {
+              try {
+                if (!m || m.key?.fromMe) return true;
+                const from = m.key?.participant || m.participant || m.key?.remoteJid || "";
+                return !BL.isBlockedJid(from);
+              } catch { return true; }
+            });
+            if (!kept.length) return false;
+            if (kept.length !== payload.messages.length) payload = { ...payload, messages: kept };
+          }
+        } catch {}
+        return _origEmit(evt, payload, ...rest);
+      };
+
+      // Calls from blocked users → reject (official rejectCall), stay silent.
+      sock.ev.on("call", async (calls = []) => {
+        for (const call of calls || []) {
+          try {
+            if (call?.isGroup) continue;
+            const from = call?.from || call?.chatId || call?.peerJid || call?.participant || "";
+            if (!BL.isBlockedJid(from)) continue;
+            const id = call?.id || call?.callId;
+            if (id && typeof sock.rejectCall === "function") {
+              await sock.rejectCall(id, from).catch(() => {});
+            }
+            console.log(`[BLOCK-GATE] rejected call from blocked ${BL.normalizeNumber(from)}`);
+          } catch {}
+        }
+      });
+    };
+
+    const _try = (s) => { if (s && s.ev) { try { globalThis.__miasInstallBlockGate(s); } catch {} } };
+    _try(globalThis.__miasMainSock || globalThis.sock || globalThis.conn || globalThis.client);
+    let _n = 0;
+    const _iv = setInterval(() => {
+      _n++;
+      const s = globalThis.__miasMainSock || globalThis.sock || globalThis.conn || globalThis.client;
+      if (s && s.ev) { _try(s); clearInterval(_iv); }
+      if (_n > 120) clearInterval(_iv);
+    }, 1000);
+    if (_iv.unref) _iv.unref();
+
+    console.log("[LATE-PATCH-v22] block/unblock normalized + verified; global block gate armed.");
+  } catch (e) {
+    console.error("[LATE-PATCH-v22]", e?.message || e);
+  }
+})();

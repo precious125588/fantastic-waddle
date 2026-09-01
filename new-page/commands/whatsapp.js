@@ -1,32 +1,51 @@
 import { senderNum, isOwnerOrSudo, sleep } from '../lib/utils.js';
 import { getAutoFeat, setAutoFeat, getSetting, setSetting } from '../lib/db.js';
 
+
+/** Only bare <digits>@s.whatsapp.net is accepted by WhatsApp block/unblock. */
+function normalizeUserJid(input) {
+  const raw = String(input || '').trim();
+  if (!raw) return null;
+  const low = raw.toLowerCase();
+  if (low.endsWith('@g.us') || low.endsWith('@broadcast') || low.endsWith('@newsletter') || low.endsWith('@lid')) return null;
+  const num = raw.split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
+  if (num.length < 7 || num.length > 15) return null;
+  return `${num}@s.whatsapp.net`;
+}
+
 export async function handleWhatsApp(sock, msg, { command, args, jid, sender, text, reply, mentionedJids, quotedSender }) {
   switch (command) {
 
-    case 'block': {
-      const target = mentionedJids[0] || quotedSender ||
-        (text ? `${text.replace(/[^0-9]/g, '')}@s.whatsapp.net` : null);
-      if (!target) return reply('❌ Tag someone, reply, or provide a number.\nUsage: .block <number>');
-      try {
-        await sock.updateBlockStatus(target, 'block');
-        await reply(`🚫 Blocked *${target.split('@')[0]}*`);
-      } catch (e) {
-        await reply(`❌ ${e.message}`);
-      }
-      break;
-    }
-
+    case 'block':
     case 'unblock': {
-      const target = mentionedJids[0] || quotedSender ||
-        (text ? `${text.replace(/[^0-9]/g, '')}@s.whatsapp.net` : null);
-      if (!target) return reply('❌ Usage: .unblock <number>');
-      try {
-        await sock.updateBlockStatus(target, 'unblock');
-        await reply(`✅ Unblocked *${target.split('@')[0]}*`);
-      } catch (e) {
-        await reply(`❌ ${e.message}`);
+      if (!isOwnerOrSudo(sender)) return reply('❌ Owner only.');
+      const action = command === 'block' ? 'block' : 'unblock';
+      const target = normalizeUserJid(mentionedJids[0] || quotedSender || text);
+      if (!target) {
+        return reply(`❌ Tag someone, reply, or provide a valid number.\nUsage: .${action} <number>\n_Groups, status and channels cannot be ${action}ed._`);
       }
+      const selfJid = normalizeUserJid(sock.user?.id || '');
+      if (selfJid && selfJid === target) return reply('❌ Cannot block the bot itself.');
+      try {
+        await sock.updateBlockStatus(target, action);
+      } catch (e) {
+        return reply(`❌ ${action} failed for ${target.split('@')[0]}: ${e?.message || e}`);
+      }
+      // Verify against WhatsApp's own blocklist where supported.
+      let note = '';
+      try {
+        if (typeof sock.fetchBlocklist === 'function') {
+          const list = (await sock.fetchBlocklist()) || [];
+          const nums = list.map(j => String(j).split('@')[0].split(':')[0].replace(/[^0-9]/g, ''));
+          const isBlocked = nums.includes(target.split('@')[0]);
+          if (action === 'block' && !isBlocked) return reply(`❌ WhatsApp accepted the block but the number is still not on the blocklist.`);
+          if (action === 'unblock' && isBlocked) return reply(`❌ WhatsApp accepted the unblock but the number is still blocked.`);
+          note = '\n✅ Verified against WhatsApp blocklist.';
+        }
+      } catch {}
+      await reply(action === 'block'
+        ? `🚫 Blocked *${target.split('@')[0]}*${note}`
+        : `🔓 Unblocked *${target.split('@')[0]}*${note}`);
       break;
     }
 
