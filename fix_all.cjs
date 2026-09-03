@@ -582,7 +582,7 @@ console.log('[fix_all] All done.\n');
     changed++;
   }
   if (changed) {
-    src = marker + '\n' + src;
+    src = '/* ' + marker + ' */\n' + src;
     fs.writeFileSync(target, src, 'utf8');
     console.log('[fix_all] FIX-8: patched mias video/adult media paths (' + changed + ' change(s)).');
   } else {
