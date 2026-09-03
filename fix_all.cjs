@@ -487,3 +487,105 @@ console.log('[fix_all] All done.\n');
   console.error('[fix_all] Outer guard caught:', _outerErr && _outerErr.message || _outerErr);
   process.exit(0); // always exit 0 so server.js still runs
 }
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FIX 8 — Portable video pipeline and resilient NSFW binary/API handling
+// Providers can return WebM, GIF, HTML errors, or JSON containing a media URL.
+// WhatsApp playback is most reliable with H.264/AAC MP4 (yuv420p).
+// ─────────────────────────────────────────────────────────────────────────────
+(function ensurePortableVideoPipeline() {
+  const fs = require('fs');
+  const path = require('path');
+  const target = path.join(__dirname, 'mias', 'index.js');
+  const helperPath = path.join(__dirname, 'mias', 'lib', 'portableVideo.cjs');
+  const helperB64 = 'J3VzZSBzdHJpY3QnOwpjb25zdCBmc3AgPSByZXF1aXJlKCdmcy9wcm9taXNlcycpOwpjb25zdCBvcyA9IHJlcXVpcmUoJ29zJyk7CmNvbnN0IHBhdGggPSByZXF1aXJlKCdwYXRoJyk7CmNvbnN0IHsgZXhlY0ZpbGUgfSA9IHJlcXVpcmUoJ2NoaWxkX3Byb2Nlc3MnKTsKY29uc3QgeyBwcm9taXNpZnkgfSA9IHJlcXVpcmUoJ3V0aWwnKTsKY29uc3QgZXhlY0ZpbGVBc3luYyA9IHByb21pc2lmeShleGVjRmlsZSk7CmxldCBmZm1wZWdQYXRoOwpmdW5jdGlvbiByZXNvbHZlRmZtcGVnKCkgewogIGlmIChmZm1wZWdQYXRoKSByZXR1cm4gZmZtcGVnUGF0aDsKICB0cnkgeyBmZm1wZWdQYXRoID0gcmVxdWlyZSgnZmZtcGVnLXN0YXRpYycpOyB9CiAgY2F0Y2ggKF8pIHsgZmZtcGVnUGF0aCA9IHByb2Nlc3MuZW52LkZGTVBFR19QQVRIIHx8ICdmZm1wZWcnOyB9CiAgcmV0dXJuIGZmbXBlZ1BhdGg7Cn0KZnVuY3Rpb24gaXNNcDQoYnVmKSB7CiAgcmV0dXJuIEJ1ZmZlci5pc0J1ZmZlcihidWYpICYmIGJ1Zi5sZW5ndGggPj0gMTIgJiYgYnVmLnNsaWNlKDQsIDgpLnRvU3RyaW5nKCdhc2NpaScpID09PSAnZnR5cCc7Cn0KYXN5bmMgZnVuY3Rpb24gbm9ybWFsaXplVmlkZW9CdWZmZXIoaW5wdXQsIG9wdHMgPSB7fSkgewogIGlmICghQnVmZmVyLmlzQnVmZmVyKGlucHV0KSB8fCBpbnB1dC5sZW5ndGggPCAxMDI0KSByZXR1cm4gaW5wdXQ7CiAgaWYgKGlucHV0Lmxlbmd0aCA+IChvcHRzLm1heElucHV0Qnl0ZXMgfHwgOTAgKiAxMDI0ICogMTAyNCkpIHJldHVybiBpbnB1dDsKICBjb25zdCBkaXIgPSBhd2FpdCBmc3AubWtkdGVtcChwYXRoLmpvaW4ob3MudG1wZGlyKCksICdtaWFzLXZpZGVvLScpKTsKICBjb25zdCBpblBhdGggPSBwYXRoLmpvaW4oZGlyLCAnaW5wdXQuYmluJyk7CiAgY29uc3Qgb3V0UGF0aCA9IHBhdGguam9pbihkaXIsICdvdXRwdXQubXA0Jyk7CiAgdHJ5IHsKICAgIGF3YWl0IGZzcC53cml0ZUZpbGUoaW5QYXRoLCBpbnB1dCk7CiAgICBhd2FpdCBleGVjRmlsZUFzeW5jKHJlc29sdmVGZm1wZWcoKSwgWwogICAgICAnLWhpZGVfYmFubmVyJywgJy1sb2dsZXZlbCcsICdlcnJvcicsICcteScsICctaScsIGluUGF0aCwKICAgICAgJy1tYXAnLCAnMDp2OjAnLCAnLW1hcCcsICcwOmE6MD8nLAogICAgICAnLWM6dicsICdsaWJ4MjY0JywgJy1wcmVzZXQnLCBvcHRzLnByZXNldCB8fCAndmVyeWZhc3QnLAogICAgICAnLWNyZicsIFN0cmluZyhvcHRzLmNyZiB8fCAyMyksICctcGl4X2ZtdCcsICd5dXY0MjBwJywKICAgICAgJy1jOmEnLCAnYWFjJywgJy1iOmEnLCAnMTI4aycsICctbW92ZmxhZ3MnLCAnK2Zhc3RzdGFydCcsCiAgICAgICctZicsICdtcDQnLCBvdXRQYXRoLAogICAgXSwgeyB0aW1lb3V0OiBvcHRzLnRpbWVvdXRNcyB8fCAxMjAwMDAsIG1heEJ1ZmZlcjogMTAyNCAqIDEwMjQgfSk7CiAgICBjb25zdCBvdXRwdXQgPSBhd2FpdCBmc3AucmVhZEZpbGUob3V0UGF0aCk7CiAgICBpZiAoaXNNcDQob3V0cHV0KSAmJiBvdXRwdXQubGVuZ3RoID4gMTAwMDApIHJldHVybiBvdXRwdXQ7CiAgfSBjYXRjaCAoZXJyKSB7CiAgICB0cnkgeyBjb25zb2xlLndhcm4oJ1t2aWRlb10gbm9ybWFsaXphdGlvbiBza2lwcGVkOicsIGVyciAmJiBlcnIubWVzc2FnZSB8fCBlcnIpOyB9IGNhdGNoIChfKSB7fQogIH0gZmluYWxseSB7CiAgICB0cnkgeyBhd2FpdCBmc3Aucm0oZGlyLCB7IHJlY3Vyc2l2ZTogdHJ1ZSwgZm9yY2U6IHRydWUgfSk7IH0gY2F0Y2ggKF8pIHt9CiAgfQogIHJldHVybiBpbnB1dDsKfQptb2R1bGUuZXhwb3J0cyA9IHsgbm9ybWFsaXplVmlkZW9CdWZmZXIsIGlzTXA0LCByZXNvbHZlRmZtcGVnIH07Cg==';
+  try {
+    if (!fs.existsSync(path.dirname(helperPath))) fs.mkdirSync(path.dirname(helperPath), { recursive: true });
+    if (!fs.existsSync(helperPath) || !fs.readFileSync(helperPath, 'utf8').includes('normalizeVideoBuffer')) {
+      fs.writeFileSync(helperPath, Buffer.from(helperB64, 'base64').toString('utf8'), 'utf8');
+      console.log('[fix_all] FIX-8: installed portableVideo helper.');
+    }
+  } catch (e) { console.warn('[fix_all] FIX-8: helper install failed:', e.message); }
+  if (!fs.existsSync(target)) return;
+  let src = fs.readFileSync(target, 'utf8');
+  const marker = '__MIAS_PORTABLE_VIDEO_PATCH_V1__';
+  if (src.includes(marker)) { console.log('[fix_all] FIX-8: video pipeline already patched.'); return; }
+  let changed = 0;
+  const videoBufNeedle = 'const vidBuf = Buffer.from(vidRes.data || []);';
+  if (src.includes(videoBufNeedle)) {
+    src = src.replace(videoBufNeedle,
+      'let vidBuf = Buffer.from(vidRes.data || []);\n' +
+      '     try {\n' +
+      '       const _vn = require("./lib/portableVideo.cjs");\n' +
+      '       const _nv = await _vn.normalizeVideoBuffer(vidBuf, { timeoutMs: 120000 });\n' +
+      '       if (Buffer.isBuffer(_nv) && _nv.length > 10000) vidBuf = _nv;\n' +
+      '     } catch (_videoNormalizeErr) { console.warn("[video] normalization unavailable:", _videoNormalizeErr?.message || _videoNormalizeErr); }');
+    changed++;
+  }
+  const mimeNeedle = '    const _vMime = _hasWebm ? "video/webm" : "video/mp4";\n    const _vExt  = _hasWebm ? ".webm"      : ".mp4";';
+  const mimeReplacement =
+    '    const _finalHasFtyp = vidBuf.length >= 12 && vidBuf.slice(4, 8).toString("ascii") === "ftyp";\n' +
+    '    const _finalHasWebm = vidBuf.length >= 4 && vidBuf[0] === 0x1A && vidBuf[1] === 0x45 && vidBuf[2] === 0xDF && vidBuf[3] === 0xA3;\n' +
+    '    const _vMime = _finalHasWebm && !_finalHasFtyp ? "video/webm" : "video/mp4";\n' +
+    '    const _vExt  = _finalHasWebm && !_finalHasFtyp ? ".webm" : ".mp4";';
+  if (src.includes(mimeNeedle)) { src = src.replace(mimeNeedle, mimeReplacement); changed++; }
+  const adultNeedle = 'const buf = await _downloadVideoBuf(mp4, pageUrl);';
+  if (src.includes(adultNeedle)) {
+    src = src.replace(adultNeedle,
+      'let buf = await _downloadVideoBuf(mp4, pageUrl);\n' +
+      '        if (buf) { try { const _vn = require("./lib/portableVideo.cjs"); buf = await _vn.normalizeVideoBuffer(buf, { timeoutMs: 120000 }); } catch (_e) {} }');
+    changed++;
+  }
+  const nsfwNeedle = 'if (isVid) await sock.sendMessage(msg.key.remoteJid, { video: buf, caption: _pCaption }, { quoted: msg });';
+  if (src.includes(nsfwNeedle)) {
+    src = src.replace(nsfwNeedle,
+      'if (isVid) {\n' +
+      '         let _sendBuf = buf;\n' +
+      '         try { const _vn = require("./lib/portableVideo.cjs"); _sendBuf = await _vn.normalizeVideoBuffer(buf, { timeoutMs: 90000 }); } catch (_e) {}\n' +
+      '         const _sendMp4 = Buffer.isBuffer(_sendBuf) && _sendBuf.length >= 12 && _sendBuf.slice(4, 8).toString("ascii") === "ftyp";\n' +
+      '         await sock.sendMessage(msg.key.remoteJid, { video: _sendBuf, mimetype: _sendMp4 ? "video/mp4" : "video/webm", caption: _pCaption }, { quoted: msg });\n' +
+      '       }');
+    changed++;
+  }
+  const fnStart = src.indexOf('async function _prexzyNsfwFetch');
+  const fnEnd = src.indexOf('\n\nconst PREXZY_NSFW_MAP', fnStart);
+  if (fnStart !== -1 && fnEnd > fnStart) {
+    const robustFn = [
+      'async function _prexzyNsfwFetch(endpoint, params = {}, timeoutMs = 35000) {',
+      '  const qs = new URLSearchParams();',
+      '  for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== null) qs.set(k, v);',
+      '  const base = String(CONFIG.PREXZY_API || "").replace(/\\/$/, "");',
+      '  const url = base + "/" + endpoint + (qs.toString() ? "?" + qs.toString() : "");',
+      '  const resp = await axios.get(url, { responseType: "arraybuffer", timeout: timeoutMs, maxRedirects: 5 });',
+      '  let buf = Buffer.from(resp.data || []);',
+      '  let ct = String(resp.headers?.["content-type"] || "").toLowerCase();',
+      '  const looksJson = ct.includes("json") || /^[\\s]*[\\[{]/.test(buf.slice(0, 256).toString("utf8"));',
+      '  if (looksJson) {',
+      '    try {',
+      '      const parsed = JSON.parse(buf.toString("utf8"));',
+      '      const findUrl = (v, depth = 0) => {',
+      '        if (depth > 4 || !v) return null;',
+      '        if (typeof v === "string") return /^https?:\\/\\//i.test(v) ? v : null;',
+      '        if (Array.isArray(v)) { for (const x of v) { const u = findUrl(x, depth + 1); if (u) return u; } return null; }',
+      '        if (typeof v === "object") { for (const k of ["url", "download", "download_url", "media", "video", "image", "result", "data"]) { const u = findUrl(v[k], depth + 1); if (u) return u; } }',
+      '        return null;',
+      '      };',
+      '      const mediaUrl = findUrl(parsed);',
+      '      if (mediaUrl) { const media = await axios.get(mediaUrl, { responseType: "arraybuffer", timeout: timeoutMs, maxRedirects: 5 }); buf = Buffer.from(media.data || []); ct = String(media.headers?.["content-type"] || "").toLowerCase(); }',
+      '    } catch {}',
+      '  }',
+      '  return { buf, ct, ok: buf.length > 500 };',
+      '}',
+    ].join('\n');
+    src = src.slice(0, fnStart) + robustFn + src.slice(fnEnd);
+    changed++;
+  }
+  if (changed) {
+    src = marker + '\n' + src;
+    fs.writeFileSync(target, src, 'utf8');
+    console.log('[fix_all] FIX-8: patched mias video/adult media paths (' + changed + ' change(s)).');
+  } else {
+    console.warn('[fix_all] FIX-8: no known video/adult markers found; helper remains available.');
+  }
+})();

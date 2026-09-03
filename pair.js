@@ -700,6 +700,16 @@ async function startpairing(nexusDevNumber) {
     pairingInFlight.add(nexusDevNumber);
     setTimeout(() => pairingInFlight.delete(nexusDevNumber), 15000);
 
+    // A successful pairing may be in the short handoff window before the
+    // child process is visible to the launcher. Do not clear its ownership or
+    // open a second socket during that window.
+    const _handoffTracker = rentbotTracker.get(nexusDevNumber);
+    if (_handoffTracker?.handoffToMais) {
+        console.log(chalk.gray(`🤝 ${nexusDevNumber} handoff already in progress — skipping duplicate pairing.`));
+        pairingInFlight.delete(nexusDevNumber);
+        return _handoffTracker.connection || null;
+    }
+
     // ── Clear any stale in-memory pairing code BEFORE the early-return guards ──
     // Bug: when startpairing() returned early (isOwnedByBot guard below), the
     // tracker's pairingCode was never reset to null. waitForPairingResult()
@@ -1554,9 +1564,11 @@ async function startpairing(nexusDevNumber) {
             try {
                 const sessionDir = path.resolve(getSessionPath(nexusDevNumber));
                 const launcher   = require('./mais_launcher');
-                // Release the pairing-side socket before the child opens the
-                // same Signal session. This handoff prevents duplicate
-                // connections and "connection replaced" churn.
+                // Mark the handoff before closing the socket. Baileys can emit
+                // a local 515 and a later 401; both are expected while the
+                // child takes ownership and must not start another pair socket.
+                tracker.handoffToMais = true;
+                ownership.handOffToBot(nexusDevNumber, 'mias-mdx');
                 try { nexus.end(); } catch {}
                 try { nexus.ws?.close(); } catch {}
                 await sleep(6000);
@@ -1567,6 +1579,11 @@ async function startpairing(nexusDevNumber) {
                 });
                 console.log(chalk.green(`[Pair] ${nexusDevNumber} handed to MIAS MDX`));
             } catch (e) {
+                // If spawning failed before mais_launcher could register the
+                // child, release the provisional handoff so a later retry can
+                // pair cleanly. Never wipe the saved credentials here.
+                if (tracker) tracker.handoffToMais = false;
+                try { ownership.release(nexusDevNumber); } catch {}
                 console.log(chalk.red(`⚠️ MIAS launch error for ${nexusDevNumber}: ${e.message}`));
                 try {
                     await nexus.sendMessage(`${String(nexusDevNumber).replace(/\D/g, '')}@s.whatsapp.net`, {

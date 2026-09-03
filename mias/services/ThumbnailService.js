@@ -10,6 +10,9 @@
 
 import engineRegistryModule from "../lib/engineRegistry.cjs";
 import { enqueueThumbnail } from "./QueueService.js";
+import { createRequire } from "module";
+
+const require = createRequire(import.meta.url);
 
 const _imageEngine = engineRegistryModule.getEngineRegistry().get("image");
 

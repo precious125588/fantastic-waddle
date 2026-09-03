@@ -8,6 +8,9 @@
  */
 
 import { join } from "path";
+import { createRequire } from "module";
+
+const require = createRequire(import.meta.url);
 import { tmpdir } from "os";
 import { writeFile, readFile, unlink } from "fs/promises";
 import { enqueueMedia } from "./QueueService.js";
@@ -30,8 +33,9 @@ async function _getFluentFfmpeg() {
 }
 
 async function _process(inputBuf, inputExt, outputExt, buildCmd) {
-  const tmpIn  = join(tmpdir(), `mias_video_${Date.now()}.${inputExt}`);
-  const tmpOut = join(tmpdir(), `mias_video_${Date.now()}.${outputExt}`);
+  const runId = `${Date.now()}_${process.pid}_${Math.random().toString(36).slice(2)}`;
+  const tmpIn  = join(tmpdir(), `mias_video_${runId}.${inputExt}`);
+  const tmpOut = join(tmpdir(), `mias_video_${runId}.${outputExt}`);
   try {
     await writeFile(tmpIn, inputBuf);
     const ffmpeg = await _getFluentFfmpeg();
@@ -62,7 +66,7 @@ async function _process(inputBuf, inputExt, outputExt, buildCmd) {
 export async function toMp4(buffer, inputExt = "mkv", opts = {}) {
   return enqueueMedia(() => _process(buffer, inputExt, "mp4", (cmd) => {
     cmd.videoCodec("libx264")
-       .outputOptions([`-crf ${opts.crf || 23}`, `-preset ${opts.preset || "medium"}`])
+       .outputOptions([`-crf ${opts.crf || 23}`, `-preset ${opts.preset || "medium"}`, "-pix_fmt yuv420p", "-movflags +faststart"])
        .audioCodec("aac");
   }));
 }
@@ -79,7 +83,7 @@ export async function toMp4(buffer, inputExt = "mkv", opts = {}) {
 export async function compress(buffer, inputExt = "mp4", opts = {}) {
   return enqueueMedia(() => _process(buffer, inputExt, "mp4", (cmd) => {
     cmd.videoCodec("libx264")
-       .outputOptions([`-crf ${opts.crf || 28}`, "-preset fast"])
+       .outputOptions([`-crf ${opts.crf || 28}`, "-preset fast", "-pix_fmt yuv420p", "-movflags +faststart"])
        .audioCodec("aac")
        .audioBitrate("96k");
     if (opts.resolution) cmd.videoFilter(`scale=${opts.resolution}`);

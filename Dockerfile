@@ -11,6 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     librsvg2-dev \
     libpixman-1-dev \
     libvips-dev \
+    ffmpeg \
     python3 \
     make \
     g++ \
