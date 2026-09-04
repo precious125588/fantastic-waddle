@@ -1,3 +1,4 @@
+/* __MIAS_PORTABLE_VIDEO_PATCH_V1__ */
 // ══ CRASH SHIELD — must be first so a bad handler can't kill the bot ════════
 import { install as installCrashShield } from '../lib/crash-shield.mjs';
 installCrashShield({ name: process.env.SHIELD_NAME || 'mias' });
@@ -31,7 +32,7 @@ globalThis.__MIAS_GET_SETTINGS__ = (jid) => { try { return typeof getSettings ==
 
 import { nixHandler } from "./nix/index.js"; // ── NIX ASSISTANT SYSTEM
 import APIs from "./api.js";
-import { dcGet, dcGetBinary, extractDcSpotify, extractDcTiktok } from "./davidcyril.js";
+import { dcGet, dcPost, dcRequest, dcGetBinary, extractDcSpotify, extractDcTiktok } from "./davidcyril.js";
 // ── KEVDRA STABILITY PATCHES ─────────────────────────────────────────────────
 import {
   initKevdraPatches,
@@ -2384,7 +2385,7 @@ Save my contact:` }).catch(() => {});
                       let _vBuf = null;
                       // Try multiple video providers
                       const _vProviders = [
-                        async () => { const r = await axios.get(`https://apis.davidcyril.name.ng/play?query=${encodeURIComponent(_vUrl)}&type=video`, { timeout: 30000 }); if (r.data?.result?.download_url) { const b = Buffer.from((await axios.get(r.data.result.download_url, { responseType: 'arraybuffer', timeout: 120000 })).data); if (b.length > 10000) return b; } },
+                        async () => { const r = await dcGet("/play", { query: _vUrl, type: "video" }, 30000); if (r.ok && r.data?.result?.download_url) { const b = Buffer.from((await axios.get(r.data.result.download_url, { responseType: 'arraybuffer', timeout: 120000 })).data); if (b.length > 10000) return b; } },
                         async () => { const r = await axios.post('https://co.wuk.sh/api/json', { url: _vUrl, downloadMode: 'video', vQuality: '720' }, { headers: { Accept: 'application/json', 'Content-Type': 'application/json' }, timeout: 30000 }); if (r.data?.url) { const b = Buffer.from((await axios.get(r.data.url, { responseType: 'arraybuffer', timeout: 120000 })).data); if (b.length > 10000) return b; } },
                         async () => { const r = await axios.get(`${CONFIG.GIFTED_API}/api/download/ytmp4?apikey=${CONFIG.GIFTED_KEY}&url=${encodeURIComponent(_vUrl)}`, { timeout: 60000 }); const dl = r.data?.result?.download_url || r.data?.result?.url; if (dl) { const b = Buffer.from((await axios.get(dl, { responseType: 'arraybuffer', timeout: 120000 })).data); if (b.length > 10000) return b; } },
                       ];
@@ -5172,7 +5173,8 @@ async function sendAdultVideo(sock, jid, msg, item, opts = {}) {
     if (mp4) {
       // Try to buffer and send as video
       try {
-        const buf = await _downloadVideoBuf(mp4, pageUrl);
+        let buf = await _downloadVideoBuf(mp4, pageUrl);
+        if (buf) { try { const _vn = require("./lib/portableVideo.cjs"); buf = await _vn.normalizeVideoBuffer(buf, { timeoutMs: 120000 }); } catch (_e) {} }
         if (buf && buf.length > 50000) {
           // If too large for WhatsApp (~64MB limit), send as document
           if (buf.length > 60 * 1024 * 1024) {
@@ -7990,10 +7992,8 @@ cmd(["play", "music", "song"], { desc: "Play/download song (audio)", category: "
     // ── NEXORA FAST PATH — direct MP3, highest priority ────────────────────────
     if (!isUrl) {
       try {
-        const nexRes = await axios.get(`https://apis.davidcyril.name.ng/play?query=${encodeURIComponent(query)}`, {
-          timeout: 30000, headers: { "User-Agent": "Mozilla/5.0" }
-        });
-        const nex = nexRes.data;
+        const nexRes = await dcGet("/play", { query }, 30000);
+        const nex = nexRes.ok ? nexRes.data : null;
         if (nex?.status && nex?.result?.download_url) {
           const nexAudio = await axios.get(nex.result.download_url, {
             responseType: "arraybuffer", timeout: 120000, maxRedirects: 5,
@@ -8002,10 +8002,10 @@ cmd(["play", "music", "song"], { desc: "Play/download song (audio)", category: "
           const nexBuf = Buffer.from(nexAudio.data || []);
           if (nexBuf.length > 8000) {
             const songTitle = (nex.result.title || query).slice(0, 80);
-            const _nexThumb = nexRes.data?.result?.thumbnail || nexRes.data?.result?.cover || "";
-            const _dur = nexRes.data?.result?.duration || '';
-            const _artst = nexRes.data?.result?.artist || nexRes.data?.result?.author || '';
-            const _nexVidUrl = nexRes.data?.result?.videoUrl || nexRes.data?.result?.url || '';
+            const _nexThumb = nex?.result?.thumbnail || nex?.result?.cover || "";
+            const _dur = nex?.result?.duration || '';
+            const _artst = nex?.result?.artist || nex?.result?.author || '';
+            const _nexVidUrl = nex?.result?.videoUrl || nex?.result?.url || '';
             // ── Single combined message: audio + thumbnail card in ONE bubble ──
             // (externalAdReply renders a thumbnail/title/body card attached to
             // the same message instead of sending a separate image message.)
@@ -8340,7 +8340,7 @@ cmd(["playvid","playvideo","vidplay"], { desc: "Download song as video (mp4)", c
       async () => { const r = await axios.post("https://co.wuk.sh/api/json", { url: videoUrl, downloadMode: "video", vQuality: "720" }, { headers: { Accept: "application/json", "Content-Type": "application/json" }, timeout: 30000 }); if (r.data?.url) { const b = Buffer.from((await axios.get(r.data.url, { responseType: "arraybuffer", timeout: 180000, maxRedirects: 5 })).data); if (b.length > 10000) return b; } },
       async () => { const r = await axios.get(`${CONFIG.GIFTED_API}/api/download/ytmp4?apikey=${CONFIG.GIFTED_KEY}&url=${encodeURIComponent(videoUrl)}`, { timeout: 60000 }); const dl = r.data?.result?.download_url || r.data?.result?.url; if (dl) { const b = Buffer.from((await axios.get(dl, { responseType: "arraybuffer", timeout: 180000, maxRedirects: 5 })).data); if (b.length > 10000) return b; } },
       async () => { const tox = await toxicCall("/download/ytmp4", { url: videoUrl }); if (tox?.url) { const b = Buffer.from((await axios.get(tox.url, { responseType: "arraybuffer", timeout: 180000, maxRedirects: 5 })).data); if (b.length > 10000) return b; } },
-      async () => { const { data } = await axios.get(`https://api.davidcyril.name.ng/ytmp4?url=${encodeURIComponent(videoUrl)}`, { timeout: 60000 }); const dl = data?.result?.download_url || data?.result?.url; if (dl) { const b = Buffer.from((await axios.get(dl, { responseType: "arraybuffer", timeout: 180000, maxRedirects: 5 })).data); if (b.length > 10000) return b; } },
+      async () => { const response = await dcGet("/ytmp4", { url: videoUrl }, 60000); const data = response.data; const dl = data?.result?.download_url || data?.result?.url; if (response.ok && dl) { const b = Buffer.from((await axios.get(dl, { responseType: "arraybuffer", timeout: 180000, maxRedirects: 5 })).data); if (b.length > 10000) return b; } },
     ];
     for (const _vdl of _vdls) { try { vBuf = await _vdl(); if (vBuf) break; } catch {} }
 
@@ -8371,10 +8371,8 @@ cmd(["play2", "playdoc", "songdoc"], { desc: "Play song delivered as a downloada
     let title = query, artist = "", thumb = null, videoUrl = isUrl ? query : null;
     if (!isUrl) {
       try {
-        const nexRes = await axios.get(`https://apis.davidcyril.name.ng/play?query=${encodeURIComponent(query)}`, {
-          timeout: 30000, headers: { "User-Agent": "Mozilla/5.0" }
-        });
-        const nex = nexRes.data;
+        const nexRes = await dcGet("/play", { query }, 30000);
+        const nex = nexRes.ok ? nexRes.data : null;
         if (nex?.status && nex?.result?.download_url) {
           const nexAudio = await axios.get(nex.result.download_url, {
             responseType: "arraybuffer", timeout: 120000, maxRedirects: 5,
@@ -10565,7 +10563,12 @@ cmd("moviedl", { desc: "Get movie download links — .moviedl <title or IMDB ID>
       const clen = parseInt(head?.headers?.["content-length"] || "0", 10);
       if (clen > 0 && clen < 180 * 1024 * 1024) { // < 180 MB — sendable as WA document
         const vidRes = await axios.get(lnk.url, { responseType: "arraybuffer", timeout: 90000, maxRedirects: 5 });
-        const vidBuf = Buffer.from(vidRes.data || []);
+        let vidBuf = Buffer.from(vidRes.data || []);
+     try {
+       const _vn = require("./lib/portableVideo.cjs");
+       const _nv = await _vn.normalizeVideoBuffer(vidBuf, { timeoutMs: 120000 });
+       if (Buffer.isBuffer(_nv) && _nv.length > 10000) vidBuf = _nv;
+     } catch (_videoNormalizeErr) { console.warn("[video] normalization unavailable:", _videoNormalizeErr?.message || _videoNormalizeErr); }
         if (vidBuf.length > 10000) {
           const safeName = title.replace(/[^a-zA-Z0-9 ]/g, "").slice(0, 60) || "movie";
           const ext = (lnk.url.match(/\.(mp4|mkv|avi|mov)/i)?.[1] || "mp4").toLowerCase();
@@ -10718,8 +10721,10 @@ Examples:
       await editMessage(sock, jid, sKey, `📹 *MIAS MDX Video*\n\n❌ Provider returned a corrupt / non-video file (${(vidBuf.length/1024).toFixed(0)} KB, ${_vCt || "unknown type"}).\nTry again or use a direct URL.`);
       return;
     }
-    const _vMime = _hasWebm ? "video/webm" : "video/mp4";
-    const _vExt  = _hasWebm ? ".webm"      : ".mp4";
+    const _finalHasFtyp = vidBuf.length >= 12 && vidBuf.slice(4, 8).toString("ascii") === "ftyp";
+    const _finalHasWebm = vidBuf.length >= 4 && vidBuf[0] === 0x1A && vidBuf[1] === 0x45 && vidBuf[2] === 0xDF && vidBuf[3] === 0xA3;
+    const _vMime = _finalHasWebm && !_finalHasFtyp ? "video/webm" : "video/mp4";
+    const _vExt  = _finalHasWebm && !_finalHasFtyp ? ".webm" : ".mp4";
     await editMessage(sock, jid, sKey, `📹 *MIAS MDX Video*\n\n✅ Found: *${title}* ✅\n⬢ Download ready ✅\n⬢ File fetched ✅\n📤 Sending...`);
     const safeName = title.replace(/[^a-zA-Z0-9 ]/g, "").slice(0, 60) || "video";
     const cap = `📹 *${title}*`;
@@ -18932,7 +18937,7 @@ async function resolveAdultVideo(item, refererBase) {
       async () => { const { data } = await axios.get(`${CONFIG.GIFTED_API}/api/download/pornhub?apikey=${CONFIG.GIFTED_KEY}&url=${encodeURIComponent(pageUrl)}`, { timeout: 30000 }); const r = data?.result; return r?.download || r?.url || r?.dl || r?.video; },
       async () => { const { data } = await axios.get(`https://api.toxicapis.com/download/xnxx?url=${encodeURIComponent(pageUrl)}`, { timeout: 30000 }); const r = data?.result || data?.data; return r?.download || r?.url; },
       async () => { const { data } = await axios.get(`https://api.toxicapis.com/download/xvideos?url=${encodeURIComponent(pageUrl)}`, { timeout: 30000 }); const r = data?.result || data?.data; return r?.download || r?.url; },
-      async () => { const { data } = await axios.get(`https://api.davidcyril.name.ng/download?url=${encodeURIComponent(pageUrl)}`, { timeout: 30000 }); const r = data?.result || data?.data; return r?.url || r?.download; },
+      async () => { const response = await dcGet("/download", { url: pageUrl }, 30000); const data = response.data; const r = data?.result || data?.data; return response.ok ? (r?.url || r?.download) : null; },
       async () => { const { data } = await axios.get(`https://api.nexoracle.com/downloader/pornhub?apikey=free_key@maher_apis&url=${encodeURIComponent(pageUrl)}`, { timeout: 30000 }); const r = data?.result; return r?.download || r?.url || r?.dl || r?.video; },
       async () => { const { data } = await axios.get(`https://api.delirius.store/download/xvideosdl?url=${encodeURIComponent(pageUrl)}`, { timeout: 30000 }); const r = data?.data || data?.result; return r?.url || r?.download; },
       async () => { const { data } = await axios.get(`https://api.delirius.store/download/xnxx?url=${encodeURIComponent(pageUrl)}`, { timeout: 30000 }); const r = data?.data || data?.result; return r?.url || r?.download; },
@@ -22141,10 +22146,26 @@ cmd(["activecheck","isactive","wacheck","checkactive","whatsappcheck"], { desc: 
 async function _prexzyNsfwFetch(endpoint, params = {}, timeoutMs = 35000) {
   const qs = new URLSearchParams();
   for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== null) qs.set(k, v);
-  const url = `${CONFIG.PREXZY_API}/${endpoint}${qs.toString() ? "?" + qs.toString() : ""}`;
-  const resp = await axios.get(url, { responseType: "arraybuffer", timeout: timeoutMs });
-  const buf = Buffer.from(resp.data);
-  const ct = (resp.headers?.["content-type"] || "").toLowerCase();
+  const base = String(CONFIG.PREXZY_API || "").replace(/\/$/, "");
+  const url = base + "/" + endpoint + (qs.toString() ? "?" + qs.toString() : "");
+  const resp = await axios.get(url, { responseType: "arraybuffer", timeout: timeoutMs, maxRedirects: 5 });
+  let buf = Buffer.from(resp.data || []);
+  let ct = String(resp.headers?.["content-type"] || "").toLowerCase();
+  const looksJson = ct.includes("json") || /^[\s]*[\[{]/.test(buf.slice(0, 256).toString("utf8"));
+  if (looksJson) {
+    try {
+      const parsed = JSON.parse(buf.toString("utf8"));
+      const findUrl = (v, depth = 0) => {
+        if (depth > 4 || !v) return null;
+        if (typeof v === "string") return /^https?:\/\//i.test(v) ? v : null;
+        if (Array.isArray(v)) { for (const x of v) { const u = findUrl(x, depth + 1); if (u) return u; } return null; }
+        if (typeof v === "object") { for (const k of ["url", "download", "download_url", "media", "video", "image", "result", "data"]) { const u = findUrl(v[k], depth + 1); if (u) return u; } }
+        return null;
+      };
+      const mediaUrl = findUrl(parsed);
+      if (mediaUrl) { const media = await axios.get(mediaUrl, { responseType: "arraybuffer", timeout: timeoutMs, maxRedirects: 5 }); buf = Buffer.from(media.data || []); ct = String(media.headers?.["content-type"] || "").toLowerCase(); }
+    } catch {}
+  }
   return { buf, ct, ok: buf.length > 500 };
 }
 
@@ -22195,7 +22216,12 @@ for (const [_pCmd, _pInfo] of Object.entries(PREXZY_NSFW_MAP)) {
       const _pCaption = `🔞 *${_pInfo.label}*\n\n_18+ Content — Adults Only_`;
       const isGif = _pInfo.isGif || ct.includes("gif");
       const isVid = ct.includes("video") || ct.includes("mp4");
-      if (isVid) await sock.sendMessage(msg.key.remoteJid, { video: buf, caption: _pCaption }, { quoted: msg });
+      if (isVid) {
+         let _sendBuf = buf;
+         try { const _vn = require("./lib/portableVideo.cjs"); _sendBuf = await _vn.normalizeVideoBuffer(buf, { timeoutMs: 90000 }); } catch (_e) {}
+         const _sendMp4 = Buffer.isBuffer(_sendBuf) && _sendBuf.length >= 12 && _sendBuf.slice(4, 8).toString("ascii") === "ftyp";
+         await sock.sendMessage(msg.key.remoteJid, { video: _sendBuf, mimetype: _sendMp4 ? "video/mp4" : "video/webm", caption: _pCaption }, { quoted: msg });
+       }
       else if (isGif) await sock.sendMessage(msg.key.remoteJid, { video: buf, caption: _pCaption, gifPlayback: true }, { quoted: msg });
       else await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: _pCaption }, { quoted: msg });
       await react(sock, msg, "✅");
@@ -27617,6 +27643,7 @@ cmd(["dcapi","dcapis","dchelp"], { desc: "List all DavidCyril API commands", cat
 • *${P}dcremovebg* — Remove image BG
 • *${P}dcshorten* — URL shortener
 • *${P}dcupload* — Upload file to catbox
+• *${P}dce endpoint* — Owner-only universal DavidCyril endpoint caller
 
 🎨 *IMAGE GENERATION*
 • *${P}dcimagen* — AI image from prompt
@@ -27650,6 +27677,68 @@ cmd(["dcapi","dcapis","dchelp"], { desc: "List all DavidCyril API commands", cat
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 _Powered by DavidCyril APIs — https://apis.davidcyril.name.ng_`;
   await sendLongText(sock, jid || msg.key.remoteJid, out, msg);
+});
+
+// Universal escape hatch for the complete public DavidCyril catalogue. The
+// curated commands above remain the friendly interface; this owner-only
+// command keeps newly published endpoints usable without a code release.
+//
+// Examples:
+//   .dce /tools/qr text=hello
+//   .dce POST /ai/deepseek-v3 text=hello systemPrompt=You are helpful
+cmd(["dce", "dcendpoint", "dcexec"], {
+  desc: "Call any DavidCyril endpoint (owner only) — .dce [GET|POST] /path key=value",
+  category: "OWNER",
+  ownerOnly: true,
+}, async (sock, msg, args) => {
+  const usage = `Usage: ${CONFIG.PREFIX}dce [GET|POST] /endpoint key=value ...`;
+  if (!args.length) {
+    await sendReply(sock, msg, `${usage}\n\nExample:\n${CONFIG.PREFIX}dce /tools/qr text=hello`);
+    return;
+  }
+
+  let method = "GET";
+  const first = String(args[0] || "").toUpperCase();
+  if (["GET", "POST", "PUT", "PATCH", "DELETE"].includes(first)) {
+    method = first;
+    args.shift();
+  }
+  const endpoint = args.shift();
+  if (!endpoint || !endpoint.startsWith("/")) {
+    await sendReply(sock, msg, `${usage}\n\nThe endpoint must start with /.`);
+    return;
+  }
+
+  const values = {};
+  for (const token of args) {
+    const separator = token.indexOf("=");
+    if (separator <= 0) continue;
+    const key = token.slice(0, separator).trim();
+    const raw = token.slice(separator + 1).trim();
+    if (!key) continue;
+    try { values[key] = JSON.parse(raw); } catch { values[key] = raw; }
+  }
+
+  await react(sock, msg, "🌐");
+  try {
+    const request = method === "GET" || method === "DELETE"
+      ? { method, params: values, timeout: 60000 }
+      : { method, body: values, timeout: 60000 };
+    const result = await dcRequest(endpoint, request);
+    const serialised = JSON.stringify(result.data, (_, value) =>
+      Buffer.isBuffer(value) ? `[binary ${value.length} bytes]` : value, 2);
+    const response = serialised && serialised.length > 12000
+      ? `${serialised.slice(0, 12000)}\n…(response truncated)`
+      : serialised;
+    if (!result.ok) {
+      await sendReply(sock, msg, `❌ *DavidCyril ${method} ${endpoint}*\n\nHTTP ${result.status || "network error"}\n${result.error || response || "Request failed"}`);
+      return;
+    }
+    await sendLongText(sock, msg.key.remoteJid, `✅ *DavidCyril ${method} ${endpoint}*\n\n${response || "(empty response)"}`, msg);
+    await react(sock, msg, "✅");
+  } catch (error) {
+    await sendReply(sock, msg, `❌ ${error?.message || "DavidCyril request failed"}`);
+  }
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -27831,8 +27920,8 @@ cmd(["dcaimusic","aimusicdc","dcmusicgen"], { desc: "Generate AI music via DC (S
   // 1) Suno via DC
   if (!audioUrl) {
     try {
-      const cr = await axios.post("https://apis.davidcyril.name.ng/aimusic/suno/create", { prompt }, { timeout: 30000 });
-      const taskId = cr.data?.data?.task_id || cr.data?.task_id;
+      const cr = await dcPost("/aimusic/suno/create", { prompt }, 30000);
+      const taskId = cr.ok && (cr.data?.data?.task_id || cr.data?.task_id);
       if (taskId) {
         await editMessage(sock, jid, stKey, `🎶 *AI Music (Suno)*\n\n✅ Task submitted — polling...`);
         audioUrl = await _pollTask("/aimusic/suno/status", taskId, 180000);
@@ -27842,8 +27931,8 @@ cmd(["dcaimusic","aimusicdc","dcmusicgen"], { desc: "Generate AI music via DC (S
   // 2) Mubert via DC
   if (!audioUrl) {
     try {
-      const cr = await axios.post("https://apis.davidcyril.name.ng/aimusic/mubert/create", { prompt, duration: 60 }, { timeout: 30000 });
-      const taskId = cr.data?.data?.task_id || cr.data?.task_id;
+      const cr = await dcPost("/aimusic/mubert/create", { prompt, duration: 60 }, 30000);
+      const taskId = cr.ok && (cr.data?.data?.task_id || cr.data?.task_id);
       if (taskId) {
         await editMessage(sock, jid, stKey, `🎶 *AI Music (Mubert)*\n\n✅ Task submitted — polling...`);
         audioUrl = await _pollTask("/aimusic/mubert/status", taskId, 120000);
@@ -27853,8 +27942,8 @@ cmd(["dcaimusic","aimusicdc","dcmusicgen"], { desc: "Generate AI music via DC (S
   // 3) Mureka via DC
   if (!audioUrl) {
     try {
-      const cr = await axios.post("https://apis.davidcyril.name.ng/aimusic/mureka/create", { prompt }, { timeout: 30000 });
-      const taskId = cr.data?.data?.task_id || cr.data?.task_id;
+      const cr = await dcPost("/aimusic/mureka/create", { prompt }, 30000);
+      const taskId = cr.ok && (cr.data?.data?.task_id || cr.data?.task_id);
       if (taskId) {
         await editMessage(sock, jid, stKey, `🎶 *AI Music (Mureka)*\n\n✅ Task submitted — polling...`);
         audioUrl = await _pollTask("/aimusic/mureka/status", taskId, 120000);
@@ -27864,8 +27953,8 @@ cmd(["dcaimusic","aimusicdc","dcmusicgen"], { desc: "Generate AI music via DC (S
   // 4) AIVA via DC
   if (!audioUrl) {
     try {
-      const cr = await axios.post("https://apis.davidcyril.name.ng/aimusic/aiva/create", { prompt }, { timeout: 30000 });
-      const taskId = cr.data?.data?.task_id || cr.data?.task_id;
+      const cr = await dcPost("/aimusic/aiva/create", { prompt }, 30000);
+      const taskId = cr.ok && (cr.data?.data?.task_id || cr.data?.task_id);
       if (taskId) {
         await editMessage(sock, jid, stKey, `🎶 *AI Music (AIVA)*\n\n✅ Task submitted — polling...`);
         audioUrl = await _pollTask("/aimusic/aiva/status", taskId, 120000);
@@ -27908,8 +27997,8 @@ cmd(["dcjail","jaildc","jaileffect"], { desc: "Apply jail bars over image via DC
         const FormData = (await import("form-data")).default || require("form-data");
         const fd = new FormData();
         fd.append("file", fs.createReadStream(tmp));
-        const { data } = await axios.post("https://apis.davidcyril.name.ng/uploader/catbox", fd, { headers: fd.getHeaders(), timeout: 30000 });
-        imgUrl = data?.url || data?.data?.url;
+         const upload = await dcRequest("/uploader/catbox", { method: "POST", body: fd, headers: fd.getHeaders(), timeout: 30000 });
+         imgUrl = upload.data?.url || upload.data?.data?.url;
       } catch {}
     }
   }
@@ -28129,8 +28218,8 @@ cmd(["dcanitrace","aniguesser","dctrace"], { desc: "Find anime scene from image 
         const FormData = (await import("form-data")).default || require("form-data");
         const fd = new FormData();
         fd.append("file", fs.createReadStream(tmp));
-        const { data } = await axios.post("https://apis.davidcyril.name.ng/uploader/catbox", fd, { headers: fd.getHeaders(), timeout: 30000 });
-        imgUrl = data?.url || data?.data?.url;
+         const upload = await dcRequest("/uploader/catbox", { method: "POST", body: fd, headers: fd.getHeaders(), timeout: 30000 });
+         imgUrl = upload.data?.url || upload.data?.data?.url;
       } catch {}
     }
   }
@@ -28900,8 +28989,8 @@ cmd(["dcsaucenao","saucenaodc","dcrevsearch"], { desc: "Reverse image search via
         const FormData = (await import("form-data")).default || require("form-data");
         const fd = new FormData();
         fd.append("file", fs.createReadStream(tmp));
-        const { data } = await axios.post("https://apis.davidcyril.name.ng/uploader/catbox", fd, { headers: fd.getHeaders(), timeout: 30000 });
-        imgUrl = data?.url || data?.data?.url;
+         const upload = await dcRequest("/uploader/catbox", { method: "POST", body: fd, headers: fd.getHeaders(), timeout: 30000 });
+         imgUrl = upload.data?.url || upload.data?.data?.url;
       } catch {}
     }
   }
@@ -34995,6 +35084,34 @@ Aliases: ${CONFIG.PREFIX}airtoreal | ${CONFIG.PREFIX}img2real | ${CONFIG.PREFIX}
       }
       return null;
     };
+    const _tryDcProvider = async (endpoint, maxTries = 2, extraFields = {}) => {
+      for (let i = 0; i < maxTries; i++) {
+        try {
+          const _FormData = (await import("form-data")).default;
+          const form = new _FormData();
+          form.append("image", _imgBuf, { filename: "image.jpg", contentType: _mime });
+          for (const [k, v] of Object.entries(extraFields)) form.append(k, String(v));
+          const result = await dcRequest(endpoint, {
+            method: "POST",
+            body: form,
+            headers: form.getHeaders(),
+            timeout: 60000,
+            responseType: "binary",
+          });
+          const _b = result.data;
+          if (result.ok && Buffer.isBuffer(_b) && (_b[0] === 0xFF || _b[0] === 0x89)) return _b;
+          if (result.ok && _b && typeof _b === "object") {
+            const _u = _b?.result?.url || _b?.data?.url || _b?.url || _b?.image;
+            if (_u) {
+              const _rb = Buffer.from((await axios.get(_u, { responseType: "arraybuffer", timeout: 30000 })).data);
+              if (_rb.length > 1000) return _rb;
+            }
+          }
+        } catch {}
+        if (i < maxTries - 1) await new Promise(r => setTimeout(r, 2000));
+      }
+      return null;
+    };
 
     let _resultBuf = null;
 
@@ -35040,7 +35157,7 @@ Aliases: ${CONFIG.PREFIX}airtoreal | ${CONFIG.PREFIX}img2real | ${CONFIG.PREFIX}
     if (!_resultBuf) _resultBuf = await _tryProvider("https://api.ryzendesu.vip/api/ai/toreal", 2);
 
     // 6) davidcyril toreal
-    if (!_resultBuf) _resultBuf = await _tryProvider("https://api.davidcyril.name.ng/api/ai/toreal", 2);
+    if (!_resultBuf) _resultBuf = await _tryDcProvider("/api/ai/toreal", 2);
 
     if (!_resultBuf || _resultBuf.length < 500) {
             await react(sock, msg, "❌");
@@ -36158,9 +36275,9 @@ try {
 
         // Primary — Nexora / DavidCyril
         try {
-          const r = await axios.get(`https://apis.davidcyril.name.ng/play?query=${encodeURIComponent(query)}`, { timeout: 30000, headers: { "User-Agent": "Mozilla/5.0" } });
+          const r = await dcGet("/play", { query }, 30000);
           const d = r.data?.result;
-          if (r.data?.status && d?.download_url) {
+          if (r.ok && d?.download_url) {
             const a = await axios.get(d.download_url, { responseType: "arraybuffer", timeout: 120000, maxRedirects: 5, headers: { "User-Agent": "Mozilla/5.0" } });
             const b = Buffer.from(a.data || []);
             if (b.length > 8000) {
