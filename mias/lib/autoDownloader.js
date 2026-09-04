@@ -10,6 +10,7 @@
  */
 
 import { httpClient as axios } from "./engineAccess.js";
+import { dcGet as sharedDcGet } from "../davidcyril.js";
 import fs from "fs";
 import path from "path";
 import os from "os";
@@ -38,7 +39,6 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const ZERO_BASE   = "https://zeroapi2-production.up.railway.app";
 const ZERO_KEY    = process.env.ZERO_API_KEY || "";
-const DC_BASE     = "https://apis.davidcyril.name.ng";
 const PREXZY_BASE = "https://apis.prexzyvilla.site";
 
 const REQUEST_TIMEOUT  = 30000;
@@ -195,8 +195,7 @@ async function zeroGet(endpoint, params = {}, timeout = REQUEST_TIMEOUT) {
 }
 
 async function dcGet(endpoint, params = {}, timeout = REQUEST_TIMEOUT) {
-  const qs = new URLSearchParams(params).toString();
-  return httpGet(`${DC_BASE}${endpoint}${qs ? "?" + qs : ""}`, { timeout });
+  return sharedDcGet(endpoint, params, timeout);
 }
 
 async function prexzyGet(endpoint, params = {}, timeout = REQUEST_TIMEOUT) {
@@ -694,7 +693,6 @@ async function fromEporner(url) {
 
 // ─── Proven APIs from case.js commands (davidcyril / prexzyvilla / prince / vreden) ──
 
-const DC_BASE2    = "https://apis.davidcyril.name.ng";
 const PREXZY_BASE2 = "https://apis.prexzyvilla.site";
 const PRINCE_BASE = "https://api.princetechn.com";
 const PRINCE_KEY  = "prince";
@@ -753,8 +751,8 @@ async function fromPrexzyYtMp3(url) {
 /** davidcyril Facebook API */
 async function fromDcFb(url) {
   try {
-    const r = await axios.get(`${DC_BASE2}/facebook?url=${encodeURIComponent(url)}`,
-      { timeout: 30000, headers: { "User-Agent": UA2 } });
+    const r = await sharedDcGet("/facebook", { url }, 30000);
+    if (!r.ok) return null;
     const d = r.data?.result || r.data?.data || r.data;
     const dlUrl = d?.hd || d?.sd || d?.url || d?.video || (Array.isArray(d?.videos) ? d.videos[0]?.url : null);
     if (dlUrl && String(dlUrl).startsWith("http")) return { url: dlUrl, type: "video", title: d?.title || "Facebook", _via: "davidcyril-fb" };
@@ -791,8 +789,8 @@ async function fromPrexzyIg(url) {
 /** davidcyril Instagram API */
 async function fromDcIg(url) {
   try {
-    const r = await axios.get(`${DC_BASE2}/instagram?url=${encodeURIComponent(url)}`,
-      { timeout: 30000, headers: { "User-Agent": UA2 } });
+    const r = await sharedDcGet("/instagram", { url }, 30000);
+    if (!r.ok) return null;
     const d = r.data?.result || r.data?.data || r.data;
     const dlUrl = (Array.isArray(d) ? d[0]?.url : null) || d?.url || d?.video;
     const imgUrl = d?.image || d?.thumbnail;
@@ -825,8 +823,8 @@ async function fromPrinceTw(url) {
 async function fromDcSpotify(url) {
   if (!String(url || "").includes("spotify.com")) return null;
   try {
-    const r = await axios.get(`${DC_BASE2}/download/spotify?url=${encodeURIComponent(url)}`,
-      { timeout: 45000, headers: { "User-Agent": UA2 } });
+    const r = await sharedDcGet("/download/spotify", { url }, 45000);
+    if (!r.ok) return null;
     const d = r.data?.result || r.data?.data || r.data;
     const dlUrl = d?.url || d?.audio || d?.download;
     if (dlUrl && String(dlUrl).startsWith("http")) return { url: dlUrl, type: "audio", title: d?.title || d?.name || "Spotify Track", _via: "davidcyril-spotify" };
@@ -842,7 +840,8 @@ async function fromSpotifyViaYt(url) {
     let title = "", artist = "";
     if (trackId) {
       try {
-        const info = await axios.get(`${DC_BASE2}/spotify/track?id=${trackId}`, { timeout: 15000 });
+        const info = await sharedDcGet("/spotify/track", { id: trackId }, 15000);
+        if (!info.ok) throw new Error(info.error || "DavidCyril track lookup failed");
         const d = info.data?.result || info.data?.data || info.data;
         title = d?.name || d?.title || "";
         artist = d?.artists?.[0]?.name || d?.artist || "";
