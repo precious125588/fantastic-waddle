@@ -12,12 +12,12 @@
  */
 
 import { httpClient as axios } from '../lib/engineAccess.js';
+import { dcGet } from '../davidcyril.js';
 
 // ── Constants ────────────────────────────────────────────────
 const ZERO_BASE   = 'https://zeroapi2-production.up.railway.app';
 const ZERO_KEY    = process.env.ZERO_API_KEY || '';
 const PREXZY_BASE = 'https://apis.prexzyvilla.site';
-  const DAVIDCYRIL_BASE = 'https://apis.davidcyril.name.ng';
 const HF_BASE     = 'https://api-inference.huggingface.co/models';
 const HF_TOKEN    = process.env.HF_TOKEN    || '';
 const OPENAI_KEY  = process.env.OPENAI_API_KEY || '';
@@ -75,20 +75,11 @@ export async function prexzyGet(endpoint, params = {}, timeoutMs = 30000) {
   }
 }
 
-// ── Davidcyril API helper ───────────────────────────────────
-  export async function davidcyrilGet(endpoint, params = {}, timeoutMs = 30000) {
-    try {
-      const qs = new URLSearchParams();
-      for (const [k, v] of Object.entries(params)) {
-        if (v !== undefined && v !== null && v !== '') qs.set(k, String(v));
-      }
-      const url = `${DAVIDCYRIL_BASE}${endpoint}${qs.toString() ? '?' + qs.toString() : ''}`;
-      const { data } = await _http.get(url, { timeout: timeoutMs });
-      return { ok: true, data };
-    } catch (e) {
-      return { ok: false, error: e?.message || 'Davidcyril GET failed' };
-    }
-  }
+// ── DavidCyril API helper ───────────────────────────────────
+// Keep NIX on the same shared client as the regular command router.
+export async function davidcyrilGet(endpoint, params = {}, timeoutMs = 30000) {
+  return dcGet(endpoint, params, timeoutMs);
+}
 
   // ── Generic URL downloader ───────────────────────────────────
 async function _fetchBuf(url, minBytes = 1000, timeoutMs = 60000) {
@@ -131,13 +122,13 @@ async function _socialDl(platform, url, prexzyEp = null) {
     if (dlUrl) return { ok: true, url: dlUrl, title: d?.title || platform, data: d };
   }
 
-    // 2. Davidcyril API (faster fallback before Prexzy)
+    // 2. DavidCyril API (faster fallback before Prexzy)
     try {
-      const dcEp = `/download/${platform}?url=${encodeURIComponent(url)}`;
-      const rDc = await _http.get(`${DAVIDCYRIL_BASE}${dcEp}`, { timeout: 60000 });
-      if (rDc?.data) {
+      const rDc = await davidcyrilGet(`/download/${platform}`, { url }, 60000);
+      if (rDc.ok) {
         const dlUrl = _extractUrl(rDc.data);
-        if (dlUrl) return { ok: true, url: dlUrl, title: rDc.data?.result?.title || platform, data: rDc.data?.result || rDc.data };
+        const d = rDc.data?.result || rDc.data?.data || rDc.data;
+        if (dlUrl) return { ok: true, url: dlUrl, title: d?.title || platform, data: d };
       }
     } catch {}
     // 3. Prexzy
@@ -186,7 +177,15 @@ export async function nixUniversal(url) {
 // not need to know which provider implementation currently serves the call.
 export const nixDownload = nixUniversal;
 export const nixGif = (keyword) => prexzyGet('/search/gif', { query: keyword });
-export const nixNews = () => prexzyGet('/news');
+export async function nixNews() {
+  // DavidCyril publishes news by source/category, not at a bare /news path.
+  // Trending is the closest equivalent to the old "latest news" command.
+  const trending = await dcGet("/news/trending", {}, 20000);
+  if (trending.ok) return trending;
+  const tech = await dcGet("/news/tech", {}, 20000);
+  if (tech.ok) return tech;
+  return prexzyGet("/news");
+}
 export const nixFetch = (url, options = {}) =>
   _http.get(url, options).then(({ data }) => ({ ok: true, data }))
     .catch((error) => ({ ok: false, error: error?.message || 'Fetch failed' }));
