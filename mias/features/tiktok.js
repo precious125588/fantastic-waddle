@@ -35,6 +35,7 @@ export function normalizeTikTokResponse(payload = {}) {
     videoWatermark: pick(data.wmplay, data.play),
     audio: pick(data.music, data.music_info?.play, data.audio),
   };
+}
 
 export function parseTikTokMode(value) {
   const mode = MODES[String(value || "").trim()];
