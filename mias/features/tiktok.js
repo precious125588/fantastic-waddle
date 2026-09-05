@@ -35,7 +35,6 @@ export function normalizeTikTokResponse(payload = {}) {
     videoWatermark: pick(data.wmplay, data.play),
     audio: pick(data.music, data.music_info?.play, data.audio),
   };
-}
 
 export function parseTikTokMode(value) {
   const mode = MODES[String(value || "").trim()];
@@ -48,7 +47,7 @@ export function formatTikTokMenu(info, prefix = ".") {
     `Author: ${info.author}`,
     info.duration ? `Duration: ${info.duration}s` : null,
     "",
-    "Please reply with the number you want to select:",
+    "Reply with the number you want:",
     "➜ [1] Video",
     "1.1 SD Video (mp4)",
     "1.2 SD Document (mp4)",
@@ -62,7 +61,7 @@ export function formatTikTokMenu(info, prefix = ".") {
     "2.2 Document Audio",
     "2.3 Voice Note",
     "",
-    `Reply with *${prefix}pick <number>* within 5 minutes.`,
+    "Reply with a choice such as *1.3* within 5 minutes.",
   ].filter(Boolean).join("\n");
 }
 
