@@ -72,6 +72,22 @@ import {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
+let __miasPortableVideoModule = null;
+async function __miasNormalizeVideoBuffer(value) {
+  if (!Buffer.isBuffer(value) || value.length < 1024) return value;
+  try {
+    if (!__miasPortableVideoModule) {
+      __miasPortableVideoModule = require("./lib/portableVideo.cjs");
+    }
+    if (typeof __miasPortableVideoModule?.normalizeVideoBuffer === "function") {
+      return await __miasPortableVideoModule.normalizeVideoBuffer(value, { timeoutMs: 120000 });
+    }
+  } catch (e) {
+    // Keep the original file if ffmpeg/portableVideo is unavailable.
+    try { console.warn("[video] normalization skipped:", e?.message || e); } catch {}
+  }
+  return value;
+}
 const __ttSelections = new Map();
 const __joinApprovals = new Map();
 // ── NexRay API wrapper — primary endpoint for all supported commands ──────────
@@ -378,6 +394,16 @@ globalThis.__miasInstallProfilePicShim = __miasInstallProfilePicShim;
 const _origMakeWASocket = makeWASocket;
 makeWASocket = function __wrappedMakeWASocket(opts) {
   const sock = _origMakeWASocket(opts);
+  // Expose the live socket for late patches and watchdogs.  The old late
+  // patches only looked for globalThis.sock, while the main socket lived in a
+  // module-local variable; after a reconnect they silently stopped applying.
+  try {
+    globalThis.__miasMainSock = sock;
+    globalThis.sock = sock;
+    if (typeof globalThis.__miasInstallConnectSync === "function") {
+      globalThis.__miasInstallConnectSync(sock);
+    }
+  } catch {}
   // STRIP PROCESSING/DONE REACTIONS (spiral + checkmark) globally
   try {
     const _origSendMsg = sock.sendMessage.bind(sock);
@@ -1585,7 +1611,14 @@ async function connectToWA(force = false) {
           }
         }
       } catch {}
-      const _smResult = await _rawSendMessage(jid, normalizeOutgoingPayload(content), options);
+     let _outgoing = normalizeOutgoingPayload(content);
+     // Normalize every buffered video to H.264/AAC MP4 when the portable
+     // helper is available.  Sending a WebM/VP9 or fragmented stream as
+     // video/mp4 is the common cause of "audio works, picture is black".
+     if (_outgoing?.video && Buffer.isBuffer(_outgoing.video) && !_outgoing.gifPlayback) {
+       _outgoing = { ..._outgoing, video: await __miasNormalizeVideoBuffer(_outgoing.video), mimetype: "video/mp4" };
+     }
+     const _smResult = await _rawSendMessage(jid, _outgoing, options);
       if (_smResult?.key?.id) { _botSentMsgIds.add(_smResult.key.id); setTimeout(() => _botSentMsgIds.delete(_smResult.key.id), 120000); }
       return _smResult;
     };
@@ -1612,6 +1645,21 @@ async function connectToWA(force = false) {
       };
     }
     sockGlobal = sock;
+    try {
+      globalThis.__miasMainSock = sock;
+      globalThis.sock = sock;
+      updateHandlerSock(sock);
+      for (const _installer of [
+        globalThis.__miasInstallConnectSync,
+        globalThis.__miasInstallStubShield,
+        globalThis.__miasInstallMentionResponder,
+        globalThis.__miasInstallBlockGate,
+      ]) {
+        if (typeof _installer === "function") {
+          try { _installer(sock); } catch {}
+        }
+      }
+    } catch {}
 
     // ── NIX BRIDGE: expose contacts + auto-feature toggles to nix modules ──
     try {
@@ -1790,54 +1838,47 @@ async function connectToWA(force = false) {
           }
         } catch (e) { console.log("[lid-learn]", e?.message); }
         try { initializeLidStore(sock); } catch {}
-        // ─── v4.9.3 FIX: only DM the owner ONCE per process lifetime ───
-        // (was spamming on every reconnect — network blips, keepalive
-        //  bounces, and post-pair handshakes all triggered another DM).
-        // We also throttle to one notice every 30 minutes as a hard cap
-        // in case the process is restarted in a tight loop by the host.
+        // ─── Connection notice ─────────────────────────────────────────────
+        // Do not persist this throttle on disk.  A persisted six-hour marker
+        // made a genuine process restart look silent to the owner.  Keep the
+        // guard in memory instead: reconnects in the same process are capped,
+        // while every fresh process gets a new startup notice.
         try {
-          const ownerNum = (CONFIG.OWNER_NUMBER || "").replace(/[^0-9]/g, "");
-          const ownerJid = ownerNum ? ownerNum + "@s.whatsapp.net" : "";
-          const NOW = Date.now();
-          const THROTTLE_MS = 6 * 60 * 60 * 1000; // 6h — prevents spam on frequent restarts
-          // Persist last-notified time across process restarts via a file
-          const _connNotifFile = path.join(__dirname, '..', 'nexstore', '.last_conn_notif');
-          let _lastNotifAt = 0;
-          try { _lastNotifAt = parseInt(fs.readFileSync(_connNotifFile, 'utf8') || '0', 10) || 0; } catch {}
-          // Auto-detect ownerJid from sock.user when OWNER_NUMBER env var is not set
-          if (!ownerJid && sock?.user?.id) {
-            const _autoNum2 = sock.user.id.split(':')[0].split('@')[0].replace(/[^0-9]/g,'');
-            if (_autoNum2 && _autoNum2.length >= 7) {
-              ownerJid = _autoNum2 + '@s.whatsapp.net';
-              // Also persist to CONFIG so commands work
-              if (!CONFIG.OWNER_NUMBER) CONFIG.OWNER_NUMBER = _autoNum2;
-              console.log(`[MIAS] Auto-detected owner: +${_autoNum2} (set OWNER_NUMBER in Railway to make this permanent)`);
+          let ownerJid = "";
+          const configuredOwner = String(CONFIG.OWNER_JID || "").trim();
+          const configuredNumber = String(CONFIG.OWNER_NUMBER || "").replace(/[^0-9]/g, "");
+          const sessionNumber = _cleanNum(sock?.user?.id || "");
+          if (configuredOwner.includes("@")) ownerJid = toStandardJid(configuredOwner);
+          else if (configuredNumber) ownerJid = `${configuredNumber}@s.whatsapp.net`;
+          else if (sessionNumber) {
+            ownerJid = `${sessionNumber}@s.whatsapp.net`;
+            CONFIG.OWNER_NUMBER = sessionNumber;
+            CONFIG.OWNER_JID = ownerJid;
+            console.log(`[MIAS] Auto-detected owner: +${sessionNumber}`);
+          }
+          const now = Date.now();
+          const noticeCooldown = 5 * 60 * 1000;
+          const lastNotice = Number(globalThis.__miasLastConnectionNoticeAt || 0);
+          if (ownerJid && now - lastNotice >= noticeCooldown) {
+            globalThis.__miasLastConnectionNoticeAt = now;
+            const ownerDisplayName =
+              (typeof getOwnerName === "function" ? getOwnerName() : null) ||
+              CONFIG.OWNER_NAME || "Owner";
+            const ownerPhoneNum = _cleanNum(ownerJid);
+            console.log(`✅ MIAS MDX is active | Owner: ${ownerDisplayName} (+${ownerPhoneNum || "unknown"}) | ${commands.size} commands loaded`);
+            await sock.sendMessage(ownerJid, {
+              text: `MIAS is ALIVE\n\nBy \ud835\udc77\ud835\udc79\ud835\udc6c\ud835\udc6a\ud835\udc70\ud835\udc76\ud835\udc7c\ud835\udc7a x`,
+            });
+          }
+          try {
+            const sidCreds = path.join(AUTH_DIR, "creds.json");
+            if (fs.existsSync(sidCreds)) {
+              console.log("✅ Session auto-persisted to", AUTH_DIR, "— will restore automatically on restart.");
             }
-          }
-          if (
-            ownerJid &&
-            (NOW - _lastNotifAt) > THROTTLE_MS
-          ) {
-            try { fs.writeFileSync(_connNotifFile, String(NOW)); } catch {}
-// v-fix: richer startup DM with owner name, number and bot info
-            const _ownerDisplayName = (typeof getOwnerName === "function" ? getOwnerName() : null) || CONFIG.OWNER_NAME || "Owner";
-            const _ownerPhoneNum = ownerNum ? `+${ownerNum}` : "Unknown";
-            console.log(`✅ MIAS MDX is active | Owner: ${_ownerDisplayName} (${_ownerPhoneNum}) | ${commands.size} commands loaded`);
-            const _connMsg = `MIAS is ALIVE\n\nBy \ud835\udc77\ud835\udc79\ud835\udc6c\ud835\udc6a\ud835\udc70\ud835\udc76\ud835\udc7c\ud835\udc7a x`;
-            await sock.sendMessage(ownerJid, { text: _connMsg });
-            // ── Session persistence is fully automatic — nothing is ever DMed. ──
-            // AUTH_DIR (backed by the Railway persistent volume) already holds
-            // the live creds.json/keys, and restoreSession() reloads them on
-            // every boot. No SESSION_ID string needs to leave the server, so
-            // there is nothing here to intercept, forward, or lose.
-            try {
-              const _sidCreds = path.join(AUTH_DIR, 'creds.json');
-              if (fs.existsSync(_sidCreds)) {
-                console.log('✅ Session auto-persisted to', AUTH_DIR, '— will restore automatically on restart/redeploy.');
-              }
-            } catch {}
-          }
-        } catch {}
+          } catch {}
+        } catch (e) {
+          console.error("[connection notice]", e?.message || e);
+        }
 
         // ─────────────────────────────────────────────────────────────
         // v17: FAST-READY WARMUP — prefetch group metadata in the
@@ -2908,7 +2949,17 @@ ${_atBotAdmin ? "✅ Message deleted." : "⚠️ Make me admin to auto-delete."}
             }
           }
           const _matchedPrefix = (body && (CONFIG.PREFIXES||[CONFIG.PREFIX]).find(p=>body.startsWith(p))) || null;
-          if (!body || !_matchedPrefix) return;
+          if (!body || !_matchedPrefix) {
+            // Numbered media menus are intentionally usable without another
+            // command prefix.  This lets a user reply "1.3" to TikTok or "2"
+            // to a play picker instead of typing .pick first.
+            try {
+              if (await __miasHandleBareNumberReply(sock, msg, body)) return;
+            } catch (e) {
+              console.error("[numbered-reply]", e?.message || e);
+            }
+            return;
+          }
 
           const sender = getSender(msg);
           const fromOwner = msg.key.fromMe || isOwner(sender) || (typeof isSudo === "function" && isSudo(sender));
@@ -7717,79 +7768,111 @@ cmd(["alive", "runtime", "uptime"], { desc: "Bot alive status and uptime info", 
   await sendReply(sock, msg, `ⓘ _The bot has been active for ${up}_`);
 });
 
-// .forward / .fwd — forward a quoted message to a target number/jid (or same chat if no target)
-// Usage: reply to any message then → .forward <number|jid|lid>
-//   number  e.g. 2348012345678  → appended with @s.whatsapp.net
-//   JID     e.g. 2348012345678@s.whatsapp.net or 120363...@g.us or ...@lid
+// .forward / .fwd — forward a quoted message to a target number/JID.
+// The previous implementation returned its usage text before reaching the
+// forwarding code, and it did not normalize @lid/group JIDs.
 cmd(["forward", "fwd"], { desc: "Forward a quoted message — .forward <number or JID>", category: "MISC" }, async (sock, msg, args) => {
-  await react(sock, msg, "↩️");
-  return sendReply(sock, msg, `*Usage:* ${CONFIG.PREFIX}forward <number or JID>`);
-  // Placeholder — actual forward functionality moved here for correction guide only
-  if (false) {
-    const targetJid = null;
-
-  // ── extract quoted / replied message ─────────────────────────────────────
-  const _mw = msg.message || {};
-  const ctx =
-    _mw.extendedTextMessage?.contextInfo ||
-    _mw.imageMessage?.contextInfo        ||
-    _mw.videoMessage?.contextInfo        ||
-    _mw.audioMessage?.contextInfo        ||
-    _mw.documentMessage?.contextInfo     ||
-    _mw.stickerMessage?.contextInfo      || null;
-  const quoted   = ctx?.quotedMessage || null;
-  const stanzaId = ctx?.stanzaId      || null;
-
-  if (!quoted || !stanzaId) {
-    return sendReply(sock, msg, "↩️ Reply to a message first, then run " + CONFIG.PREFIX + "forward <number>.");
+  const ctx = getContextInfo(msg);
+  let quoted = ctx?.quotedMessage || null;
+  for (let i = 0; i < 5; i++) {
+    const inner = quoted?.viewOnceMessage?.message
+      || quoted?.viewOnceMessageV2?.message
+      || quoted?.viewOnceMessageV2Extension?.message
+      || quoted?.ephemeralMessage?.message
+      || quoted?.documentWithCaptionMessage?.message;
+    if (!inner || inner === quoted) break;
+    quoted = inner;
+  }
+  if (!quoted) {
+    await react(sock, msg, "❌").catch(() => {});
+    return sendReply(sock, msg, `↩️ Reply to a message first, then use ${CONFIG.PREFIX}forward <number|JID>.`);
   }
 
-  await react(sock, msg, "🌀");
+  const rawTarget = String(args?.[0] || "").trim();
+  let targetJid = "";
+  if (rawTarget) {
+    if (rawTarget.includes("@")) {
+      targetJid = resolveLid(rawTarget);
+      if (targetJid.endsWith("@lid") && isGroup(msg)) {
+        try {
+          const meta = await sock.groupMetadata(msg.key.remoteJid);
+          updateLidMappingsFromMeta(meta);
+          targetJid = resolveLid(targetJid);
+        } catch {}
+      }
+      if (!targetJid.endsWith("@g.us") && !targetJid.endsWith("@broadcast")) {
+        targetJid = toStandardJid(targetJid);
+      }
+    } else {
+      const digits = rawTarget.replace(/[^0-9]/g, "");
+      if (digits.length >= 7) targetJid = `${digits}@s.whatsapp.net`;
+    }
+  }
+  if (!targetJid) {
+    await react(sock, msg, "❌").catch(() => {});
+    return sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}forward <number|JID>\nExample: ${CONFIG.PREFIX}forward 2348012345678`);
+  }
 
-  // ── strategy 1: relay (preserves forward context) ────────────────────────
+  await react(sock, msg, "🌀").catch(() => {});
+  const stanzaId = ctx?.stanzaId || `fwd_${Date.now()}`;
   try {
-    await sock.relayMessage(targetJid, quoted, { messageId: stanzaId + "_fwd_" + Date.now() });
-    await react(sock, msg, "✅");
+    // Relay first: this preserves captions, quoted context, and forwarded
+    // metadata without requiring a second media download.
+    await sock.relayMessage(targetJid, quoted, { messageId: `${stanzaId}_${Date.now()}` });
+    await react(sock, msg, "✅").catch(() => {});
     return;
-  } catch {}
+  } catch (relayError) {
+    console.log("[forward] relay failed, falling back to media download:", relayError?.message || relayError);
+  }
 
-  // ── strategy 2: re-download each media type and re-send ──────────────────
   try {
     const mediaTypes = [
-      ["imageMessage",    "image"],
-      ["videoMessage",    "video"],
-      ["audioMessage",    "audio"],
-      ["stickerMessage",  "sticker"],
+      ["imageMessage", "image"],
+      ["videoMessage", "video"],
+      ["audioMessage", "audio"],
+      ["stickerMessage", "sticker"],
       ["documentMessage", "document"],
     ];
     let sent = false;
     for (const [key, type] of mediaTypes) {
-      if (!quoted[key]) continue;
-      const stream = await downloadContentFromMessage(quoted[key], type);
-      let buf = Buffer.from([]);
-      for await (const chunk of stream) buf = Buffer.concat([buf, chunk]);
+      const media = quoted[key];
+      if (!media) continue;
+      const stream = await downloadContentFromMessage(media, type);
+      const chunks = [];
+      for await (const chunk of stream) chunks.push(chunk);
+      const buf = Buffer.concat(chunks);
+      if (!buf.length) continue;
       let payload;
-      if (key === "imageMessage")      payload = { image:    buf, caption: quoted[key].caption || "" };
-      else if (key === "videoMessage") payload = { video:    buf, caption: quoted[key].caption || "" };
-      else if (key === "audioMessage") payload = { audio:    buf, mimetype: quoted[key].mimetype || "audio/ogg; codecs=opus", ptt: quoted[key].ptt || false };
-      else if (key === "stickerMessage") payload = { sticker: buf };
-      else                             payload = { document: buf, mimetype: quoted[key].mimetype || "application/octet-stream", fileName: quoted[key].fileName || "file" };
+      if (key === "imageMessage") {
+        payload = { image: buf, caption: media.caption || "" };
+      } else if (key === "videoMessage") {
+        payload = { video: buf, mimetype: media.mimetype || "video/mp4", caption: media.caption || "" };
+      } else if (key === "audioMessage") {
+        payload = { audio: buf, mimetype: media.mimetype || "audio/ogg; codecs=opus", ptt: !!media.ptt };
+      } else if (key === "stickerMessage") {
+        payload = { sticker: buf };
+      } else {
+        payload = {
+          document: buf,
+          mimetype: media.mimetype || "application/octet-stream",
+          fileName: media.fileName || "forwarded_file",
+          caption: media.caption || "",
+        };
+      }
       await sock.sendMessage(targetJid, payload);
       sent = true;
       break;
     }
     if (!sent) {
-      // Text fallback
       const text = quoted.conversation || quoted.extendedTextMessage?.text;
-      if (text) await sock.sendMessage(targetJid, { text });
-      else return sendReply(sock, msg, "❌ Cannot forward: unsupported message type.");
+      if (!text) throw new Error("unsupported quoted message type");
+      await sock.sendMessage(targetJid, { text });
     }
-    await react(sock, msg, "✅");
+    await react(sock, msg, "✅").catch(() => {});
   } catch (e) {
-    await sendReply(sock, msg, `❌ Forward failed: ${e.message}`);
-    await react(sock, msg, "❌");
+    await react(sock, msg, "❌").catch(() => {});
+    await sendReply(sock, msg, `❌ Forward failed: ${e?.message || e}`);
   }
-  } // end if (false)
 });
 
 
@@ -8613,7 +8696,7 @@ cmd(["play!", "musicpick", "songpick"], { desc: "Play song — pick audio format
       await editMessage(sock, jid, statusKey, `🎵 *MIAS MDX Player (Pick)*\n\n❌ No results found for: *"${query}"*`);
       return;
     }
-    _playPickStore.set(jid, { videoUrl, title, ts: Date.now() });
+    _playPickStore.set(jid, { videoUrl, title, ts: Date.now(), picker: "audio" });
     await sock.sendMessage(jid, { delete: statusKey }).catch(() => {});
     const shortTitle = title.slice(0, 55);
     const pickerText = `🎵 *${shortTitle}*\n\n🎧 Choose the audio format you want to receive:\n_Tip: if one format sounds corrupt, pick another_`;
@@ -8624,7 +8707,7 @@ cmd(["play!", "musicpick", "songpick"], { desc: "Play song — pick audio format
       { text: "📄 Send as MP3 Document",  id: `${CONFIG.PREFIX}playget doc` },
     ];
     try { await sendNativeFlowButtons(sock, jid, msg, pickerText, buttons, `${CONFIG.BOT_NAME} • Audio Format Picker`); }
-    catch { await sendReply(sock, msg, `${pickerText}\n\n_Pick:_\n• *${CONFIG.PREFIX}playget mp3*\n• *${CONFIG.PREFIX}playget m4a*\n• *${CONFIG.PREFIX}playget ogg*\n• *${CONFIG.PREFIX}playget doc*`); }
+    catch { await sendReply(sock, msg, `${pickerText}\n\nReply with:\n1. MP3\n2. M4A\n3. OGG\n4. MP3 document`); }
   } catch (e) {
     await editMessage(sock, jid, statusKey, `❌ Error: ${e.message}`).catch(() => {});
   }
@@ -8657,7 +8740,7 @@ cmd(["play2!", "playdocpick", "songdocpick"], { desc: "Play song as document —
       await editMessage(sock, jid, statusKey, `🎼 *MIAS MDX Player Doc (Pick)*\n\n❌ No results found for: *"${query}"*`);
       return;
     }
-    _playPickStore.set(jid, { videoUrl, title, ts: Date.now() });
+    _playPickStore.set(jid, { videoUrl, title, ts: Date.now(), picker: "document" });
     await sock.sendMessage(jid, { delete: statusKey }).catch(() => {});
     const shortTitle = title.slice(0, 55);
     const pickerText = `🎼 *${shortTitle}*\n\n📁 Choose the document format to download:\n_All formats sent as a downloadable file_`;
@@ -8667,7 +8750,7 @@ cmd(["play2!", "playdocpick", "songdocpick"], { desc: "Play song as document —
       { text: "🎶 OGG Document  (opus/ogg)", id: `${CONFIG.PREFIX}playgetdoc ogg` },
     ];
     try { await sendNativeFlowButtons(sock, jid, msg, pickerText, buttons, `${CONFIG.BOT_NAME} • Doc Format Picker`); }
-    catch { await sendReply(sock, msg, `${pickerText}\n\n_Pick:_\n• *${CONFIG.PREFIX}playgetdoc mp3*\n• *${CONFIG.PREFIX}playgetdoc m4a*\n• *${CONFIG.PREFIX}playgetdoc ogg*`); }
+    catch { await sendReply(sock, msg, `${pickerText}\n\nReply with:\n1. MP3 document\n2. M4A document\n3. OGG document`); }
   } catch (e) {
     await editMessage(sock, jid, statusKey, `❌ Error: ${e.message}`).catch(() => {});
   }
@@ -13117,39 +13200,69 @@ cmd(["vv", "viewonce"], { desc: "Reveal view-once message (reply to it)", catego
 // straight to the bot owner's DM. Ideal for archiving without alerting
 // the sender or other group members.
 cmd(["vv2","lol","wow","hehe","😂","🙂","omor","chai","🥀"], { desc: "Save replied view-once media silently to OWNER DM", category: "TOOLS" }, async (sock, msg) => {
-  const ctx = msg.message?.extendedTextMessage?.contextInfo;
+  const ctx = getContextInfo(msg);
   if (!ctx?.quotedMessage) { return; } // silent — no reply when not replying to anything
-  const vo = ctx.quotedMessage?.viewOnceMessage?.message
-          || ctx.quotedMessage?.viewOnceMessageV2?.message
-          || ctx.quotedMessage?.viewOnceMessageV2Extension?.message
-          || ctx.quotedMessage;
+  let vo = ctx.quotedMessage;
+  for (let i = 0; i < 5; i++) {
+    const inner = vo?.viewOnceMessage?.message
+      || vo?.viewOnceMessageV2?.message
+      || vo?.viewOnceMessageV2Extension?.message
+      || vo?.ephemeralMessage?.message
+      || vo?.documentWithCaptionMessage?.message;
+    if (!inner || inner === vo) break;
+    vo = inner;
+  }
   if (!vo) { return; } // silent — not a view-once
-  const senderJid = ctx.participant || msg.key.remoteJid;
-  const senderTag = (senderJid || "").split("@")[0];
-  const ownerJid = ((CONFIG.OWNER_NUMBER || "").replace(/[^0-9]/g, "")) + "@s.whatsapp.net";
-  if (!ownerJid || ownerJid === "@s.whatsapp.net") { return; } // silent
+  let senderJid = resolveLid(
+    ctx.participant ||
+    ctx.remoteJid ||
+    msg.key.participant ||
+    msg.participant ||
+    msg.key.remoteJid ||
+    ""
+  );
+  // A quoted group message may identify its author with an @lid.  Refresh the
+  // group mapping before falling back to the numeric session identity.
+  if (senderJid.endsWith("@lid") && isGroup(msg)) {
+    try {
+      const meta = await sock.groupMetadata(msg.key.remoteJid);
+      updateLidMappingsFromMeta(meta);
+      senderJid = resolveLid(senderJid);
+    } catch {}
+  }
+  const senderMentionJid = senderJid.endsWith("@s.whatsapp.net") ? senderJid : "";
+  const senderTag = _cleanNum(senderJid) || "unknown";
+  let ownerJid = "";
+  const configuredOwnerJid = String(CONFIG.OWNER_JID || "").trim();
+  const configuredOwnerNumber = String(CONFIG.OWNER_NUMBER || "").replace(/[^0-9]/g, "");
+  const sessionOwnerNumber = _cleanNum(sock.user?.id || _botJid || "");
+  if (configuredOwnerJid.includes("@")) ownerJid = toStandardJid(configuredOwnerJid);
+  else if (configuredOwnerNumber) ownerJid = `${configuredOwnerNumber}@s.whatsapp.net`;
+  else if (sessionOwnerNumber) ownerJid = `${sessionOwnerNumber}@s.whatsapp.net`;
+  if (!ownerJid) { return; } // silent
   const chatLabel = msg.key.remoteJid?.endsWith("@g.us")
     ? `Group: ${msg.key.remoteJid}`
     : `Chat: ${msg.key.remoteJid}`;
   const cap = `🔒 *ViewOnce Saved*\n👤 From: @${senderTag}\n📍 ${chatLabel}\n🕐 ${new Date().toLocaleString()}`;
+  const mentions = senderMentionJid ? [senderMentionJid] : [];
   try {
     let mediaPayload = null;
     if (vo.imageMessage) {
       const stream = await downloadContentFromMessage(vo.imageMessage, "image");
       let buf = Buffer.from([]);
       for await (const c of stream) buf = Buffer.concat([buf, c]);
-      mediaPayload = { image: buf, caption: cap, mentions: [senderJid] };
+      mediaPayload = { image: buf, caption: cap, ...(mentions.length ? { mentions } : {}) };
     } else if (vo.videoMessage) {
       const stream = await downloadContentFromMessage(vo.videoMessage, "video");
       let buf = Buffer.from([]);
       for await (const c of stream) buf = Buffer.concat([buf, c]);
-      mediaPayload = { video: buf, caption: cap, mentions: [senderJid] };
+      mediaPayload = { video: buf, mimetype: "video/mp4", caption: cap, ...(mentions.length ? { mentions } : {}) };
     } else if (vo.audioMessage) {
       const stream = await downloadContentFromMessage(vo.audioMessage, "audio");
       let buf = Buffer.from([]);
       for await (const c of stream) buf = Buffer.concat([buf, c]);
       // Audio can't carry a caption — send caption as a separate text first.
-      await sock.sendMessage(ownerJid, { text: cap, mentions: [senderJid] }).catch(() => {});
+      await sock.sendMessage(ownerJid, { text: cap, ...(mentions.length ? { mentions } : {}) }).catch(() => {});
       mediaPayload = { audio: buf, mimetype: "audio/mp4", ptt: !!vo.audioMessage.ptt };
     } else { return; } // silent — unknown media type in view-once
     await sock.sendMessage(ownerJid, mediaPayload);
@@ -16813,7 +16926,26 @@ cmd(["tiktok","tt","ttdl"], { desc: "Download TikTok video/audio — supports: .
       try {
         const info = await fetchTikTokInfo(url);
         __ttSelections.set(jid, { info, ts: Date.now(), sourceMessage: msg });
-        await sendReply(sock, msg, formatTikTokMenu(info, CONFIG.PREFIX));
+        const menuCaption = formatTikTokMenu(info, CONFIG.PREFIX);
+        // Show the TikTok cover together with the caption/menu so the
+        // numbered choices are tied to the actual post the user sent.
+        if (info.thumbnail) {
+          try {
+            const thumb = Buffer.from((await axios.get(info.thumbnail, {
+              responseType: "arraybuffer", timeout: 15000,
+              headers: { "User-Agent": "Mozilla/5.0", Referer: "https://www.tiktok.com/" },
+            })).data);
+            if (thumb.length > 1024) {
+              await sock.sendMessage(jid, { image: thumb, caption: menuCaption }, { quoted: msg });
+            } else {
+              await sendReply(sock, msg, menuCaption);
+            }
+          } catch {
+            await sendReply(sock, msg, menuCaption);
+          }
+        } else {
+          await sendReply(sock, msg, menuCaption);
+        }
         await react(sock, msg, "✅");
         return;
       } catch (_previewErr) {
@@ -20211,6 +20343,57 @@ for (const [acmd, cfg] of Object.entries(_ADULT_QUICK)) {
   });
 }
 
+// Plain numeric replies for media menus.  Keep .pick/.p as a compatible
+// fallback, but do not make users repeat the command shown by the bot.
+async function __miasHandleBareNumberReply(sock, msg, body) {
+  const value = String(body || "").trim();
+  if (!/^\d+(?:\.\d+)?$/.test(value)) return false;
+  const jid = msg.key.remoteJid;
+  const now = Date.now();
+
+  const ttPick = __ttSelections.get(jid);
+  if (ttPick && now - ttPick.ts <= 5 * 60 * 1000 && parseTikTokMode(value)) {
+    const entry = commands.get("pick");
+    if (entry?.handler) {
+      await entry.handler(sock, msg, [value]);
+      return true;
+    }
+  }
+
+  const playPick = _playPickStore.get(jid);
+  if (playPick && now - playPick.ts <= 10 * 60 * 1000) {
+    const n = Number(value);
+    const picker = playPick.picker === "document" ? "playgetdoc" : "playget";
+    const formats = playPick.picker === "document"
+      ? ["mp3", "m4a", "ogg"]
+      : ["mp3", "m4a", "ogg", "doc"];
+    if (Number.isInteger(n) && n >= 1 && n <= formats.length) {
+      const entry = commands.get(picker);
+      if (entry?.handler) {
+        await entry.handler(sock, msg, [formats[n - 1]]);
+        return true;
+      }
+    }
+  } else if (playPick) {
+    _playPickStore.delete(jid);
+  }
+
+  // Adult/text menus already have a complete .pick implementation, so route
+  // plain integer replies through it as well.
+  if (/^\d+$/.test(value)) {
+    const hasAdult = _lastAdultResults.get(jid);
+    const hasMenu = _menuPickStore.get(jid);
+    if (hasAdult || hasMenu) {
+      const entry = commands.get("pick");
+      if (entry?.handler) {
+        await entry.handler(sock, msg, [value]);
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 // .pick — smart dual-mode: random chooser (A | B | C) OR adult video download (pick N)
 cmd(["pick", "p"], { desc: "Pick randomly from options (A|B|C) OR download adult search result N — .pick A|B|C  /  .pick <N>", category: "UTILITY" }, async (sock, msg, args) => {
   const jid = msg.key.remoteJid;
@@ -20252,6 +20435,11 @@ cmd(["pick", "p"], { desc: "Pick randomly from options (A|B|C) OR download adult
       });
       const media = Buffer.from(response.data);
       if (media.length < 2048) throw new Error("provider returned an empty media file");
+      const mediaHead = media.slice(0, 64).toString("utf8").trim().toLowerCase();
+      if (mediaHead.startsWith("<!doctype") || mediaHead.startsWith("<html") || mediaHead.startsWith("{")) {
+        throw new Error("TikTok provider returned metadata instead of media");
+      }
+      const ttCaption = `🎵 *${ttPick.info.title}*\n👤 ${ttPick.info.author}`;
       if (ttMode.kind === "audio") {
         await sock.sendMessage(jid, {
           audio: media, mimetype: "audio/mpeg", ptt: !!ttMode.voiceNote,
@@ -20260,12 +20448,22 @@ cmd(["pick", "p"], { desc: "Pick randomly from options (A|B|C) OR download adult
       } else if (ttMode.document) {
         await sock.sendMessage(jid, {
           document: media, mimetype: "video/mp4", fileName: "tiktok_video.mp4",
-          caption: ttPick.info.title,
+          caption: ttCaption,
         }, { quoted: msg });
       } else {
-        const payload = { video: media, mimetype: "video/mp4", caption: ttPick.info.title };
+        const payload = { video: media, mimetype: "video/mp4", caption: ttCaption };
         if (ttMode.kind === "video" && ttMode.videoNote) payload.videoNote = true;
-        await sock.sendMessage(jid, payload, { quoted: msg });
+        try {
+          await sock.sendMessage(jid, payload, { quoted: msg });
+        } catch (videoError) {
+          // A provider can return a valid file that WhatsApp rejects as a
+          // playable video.  Preserve delivery as a downloadable MP4.
+          console.log("[tiktok] video send failed, using document fallback:", videoError?.message || videoError);
+          await sock.sendMessage(jid, {
+            document: media, mimetype: "video/mp4", fileName: "tiktok_video.mp4",
+            caption: `${ttCaption}\n📎 Sent as a file because video playback was unavailable.`,
+          }, { quoted: msg });
+        }
       }
       await react(sock, msg, "✅");
     } catch (error) {
