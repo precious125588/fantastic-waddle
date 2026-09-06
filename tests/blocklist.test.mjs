@@ -132,3 +132,36 @@ test("call gate: only blocked callers are rejected", async () => {
   }
   assert.deepEqual(rejected, ["a"]);
 });
+
+test("target extraction prefers explicit mention and never command sender", () => {
+  const mentioned = {
+    key: { participant: "111222333444@s.whatsapp.net" },
+    message: {
+      extendedTextMessage: {
+        contextInfo: {
+          mentionedJid: ["2349068551055@s.whatsapp.net"],
+        },
+      },
+    },
+  };
+  assert.deepEqual(
+    BL.extractBlockTargetCandidates(mentioned, []),
+    ["2349068551055@s.whatsapp.net"],
+  );
+
+  const quoted = {
+    key: { participant: "111222333444@s.whatsapp.net" },
+    message: {
+      extendedTextMessage: {
+        contextInfo: {
+          participant: "2349068551055@s.whatsapp.net",
+          quotedMessage: { conversation: "hello" },
+        },
+      },
+    },
+  };
+  assert.deepEqual(
+    BL.extractBlockTargetCandidates(quoted, []),
+    ["2349068551055@s.whatsapp.net"],
+  );
+});
