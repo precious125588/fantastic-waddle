@@ -10265,6 +10265,96 @@ cmd("img", { desc: "Image search", category: "SEARCH" }, async (sock, msg, args)
     await editMessage(sock, jid, imgKey, `🖼️ *Image Search: ${q}*\n\n🔗 Google Images:\nhttps://www.google.com/search?tbm=isch&q=${encodeURIComponent(q)}`);
   }
 });
+
+// .image — David Cyril HD image search (five results)
+cmd("image", { desc: "Send five HD images from David Cyril — .image <query>", category: "SEARCH" }, async (sock, msg, args) => {
+  if (!args.length) {
+    await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}image <query>\nExample: ${CONFIG.PREFIX}image Itachi`);
+    return;
+  }
+
+  const query = args.join(" ").trim();
+  const jid = msg.key.remoteJid;
+  await react(sock, msg, "🖼️");
+  const statusMsg = await sock.sendMessage(
+    jid,
+    { text: `🖼️ *David Cyril Image Search*\n\nSearching for *"${query}"*...\nPreparing 5 HD images...` },
+    { quoted: msg },
+  );
+
+  const imageUrls = [];
+  const addUrl = (value) => {
+    if (typeof value !== "string" || !/^https?:\/\//i.test(value)) return;
+    if (!imageUrls.includes(value)) imageUrls.push(value);
+  };
+  const addItems = (value) => {
+    const items = Array.isArray(value)
+      ? value
+      : value && typeof value === "object"
+        ? (value.result || value.results || value.images || value.items || [])
+        : [];
+    for (const item of items) {
+      addUrl(typeof item === "string" ? item : item?.image || item?.url || item?.link);
+      if (imageUrls.length >= 10) break;
+    }
+  };
+
+  // David Cyril's live endpoint uses `text` and returns result[].image.
+  try {
+    const dc = await dcGet("/search/wallpaper", { text: query }, 30000);
+    addItems(dc.data?.result || dc.data?.data?.result || dc.data?.data || dc.data);
+  } catch {}
+
+  // Keep the command useful if David Cyril temporarily returns fewer results.
+  if (imageUrls.length < 5) {
+    try {
+      const fallback = await prexzyGet("/search/wallpaper", { query }, 20000);
+      addItems(fallback.data?.result || fallback.data?.data?.result || fallback.data?.data || fallback.data);
+    } catch {}
+  }
+
+  const images = [];
+  for (const url of imageUrls) {
+    if (images.length >= 5) break;
+    try {
+      const response = await axios.get(url, {
+        responseType: "arraybuffer",
+        timeout: 30000,
+        maxContentLength: 25 * 1024 * 1024,
+        maxRedirects: 5,
+        headers: {
+          "User-Agent": "Mozilla/5.0 (WhatsApp/2.24; +MAIS)",
+          Referer: "https://www.bhdw.net/",
+        },
+      });
+      const buffer = Buffer.from(response.data || []);
+      const contentType = String(response.headers?.["content-type"] || "");
+      if (buffer.length > 500 && (contentType.startsWith("image/") || !contentType)) {
+        images.push({ buffer, url });
+      }
+    } catch {}
+  }
+
+  if (!images.length) {
+    await editMessage(sock, jid, statusMsg.key, `❌ No HD images were found for *${query}*.\nTry another search term.`);
+    await react(sock, msg, "❌");
+    return;
+  }
+
+  await editMessage(sock, jid, statusMsg.key, `🖼️ Found ${images.length} HD image${images.length === 1 ? "" : "s"} for *${query}*.\nSending...`);
+  for (let index = 0; index < images.length; index += 1) {
+    await sock.sendMessage(
+      jid,
+      {
+        image: images[index].buffer,
+        caption: `🖼️ *${query}*\nImage ${index + 1} of ${images.length}\n_Powered by David Cyril_`,
+      },
+      { quoted: msg },
+    );
+  }
+  await react(sock, msg, "✅");
+});
+
 cmd("lyrics", { desc: "Song lyrics", category: "SEARCH" }, async (sock, msg, args) => {
   if (!args.length) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}lyrics <song name>`); return; }
   await react(sock, msg, "🎶");
@@ -37903,14 +37993,11 @@ globalThis.__MiasBlocklist = __MiasBlocklist;
       (typeof isCreator === "function" && isCreator(sender));
 
     async function __v22Target(sock, msg, args) {
-      let raw = "";
-      try {
-        const r = await resolveCommandTarget(sock, msg, args);
-        raw = r?.targetJid || r?.resolved || r?.rawTarget || "";
-      } catch {}
-      const extra = [];
-      if (args?.[0]) extra.push(String(args[0]));
-      return BL.resolveBlockTarget(sock, [raw, ...extra]);
+      // Only use a mention, a quoted sender, or an explicit number. The old
+      // resolveCommandTarget fallback could return msg.key.participant, which
+      // is the command sender (often the bot account itself).
+      const candidates = BL.extractBlockTargetCandidates(msg, args);
+      return BL.resolveBlockTarget(sock, candidates);
     }
 
     const __v22Block = async (sock, msg, args = []) => {
