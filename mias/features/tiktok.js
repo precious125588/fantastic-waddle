@@ -37,9 +37,33 @@ export function normalizeTikTokResponse(payload = {}) {
   };
 }
 
+const MODE_ALIASES = {
+  "1": "1.1", "sd": "1.1", "video": "1.1",
+  "doc": "1.2", "document": "1.2",
+  "hd": "1.3",
+  "hddoc": "1.4",
+  "wm": "1.5", "watermark": "1.5",
+  "hdwm": "1.6",
+  "note": "1.7", "videonote": "1.7",
+  "2": "2.1", "audio": "2.1", "mp3": "2.1", "music": "2.1",
+  "audiodoc": "2.2",
+  "vn": "2.3", "voice": "2.3", "voicenote": "2.3", "ptt": "2.3",
+};
+
+// Accepts "1.3", " 1.3 ", "*1.3*", "1 3", "1,3", "1-3", "hd", "audio", ...
+export function normalizeTikTokMode(value) {
+  let v = String(value || "").replace(/[*_~`>]/g, "").trim().toLowerCase();
+  v = v.replace(/[.)]+$/, "").trim();
+  if (MODE_ALIASES[v.replace(/\s+/g, "")]) return MODE_ALIASES[v.replace(/\s+/g, "")];
+  const m = v.match(/^(\d+)\s*(?:[.,\-/ ]\s*(\d+))?$/);
+  if (m) return m[2] ? `${m[1]}.${m[2]}` : (MODE_ALIASES[m[1]] || m[1]);
+  return v;
+}
+
 export function parseTikTokMode(value) {
-  const mode = MODES[String(value || "").trim()];
-  return mode ? { ...mode, id: String(value).trim() } : null;
+  const id = normalizeTikTokMode(value);
+  const mode = MODES[id];
+  return mode ? { ...mode, id } : null;
 }
 
 export function formatTikTokMenu(info, prefix = ".") {

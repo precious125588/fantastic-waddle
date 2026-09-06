@@ -2369,6 +2369,16 @@ Save my contact:` }).catch(() => {});
               if (_kHandled) return;
             }
           } catch (_kErr) {}
+          // ── NUMBERED MEDIA MENU REPLIES (early) ────────────────────────────
+          // A plain reply like "1.3" to the TikTok menu (or "2" to a play menu)
+          // must be handled BEFORE the game-answer / autochat / NIX handlers,
+          // otherwise one of them consumes the message and nothing happens.
+          try {
+            const _numIsCmd = !!(body && (CONFIG.PREFIXES||[CONFIG.PREFIX||'.']).some(p=>body.startsWith(p)));
+            if (!_numIsCmd && body && __miasHasPendingPicker(msg.key.remoteJid)) {
+              if (await __miasHandleBareNumberReply(sock, msg, body)) return;
+            }
+          } catch (_numErr) { console.error("[numbered-reply-early]", _numErr?.message || _numErr); }
           // ────────────────────────────────────────────────────────────────────────
           try {
             const observedSender = toStandardJid(getSender(msg) || "");
@@ -3867,6 +3877,38 @@ function getContextInfo(msg) {
     || m.interactiveResponseMessage?.contextInfo
     || null;
 }
+// Text of the quoted/replied message, including link-preview matchedText.
+function __quotedTextOf(msg) {
+  const ctx = getContextInfo(msg);
+  let q = ctx?.quotedMessage || null;
+  if (!q) return "";
+  for (let i = 0; i < 5; i++) {
+    const inner = q.viewOnceMessage?.message
+      || q.viewOnceMessageV2?.message
+      || q.viewOnceMessageV2Extension?.message
+      || q.ephemeralMessage?.message
+      || q.documentWithCaptionMessage?.message;
+    if (!inner || inner === q) break;
+    q = inner;
+  }
+  return q.conversation
+    || q.extendedTextMessage?.text
+    || q.extendedTextMessage?.matchedText
+    || q.imageMessage?.caption
+    || q.videoMessage?.caption
+    || q.documentMessage?.caption
+    || "";
+}
+
+// Lets a user reply to a message that holds a link and just type .aio / .tiktok
+function __withQuotedUrl(msg, args = [], pattern = null) {
+  const list = Array.isArray(args) ? args : [];
+  if (list.some((a) => /^https?:\/\//i.test(String(a)))) return list;
+  const urls = String(__quotedTextOf(msg)).match(/https?:\/\/[^\s<>"']+/gi) || [];
+  const found = pattern ? urls.find((u) => pattern.test(u)) : urls[0];
+  return found ? [found, ...list] : list;
+}
+
 function getMessageParticipant(msg) {
   const ctx = getContextInfo(msg);
   return resolveLid(msg?.key?.participant || msg?.participant || ctx?.participant || "");
@@ -7815,11 +7857,37 @@ cmd(["forward", "fwd"], { desc: "Forward a quoted message — .forward <number o
 
   await react(sock, msg, "🌀").catch(() => {});
   const stanzaId = ctx?.stanzaId || `fwd_${Date.now()}`;
-  try {
-    // Relay first: this preserves captions, quoted context, and forwarded
-    // metadata without requiring a second media download.
-    await sock.relayMessage(targetJid, quoted, { messageId: `${stanzaId}_${Date.now()}` });
+  const targetLabel = targetJid.endsWith("@g.us") ? targetJid : `+${targetJid.split("@")[0]}`;
+  const confirmForward = async () => {
     await react(sock, msg, "✅").catch(() => {});
+    await sendReply(sock, msg, `✅ Forwarded to ${targetLabel}`);
+  };
+  const quotedKey = {
+    remoteJid: msg.key.remoteJid,
+    id: ctx?.stanzaId || stanzaId,
+    fromMe: false,
+    participant: ctx?.participant || undefined,
+  };
+
+  // 1) Proper Baileys forward — keeps media, caption and the forwarded tag,
+  //    and (unlike a bare relay) actually reports whether it was delivered.
+  try {
+    const sentForward = await sock.sendMessage(targetJid, {
+      forward: { key: quotedKey, message: quoted },
+      force: true,
+    });
+    if (sentForward) {
+      await confirmForward();
+      return;
+    }
+  } catch (forwardError) {
+    console.log("[forward] forward send failed, trying relay:", forwardError?.message || forwardError);
+  }
+
+  // 2) Raw relay of the quoted node.
+  try {
+    await sock.relayMessage(targetJid, quoted, { messageId: `${stanzaId}_${Date.now()}` });
+    await confirmForward();
     return;
   } catch (relayError) {
     console.log("[forward] relay failed, falling back to media download:", relayError?.message || relayError);
@@ -7868,7 +7936,7 @@ cmd(["forward", "fwd"], { desc: "Forward a quoted message — .forward <number o
       if (!text) throw new Error("unsupported quoted message type");
       await sock.sendMessage(targetJid, { text });
     }
-    await react(sock, msg, "✅").catch(() => {});
+    await confirmForward();
   } catch (e) {
     await react(sock, msg, "❌").catch(() => {});
     await sendReply(sock, msg, `❌ Forward failed: ${e?.message || e}`);
@@ -16877,7 +16945,8 @@ async function _addVideoWatermark(videoBuf, label) {
 // ────────────────────────────────────────────────────────────────────────────
 
 cmd(["tiktok","tt","ttdl"], { desc: "Download TikTok video/audio — supports: .tiktok link1,link2,link3", category: "DOWNLOAD" }, async (sock, msg, args) => {
-    if (!args[0]) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}tiktok <url> [audio]\nor bulk: ${CONFIG.PREFIX}tiktok url1,url2,url3`); return; }
+    args = __withQuotedUrl(msg, args, /tiktok\.com|vm\.tik/i);
+    if (!args[0]) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}tiktok <url> [audio]\nor reply to a message with the link and send ${CONFIG.PREFIX}tiktok\nor bulk: ${CONFIG.PREFIX}tiktok url1,url2,url3`); return; }
     await react(sock, msg, "🌀");
     const jid = msg.key.remoteJid;
     // ── Multi-URL batch download ─────────────────────────────────────────────
@@ -20345,19 +20414,68 @@ for (const [acmd, cfg] of Object.entries(_ADULT_QUICK)) {
 
 // Plain numeric replies for media menus.  Keep .pick/.p as a compatible
 // fallback, but do not make users repeat the command shown by the bot.
+// True when this chat has a menu waiting for a plain numbered reply.
+function __miasHasPendingPicker(jid) {
+  try {
+    const now = Date.now();
+    const tt = __ttSelections.get(jid);
+    if (tt && now - tt.ts <= 5 * 60 * 1000) return true;
+    const pl = _playPickStore.get(jid);
+    if (pl && now - pl.ts <= 10 * 60 * 1000) return true;
+    if (_lastAdultResults.get(jid)) return true;
+    if (_menuPickStore.get(jid)) return true;
+  } catch {}
+  return false;
+}
+
+// Normalises what the user actually typed into a menu choice:
+// "*1.3*", "1 3", "1,3", "1-3", "hd", "audio", "voice note" -> "1.3" / "2.1" ...
+function __miasNormalizeChoice(raw) {
+  let v = String(raw || "")
+    .replace(/[*_~`>]/g, "")
+    .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\uFE0F]/gu, "")
+    .trim()
+    .toLowerCase();
+  v = v.replace(/^(option|opt|number|num|choice|pick|p)\s*[:.\-]?\s*/i, "").trim();
+  v = v.replace(/[.)]+$/, "").trim();
+  const words = {
+    "sd": "1.1", "sd video": "1.1", "video": "1.1",
+    "doc": "1.2", "document": "1.2", "sd doc": "1.2",
+    "hd": "1.3", "hd video": "1.3",
+    "hd doc": "1.4", "hd document": "1.4",
+    "watermark": "1.5", "wm": "1.5", "hd watermark": "1.6",
+    "note": "1.7", "video note": "1.7",
+    "audio": "2.1", "mp3": "2.1", "music": "2.1", "song": "2.1",
+    "audio doc": "2.2", "audio document": "2.2", "doc audio": "2.2",
+    "voice": "2.3", "vn": "2.3", "voice note": "2.3", "ptt": "2.3",
+  };
+  if (words[v]) return words[v];
+  const m = v.match(/^(\d+)\s*(?:[.,\-/ ]\s*(\d+))?$/);
+  if (!m) return "";
+  return m[2] ? `${m[1]}.${m[2]}` : m[1];
+}
+
 async function __miasHandleBareNumberReply(sock, msg, body) {
-  const value = String(body || "").trim();
-  if (!/^\d+(?:\.\d+)?$/.test(value)) return false;
+  const value = __miasNormalizeChoice(body);
+  if (!value) return false;
   const jid = msg.key.remoteJid;
   const now = Date.now();
 
   const ttPick = __ttSelections.get(jid);
-  if (ttPick && now - ttPick.ts <= 5 * 60 * 1000 && parseTikTokMode(value)) {
-    const entry = commands.get("pick");
-    if (entry?.handler) {
-      await entry.handler(sock, msg, [value]);
-      return true;
+  if (ttPick && now - ttPick.ts <= 5 * 60 * 1000) {
+    // A bare group number ("1" or "2") means the default of that group rather
+    // than silently doing nothing.
+    let ttValue = value;
+    if (/^\d+$/.test(ttValue)) ttValue = `${ttValue}.1`;
+    if (parseTikTokMode(ttValue)) {
+      const entry = commands.get("pick");
+      if (entry?.handler) {
+        await entry.handler(sock, msg, [ttValue]);
+        return true;
+      }
     }
+    await sendReply(sock, msg, `❌ *${value}* is not on that list. Reply with a choice like *1.3* (HD video) or *2.1* (audio).`);
+    return true;
   }
 
   const playPick = _playPickStore.get(jid);
@@ -20420,12 +20538,13 @@ cmd(["pick", "p"], { desc: "Pick randomly from options (A|B|C) OR download adult
   const ttPick = __ttSelections.get(jid);
   const ttMode = parseTikTokMode(raw);
   if (ttPick && Date.now() - ttPick.ts <= 5 * 60 * 1000 && ttMode) {
-    __ttSelections.delete(jid);
-    const mediaUrl = selectTikTokUrl(ttPick.info, ttMode);
+    const mediaUrl = selectTikTokUrl(ttPick.info, ttMode)
+      || (ttMode.kind === "audio" ? ttPick.info.audio : (ttPick.info.videoHd || ttPick.info.videoSd || ttPick.info.videoWatermark));
     if (!mediaUrl) {
-      await sendReply(sock, msg, "❌ That format is unavailable for this TikTok.");
+      await sendReply(sock, msg, "❌ That format is unavailable for this TikTok. Try *2.1* for audio or *1.1* for SD video.");
       return;
     }
+    await react(sock, msg, "🌀").catch(() => {});
     try {
       const response = await axios.get(mediaUrl, {
         responseType: "arraybuffer",
@@ -20465,9 +20584,12 @@ cmd(["pick", "p"], { desc: "Pick randomly from options (A|B|C) OR download adult
           }, { quoted: msg });
         }
       }
+      __ttSelections.delete(jid);
       await react(sock, msg, "✅");
     } catch (error) {
-      await sendReply(sock, msg, `❌ TikTok format failed: ${error.message}`);
+      // Keep the menu alive so the user can reply with another number instead
+      // of resending the link.
+      await sendReply(sock, msg, `❌ TikTok format failed: ${error.message}\n\nReply with another choice (e.g. *1.1* or *2.1*) — the menu is still active.`);
       await react(sock, msg, "❌");
     }
     return;
@@ -21515,7 +21637,8 @@ try {
 
 // .aio — universal AIO downloader (any social link)
 cmd(["aio","alldl","universaldl"], { desc: "Universal downloader — TikTok, IG, FB, Spotify, YT, Twitter, Reddit, etc.", category: "DOWNLOAD" }, async (sock, msg, args) => {
-  if (!args[0]) { await sendReply(sock, msg, `Usage: *${CONFIG.PREFIX}aio <social_url>*\nWorks with TikTok, Instagram, Twitter/X, Facebook, YouTube, Spotify, Pinterest, Threads, Reddit, SoundCloud, etc.`); return; }
+  args = __withQuotedUrl(msg, args);
+  if (!args[0]) { await sendReply(sock, msg, `Usage: *${CONFIG.PREFIX}aio <social_url>*\nOr reply to a message that contains the link and send *${CONFIG.PREFIX}aio*.\nWorks with TikTok, Instagram, Twitter/X, Facebook, YouTube, Spotify, Pinterest, Threads, Reddit, SoundCloud, etc.`); return; }
   await react(sock, msg, "📥");
   const url = args[0];
   const jid = msg.key.remoteJid;
