@@ -9,6 +9,7 @@ const express = require('express');
 const path    = require('path');
 const fs      = require('fs');
 const os      = require('os');
+const QRCode  = require('qrcode');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -155,11 +156,12 @@ const _sleep = ms => new Promise(r=>setTimeout(r,ms));
 app.get('/api/health', (_,res) => res.json({ok:true,ready:_ready,uptime:process.uptime(),version:process.version,port:PORT}));
 app.get('/api/ready',  (_,res) => res.json({ok:_ready&&!!_pair,pairReady:!!_pair,message:_ready&&!!_pair?'Server ready':'Warming up — try again in 15s'}));
 
-// ── Pair: request code ────────────────────────────────────────────────────────
+// ── Pair: request a QR or pairing code ───────────────────────────────────────
 app.post('/api/pair', rateLimit(60000,10), async (req,res) => {
     if (!_pair) return res.status(503).json({ok:false,error:'Server is still starting up. Please wait 15–30 seconds and try again.'});
 
     let {number} = req.body;
+    const mode = req.body?.mode === 'qr' ? 'qr' : 'code';
     if (!number) return res.status(400).json({ok:false,error:'Phone number required.'});
     number = number.replace(/[^0-9]/g,'');
     if (number.length<7||number.length>15) return res.status(400).json({ok:false,error:'Invalid phone number.'});
@@ -188,10 +190,16 @@ app.post('/api/pair', rateLimit(60000,10), async (req,res) => {
         }
     }
 
-    const existing = _pair.readPairingCodeRecord(jid);
-    if (existing?.code) {
+    const existing = mode === 'qr'
+        ? _pair.readPairingQrRecord?.(jid)
+        : _pair.readPairingCodeRecord(jid);
+    if (mode === 'qr' && existing?.qr) {
+        broadcastPairingEvent(jid,'qr_ready',{url:`/api/pair/qr/${number}`,cached:true});
+        return res.json({ok:true,mode:'qr',qrUrl:`/api/pair/qr/${number}`,cached:true});
+    }
+    if (mode === 'code' && existing?.code) {
         broadcastPairingEvent(jid,'code_ready',{code:existing.code,cached:true});
-        return res.json({ok:true,code:existing.code,cached:true});
+        return res.json({ok:true,mode:'code',code:existing.code,cached:true});
     }
 
     logger.log('pairing',`Web pair request: ${jid}`);
@@ -204,18 +212,25 @@ app.post('/api/pair', rateLimit(60000,10), async (req,res) => {
     // and the code is pushed over the SSE stream (and readable via
     // /api/pair/status/:number as a fallback).
     try {
-        _pair.startpairing(jid).catch(err => {
+        _pair.startpairing(jid, {mode}).catch(err => {
             logError(jid,err.message,'pairing-init');
             logPair(jid,'failed',err.message,'web');
             broadcastPairingEvent(jid,'failed',{msg:err.message});
         });
         broadcastPairingEvent(jid,'authenticating',{msg:'Authenticating session...'});
 
-        _pair.waitForPairingResult(jid,120000)
+        _pair.waitForPairingResult(jid,120000,mode)
             .then(result => {
                 try { registry.register(jid,'web'); } catch {}
-                logPair(jid,'code-sent',result.code,'web');
-                broadcastPairingEvent(jid,'code_ready',{code:result.code});
+                const detail = mode === 'qr'
+                    ? `/api/pair/qr/${number}`
+                    : result.code;
+                logPair(jid, mode === 'qr' ? 'qr-sent' : 'code-sent', detail, 'web');
+                if (mode === 'qr') {
+                    broadcastPairingEvent(jid,'qr_ready',{url:detail});
+                } else {
+                    broadcastPairingEvent(jid,'code_ready',{code:result.code});
+                }
             })
             .catch(err => {
                 logError(jid,err.message,'pairing');
@@ -223,12 +238,41 @@ app.post('/api/pair', rateLimit(60000,10), async (req,res) => {
                 broadcastPairingEvent(jid,'failed',{msg:err.message||'Pairing failed. Try again.'});
             });
 
-        return res.status(202).json({ok:true,pending:true,msg:'Generating your pairing code…'});
+        return res.status(202).json({
+            ok:true,
+            pending:true,
+            mode,
+            msg: mode === 'qr' ? 'Generating your QR code…' : 'Generating your pairing code…'
+        });
     } catch(err) {
         logError(jid,err.message,'pairing');
         logPair(jid,'failed',err.message,'web');
         broadcastPairingEvent(jid,'failed',{msg:err.message});
         return res.status(500).json({ok:false,error:err.message||'Pairing failed. Try again.'});
+    }
+});
+
+// Render the live QR payload as a PNG. The raw WhatsApp payload never needs to
+// be exposed to the browser or Telegram client.
+app.get('/api/pair/qr/:number', async (req,res) => {
+    const number = String(req.params.number || '').replace(/[^0-9]/g,'');
+    if (number.length < 7 || number.length > 15 || !_pair) {
+        return res.status(404).json({ok:false,error:'QR code not available.'});
+    }
+    const record = _pair.readPairingQrRecord?.(`${number}@s.whatsapp.net`);
+    if (!record?.qr) return res.status(404).json({ok:false,error:'QR code expired. Start a new pairing.'});
+    try {
+        const png = await QRCode.toBuffer(record.qr, {
+            type: 'png',
+            width: 420,
+            margin: 2,
+            errorCorrectionLevel: 'M'
+        });
+        res.setHeader('Content-Type','image/png');
+        res.setHeader('Cache-Control','no-store, no-cache, must-revalidate');
+        return res.end(png);
+    } catch (error) {
+        return res.status(500).json({ok:false,error:'Could not render QR code.'});
     }
 });
 
@@ -248,12 +292,14 @@ app.get('/api/pair/stream/:number', (req,res) => {
 
     const hb = setInterval(()=>{ try{res.write(': ping\n\n');}catch{clearInterval(hb);} },10000);
     let linked = false;
+    const requestedMode = req.query.mode === 'qr' ? 'qr' : null;
     let codeSent = false;
+    let lastQrTimestamp = '';
 
     // If a code already exists (or arrives while this stream is open) push it
     // straight away — the POST no longer carries the code in its response.
     const sendExistingCode = () => {
-        if (codeSent || !_pair) return;
+        if (codeSent || requestedMode === 'qr' || !_pair) return;
         try {
             const rec = _pair.readPairingCodeRecord(jid);
             if (rec?.code) {
@@ -262,11 +308,23 @@ app.get('/api/pair/stream/:number', (req,res) => {
             }
         } catch {}
     };
+    const sendExistingQr = () => {
+        if (requestedMode !== 'qr' || !_pair) return;
+        try {
+            const rec = _pair.readPairingQrRecord?.(jid);
+            if (rec?.qr && rec.timestamp !== lastQrTimestamp) {
+                lastQrTimestamp = rec.timestamp;
+                res.write(`event: qr_ready\ndata: ${JSON.stringify({url:`/api/pair/qr/${number}`,timestamp:rec.timestamp})}\n\n`);
+            }
+        } catch {}
+    };
     sendExistingCode();
+    sendExistingQr();
 
     const poll = setInterval(async ()=>{
         if (!_pair){res.write(`event: waiting\ndata: ${JSON.stringify({msg:'Warming up...'})}\n\n`);return;}
         sendExistingCode();
+        sendExistingQr();
         try {
             if (_pair.hasPairedSession(jid)&&!linked) {
                 linked=true;
@@ -363,6 +421,8 @@ app.get('/api/pair/status/:number', (req,res) => {
     res.json({
         ok:true,paired,live,
         code:record?.code||null,
+        qr: !!_pair?.readPairingQrRecord?.(jid),
+        mode: _pair?.readPairingQrRecord?.(jid) ? 'qr' : (record?.code ? 'code' : null),
         source:registry.get(jid)?.source||null,
         ready:_ready,botRunning,
         awaitingSelection: false,

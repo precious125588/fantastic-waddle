@@ -30,8 +30,10 @@ const {
     Boom
 } = require('@hapi/boom')
 const PhoneNumber = require('awesome-phonenumber')
-let phoneNumber = "2347081827038";
-const pairingCode = !!phoneNumber || process.argv.includes("--pairing-code");
+// Pairing is selected by the caller.  The old implementation hard-coded a
+// phone number here, which made every connection use pairing-code mode and
+// made it impossible for the web UI to offer a QR option.
+const defaultPairingMode = process.argv.includes("--qr") ? "qr" : "code";
 const useMobile = process.argv.includes("--mobile");
 const pino = require('pino')
 const FileType = require('file-type')
@@ -54,6 +56,10 @@ function getSessionPath(nexusDevNumber) {
 
 function getPairingCodePath(nexusDevNumber) {
     return path.join(getSessionPath(nexusDevNumber), 'pairing-code.json');
+}
+
+function getPairingQrPath(nexusDevNumber) {
+    return path.join(getSessionPath(nexusDevNumber), 'pairing-qr.json');
 }
 
 function ensureSessionPath(nexusDevNumber) {
@@ -199,6 +205,7 @@ function unpairSession(nexusDevNumber) {
     // can pick a different bot on its next pairing.
     try { require('./deploy/botSelectionStore').clearSelection(nexusDevNumber); } catch {}
     try { fs.unlinkSync(getPairingCodePath(nexusDevNumber)); } catch {}
+    try { fs.unlinkSync(getPairingQrPath(nexusDevNumber)); } catch {}
     try {
         if (fs.existsSync(LEGACY_PAIRING_FILE)) {
             const payload = JSON.parse(fs.readFileSync(LEGACY_PAIRING_FILE, 'utf8'));
@@ -231,10 +238,10 @@ function hasLiveHandshake(nexusDevNumber) {
     return rs === 0 || rs === 1 || rs === undefined;
 }
 
-function isFreshPairingRecord(payload) {
+function isFreshPairingRecord(payload, field = 'code') {
     if (payload && payload.instance && payload.instance !== PAIRING_INSTANCE_ID) return false;
     if (payload && !payload.instance) return false; // written by an older run
-    if (!payload?.code) return false;
+    if (!payload?.[field]) return false;
     const ts = Date.parse(payload.timestamp || '');
     if (!ts || Number.isNaN(ts)) return false;
     return Date.now() - ts < PAIRING_CODE_TTL;
@@ -268,6 +275,19 @@ function readPairingCodeRecord(nexusDevNumber) {
     return null;
 }
 
+function readPairingQrRecord(nexusDevNumber) {
+    const sessionFile = getPairingQrPath(nexusDevNumber);
+    try {
+        if (!fs.existsSync(sessionFile)) return null;
+        const payload = JSON.parse(fs.readFileSync(sessionFile, 'utf8'));
+        if (isFreshPairingRecord(payload, 'qr') && hasLiveHandshake(nexusDevNumber)) return payload;
+        try { fs.unlinkSync(sessionFile); } catch {}
+    } catch (error) {
+        console.log(chalk.yellow(`⚠️ Failed to read QR record for ${nexusDevNumber}: ${error.message}`));
+    }
+    return null;
+}
+
 function writePairingCodeRecord(nexusDevNumber, code) {
     const payload = {
         number: nexusDevNumber,
@@ -281,6 +301,19 @@ function writePairingCodeRecord(nexusDevNumber, code) {
     ensureDirectoryExists(PAIRING_ROOT);
     fs.writeFileSync(LEGACY_PAIRING_FILE, JSON.stringify(payload, null, 2), 'utf8');
 
+    return payload;
+}
+
+function writePairingQrRecord(nexusDevNumber, qr) {
+    const payload = {
+        number: nexusDevNumber,
+        qr,
+        mode: 'qr',
+        instance: PAIRING_INSTANCE_ID,
+        timestamp: new Date().toISOString()
+    };
+    ensureSessionPath(nexusDevNumber);
+    fs.writeFileSync(getPairingQrPath(nexusDevNumber), JSON.stringify(payload, null, 2), 'utf8');
     return payload;
 }
 
@@ -688,9 +721,10 @@ function retireSocket(nexusDevNumber, reason = 'retired') {
 // be fed from the web UI, Telegram and the 515 reconnect at the same time).
 const pairingInFlight = new Set();
 
-async function startpairing(nexusDevNumber) {
+async function startpairing(nexusDevNumber, options = {}) {
     await _baileysReady; // ensure ESM baileys is loaded before use
     ensureDirectoryExists(PAIRING_ROOT);
+    const pairingMode = options?.mode === 'qr' ? 'qr' : (options?.mode === 'code' ? 'code' : defaultPairingMode);
 
     if (pairingInFlight.has(nexusDevNumber)) {
         console.log(chalk.gray(`⏳ Pairing already starting for ${nexusDevNumber} — skipping duplicate run.`));
@@ -720,11 +754,13 @@ async function startpairing(nexusDevNumber) {
     const _earlyTracker = rentbotTracker.get(nexusDevNumber);
     if (_earlyTracker) {
         _earlyTracker.pairingCode  = null;
+        _earlyTracker.pairingQr    = null;
         _earlyTracker.pairingError = null;
     }
     // Also delete the on-disk pairing code record; it belongs to the previous
     // socket session and is invalid regardless of TTL.
     try { fs.unlinkSync(getPairingCodePath(nexusDevNumber)); } catch {}
+    try { fs.unlinkSync(getPairingQrPath(nexusDevNumber)); } catch {}
 
     // ── NEVER open a pairing socket on an identity a bot already owns ────────
     // This was the actual killer: every reconnect path (the 401 "grace
@@ -768,7 +804,8 @@ async function startpairing(nexusDevNumber) {
             connection: null,
             retryCount: 0,
             disconnected: false,
-            lastActivity: Date.now()
+            lastActivity: Date.now(),
+            pairingMode
         });
     }
     
@@ -777,6 +814,8 @@ async function startpairing(nexusDevNumber) {
     tracker.disconnected = false;
     tracker.lastActivity = Date.now();
     tracker.pairingCode = null;
+    tracker.pairingQr = null;
+    tracker.pairingMode = pairingMode;
     tracker.pairingError = null;
     tracker.pairingPromise = null;
     tracker.loggedOut = false;
@@ -808,7 +847,7 @@ async function startpairing(nexusDevNumber) {
         printQRInTerminal: false,
         auth: state,
         version,
-        browser: Browsers.macOS("Safari"), // pairing-code registration is most reliable on the macOS/Safari signature
+        browser: Browsers.macOS(pairingMode === 'qr' ? "Chrome" : "Safari"),
         getMessage: async key => {
             if (!store) return { conversation: '' };
             const jid = key.remoteJid;
@@ -845,7 +884,7 @@ async function startpairing(nexusDevNumber) {
 
     if (store) store.bind(nexus.ev);
 
-    if (pairingCode && !state.creds.registered) {
+    if (pairingMode === 'code' && !state.creds.registered) {
         if (useMobile) {
             throw new Error('Cannot use pairing code with mobile API');
         }
@@ -1362,8 +1401,20 @@ async function startpairing(nexusDevNumber) {
 
     // Enhanced connection.update handler
     nexus.ev.on("connection.update", async (update) => {
-        const { connection, lastDisconnect } = update;
+        const { connection, lastDisconnect, qr } = update;
         const tracker = rentbotTracker.get(nexusDevNumber);
+
+        // QR mode emits the raw QR payload through connection.update. Store it
+        // by session and expose only an image endpoint from the web server.
+        // Keeping this in the tracker also lets Telegram receive the exact
+        // QR that belongs to the live socket.
+        if (qr && tracker && pairingMode === 'qr' && !state.creds.registered) {
+            tracker.pairingQr = qr;
+            tracker.pairingQrTimestamp = Date.now();
+            try { writePairingQrRecord(nexusDevNumber, qr); } catch (error) {
+                tracker.pairingError = `Could not save QR code: ${error.message}`;
+            }
+        }
 
         if (connection === "close") {
             let reason = new Boom(lastDisconnect?.error)?.output.statusCode;
@@ -1556,6 +1607,8 @@ async function startpairing(nexusDevNumber) {
             tracker.sessionInvalid = false;
             recentlyPurged.delete(nexusDevNumber);
             tracker.lastActivity = Date.now();
+            try { fs.unlinkSync(getPairingQrPath(nexusDevNumber)); } catch {}
+            try { fs.unlinkSync(getPairingCodePath(nexusDevNumber)); } catch {}
             await sendUserConnected(nexusDevNumber);
 
             // One paired MD owns exactly one MIAS process. There is no bot
@@ -1654,14 +1707,19 @@ async function startpairing(nexusDevNumber) {
     return nexus;
 }
 
-async function waitForPairingResult(nexusDevNumber, timeoutMs = 120000) {
+async function waitForPairingResult(nexusDevNumber, timeoutMs = 120000, requestedMode = null) {
     const started = Date.now();
 
     while (Date.now() - started < timeoutMs) {
         const tracker = rentbotTracker.get(nexusDevNumber);
         const pairingRecord = readPairingCodeRecord(nexusDevNumber);
+        const pairingQr = readPairingQrRecord(nexusDevNumber);
+        const mode = requestedMode || tracker?.pairingMode || 'code';
 
-        if (pairingRecord?.code) {
+        if (mode === 'qr' && pairingQr?.qr) {
+            return pairingQr;
+        }
+        if (mode !== 'qr' && pairingRecord?.code) {
             return pairingRecord;
         }
 
@@ -1677,6 +1735,15 @@ async function waitForPairingResult(nexusDevNumber, timeoutMs = 120000) {
             return {
                 number: nexusDevNumber,
                 code: tracker.pairingCode,
+                timestamp: new Date().toISOString()
+            };
+        }
+
+        if (mode === 'qr' && tracker.pairingQr) {
+            return {
+                number: nexusDevNumber,
+                qr: tracker.pairingQr,
+                mode: 'qr',
                 timestamp: new Date().toISOString()
             };
         }
@@ -1775,6 +1842,7 @@ module.exports = {
     startpairing,
     waitForPairingResult,
     readPairingCodeRecord,
+    readPairingQrRecord,
     hasPairedSession,
     isPairingInProgress,
     beginPairingWindow,

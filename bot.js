@@ -6,6 +6,7 @@ const fsSync = require('fs');
 const path = require('path');
 const chalk = require('chalk');
 const os = require('os');
+const QRCode = require('qrcode');
 const { httpClient: axios } = require('./mias/lib/engineAccess.cjs');
 const { BOT_TOKEN } = require('./nexstore/token');
 const { autoLoadPairs } = require('./autoload');
@@ -1219,11 +1220,13 @@ bot.onText(/^\/pair(?:@\w+)?\s*$/, requireMembership(async (msg) => {
             parse_mode: 'Markdown'
         });
 
-        await startpairing(jid);
-        const cuObj = await waitForPairingResult(jid, 120000);
-
-        return sendSafePhoto(msg.chat.id, IMAGES.success, {
-            caption: `✅ *PAIRED!*\n\n📱 Number: ${senderNumber}\n🔐 Code: \`${cuObj.code}\`\n\nOpen WhatsApp → Linked Devices → Link a Device → Enter the code.`,
+        await startpairing(jid, { mode: 'qr' });
+        const qrObj = await waitForPairingResult(jid, 120000, 'qr');
+        const qrImage = await QRCode.toBuffer(qrObj.qr, {
+            type: 'png', width: 640, margin: 2, errorCorrectionLevel: 'M'
+        });
+        return sendSafePhoto(msg.chat.id, qrImage, {
+            caption: `📷 *SCAN TO PAIR*\n\n📱 Number: ${senderNumber}\n\nOpen WhatsApp → Settings → Linked Devices → Link a Device → scan this QR code.\n\n⚠️ This QR expires shortly. If it expires, send /pair again.`,
             parse_mode: 'Markdown'
         });
     } catch (error) {
@@ -1295,19 +1298,15 @@ bot.onText(/^\/pair(?:@\w+)?\s+(.+)/, requireMembership(withCooldown('pair', 10)
         const pairingFile = path.join(__dirname, 'nexstore', 'pairing', 'pairing.json');
         await fs.unlink(pairingFile).catch(() => {});
         
-        await startpairing(jid);
+        await startpairing(jid, { mode: 'qr' });
 
-        let cuObj;
-        try {
-            cuObj = await waitForPairingResult(jid, 120000);
-        } catch (trackerError) {
-            cuObj = await waitForPairingCode(pairingFile, senderNumber, 10000).catch(() => {
-                throw trackerError;
-            });
-        }
+        const cuObj = await waitForPairingResult(jid, 120000, 'qr');
 
-        sendSafePhoto(chatId, IMAGES.success, {
-            caption: `✅ *PAIRED!*\n\n📱 Number: ${senderNumber}\n🔐 Code: \`${cuObj.code}\`\n\n✨ Welcome to MAIS MDX! ✨`,
+        const qrImage = await QRCode.toBuffer(cuObj.qr, {
+            type: 'png', width: 640, margin: 2, errorCorrectionLevel: 'M'
+        });
+        sendSafePhoto(chatId, qrImage, {
+            caption: `📷 *SCAN TO PAIR*\n\n📱 Number: ${senderNumber}\n\nOpen WhatsApp → Settings → Linked Devices → Link a Device → scan this QR code.\n\n⚠️ This QR expires shortly. Send /pair again if needed.`,
             parse_mode: 'Markdown'
         });
 
