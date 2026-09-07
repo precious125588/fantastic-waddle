@@ -55,6 +55,57 @@ export function isBlockableTarget(input) {
 }
 
 /**
+ * Return only explicit block targets from a command message.
+ *
+ * Do not use msg.key.participant or msg.key.remoteJid here: those identify
+ * the person who sent the command/chat, not the person being blocked. Using
+ * either one is what makes `.block` accidentally target the bot account.
+ */
+export function extractBlockTargetCandidates(msg, args = []) {
+  const candidates = [];
+  const add = (value) => {
+    if (typeof value !== "string") return;
+    const trimmed = value.trim();
+    if (trimmed && !candidates.includes(trimmed)) candidates.push(trimmed);
+  };
+
+  const containers = [];
+  const seen = new Set();
+  const visit = (node) => {
+    if (!node || typeof node !== "object" || seen.has(node)) return;
+    seen.add(node);
+    if (node.contextInfo && typeof node.contextInfo === "object") {
+      containers.push(node.contextInfo);
+    }
+    for (const [key, value] of Object.entries(node)) {
+      if (key !== "contextInfo" && value && typeof value === "object") {
+        visit(value);
+      }
+    }
+  };
+  visit(msg?.message || msg);
+
+  // A mention is the most reliable target, including modern @lid mentions.
+  for (const context of containers) {
+    for (const jid of context.mentionedJid || []) add(jid);
+  }
+
+  // A quoted sender is a target only when there really is a quoted message.
+  for (const context of containers) {
+    if (context.quotedMessage && context.participant) add(context.participant);
+  }
+  if (msg?.quoted?.sender) add(String(msg.quoted.sender));
+
+  // Finally accept an explicitly typed number/JID. Never fall back to the
+  // command sender or chat JID.
+  const tokens = Array.isArray(args) ? args : [args];
+  for (const token of tokens) add(String(token));
+  if (Array.isArray(args) && args.length) add(args.join(" "));
+
+  return candidates;
+}
+
+/**
  * Resolve a raw target (jid, @lid, mention, phone string) to a jid WhatsApp
  * will accept for block/unblock. Verifies existence via onWhatsApp when
  * available so we never send a bad-request for a non-existent number.
