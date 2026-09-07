@@ -61,6 +61,8 @@ import {
   parseTikTokMode,
   selectTikTokUrl,
 } from "./features/tiktok.js";
+import { createStatusEditFlow } from "./lib/statusEditFlow.js";
+import { prepareHdImage, HD_IMAGE_WIDTH, imageGalleryCaption } from "./lib/hdImage.js";
 import { normalizeInviteCode, approvalPrompt, adminNumberList, parseAdminChoice } from "./features/joinApproval.js";
 // ── BUTTON MODE — wizard & interactive menu (new design) ──────────────────────
 import { handleWizardInput }   from "./handlers/wizardHandler.js";
@@ -475,6 +477,7 @@ const CONFIG = {
   BOT_URL:      process.env.BOT_URL      || "",
   BOT_PIC:      process.env.BOT_PIC      || "https://files.catbox.moe/05rqy6.png",
 };
+const statusEditFlow = createStatusEditFlow({ prefix: CONFIG.PREFIX });
 
 // ── DYNAMIC OWNER NAME ─────────────────────────────────────────────────────
 // When the bot connects, replace any hard-coded OWNER_NAME with the real
@@ -2369,6 +2372,16 @@ Save my contact:` }).catch(() => {});
               if (_kHandled) return;
             }
           } catch (_kErr) {}
+          // ── STATUS EDIT WIZARD: only consume replies quoted to our prompts ──
+          // This runs before generic numbered menus so a quoted "2" is treated
+          // as a platform/quantity choice only when a .status session is active.
+          try {
+            const _statusIsCmd = !!(body && (CONFIG.PREFIXES || [CONFIG.PREFIX || "."])
+              .some((prefix) => body.toLowerCase().startsWith(`${prefix.toLowerCase()}status`)));
+            if (!_statusIsCmd && body && await statusEditFlow.handleReply(sock, msg, body)) return;
+          } catch (_statusReplyErr) {
+            console.error("[status-edit-reply]", _statusReplyErr?.message || _statusReplyErr);
+          }
           // ── NUMBERED MEDIA MENU REPLIES (early) ────────────────────────────
           // A plain reply like "1.3" to the TikTok menu (or "2" to a play menu)
           // must be handled BEFORE the game-answer / autochat / NIX handlers,
@@ -10330,7 +10343,8 @@ cmd("image", { desc: "Send five HD images from David Cyril — .image <query>", 
       const buffer = Buffer.from(response.data || []);
       const contentType = String(response.headers?.["content-type"] || "");
       if (buffer.length > 500 && (contentType.startsWith("image/") || !contentType)) {
-        images.push({ buffer, url });
+        const hd = await prepareHdImage(buffer);
+        if (hd.width >= HD_IMAGE_WIDTH) images.push({ ...hd, url });
       }
     } catch {}
   }
@@ -10347,12 +10361,20 @@ cmd("image", { desc: "Send five HD images from David Cyril — .image <query>", 
       jid,
       {
         image: images[index].buffer,
-        caption: `🖼️ *${query}*\nImage ${index + 1} of ${images.length}\n_Powered by David Cyril_`,
+        mimetype: "image/webp",
+        ...(imageGalleryCaption(index, images.length)
+          ? { caption: imageGalleryCaption(index, images.length) }
+          : {}),
       },
       { quoted: msg },
     );
   }
   await react(sock, msg, "✅");
+});
+
+cmd("status", { desc: "Create short status edits with a guided picker", category: "MEDIA" }, async (sock, msg) => {
+  await react(sock, msg, "🎬");
+  await statusEditFlow.start(sock, msg);
 });
 
 cmd("lyrics", { desc: "Song lyrics", category: "SEARCH" }, async (sock, msg, args) => {
@@ -11598,7 +11620,7 @@ cmd(["perks", "achievements"], { desc: "Your achievements", category: "ECONOMY" 
   const e = getEco(getSender(msg) || msg.key.remoteJid);
   await sendReply(sock, msg, `🏆 *Achievements*\n\n${e.level >= 5 ? "✅" : "❌"} Level 5 Reached\n${e.wallet >= 10000 ? "✅" : "❌"} 10K Coins\n${e.bank >= 5000 ? "✅" : "❌"} 5K Banked\n${e.level >= 10 ? "✅" : "❌"} Level 10 Master\n\n⭐ Level: ${e.level}`);
 });
-cmd(["profile", "status"], { desc: "Full profile", category: "ECONOMY" }, async (sock, msg) => {
+cmd("profile", { desc: "Full profile", category: "ECONOMY" }, async (sock, msg) => {
   const jid = getSender(msg) || msg.key.remoteJid, e = getEco(jid);
   const rel = relationships.get(jid);
   const pet = petStore.get(jid);
