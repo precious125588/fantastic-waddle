@@ -280,7 +280,7 @@ footer a:hover{color:var(--cyan);}
   <!-- Pair Card -->
   <div class="card">
     <div class="card-title">📱 Connect Your WhatsApp</div>
-    <div class="card-sub">Enter your phone number to get a pairing code. No QR scan — works in seconds.</div>
+    <div class="card-sub">Choose the connection method that works best for you: scan a QR code or enter a pairing code.</div>
 
     <!-- Steps -->
     <div class="steps">
@@ -296,8 +296,28 @@ footer a:hover{color:var(--cyan);}
       <input type="tel" id="phoneInput" placeholder="+2348012345678" maxlength="16" autocomplete="tel"/>
     </div>
     <div class="hint">Include country code — no spaces (e.g. +2348012345678)</div>
+    <div style="display:flex;gap:8px;margin:18px 0 12px;">
+      <button type="button" id="modeQr" onclick="selectMode('qr')" style="flex:1;padding:11px 8px;border-radius:10px;border:1px solid rgba(0,245,255,.45);background:rgba(0,245,255,.14);color:#f0f4ff;font-weight:700;cursor:pointer;">📷 QR Code</button>
+      <button type="button" id="modeCode" onclick="selectMode('code')" style="flex:1;padding:11px 8px;border-radius:10px;border:1px solid rgba(255,255,255,.12);background:rgba(255,255,255,.04);color:#7a8aaa;font-weight:700;cursor:pointer;">🔐 Pairing Code</button>
+    </div>
     <div id="alertBox" class="alert"></div>
-    <button type="button" class="btn" id="pairBtn" onclick="requestPairCode()">⚡ Get Pairing Code</button>
+    <button type="button" class="btn" id="pairBtn" onclick="requestPairCode()">📷 Generate QR Code</button>
+
+    <div class="code-wrap" id="qrWrap" style="display:none;">
+      <div class="code-label">Scan this QR code in WhatsApp</div>
+      <div style="background:#fff;border-radius:14px;padding:16px;display:flex;justify-content:center;margin:0 auto 14px;max-width:340px;">
+        <img id="qrImage" alt="WhatsApp pairing QR code" style="display:block;width:100%;max-width:300px;height:auto;image-rendering:pixelated;"/>
+      </div>
+      <div class="instructions">
+        <strong>How to link:</strong>
+        <ol>
+          <li>Open WhatsApp on your phone</li>
+          <li>Go to <strong>Settings → Linked Devices</strong></li>
+          <li>Tap <strong>Link a Device</strong></li>
+          <li>Scan the QR code above ✅</li>
+        </ol>
+      </div>
+    </div>
 
     <!-- Code Display -->
     <div class="code-wrap" id="codeWrap">
@@ -357,10 +377,13 @@ footer a:hover{color:var(--cyan);}
 // STATE
 // ═══════════════════════════════════════════════════════════════
 let currentCode = '';
+let currentMode = 'qr';
 let pairingSse = null;
 const pairBtn  = document.getElementById('pairBtn');
 const alertBox = document.getElementById('alertBox');
 const codeWrap = document.getElementById('codeWrap');
+const qrWrap   = document.getElementById('qrWrap');
+const qrImage  = document.getElementById('qrImage');
 const logWrap  = document.getElementById('logWrap');
 const logBody  = document.getElementById('logBody');
 
@@ -394,11 +417,27 @@ let _loadTimer = null;
 function setLoading(on, msg) {
   if (_loadTimer) { clearInterval(_loadTimer); _loadTimer = null; }
   pairBtn.disabled = on;
-  if (!on) { pairBtn.innerHTML = '⚡ Get Pairing Code'; return; }
+  if (!on) {
+    pairBtn.innerHTML = currentMode === 'qr' ? '📷 Generate QR Code' : '⚡ Get Pairing Code';
+    return;
+  }
   let secs = 0;
   const update = () => { pairBtn.innerHTML = `<span class="spin"></span>${msg || 'Connecting…'} (${secs}s)`; };
   update();
   _loadTimer = setInterval(() => { secs++; update(); }, 1000);
+}
+
+function selectMode(mode) {
+  currentMode = mode === 'code' ? 'code' : 'qr';
+  const qr = document.getElementById('modeQr');
+  const code = document.getElementById('modeCode');
+  qr.style.background = currentMode === 'qr' ? 'rgba(0,245,255,.14)' : 'rgba(255,255,255,.04)';
+  qr.style.borderColor = currentMode === 'qr' ? 'rgba(0,245,255,.45)' : 'rgba(255,255,255,.12)';
+  qr.style.color = currentMode === 'qr' ? '#f0f4ff' : '#7a8aaa';
+  code.style.background = currentMode === 'code' ? 'rgba(0,245,255,.14)' : 'rgba(255,255,255,.04)';
+  code.style.borderColor = currentMode === 'code' ? 'rgba(0,245,255,.45)' : 'rgba(255,255,255,.12)';
+  code.style.color = currentMode === 'code' ? '#f0f4ff' : '#7a8aaa';
+  pairBtn.innerHTML = currentMode === 'qr' ? '📷 Generate QR Code' : '⚡ Get Pairing Code';
 }
 
 function setCode(code) {
@@ -409,6 +448,15 @@ function setCode(code) {
     if (el) { el.textContent = chars[i] || '-'; }
   }
   codeWrap.style.display = 'block';
+  qrWrap.style.display = 'none';
+}
+
+function setQr(url) {
+  if (!url) return;
+  currentCode = '';
+  qrImage.src = url + (url.includes('?') ? '&' : '?') + 't=' + Date.now();
+  qrWrap.style.display = 'block';
+  codeWrap.style.display = 'none';
 }
 
 function addLog(msg, type = '') {
@@ -464,6 +512,7 @@ async function requestPairCode(force = false) {
     return;
   }
   codeWrap.style.display = 'none';
+  qrWrap.style.display = 'none';
   logWrap.style.display = 'none';
   logBody.innerHTML = '';
   setLoading(true, 'Connecting to WhatsApp');
@@ -472,7 +521,7 @@ async function requestPairCode(force = false) {
     const resp = await fetch('/api/pair', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ number, force: !!force })
+      body: JSON.stringify({ number, mode: currentMode, force: !!force })
     });
     let data;
     try { data = await resp.json(); } catch { data = { ok: false, error: 'Invalid server response.' }; }
@@ -501,13 +550,17 @@ async function requestPairCode(force = false) {
     }
     _serverReady = true;
     srvBanner.className = 'ready';
-    srvBanner.textContent = '⏳ Generating your pairing code…';
+    srvBanner.textContent = currentMode === 'qr' ? '⏳ Generating your QR code…' : '⏳ Generating your pairing code…';
 
     if (data.code) {
       // Cached code — show it right away.
       srvBanner.textContent = '✅ Code generated — follow the steps below!';
       setCode(data.code);
       addLog('Pairing code generated ✓', 'ok');
+    } else if (data.qrUrl) {
+      setQr(data.qrUrl);
+      srvBanner.textContent = '✅ QR code generated — scan it in WhatsApp!';
+      addLog('QR code generated ✓', 'ok');
     } else {
       addLog('Requesting pairing code from WhatsApp…', 'info');
     }
@@ -515,7 +568,7 @@ async function requestPairCode(force = false) {
     addLog('Waiting for WhatsApp link…', 'info');
     // The code now arrives over the live stream, so the request can never
     // time out before WhatsApp answers.
-    startSSE(number);
+    startSSE(number, currentMode);
   } catch (err) {
     setLoading(false);
     showAlert('Network error — check your connection and try again.');
@@ -523,10 +576,10 @@ async function requestPairCode(force = false) {
   }
 }
 
-function startSSE(number) {
+function startSSE(number, mode = currentMode) {
   if (pairingSse) { pairingSse.close(); pairingSse = null; }
   try {
-    pairingSse = new EventSource(`/api/pair/stream/${number}`);
+    pairingSse = new EventSource(`/api/pair/stream/${number}?mode=${encodeURIComponent(mode)}`);
     pairingSse.addEventListener('connecting',    e => { const d=tryParse(e.data); addLog('🔌 '+(d?.msg||'Connecting…'), 'info'); });
     pairingSse.addEventListener('authenticating',e => { const d=tryParse(e.data); addLog('🔑 '+(d?.msg||'Authenticating…'), 'info'); });
     pairingSse.addEventListener('code_ready',    e => {
@@ -537,6 +590,15 @@ function startSSE(number) {
         srvBanner.textContent = '✅ Code generated — follow the steps below!';
       }
       addLog('✅ Code ready', 'ok');
+    });
+    pairingSse.addEventListener('qr_ready', e => {
+      const d = tryParse(e.data);
+      if (d?.url) {
+        setQr(d.url);
+        srvBanner.className = 'ready';
+        srvBanner.textContent = '✅ QR code ready — scan it in WhatsApp!';
+        addLog('✅ QR code ready', 'ok');
+      }
     });
     pairingSse.addEventListener('awaiting_selection', e => {
       const d=tryParse(e.data);
@@ -571,6 +633,10 @@ function startFallbackPoll(number) {
       if (d.code && d.code !== currentCode) {
         setCode(d.code);
         addLog('✅ Code ready', 'ok');
+      }
+      if (d.qr && currentMode === 'qr') {
+        setQr(`/api/pair/qr/${number}`);
+        addLog('✅ QR code ready', 'ok');
       }
       if (d.awaitingSelection) showSelectionNotice();
       if (d.bot) hideSelectionNotice();
@@ -642,10 +708,12 @@ function closeSuccess() {
   document.getElementById('successOverlay').classList.remove('show');
   if (pairingSse) { pairingSse.close(); pairingSse = null; }
   codeWrap.style.display = 'none';
+  qrWrap.style.display = 'none';
   logWrap.style.display = 'none';
   logBody.innerHTML = '';
   document.getElementById('phoneInput').value = '';
   setStep(1); setLoading(false); hideAlert();
+  selectMode(currentMode);
 }
 function fireConfetti() {
   const colors = ['#00f5ff','#9400ff','#00ff88','#ffcc00','#ff3b6f','#ffffff'];
