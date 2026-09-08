@@ -1,13 +1,7 @@
 // Anime edit command plugin.
 //
-// Add a folder under /animes and the command is registered automatically:
-//   animes/naruto/       -> .naruto
-//   animes/one-piece/    -> .onepiece
-//   animes/my-hero-academia/ -> .myheroacademia
-//
-// The resolver deliberately lives outside index.js so new anime titles,
-// aliases, local media and provider order can be changed without touching the
-// main bot dispatcher.
+// The resolver deliberately lives outside index.js so the two approved
+// shortcuts can be changed without touching the main bot dispatcher.
 
 import fs from "fs";
 import path from "path";
@@ -28,32 +22,16 @@ const ANIME_ROOT = path.resolve(__dirname, "..", "..", "animes");
 const MAX_RESULTS = 3;
 const MAX_INPUT_BYTES = 90 * 1024 * 1024;
 const MAX_DURATION_SECONDS = 90;
-const VIDEO_EXTENSIONS = new Set([".mp4", ".m4v", ".mov", ".webm", ".mkv"]);
 
+// Keep this feature intentionally small and predictable.  The command is a
+// shortcut for the two edit feeds requested by the owner, not a general anime
+// search command.  In particular, do not silently fall back to local files or
+// YouTube/Instagram/Facebook results when one of these feeds is unavailable.
 const BUILTIN_ALIASES = {
-  "naruto": ["naruto", "narutoshippuden", "boruto"],
-  "death-note": ["deathnote", "deadnote", "death-note"],
-  "jjk": ["jjk", "jujutsukaisen", "jujutsu"],
-  "one-piece": ["onepiece", "one-piece", "op"],
-  "attack-on-titan": ["ait", "aot", "attackontitan", "attack-on-titan"],
-  "demon-slayer": ["demonslayer", "kimetsunoyaiba", "kny"],
-  "bleach": ["bleach", "bleachtybw"],
-  "dragon-ball": ["dragonball", "dbz", "dbs", "dragonballz"],
-  "black-clover": ["blackclover"],
-  "my-hero-academia": ["myheroacademia", "mha", "bnha"],
-  "solo-leveling": ["sololeveling"],
-  "hunter-x-hunter": ["hunterxhunter", "hxh"],
-  "tokyo-ghoul": ["tokyoghoul"],
-  "chainsaw-man": ["chainsawman", "csm"],
-  "one-punch-man": ["onepunchman", "opm"],
-  "blue-lock": ["bluelock"],
-  "vinland-saga": ["vinlandsaga"],
-  "fairy-tail": ["fairytail"],
-  "haikyuu": ["haikyuu"],
-  "fire-force": ["fireforce"],
-  "fullmetal-alchemist": ["fullmetalalchemist", "fma", "fmab"],
-  "seven-deadly-sins": ["sevendeadlysins", "nanatsunotaizai"],
+  naruto: ["naruto"],
+  jjk: ["jjk"],
 };
+const ENABLED_ANIME_SLUGS = new Set(Object.keys(BUILTIN_ALIASES));
 
 function cleanSlug(value) {
   return String(value || "")
@@ -89,11 +67,11 @@ function loadCatalog() {
   const bySlug = new Map();
   for (const item of Array.isArray(configured) ? configured : []) {
     const slug = cleanSlug(item?.slug || item?.folder || item?.title);
-    if (!slug) continue;
+    if (!slug || !ENABLED_ANIME_SLUGS.has(slug)) continue;
     bySlug.set(slug, {
       slug,
       title: String(item.title || displayName(slug)).trim(),
-      aliases: Array.isArray(item.aliases) ? item.aliases.map(commandKey).filter(Boolean) : [],
+      aliases: [],
       query: String(item.query || item.title || displayName(slug)).trim(),
     });
   }
@@ -120,7 +98,7 @@ function loadCatalog() {
     for (const entry of fs.readdirSync(ANIME_ROOT, { withFileTypes: true })) {
       if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
       const slug = cleanSlug(entry.name);
-      if (!slug) continue;
+      if (!slug || !ENABLED_ANIME_SLUGS.has(slug)) continue;
       const current = bySlug.get(slug) || {
         slug,
         title: displayName(slug),
@@ -210,27 +188,6 @@ async function normalizeHdVideo(input) {
   }
 }
 
-async function localEdits(entry) {
-  const mediaDir = path.join(ANIME_ROOT, entry.slug, "media");
-  const items = [];
-  try {
-    for (const file of fs.readdirSync(mediaDir)) {
-      const extension = path.extname(file).toLowerCase();
-      if (!VIDEO_EXTENSIONS.has(extension)) continue;
-      const full = path.join(mediaDir, file);
-      const stat = fs.statSync(full);
-      if (stat.size <= MAX_INPUT_BYTES) items.push(full);
-    }
-  } catch {}
-  const results = [];
-  for (const file of shuffle(items)) {
-    const converted = await normalizeHdVideo(await fs.promises.readFile(file).catch(() => null));
-    if (converted) results.push({ buffer: converted, localFile: file });
-    if (results.length >= MAX_RESULTS) break;
-  }
-  return results;
-}
-
 function withTimeout(promise, timeoutMs = 130000) {
   return Promise.race([
     promise,
@@ -244,7 +201,10 @@ async function remoteEdits(entry) {
     `${entry.query} AMV edit`,
     `${entry.query} status edit`,
   ];
-  const platforms = ["auto", "tiktok", "facebook", "youtube", "pinterest", "instagram", "twitter"];
+  // Source restriction is deliberate: anime edits must come from TikTok or
+  // Pinterest only.  The status flow validates the host again before
+  // downloading, so a search-engine redirect cannot widen this allow-list.
+  const platforms = ["tiktok", "pinterest"];
   const candidates = [];
   const seen = new Set();
 
@@ -280,7 +240,7 @@ async function remoteEdits(entry) {
 function dedupeResults(items) {
   const seen = new Set();
   return items.filter((item) => {
-    const key = item.localFile || item.sourceUrl || item.downloadUrl;
+    const key = item.sourceUrl || item.downloadUrl;
     if (!key || seen.has(key)) return false;
     seen.add(key);
     return true;
@@ -303,17 +263,15 @@ export function createAnimeEditFlow({ prefix = "." } = {}) {
     }).catch(() => {});
     await react("🎬");
 
-    // Local files are tried first, making each folder a dependable manual
-    // fallback. Remote results then use David Cyril before other providers.
-    const local = await localEdits(entry);
-    const remote = local.length >= MAX_RESULTS ? [] : await remoteEdits(entry);
-    const results = dedupeResults([...local, ...remote]);
+    // Never mix in local media: the owner asked for public TikTok/Pinterest
+    // edits only, and exactly three results per request.
+    const results = dedupeResults(await remoteEdits(entry));
     if (results.length < MAX_RESULTS) {
       await react("❌");
       return false;
     }
 
-    // Send media only: no progress message, caption, footer, or quoted text.
+    // Send media only: no progress message, footer, or quoted text.
     for (const result of results) {
       await sock.sendMessage(jid, {
         video: result.buffer,
@@ -329,9 +287,8 @@ export function createAnimeEditFlow({ prefix = "." } = {}) {
     const entry = byCommand.get(key);
     const query = args.join(" ").trim();
     if (!entry && !query) {
-      const examples = entries.slice(0, 12).map((item) => `• ${prefix}${commandKey(item.slug)}`).join("\n");
       await sock.sendMessage(msg.key.remoteJid, {
-        text: `🎌 *Anime edits*\n\nUse ${prefix}Naruto or ${prefix}animeedit <anime title>.\n\nExamples:\n${examples}`,
+        text: `🎌 *Anime edits*\n\nUse ${prefix}Naruto or ${prefix}jjk.`,
       }, { quoted: msg });
       return true;
     }
@@ -352,10 +309,9 @@ export function createAnimeEditFlow({ prefix = "." } = {}) {
         category: "ANIME",
       }, (sock, msg, args) => handle(sock, msg, args, entry));
     }
-    cmd(["animeedit", "animeedits", "animeclip"], {
-      desc: "Send 3 random HD edits for any anime title",
-      category: "ANIME",
-    }, (sock, msg, args) => handle(sock, msg, args));
+    // Do not register a generic anime search command.  This prevents
+    // `.animeedit`, `.animeclip`, etc. from fetching from an unapproved
+    // platform or query.
   }
 
   return {
