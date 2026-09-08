@@ -98,6 +98,24 @@ function loadCatalog() {
     });
   }
 
+  // Keep the built-in commands available even when the optional /animes
+  // media folder has not been created yet. Previously an empty folder meant
+  // .naruto was never registered, so the only thing the user saw was the
+  // generic anime-usage message.
+  for (const [slug, aliases] of Object.entries(BUILTIN_ALIASES)) {
+    const current = bySlug.get(slug) || {
+      slug,
+      title: displayName(slug),
+      aliases: [],
+      query: displayName(slug),
+    };
+    current.aliases = [...new Set([
+      ...(current.aliases || []),
+      ...aliases.map(commandKey),
+    ])];
+    bySlug.set(slug, current);
+  }
+
   try {
     for (const entry of fs.readdirSync(ANIME_ROOT, { withFileTypes: true })) {
       if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
@@ -280,9 +298,10 @@ export function createAnimeEditFlow({ prefix = "." } = {}) {
 
   async function sendThree(sock, msg, entry) {
     const jid = msg.key.remoteJid;
-    await sock.sendMessage(jid, {
-      text: `🎌 Finding 3 random HD ${entry.title} edits...`,
-    }, { quoted: msg });
+    const react = (text) => sock.sendMessage(jid, {
+      react: { text, key: msg.key },
+    }).catch(() => {});
+    await react("🎬");
 
     // Local files are tried first, making each folder a dependable manual
     // fallback. Remote results then use David Cyril before other providers.
@@ -290,20 +309,18 @@ export function createAnimeEditFlow({ prefix = "." } = {}) {
     const remote = local.length >= MAX_RESULTS ? [] : await remoteEdits(entry);
     const results = dedupeResults([...local, ...remote]);
     if (results.length < MAX_RESULTS) {
-      await sock.sendMessage(jid, {
-        text: `❌ I could not prepare 3 HD ${entry.title} edits right now. Try again in a moment; no low-quality or partial media was sent.`,
-      }, { quoted: msg });
+      await react("❌");
       return false;
     }
 
-    // Captions are intentionally omitted. Exactly three media messages are
-    // delivered only after all three have passed HD conversion.
+    // Send media only: no progress message, caption, footer, or quoted text.
     for (const result of results) {
       await sock.sendMessage(jid, {
         video: result.buffer,
         mimetype: "video/mp4",
-      }, { quoted: msg });
+      });
     }
+    await react("");
     return true;
   }
 
