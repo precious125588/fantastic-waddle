@@ -462,13 +462,47 @@ process.on("uncaughtException", (err) => console.error("[CRASH:uncaughtException
 const LOCKED_OWNER_NUMBER = (process.env.OWNER_NUMBER || "").replace(/[^0-9]/g, "");
 const LOCKED_OWNER_NAME = process.env.OWNER_NAME || "Bot Owner";
 
+// Prefixes are intentionally parsed without truthiness fallbacks. In dotenv,
+// PREFIX=null is the literal string "null", and the old `|| "."` logic turned
+// that into a required prefix. Empty, null, none, off, and disabled now all
+// mean true no-prefix mode. Any other value is kept verbatim, including
+// multi-character prefixes and emoji.
+const NO_PREFIX_VALUES = new Set(["", "null", "none", "no", "off", "false", "disabled", "noprefix", "no-prefix"]);
+function normalizeConfiguredPrefix(value) {
+  const raw = String(value ?? "").trim();
+  return NO_PREFIX_VALUES.has(raw.toLowerCase()) ? "" : raw;
+}
+function parseConfiguredPrefixes() {
+  const hasPrefixesEnv = Object.prototype.hasOwnProperty.call(process.env, "PREFIXES");
+  const hasPrefixEnv = Object.prototype.hasOwnProperty.call(process.env, "PREFIX");
+  const raw = hasPrefixesEnv ? process.env.PREFIXES : process.env.PREFIX;
+  if (hasPrefixesEnv) {
+    const parts = String(raw ?? "")
+      .split(/\s*\|\s*|\s*,\s*/)
+      .map(normalizeConfiguredPrefix)
+      .filter(Boolean);
+    return parts;
+  }
+  if (hasPrefixEnv) {
+    const one = normalizeConfiguredPrefix(process.env.PREFIX);
+    return one ? [one] : [];
+  }
+  // Keep the historical aliases only when the user did not configure a
+  // prefix. Explicit customization must not silently add / or comma.
+  return [".", "/", ","];
+}
+
 const CONFIG = {
   SESSION_ID:   process.env.SESSION_ID   || "",
   OWNER_NUMBER: (process.env.OWNER_NUMBER || process.env.OWNER || "").trim(),
   OWNER_JID: (process.env.OWNER_JID || process.env.OWNER_LID || "").trim(),
   BOT_NAME:     process.env.BOT_NAME || "MIAS MDX",
-  PREFIX:       process.env.PREFIX       || ".",
-  PREFIXES:     (() => { const _p = (process.env.PREFIXES || process.env.PREFIX || ".").split("|").map(p=>p.trim()).filter(Boolean); if (!_p.includes('/')) _p.push('/'); if (!_p.includes(',')) _p.push(','); return _p; })(),
+  PREFIX:       Object.prototype.hasOwnProperty.call(process.env, "PREFIX")
+    ? normalizeConfiguredPrefix(process.env.PREFIX)
+    : (Object.prototype.hasOwnProperty.call(process.env, "PREFIXES")
+      ? normalizeConfiguredPrefix(String(process.env.PREFIXES).split(/\s*\|\s*|\s*,\s*/)[0])
+      : "."),
+  PREFIXES:     parseConfiguredPrefixes(),
   VERSION:      "4.9.9",
   GIFTED_KEY:   process.env.GIFTED_KEY || "gifted",
   MOVIE_API:    "https://movieapi.giftedtech.co.ke/api/v2",
@@ -2378,7 +2412,7 @@ Save my contact:` }).catch(() => {});
             if (_stkPay && typeof getStickerHash === 'function') {
               const _sHash = getStickerHash(_stkPay);
               const _sBound = _sHash ? stickerGetCmd(_sHash) : null;
-              if (_sBound) body = (CONFIG.PREFIX || '.') + _sBound; // override body → cmd dispatch runs it
+               if (_sBound) body = CONFIG.PREFIX ? CONFIG.PREFIX + _sBound : _sBound; // override body → cmd dispatch runs it
             }
           } catch (_stkErr) {}
           // ── HARD PRIVATE-MODE GATE ────────────────────────────────────────
@@ -2391,7 +2425,7 @@ Save my contact:` }).catch(() => {});
           try {
             const _kSender = getSender(msg);
             const _kIsOwner = msg.key.fromMe || isOwner(_kSender) || isSudo(_kSender);
-            const _kIsCmd = body && (CONFIG.PREFIXES||[CONFIG.PREFIX||'.']).some(p=>body.startsWith(p));
+             const _kIsCmd = isCommandBody(body);
             if (!_kIsCmd) {
               // v14 FIX: also check matchedText — WhatsApp link-preview puts the URL there
               let _kBody = body;
@@ -2409,8 +2443,7 @@ Save my contact:` }).catch(() => {});
           // This runs before generic numbered menus so a quoted "2" is treated
           // as a platform/quantity choice only when a .status session is active.
           try {
-            const _statusIsCmd = !!(body && (CONFIG.PREFIXES || [CONFIG.PREFIX || "."])
-              .some((prefix) => body.toLowerCase().startsWith(`${prefix.toLowerCase()}status`)));
+             const _statusIsCmd = parseCommandBody(body).name === "status";
             if (!_statusIsCmd && body && await statusEditFlow.handleReply(sock, msg, body)) return;
           } catch (_statusReplyErr) {
             console.error("[status-edit-reply]", _statusReplyErr?.message || _statusReplyErr);
@@ -2420,7 +2453,7 @@ Save my contact:` }).catch(() => {});
           // must be handled BEFORE the game-answer / autochat / NIX handlers,
           // otherwise one of them consumes the message and nothing happens.
           try {
-            const _numIsCmd = !!(body && (CONFIG.PREFIXES||[CONFIG.PREFIX||'.']).some(p=>body.startsWith(p)));
+             const _numIsCmd = isCommandBody(body);
             if (!_numIsCmd && body && __miasHasPendingPicker(msg.key.remoteJid)) {
               if (await __miasHandleBareNumberReply(sock, msg, body)) return;
             }
@@ -2804,7 +2837,7 @@ ${_atBotAdmin ? "✅ Message deleted." : "⚠️ Make me admin to auto-delete."}
             const _arIsEdit = _arMsgType === "editedMessage" || _arMsgType === "protocolMessage";
             if (!_arIsEdit) {
               const _arS = getSettings(getOwnerJid());
-              const _isCmd = !!(body && (CONFIG.PREFIXES||[CONFIG.PREFIX]).some(p=>body.startsWith(p)));
+              const _isCmd = isCommandBody(body);
               const _isFromOwner =
                 !!msg.key?.fromMe ||
                 (typeof isOwner === "function" && isOwner(getSender(msg)));
@@ -2820,7 +2853,7 @@ ${_atBotAdmin ? "✅ Message deleted." : "⚠️ Make me admin to auto-delete."}
             }
           } catch (e) { /* never crash the dispatcher because of a react */ }
 
-          if (body && !(CONFIG.PREFIXES||[CONFIG.PREFIX]).some(p=>body.startsWith(p))) { try { if (await handleGameAnswer(sock, msg, body)) return; } catch (e) { console.error("[game-answer]", e?.message); } }
+          if (body && !isCommandBody(body)) { try { if (await handleGameAnswer(sock, msg, body)) return; } catch (e) { console.error("[game-answer]", e?.message); } }
 
           // ── v4.9.5 AUTO-CHATBOT ──────────────────────────────────────────
           // Per-chat autoReply toggle (set via .autochat on/off).
@@ -2830,7 +2863,7 @@ ${_atBotAdmin ? "✅ Message deleted." : "⚠️ Make me admin to auto-delete."}
             const _cbMsgType = Object.keys(msg.message || {})[0];
             const _cbIsEdit  = _cbMsgType === "editedMessage" || _cbMsgType === "protocolMessage";
             if (
-              body && !(CONFIG.PREFIXES||[CONFIG.PREFIX]).some(p=>body.startsWith(p)) && !_cbIsEdit && !msg.key.fromMe
+              body && !isCommandBody(body) && !_cbIsEdit && !msg.key.fromMe
             ) {
               const _cbChatS  = getSettings(msg.key.remoteJid);
               const _cbOwnerS = getSettings(getOwnerJid());
@@ -2980,7 +3013,7 @@ ${_atBotAdmin ? "✅ Message deleted." : "⚠️ Make me admin to auto-delete."}
           // Join approval replies are intentionally plain text. They are
           // consumed before the prefix gate and bound to the requesting chat.
           const _joinPending = __joinApprovals.get(msg.key.remoteJid);
-          if (_joinPending && body && !body.startsWith(CONFIG.PREFIX)) {
+          if (_joinPending && body && !isCommandBody(body)) {
             const _answer = String(body).trim().toLowerCase();
             if (_joinPending.stage === "confirm" && ["yes", "y"].includes(_answer)) {
               _joinPending.stage = "admin";
@@ -3004,8 +3037,9 @@ ${_atBotAdmin ? "✅ Message deleted." : "⚠️ Make me admin to auto-delete."}
               }
             }
           }
-          const _matchedPrefix = (body && (CONFIG.PREFIXES||[CONFIG.PREFIX]).find(p=>body.startsWith(p))) || null;
-          if (!body || !_matchedPrefix) {
+          const _command = parseCommandBody(body);
+          const _matchedPrefix = _command.prefix;
+          if (!body || !_command.isCommand) {
             // Numbered media menus are intentionally usable without another
             // command prefix.  This lets a user reply "1.3" to TikTok or "2"
             // to a play picker instead of typing .pick first.
@@ -3054,7 +3088,7 @@ ${_atBotAdmin ? "✅ Message deleted." : "⚠️ Make me admin to auto-delete."}
             if (!isCommandAllowedInContext(msg, fromOwner, false)) return;
           } catch {}
 
-          const raw = body.slice((_matchedPrefix||CONFIG.PREFIX).length).trim();
+          const raw = _command.raw;
           if (!raw) return;
           const parts = raw.split(/\s+/);
           const name = (parts.shift() || "").toLowerCase();
@@ -4117,19 +4151,40 @@ function getBody(msg) {
     || "";
 }
 function hasCommandPrefix(text = "") {
-  const prefix = String(CONFIG?.PREFIX ?? "");
-  const value = String(text || "").trim();
-  if (!value) return false;
-  return prefix ? value.toLowerCase().startsWith(prefix.toLowerCase()) : true;
+  return isCommandBody(text);
 }
 function extractCommandName(input) {
   const rawBody = typeof input === "string" ? input : getBody(input);
   const value = String(_extractButtonCommand(rawBody) || rawBody || "").trim();
   if (!value) return "";
-  const prefix = String(CONFIG?.PREFIX ?? "");
-  let rest = value;
-  if (prefix && value.toLowerCase().startsWith(prefix.toLowerCase())) rest = value.slice(prefix.length);
-  return rest.trim().split(/\s+/)[0]?.toLowerCase() || "";
+  const parsed = parseCommandBody(value);
+  if (parsed.isCommand) return parsed.name;
+  return value.split(/\s+/)[0]?.toLowerCase() || "";
+}
+function parseCommandBody(input = "") {
+  const value = String(typeof input === "string" ? input : getBody(input) || "").trim();
+  if (!value) return { isCommand: false, prefix: null, raw: "", name: "" };
+  const prefixes = Array.isArray(CONFIG?.PREFIXES) ? CONFIG.PREFIXES : [];
+  const matchedPrefix = prefixes
+    .filter((p) => typeof p === "string" && p.length > 0)
+    .sort((a, b) => b.length - a.length)
+    .find((p) => value.startsWith(p));
+  if (matchedPrefix !== undefined) {
+    const raw = value.slice(matchedPrefix.length).trim();
+    return { isCommand: true, prefix: matchedPrefix, raw, name: raw.split(/\s+/)[0]?.toLowerCase() || "" };
+  }
+  // In no-prefix mode, only a registered command name is treated as a
+  // command. Ordinary messages such as "hello there" remain ordinary chat.
+  if (prefixes.length === 0) {
+    const name = value.split(/\s+/)[0]?.toLowerCase() || "";
+    if (typeof commands !== "undefined" && commands.has(name)) {
+      return { isCommand: true, prefix: "", raw: value, name };
+    }
+  }
+  return { isCommand: false, prefix: null, raw: "", name: "" };
+}
+function isCommandBody(input = "") {
+  return parseCommandBody(input).isCommand;
 }
 // Edit a previously sent message
 const editMessage = async (sock, jid, key, text) => {
@@ -4257,7 +4312,7 @@ function _findInteractiveSelectionId(value, seen = new Set()) {
       if (!raw) continue;
       const s = String(raw).trim();
       if (!s) continue;
-      if (s.startsWith(CONFIG.PREFIX) || s.startsWith("BTN:")) return s;
+       if (isCommandBody(s) || s.startsWith("BTN:")) return s;
     }
     if (Array.isArray(value)) {
       for (const item of value) {
@@ -4278,10 +4333,12 @@ function _extractButtonCommand(raw) {
     if (!raw) return "";
     const s = String(raw).trim();
     if (!s) return "";
-    if (s.startsWith(CONFIG.PREFIX)) return s;
+     if (isCommandBody(s)) return s;
     if (s.startsWith("BTN:")) {
       const cmd = s.slice(4).trim();
-      return cmd.startsWith(CONFIG.PREFIX) ? cmd : `${CONFIG.PREFIX}${cmd}`;
+       return isCommandBody(cmd) || (Array.isArray(CONFIG.PREFIXES) && CONFIG.PREFIXES.length === 0 && typeof commands !== "undefined" && commands?.has?.(cmd.split(/\s+/)[0]?.toLowerCase()))
+         ? cmd
+         : (CONFIG.PREFIX ? `${CONFIG.PREFIX}${cmd}` : cmd);
     }
     const plain = s.replace(/^\/+/, "").trim().toLowerCase();
     if (plain && typeof commands !== "undefined" && commands?.has?.(plain)) {
@@ -4292,13 +4349,15 @@ function _extractButtonCommand(raw) {
         const id = _findInteractiveSelectionId(JSON.parse(s));
         if (id) {
           const norm = String(id).trim();
-          if (norm.startsWith(CONFIG.PREFIX)) return norm;
+           if (isCommandBody(norm)) return norm;
           if (norm.startsWith("BTN:")) {
             const cmd = norm.slice(4).trim();
-            return cmd.startsWith(CONFIG.PREFIX) ? cmd : `${CONFIG.PREFIX}${cmd}`;
+             return isCommandBody(cmd) || (Array.isArray(CONFIG.PREFIXES) && CONFIG.PREFIXES.length === 0 && typeof commands !== "undefined" && commands?.has?.(cmd.split(/\s+/)[0]?.toLowerCase()))
+               ? cmd
+               : (CONFIG.PREFIX ? `${CONFIG.PREFIX}${cmd}` : cmd);
           }
           const plain = norm.replace(/^\/+/, "").trim().toLowerCase();
-          if (plain && typeof commands !== "undefined" && commands?.has?.(plain)) return `${CONFIG.PREFIX}${plain}`;
+           if (plain && typeof commands !== "undefined" && commands?.has?.(plain)) return CONFIG.PREFIX ? `${CONFIG.PREFIX}${plain}` : plain;
         }
       } catch {}
     }
@@ -5651,7 +5710,7 @@ function shouldProcessIncomingMessage(msg) {
   try { body = typeof getBody === "function" ? (getBody(msg) || "") : ""; } catch {}
   try { body = _extractButtonCommand(body) || body; } catch {}
   const text = String(body || "").trim();
-  const isCommand = !!text && text.startsWith(CONFIG.PREFIX);
+  const isCommand = isCommandBody(text);
   const isSettingsReply = !!settingsSession.get(msg.key.remoteJid) && /^(\d{1,2}\.\d{1,2}|0)$/.test(text);
 
   // Only ignore clearly stale non-text backlog messages during early boot.
@@ -12114,7 +12173,7 @@ cmd("ttt", { desc: "Tic-Tac-Toe vs Bot", category: "GAMES" }, async (sock, msg) 
   await sendReply(sock, msg, `⭕ *Tic-Tac-Toe*\n\n${display()}\n\nYou are ❌! Reply with 1-9 to play.`);
 });
 async function handleGameAnswer(sock, msg, body) {
-  const jid = msg.key.remoteJid; const text = String(body || "").trim(); if (!text || text.startsWith(CONFIG.PREFIX)) return false; const senderJid = getSender(msg); const sender = senderJid.split("@")[0];
+  const jid = msg.key.remoteJid; const text = String(body || "").trim(); if (!text || isCommandBody(text)) return false; const senderJid = getSender(msg); const sender = senderJid.split("@")[0];
   const winLines = [[0,1,2],[3,4,5],[6,7,8],[0,3,6],[1,4,7],[2,5,8],[0,4,8],[2,4,6]];
   const renderTtt = b => b.map((c,i)=>c==="X"?"❌":c==="O"?"⭕":["1️⃣","2️⃣","3️⃣","4️⃣","5️⃣","6️⃣","7️⃣","8️⃣","9️⃣"][i]).reduce((a,c,i)=>a+c+((i+1)%3===0&&i<8?"\n":" "),"");
   const winner = b => { for (const [a,c,d] of winLines) if (b[a] !== " " && b[a] === b[c] && b[c] === b[d]) return b[a]; return b.every(x=>x!==" ") ? "draw" : ""; };
@@ -15453,18 +15512,25 @@ cmd(["setprefix", "prefix"], { desc: "Change bot prefix — use 'null' or 'none'
     await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX || "."}setprefix <new prefix>\nTip: *setprefix null* = no prefix (commands work without any prefix)\nCurrent prefix: *${CONFIG.PREFIX || "(none)"}*`);
     return;
   }
-  const _lc = args[0].toLowerCase();
-  CONFIG.PREFIX = (_lc === "null" || _lc === "none" || _lc === "no" || _lc === "off") ? "" : args[0];
+  const _requestedPrefix = String(args[0]).trim();
+  CONFIG.PREFIX = normalizeConfiguredPrefix(_requestedPrefix);
+  CONFIG.PREFIXES = CONFIG.PREFIX ? [CONFIG.PREFIX] : [];
   const _pfxDisplay = CONFIG.PREFIX || "(none — commands work without any prefix)";
-    // Persist prefix to disk
-    try {
-      const _pfxEnvPath = path.join(__dirname, ".env");
-      let _pfxEnvTxt = fs.existsSync(_pfxEnvPath) ? fs.readFileSync(_pfxEnvPath, "utf8") : "";
-      _pfxEnvTxt = _pfxEnvTxt.includes("PREFIX=") ? _pfxEnvTxt.replace(/^PREFIX=.*/m, `PREFIX=${CONFIG.PREFIX}`) : _pfxEnvTxt + `\nPREFIX=${CONFIG.PREFIX}`;
-      fs.writeFileSync(_pfxEnvPath, _pfxEnvTxt, "utf8");
-    } catch {}
-    await sendReply(sock, msg, `✅ Prefix changed to: *${_pfxDisplay}*`);
-  });
+  // Persist both variables so an older PREFIXES entry cannot override the
+  // newly selected prefix after restart. Empty PREFIX/PREFIXES means no-prefix.
+  try {
+    const _pfxEnvPath = path.join(__dirname, ".env");
+    let _pfxEnvTxt = fs.existsSync(_pfxEnvPath) ? fs.readFileSync(_pfxEnvPath, "utf8") : "";
+    const _pfxLines = [`PREFIX=${CONFIG.PREFIX}`, `PREFIXES=${CONFIG.PREFIX}`];
+    for (const _line of _pfxLines) {
+      const _key = _line.split("=")[0];
+      const _re = new RegExp(`^${_key}=.*$`, "m");
+      _pfxEnvTxt = _re.test(_pfxEnvTxt) ? _pfxEnvTxt.replace(_re, _line) : `${_pfxEnvTxt.replace(/\s*$/, "")}\n${_line}\n`;
+    }
+    fs.writeFileSync(_pfxEnvPath, _pfxEnvTxt, "utf8");
+  } catch {}
+  await sendReply(sock, msg, `✅ Prefix changed to: *${_pfxDisplay}*\n\n${CONFIG.PREFIX ? `Use: ${CONFIG.PREFIX}menu` : "Commands now work without a prefix, e.g. menu or ping."}`);
+});
   cmd("broadcast", { desc: "Broadcast message to all groups + DMs — .broadcast <msg>", ownerOnly: true, category: "OWNER" }, async (sock, msg, args) => {
   const body = getBody(msg);
   const text = body.slice(CONFIG.PREFIX.length + 9).trim() || args.join(" ").trim();
@@ -20783,8 +20849,9 @@ cmd(["pick", "p"], { desc: "Pick randomly from options (A|B|C) OR download adult
         await react(sock, msg, "✅");
         const _pmRawId  = _pmItem.id || "";
         const _pmClean  = _pmRawId.startsWith("BTN:") ? _pmRawId.slice(4).trim() : _pmRawId.trim();
-        const _pmCmd    = _pmClean.startsWith(CONFIG.PREFIX) ? _pmClean : (CONFIG.PREFIX + _pmClean);
-        const _pmParts   = _pmCmd.slice(CONFIG.PREFIX.length).split(/\s+/);
+        const _pmParsed = parseCommandBody(_pmClean);
+        const _pmCmd    = _pmParsed.isCommand ? _pmClean : (CONFIG.PREFIX ? CONFIG.PREFIX + _pmClean : _pmClean);
+        const _pmParts   = (_pmParsed.isCommand ? _pmParsed.raw : _pmClean).split(/\s+/);
         const _pmCmdName = (_pmParts[0] || "").toLowerCase();
         const _pmArgs    = _pmParts.slice(1).filter(Boolean);
         // v-fix ANTI-LOOP: wipe stash BEFORE executing so the bot never re-picks itself
@@ -20895,14 +20962,15 @@ cmd(["pm","pickmenu"], { desc: "Pick option N from last text menu — .pm <numbe
     // cmd / quick_reply — re-trigger the command
     let _rawId = item.id || "";
     const _cleanId = _rawId.startsWith("BTN:") ? _rawId.slice(4).trim() : _rawId.trim();
-    const _cmdText = _cleanId.startsWith(CONFIG.PREFIX) ? _cleanId : `${CONFIG.PREFIX}${_cleanId}`;
+    const _cmdParsed = parseCommandBody(_cleanId);
+    const _cmdText = _cmdParsed.isCommand ? _cleanId : (CONFIG.PREFIX ? `${CONFIG.PREFIX}${_cleanId}` : _cleanId);
     if (!_cleanId) {
       await sendReply(sock, msg, `❌ Option ${n} has no command attached.`);
       return;
     }
     await sendReply(sock, msg, `⚡ *Running:* \`${_cmdText}\``);
     try {
-      const _parts = _cmdText.slice(CONFIG.PREFIX.length).split(/\s+/);
+      const _parts = (parseCommandBody(_cmdText).raw || _cmdText).split(/\s+/);
       const _cmdName = (_parts[0] || "").toLowerCase();
       const _cmdArgs = _parts.slice(1).filter(Boolean);
       const _handler = commands.get(_cmdName);
