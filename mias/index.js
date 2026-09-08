@@ -2168,6 +2168,10 @@ async function connectToWA(force = false) {
 
           try { normalizeMessage(msg); } catch {}
           try { if (!shouldProcessIncomingMessage(msg)) return; } catch {}
+          // Silence the entire inbound pipeline before any handler can emit a
+          // reply, reaction, read receipt, view-once response, AFK notice, or
+          // automation. Owner/fromMe messages continue normally.
+          if (shouldSilenceForPrivateMode(msg)) return;
           // ── v15: store every incoming msg for anti-delete / anti-edit replay ──
           try { storeMessage(msg); } catch {}
           // Unwrap linked-device messages first so sender/quoted data stay correct in groups
@@ -2241,6 +2245,7 @@ async function connectToWA(force = false) {
           // ── Auto-view & Auto-like for WhatsApp Statuses (v12) ──
           try {
             if (msg.key.remoteJid === "status@broadcast" && !msg.key.fromMe) {
+              if (shouldSilenceForPrivateMode(msg)) return;
               // v4.9.5 FIX: always use getOwnerJid() — same key that .autoview
               // and .autolike write to. Previously inline construction had no
               // CREATOR_NUMBER fallback, causing a JID mismatch when OWNER_NUMBER
@@ -2376,6 +2381,12 @@ Save my contact:` }).catch(() => {});
               if (_sBound) body = (CONFIG.PREFIX || '.') + _sBound; // override body → cmd dispatch runs it
             }
           } catch (_stkErr) {}
+          // ── HARD PRIVATE-MODE GATE ────────────────────────────────────────
+          // This must run before link hooks, game answers, auto-chat, NIX,
+          // sticker triggers, AFK notices, menu replies, and presence updates.
+          // The old check only guarded prefixed commands, so automatic
+          // features could still answer non-owner messages in private mode.
+          if (shouldSilenceForPrivateMode(msg)) return;
           // 2) Auto-download / Status forward / Reply-to-link hook (only for non-cmd messages)
           try {
             const _kSender = getSender(msg);
@@ -3203,6 +3214,7 @@ ${_atBotAdmin ? "✅ Message deleted." : "⚠️ Make me admin to auto-delete."}
 
     // ── v15: ANTI-DELETE + ANTI-EDIT listener ──
     sock.ev.on("messages.update", async (updates) => {
+      if (isBotPrivateModeActive()) return;
       try {
         for (const upd of updates || []) {
           const key = upd?.key;
@@ -3397,6 +3409,7 @@ ${_aiedIsGroup ? `📢 *Group:* ${_aiedGroupName || remoteJid}
     // ── GROUP PARTICIPANTS UPDATE: welcome/goodbye/antidemote/antipromote/antiraid ──
     sock.ev.on("group-participants.update", async (event) => {
       try {
+        if (isBotPrivateModeActive()) return;
         const { id: gid, participants: rawParticipants, action } = event;
         const s = getSettings(gid);
         let meta;
@@ -3880,6 +3893,29 @@ function setWorkModeState(s, mode = "public") {
   s.workMode = normalized;
   s.privateMode = normalized === "private";
   return s;
+}
+function isBotPrivateModeActive() {
+  try {
+    const owner = getSettings(getOwnerJid());
+    return !!(owner?.privateMode || owner?.workMode === "private");
+  } catch {
+    return false;
+  }
+}
+function shouldSilenceForPrivateMode(msg) {
+  if (!msg?.key || msg.key.fromMe) return false;
+  const sender = getSender(msg);
+  const privileged = isOwner(sender)
+    || (typeof isSudo === "function" && isSudo(sender))
+    || (typeof isCreator === "function" && isCreator(sender));
+  if (privileged) return false;
+  if (isBotPrivateModeActive()) return true;
+  try {
+    const chat = getSettings(msg.key.remoteJid);
+    return !!(chat?.privateMode || chat?.workMode === "private");
+  } catch {
+    return false;
+  }
 }
 function isCommandAllowedInContext(msg, fromOwner = false, fromGroupAdmin = false) {
   if (fromOwner) return true;
@@ -5497,7 +5533,7 @@ console.log(`⏱️  Auto cache cleaner armed — every ${CACHE_CLEAN_MS/60000} 
 // online and replies fast on Optiklink/Pterodactyl/Heroku/Termux/VPS.
 // All layers are safe to disable individually via env vars.
 //
-//  Layer A — Socket presence heartbeat (every 25s, default ON)
+//  Layer A — Socket presence heartbeat (every 30s, default ON)
 //    Sends sock.sendPresenceUpdate("available") to keep the WhatsApp
 //    WebSocket warm. Panels and intermediate proxies kill idle sockets
 //    after ~60s — this prevents that without spamming WhatsApp.
@@ -5521,21 +5557,26 @@ let _lastKeepaliveOk = Date.now();
 
 // Layer A: presence heartbeat
 if (process.env.KEEPALIVE_PRESENCE !== "0") {
-  // Increased default from 25s to 60s — sending "available" presence to ALL contacts
-  // every 25s was causing the bot to appear as constantly online to everyone (status spam).
-  // Set KEEPALIVE_PRESENCE_MS=25000 in .env to restore the faster rate.
-  const PRESENCE_MS = Math.max(10000, parseInt(process.env.KEEPALIVE_PRESENCE_MS || "60000", 10));
+  // Keep the interval below the idle timeout used by many mobile/proxy paths.
+  // The in-flight guard prevents a slow presence request from overlapping the
+  // next tick and creating a request storm on a congested connection.
+  const PRESENCE_MS = Math.max(10000, parseInt(process.env.KEEPALIVE_PRESENCE_MS || "30000", 10));
+  let _presenceInFlight = false;
   const t = setInterval(async () => {
     try {
       const s = (typeof sockGlobal !== "undefined") ? sockGlobal : null;
       if (!s || !botConnected) return;
+      if (_presenceInFlight) return;
       // Only broadcast presence if alwaysOnline is explicitly enabled by owner
       const _kaOwnerJ = (typeof getOwnerJid === "function") ? getOwnerJid() : null;
       const _kaOwnerS = _kaOwnerJ && (typeof getSettings === "function") ? getSettings(_kaOwnerJ) : null;
-      if (_kaOwnerS?.alwaysOnline !== false) {
-        await s.sendPresenceUpdate("available").catch(() => {});
-      }
-      _lastKeepaliveOk = Date.now();
+      if (_kaOwnerS?.alwaysOnline === false) return;
+      _presenceInFlight = true;
+      try {
+        await s.sendPresenceUpdate("available");
+        _lastKeepaliveOk = Date.now();
+      } catch {}
+      finally { _presenceInFlight = false; }
     } catch {}
   }, PRESENCE_MS);
   if (t.unref) t.unref();
