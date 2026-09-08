@@ -62,6 +62,7 @@ import {
   selectTikTokUrl,
 } from "./features/tiktok.js";
 import { createStatusEditFlow } from "./lib/statusEditFlow.js";
+import { createAnimeEditFlow } from "./features/animeEdits.js";
 import { prepareHdImage, HD_IMAGE_WIDTH, imageGalleryCaption } from "./lib/hdImage.js";
 import { normalizeInviteCode, approvalPrompt, adminNumberList, parseAdminChoice } from "./features/joinApproval.js";
 // ── BUTTON MODE — wizard & interactive menu (new design) ──────────────────────
@@ -478,6 +479,7 @@ const CONFIG = {
   BOT_PIC:      process.env.BOT_PIC      || "https://files.catbox.moe/05rqy6.png",
 };
 const statusEditFlow = createStatusEditFlow({ prefix: CONFIG.PREFIX });
+const animeEditFlow = createAnimeEditFlow({ prefix: CONFIG.PREFIX });
 
 // ── DYNAMIC OWNER NAME ─────────────────────────────────────────────────────
 // When the bot connects, replace any hard-coded OWNER_NAME with the real
@@ -5728,6 +5730,7 @@ const commands = new Map();
 function cmd(names, opts, handler) {
   for (const n of [].concat(names)) commands.set(n.toLowerCase(), { ...opts, handler });
 }
+animeEditFlow.registerCommands(cmd);
 
   cmd(["animedl", "animedownload", "anime4k"], { desc: "Download anime episodes by name", category: "ANIME" }, async (sock, msg, args) => {
     if (!args.length) {
