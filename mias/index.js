@@ -63,7 +63,7 @@ import {
 } from "./features/tiktok.js";
 import { createStatusEditFlow } from "./lib/statusEditFlow.js";
 import { createAnimeEditFlow } from "./features/animeEdits.js";
-import { prepareHdImage, HD_IMAGE_WIDTH, imageGalleryCaption } from "./lib/hdImage.js";
+import { prepareHdImage, HD_IMAGE_WIDTH } from "./lib/hdImage.js";
 import { normalizeInviteCode, approvalPrompt, adminNumberList, parseAdminChoice } from "./features/joinApproval.js";
 // ── BUTTON MODE — wizard & interactive menu (new design) ──────────────────────
 import { handleWizardInput }   from "./handlers/wizardHandler.js";
@@ -2334,8 +2334,15 @@ async function connectToWA(force = false) {
               // was not set, making both autoview and autolike silently fail.
               const _ownerJStatus = getOwnerJid();
               const _ownerSStatus = getSettings(_ownerJStatus);
-              const author = toStandardJid(resolveLid(msg.key.participant || msg.participant || ""));
-              const _authorNum = _cleanNum(author);
+              // Keep the participant exactly as WhatsApp supplied it for
+              // readMessages(). Converting an unresolved @lid to a fake
+              // phone JID makes both view and reaction silently fail.
+              const _rawAuthor = msg.key.participant || msg.participant || "";
+              const _resolvedAuthor = resolveLid(_rawAuthor);
+              const author = _resolvedAuthor?.endsWith("@lid")
+                ? _rawAuthor
+                : toStandardJid(_resolvedAuthor);
+              const _authorNum = _resolvedAuthor?.endsWith("@lid") ? "" : _cleanNum(_resolvedAuthor);
               const _viewExclude = Array.isArray(_ownerSStatus?.viewStatusExclude) ? _ownerSStatus.viewStatusExclude : [];
               const _isExcluded = _viewExclude.some(n => String(n).replace(/[^0-9]/g,"") === _authorNum);
               // ── Exclude muted contacts (viewStatusExcludeMuted setting) ──
@@ -2355,16 +2362,24 @@ async function connectToWA(force = false) {
               if (_ownerSStatus?.viewStatus && !_isExcluded && !_isMuted) {
                 // Mark as viewed — supports optional queue/delay (statusViewDelay setting)
                 const _vDelay = Math.max(0, Number(_ownerSStatus?.statusViewDelay) || 0);
-                const _doMarkViewed = () => {
+                const _doMarkViewed = async () => {
                   try {
-                    const _vKey = { remoteJid: 'status@broadcast', id: msg.key.id, participant: author };
-                    sock.readMessages([_vKey]).catch(() => {});
-                    // Also send via sendMessage for clients that require it
-                    sock.sendMessage('status@broadcast', { read: true, key: msg.key }, { statusJidList: [author] }).catch(() => {});
-                  } catch {}
+                    // This is the canonical Baileys status-view operation.
+                    // Await it so transient network failures are caught.
+                    await sock.readMessages([msg.key]);
+                  } catch {
+                    // A few Baileys forks need the status read stanza.
+                    try {
+                      await sock.sendMessage(
+                        "status@broadcast",
+                        { read: true, key: msg.key },
+                        { statusJidList: author ? [author] : [] },
+                      );
+                    } catch {}
+                  }
                 };
                 if (_vDelay > 0) setTimeout(_doMarkViewed, _vDelay * 1000);
-                else _doMarkViewed();
+                else await _doMarkViewed();
               }
               if (_ownerSStatus?.reactStatus && author && !_isExcluded) {
                 // Pick random emoji from pool (comma-separated list) or use single emoji
@@ -10384,8 +10399,6 @@ cmd("img", { desc: "Image search", category: "SEARCH" }, async (sock, msg, args)
   const q = args.join(" ");
   const jid = msg.key.remoteJid;
   await react(sock, msg, "🖼️");
-  const statusMsg = await sock.sendMessage(jid, { text: `🖼️ *MIAS MDX Image Search*\n\n⬡ Searching for *"${q}"*...\n◻ Downloading image...` }, { quoted: msg });
-  const imgKey = statusMsg.key;
   const imgApis = [
     // 1: prexzyvilla image search (primary)
     async () => {
@@ -10424,7 +10437,7 @@ cmd("img", { desc: "Image search", category: "SEARCH" }, async (sock, msg, args)
     },
     // 5: LoremFlickr (always returns query-relevant image, no key needed)
     async () => {
-      const qSlug = encodeURIComponent(q.replace(/s+/g, ",").slice(0, 60));
+      const qSlug = encodeURIComponent(q.replace(/\s+/g, ",").slice(0, 60));
       const { headers } = await axios.head(`https://loremflickr.com/800/600/${qSlug}`, { timeout: 12000, maxRedirects: 10 });
       const url = headers?.location || `https://loremflickr.com/800/600/${qSlug}`;
       return url;
@@ -10445,16 +10458,13 @@ cmd("img", { desc: "Image search", category: "SEARCH" }, async (sock, msg, args)
     try {
       const buf = await axios.get(imageUrl, { responseType: "arraybuffer", timeout: 25000, headers: { "User-Agent": "Mozilla/5.0" }, maxRedirects: 5 });
       if (buf.data?.byteLength > 500) {
-        await editMessage(sock, jid, imgKey, `🖼️ *MIAS MDX Image Search*\n\n⬢ Searching... ✅\n⬢ Sending image...`);
-        await sock.sendMessage(jid, { image: Buffer.from(buf.data), caption: `🖼️ *${q}*` }, { quoted: msg });
-        await react(sock, msg, "✅");
+        await sock.sendMessage(jid, { image: Buffer.from(buf.data) }, { quoted: msg });
+        await react(sock, msg, "");
         return;
       }
     } catch {}
-    await editMessage(sock, jid, imgKey, `🖼️ *${q}*\n\n🔗 ${imageUrl}`);
-  } else {
-    await editMessage(sock, jid, imgKey, `🖼️ *Image Search: ${q}*\n\n🔗 Google Images:\nhttps://www.google.com/search?tbm=isch&q=${encodeURIComponent(q)}`);
   }
+  await react(sock, msg, "❌");
 });
 
 // .image — David Cyril HD image search (five results)
@@ -10467,11 +10477,6 @@ cmd("image", { desc: "Send five HD images from David Cyril — .image <query>", 
   const query = args.join(" ").trim();
   const jid = msg.key.remoteJid;
   await react(sock, msg, "🖼️");
-  const statusMsg = await sock.sendMessage(
-    jid,
-    { text: `🖼️ *David Cyril Image Search*\n\nSearching for *"${query}"*...\nPreparing 5 HD images...` },
-    { quoted: msg },
-  );
 
   const imageUrls = [];
   const addUrl = (value) => {
@@ -10504,50 +10509,48 @@ cmd("image", { desc: "Send five HD images from David Cyril — .image <query>", 
     } catch {}
   }
 
-  const images = [];
-  for (const url of imageUrls) {
-    if (images.length >= 5) break;
-    try {
-      const response = await axios.get(url, {
-        responseType: "arraybuffer",
-        timeout: 30000,
-        maxContentLength: 25 * 1024 * 1024,
-        maxRedirects: 5,
-        headers: {
-          "User-Agent": "Mozilla/5.0 (WhatsApp/2.24; +MAIS)",
-          Referer: "https://www.bhdw.net/",
-        },
-      });
-      const buffer = Buffer.from(response.data || []);
-      const contentType = String(response.headers?.["content-type"] || "");
-      if (buffer.length > 500 && (contentType.startsWith("image/") || !contentType)) {
-        const hd = await prepareHdImage(buffer);
-        if (hd.width >= HD_IMAGE_WIDTH) images.push({ ...hd, url });
-      }
-    } catch {}
-  }
+  // Download candidates concurrently. The old serial loop waited up to 30s
+  // for every dead URL, which looked like the command had frozen after the
+  // "found 5" progress message on slow connections.
+  const downloaded = await Promise.allSettled(imageUrls.map(async (url) => {
+    const response = await axios.get(url, {
+      responseType: "arraybuffer",
+      timeout: 30000,
+      maxContentLength: 25 * 1024 * 1024,
+      maxRedirects: 5,
+      headers: {
+        "User-Agent": "Mozilla/5.0 (WhatsApp/2.24; +MAIS)",
+        Referer: "https://www.bhdw.net/",
+      },
+    });
+    const buffer = Buffer.from(response.data || []);
+    const contentType = String(response.headers?.["content-type"] || "");
+    if (buffer.length <= 500 || (contentType && !contentType.startsWith("image/"))) {
+      throw new Error("response was not an image");
+    }
+    const hd = await prepareHdImage(buffer);
+    return { ...hd, url };
+  }));
+  const images = downloaded
+    .filter((entry) => entry.status === "fulfilled" && entry.value?.width >= HD_IMAGE_WIDTH)
+    .map((entry) => entry.value)
+    .slice(0, 5);
 
   if (!images.length) {
-    await editMessage(sock, jid, statusMsg.key, `❌ No HD images were found for *${query}*.\nTry another search term.`);
     await react(sock, msg, "❌");
     return;
   }
 
-  await editMessage(sock, jid, statusMsg.key, `🖼️ Found ${images.length} HD image${images.length === 1 ? "" : "s"} for *${query}*.\nSending...`);
   for (let index = 0; index < images.length; index += 1) {
     await sock.sendMessage(
       jid,
       {
         image: images[index].buffer,
-        mimetype: "image/webp",
-        ...(imageGalleryCaption(index, images.length)
-          ? { caption: imageGalleryCaption(index, images.length) }
-          : {}),
       },
       { quoted: msg },
     );
   }
-  await react(sock, msg, "✅");
+  await react(sock, msg, "");
 });
 
 cmd("status", { desc: "Create short status edits with a guided picker", category: "MEDIA" }, async (sock, msg) => {
@@ -33896,6 +33899,9 @@ _This code expires in ~2 minutes._`);
 // the real sock is never mutated — completely race-condition-free.
 // ════════════════════════════════════════════════════════════════════════════
 (async () => {
+  // Disabled: command replies must remain clean. Do not add creator/VIP
+  // banners to user-facing messages.
+  return;
   try {
     // ── Badge strings ─────────────────────────────────────────────────────
     const _BADGE_CREATOR = [
