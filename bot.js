@@ -1201,49 +1201,132 @@ bot.onText(/^\/(kick|ban|unban|mute|unmute|warn|resetwarn)(?:@\w+)?(?:\s+(.+))?$
 }));
 
 // Pair command
-bot.onText(/^\/pair(?:@\w+)?\s*$/, requireMembership(async (msg) => {
+// The first Telegram message is deliberately only a choice. Starting a QR
+// handshake before the user chooses a method made it impossible to request a
+// pairing code and also allowed duplicate taps to clear a live handshake.
+const telegramPairInFlight = new Map();
+
+const pairMethodKeyboard = (number, userId) => ({
+    inline_keyboard: [[
+        { text: '📷 QR CODE', callback_data: `pairmethod|${number}|${userId}|qr` },
+        { text: '🔢 PAIRING CODE', callback_data: `pairmethod|${number}|${userId}|code` }
+    ]]
+});
+
+const sendPairMethodChoice = (msg, number) => sendSafePhoto(msg.chat.id, IMAGES.bot, {
+    caption: `📱 *Choose how to pair* \`${number}\`\n\nSelect one method below. A fresh pairing session will start only after you choose.`,
+    parse_mode: 'Markdown',
+    reply_markup: pairMethodKeyboard(number, msg.from.id)
+});
+
+const telegramBotIsRunning = (number) => {
     try {
-        const senderNumber = resolvePairTarget(msg);
+        const launcher = require('./mais_launcher');
+        return launcher.list().some((entry) =>
+            String(entry.number).replace(/[^0-9]/g, '') === String(number).replace(/[^0-9]/g, '') &&
+            entry.alive !== false
+        );
+    } catch {
+        return false;
+    }
+};
+
+async function runTelegramPair(msg, senderNumber, mode) {
+    const chatId = msg.chat.id;
+    const jid = `${senderNumber}@s.whatsapp.net`;
+    const flowKey = `${chatId}:${senderNumber}`;
+    if (telegramPairInFlight.has(flowKey)) {
+        return sendSafePhoto(chatId, IMAGES.bot, {
+            caption: `⏳ *Pairing is already in progress* for \`${senderNumber}\`.\n\nPlease use the existing ${mode === 'qr' ? 'QR code' : 'pairing code'} or wait for it to finish.`,
+            parse_mode: 'Markdown'
+        });
+    }
+
+    telegramPairInFlight.set(flowKey, mode);
+    try {
         const pairModule = require('./pair.js');
-        const waitForPairingResult = pairModule.waitForPairingResult;
         const startpairing = typeof pairModule === 'function' ? pairModule : pairModule.startpairing;
+        const waitForPairingResult = pairModule.waitForPairingResult;
         const hasPairedSession = pairModule.hasPairedSession;
         const isSessionLive = pairModule.isSessionLive;
+        const isPairingActive = pairModule.isPairingActive;
         const unpairSession = pairModule.unpairSession || pairModule.forceCleanupSession;
-        if (typeof startpairing !== 'function') throw new Error('Pairing module is not loaded correctly');
-        if (typeof waitForPairingResult !== 'function') throw new Error('Pairing result helper is not available');
-
-        const jid = `${senderNumber}@s.whatsapp.net`;
-        if (typeof hasPairedSession === 'function' && hasPairedSession(jid)) {
-            const live = typeof isSessionLive === 'function' ? isSessionLive(jid) : true;
-            if (!live && typeof unpairSession === 'function') {
-                try { unpairSession(jid); } catch {}
-                await sendSafePhoto(msg.chat.id, IMAGES.error, {
-                    caption: `🧹 *OLD SESSION CLEARED*\n\n📱 Number: ${senderNumber}\nGenerating a fresh pairing code now...`,
-                    parse_mode: 'Markdown'
-                });
-            } else {
-            return sendSafePhoto(msg.chat.id, IMAGES.success, {
-                caption: `✅ *ALREADY PAIRED*\n\n📱 Number: ${senderNumber}`,
+        if (typeof startpairing !== 'function' || typeof waitForPairingResult !== 'function') {
+            throw new Error('Pairing module is not loaded correctly');
+        }
+        if (typeof isPairingActive === 'function' && isPairingActive(jid)) {
+            return sendSafePhoto(chatId, IMAGES.bot, {
+                caption: `⏳ *A pairing session is already active* for \`${senderNumber}\`.\n\nUse the code or QR already issued, or wait for it to expire before starting another one.`,
                 parse_mode: 'Markdown'
             });
+        }
+
+        // A handoff-owned session is no longer tracked by pair.js, so
+        // isSessionLive() alone is not enough. Never delete auth for a bot
+        // process that is already running.
+        if (typeof hasPairedSession === 'function' && hasPairedSession(jid)) {
+            const live = typeof isSessionLive === 'function' ? isSessionLive(jid) : false;
+            if (live || telegramBotIsRunning(senderNumber)) {
+                return sendSafePhoto(chatId, IMAGES.success, {
+                    caption: `✅ *ALREADY PAIRED*\n\n📱 Number: ${senderNumber}`,
+                    parse_mode: 'Markdown'
+                });
+            }
+            if (typeof unpairSession === 'function') {
+                try { await Promise.resolve(unpairSession(jid)); } catch {}
             }
         }
 
-        await sendSafePhoto(msg.chat.id, IMAGES.bot, {
-            caption: `⏳ *Processing self-pair for* ${senderNumber}...`,
-            parse_mode: 'Markdown'
-        });
+        try {
+            require('./deploy/botSelectionStore').setOwner(senderNumber, {
+                id: msg.from.id,
+                username: msg.from.username || null,
+                first_name: msg.from.first_name || null,
+                firstName: msg.from.first_name || null,
+                chatId,
+            });
+        } catch (e) {
+            console.warn('[bot] Could not record pair owner:', e.message);
+        }
 
-        await startpairing(jid, { mode: 'qr' });
-        const qrObj = await waitForPairingResult(jid, 120000, 'qr');
-        const qrImage = await QRCode.toBuffer(qrObj.qr, {
-            type: 'png', width: 640, margin: 2, errorCorrectionLevel: 'M'
-        });
-        return sendSafePhoto(msg.chat.id, qrImage, {
-            caption: `📷 *SCAN TO PAIR*\n\n📱 Number: ${senderNumber}\n\nOpen WhatsApp → Settings → Linked Devices → Link a Device → scan this QR code.\n\n⚠️ This QR expires shortly. If it expires, send /pair again.`,
+        await sendSafePhoto(chatId, IMAGES.bot, {
+            caption: `⏳ *Starting ${mode === 'qr' ? 'QR' : 'pairing-code'} pairing* for \`${senderNumber}\`...`,
             parse_mode: 'Markdown'
         });
+        await startpairing(jid, { mode });
+        const result = await waitForPairingResult(jid, 120000, mode);
+
+        if (mode === 'qr') {
+            if (!result?.qr) throw new Error('QR code was not generated. Please try again.');
+            const qrImage = await QRCode.toBuffer(result.qr, {
+                type: 'png', width: 640, margin: 2, errorCorrectionLevel: 'M'
+            });
+            return sendSafePhoto(chatId, qrImage, {
+                caption: `📷 *SCAN TO PAIR*\n\n📱 Number: ${senderNumber}\n\nOpen WhatsApp → Settings → Linked Devices → Link a Device → scan this QR code.\n\n⚠️ This QR expires shortly. If it expires, choose QR again from /pair.`,
+                parse_mode: 'Markdown'
+            });
+        }
+
+        if (!result?.code) throw new Error('Pairing code was not generated. Please try again.');
+        return sendSafePhoto(chatId, IMAGES.success, {
+            caption: `🔢 *PAIRING CODE READY*\n\n📱 Number: ${senderNumber}\n\n\`${result.code}\`\n\nOpen WhatsApp → Linked Devices → Link a Device → Link with phone number instead, then enter this code.\n\n⚠️ The code expires shortly. Do not share it with anyone else.`,
+            parse_mode: 'Markdown'
+        });
+    } catch (error) {
+        logSafeError(chalk.red('Pair error:'), error);
+        return sendSafePhoto(chatId, IMAGES.error, {
+            caption: `❌ *PAIRING FAILED*\n\n${safeErrorMessage(error) || 'Please try again'}`,
+            parse_mode: 'Markdown'
+        });
+    } finally {
+        telegramPairInFlight.delete(flowKey);
+    }
+}
+
+bot.onText(/^\/pair(?:@\w+)?\s*$/, requireMembership(async (msg) => {
+    try {
+        const senderNumber = resolvePairTarget(msg);
+        return sendPairMethodChoice(msg, senderNumber);
     } catch (error) {
         return sendSafePhoto(msg.chat.id, IMAGES.error, {
             caption: `⚠️ *SELF-PAIR*\n\n${error.message || 'Use /pair 234XXXXXXXXX'}`,
@@ -1253,81 +1336,18 @@ bot.onText(/^\/pair(?:@\w+)?\s*$/, requireMembership(async (msg) => {
 }));
 
 bot.onText(/^\/pair(?:@\w+)?\s+(.+)/, requireMembership(withCooldown('pair', 10)(async (msg, match) => {
-    const chatId = msg.chat.id;
-    const number = match[1].trim();
-
+    const rawNumber = match[1].trim();
     try {
-        const senderNumber = resolvePairTarget(msg, number);
-        if (!senderNumber || /[a-z]/i.test(number) || !/^\d{7,15}$/.test(senderNumber) || senderNumber.startsWith('0')) {
-            return sendSafePhoto(chatId, IMAGES.error, {
+        const senderNumber = resolvePairTarget(msg, rawNumber);
+        if (!senderNumber || /[a-z]/i.test(rawNumber) || !/^\d{7,15}$/.test(senderNumber) || senderNumber.startsWith('0')) {
+            return sendSafePhoto(msg.chat.id, IMAGES.error, {
                 caption: `⚠️ *INVALID NUMBER*\n\nUse: /pair 234XXXXXXXXX`,
                 parse_mode: 'Markdown'
             });
         }
-
-        await sendSafePhoto(chatId, IMAGES.bot, {
-            caption: `⏳ *Processing...*`,
-            parse_mode: 'Markdown'
-        });
-
-        const pairModule = require('./pair.js');
-        const startpairing = typeof pairModule === 'function' ? pairModule : pairModule.startpairing;
-        const waitForPairingResult = pairModule.waitForPairingResult;
-        const hasPairedSession = pairModule.hasPairedSession;
-        const isSessionLive = pairModule.isSessionLive;
-        const unpairSession = pairModule.unpairSession || pairModule.forceCleanupSession;
-        if (typeof startpairing !== 'function') throw new Error('Pairing module is not loaded correctly');
-        if (typeof waitForPairingResult !== 'function') throw new Error('Pairing result helper is not available');
-
-        const jid = senderNumber + "@s.whatsapp.net";
-
-        // Remember who paired this number so the bot-selection prompt can be
-        // delivered straight to them instead of only to admins.
-        try {
-            require('./deploy/botSelectionStore').setOwner(senderNumber, {
-                id: msg.from.id,
-                username: msg.from.username || null,
-                first_name: msg.from.first_name || null,
-                firstName: msg.from.first_name || null,
-                chatId: chatId,
-            });
-        } catch (e) {
-            console.warn('[bot] Could not record pair owner:', e.message);
-        }
-
-        if (typeof hasPairedSession === 'function' && hasPairedSession(jid)) {
-            const live = typeof isSessionLive === 'function' ? isSessionLive(jid) : true;
-            if (!live && typeof unpairSession === 'function') {
-                try { unpairSession(jid); } catch {}
-                await sendSafePhoto(chatId, IMAGES.error, {
-                    caption: `🧹 *OLD SESSION CLEARED*\n\n📱 Number: ${senderNumber}\nGenerating a fresh pairing code now...`,
-                    parse_mode: 'Markdown'
-                });
-            } else {
-                return sendSafePhoto(chatId, IMAGES.success, {
-                    caption: `✅ *ALREADY PAIRED*\n\n📱 Number: ${senderNumber}`,
-                    parse_mode: 'Markdown'
-                });
-            }
-        }
-        const pairingFile = path.join(__dirname, 'nexstore', 'pairing', 'pairing.json');
-        await fs.unlink(pairingFile).catch(() => {});
-        
-        await startpairing(jid, { mode: 'qr' });
-
-        const cuObj = await waitForPairingResult(jid, 120000, 'qr');
-
-        const qrImage = await QRCode.toBuffer(cuObj.qr, {
-            type: 'png', width: 640, margin: 2, errorCorrectionLevel: 'M'
-        });
-        sendSafePhoto(chatId, qrImage, {
-            caption: `📷 *SCAN TO PAIR*\n\n📱 Number: ${senderNumber}\n\nOpen WhatsApp → Settings → Linked Devices → Link a Device → scan this QR code.\n\n⚠️ This QR expires shortly. Send /pair again if needed.`,
-            parse_mode: 'Markdown'
-        });
-
+        return sendPairMethodChoice(msg, senderNumber);
     } catch (error) {
-        logSafeError(chalk.red('Pair error:'), error);
-        sendSafePhoto(chatId, IMAGES.error, {
+        return sendSafePhoto(msg.chat.id, IMAGES.error, {
             caption: `❌ *FAILED*\n\n${safeErrorMessage(error) || 'Please try again'}`,
             parse_mode: 'Markdown'
         });
@@ -1639,6 +1659,40 @@ bot.on('callback_query', async (callbackQuery) => {
     const chatId = msg.chat.id;
     
     await trackUser(userId);
+
+    // ── Pairing method choice: pairmethod|<number>|<telegramUser>|<mode> ──
+    if (data && data.startsWith('pairmethod|')) {
+        const [, number, requestedBy, mode] = data.split('|');
+        if (!/^\d{7,15}$/.test(String(number || '')) || !['qr', 'code'].includes(mode)) {
+            return bot.answerCallbackQuery(callbackQuery.id, {
+                text: 'This pairing button is invalid or expired.',
+                show_alert: true
+            });
+        }
+        if (String(requestedBy) !== String(userId)) {
+            return bot.answerCallbackQuery(callbackQuery.id, {
+                text: 'This pairing choice belongs to the person who requested it.',
+                show_alert: true
+            });
+        }
+
+        await bot.answerCallbackQuery(callbackQuery.id, {
+            text: mode === 'qr' ? 'Starting QR pairing…' : 'Generating pairing code…'
+        }).catch(() => {});
+
+        // Re-check membership at the moment the handshake starts, not only
+        // when /pair was sent. This also prevents a stale button being used
+        // after access was revoked.
+        const membership = await checkMembership(userId);
+        if (!membership.hasJoinedAll && !adminIDs.includes(String(userId))) {
+            return sendJoinRequirement(chatId, membership.missing);
+        }
+
+        return runTelegramPair({
+            chat: msg.chat,
+            from: callbackQuery.from,
+        }, number, mode);
+    }
 
     // ── Bot selection: bsel|<number>|<botId> ─────────────────────────────
     if (data && data.startsWith('bsel|')) {

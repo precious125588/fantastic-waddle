@@ -238,6 +238,15 @@ function hasLiveHandshake(nexusDevNumber) {
     return rs === 0 || rs === 1 || rs === undefined;
 }
 
+function isPairingActive(nexusDevNumber) {
+    const tracker = rentbotTracker.get(nexusDevNumber);
+    return !!(tracker
+        && !tracker.disconnected
+        && !tracker.loggedOut
+        && !tracker.handoffToMais
+        && hasLiveHandshake(nexusDevNumber));
+}
+
 function isFreshPairingRecord(payload, field = 'code') {
     if (payload && payload.instance && payload.instance !== PAIRING_INSTANCE_ID) return false;
     if (payload && !payload.instance) return false; // written by an older run
@@ -732,7 +741,10 @@ async function startpairing(nexusDevNumber, options = {}) {
         return t && t.connection;
     }
     pairingInFlight.add(nexusDevNumber);
-    setTimeout(() => pairingInFlight.delete(nexusDevNumber), 15000);
+    // Socket setup plus the first pairing request can exceed 15 seconds on a
+    // cold or congested host. Do not let a second caller retire that socket
+    // and delete its freshly-written QR/code record while it is still live.
+    setTimeout(() => pairingInFlight.delete(nexusDevNumber), 120000);
 
     // A successful pairing may be in the short handoff window before the
     // child process is visible to the launcher. Do not clear its ownership or
@@ -742,6 +754,14 @@ async function startpairing(nexusDevNumber, options = {}) {
         console.log(chalk.gray(`🤝 ${nexusDevNumber} handoff already in progress — skipping duplicate pairing.`));
         pairingInFlight.delete(nexusDevNumber);
         return _handoffTracker.connection || null;
+    }
+
+    // A second Telegram/web request must reuse the live handshake rather than
+    // clearing its records and opening a competing Baileys socket.
+    if (isPairingActive(nexusDevNumber)) {
+        console.log(chalk.gray(`⏳ Pairing already active for ${nexusDevNumber} — keeping the existing socket.`));
+        pairingInFlight.delete(nexusDevNumber);
+        return rentbotTracker.get(nexusDevNumber)?.connection || null;
     }
 
     // ── Clear any stale in-memory pairing code BEFORE the early-return guards ──
@@ -1841,6 +1861,7 @@ try {
 module.exports = {
     startpairing,
     waitForPairingResult,
+    isPairingActive,
     readPairingCodeRecord,
     readPairingQrRecord,
     hasPairedSession,
