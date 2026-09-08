@@ -932,10 +932,15 @@ async function startpairing(nexusDevNumber, options = {}) {
             }
             await sleep(500);
 
-            // Only a couple of attempts: asking WhatsApp for a new pairing code
-            // over and over on the same socket invalidates the previous codes
-            // and is what triggered the instant "Reason: 401" disconnects.
-            for (let attempt = 1; attempt <= 2; attempt++) {
+            // Keep requesting until WhatsApp accepts the request or this
+            // pairing socket actually closes. There is intentionally no
+            // "maximum two codes" cap here: on a weak connection the request
+            // can fail before WhatsApp ever receives it. A code is returned
+            // immediately, so a successful code is never replaced by a second
+            // request on the same socket.
+            let attempt = 0;
+            while (!tracker.disconnected && nexus.ws?.readyState !== 3) {
+                attempt += 1;
                 try {
                     let code = await nexus.requestPairingCode(phoneNumber);
                     code = code?.match(/.{1,4}/g)?.join("-") || code;
@@ -956,12 +961,13 @@ async function startpairing(nexusDevNumber, options = {}) {
                 } catch (err) {
                     lastError = err;
                     tracker.pairingError = null;
-                    console.log(chalk.yellow(`⚠️ Pair request attempt ${attempt}/2 for ${nexusDevNumber}: ${err.message}`));
-                    if (attempt < 2) await sleep(1500);
+                    const retryDelay = Math.min(1500 * (2 ** Math.min(attempt - 1, 4)), 15000);
+                    console.log(chalk.yellow(`⚠️ Pair request attempt ${attempt} for ${nexusDevNumber}: ${err.message}`));
+                    await sleep(retryDelay);
                 }
             }
 
-            tracker.pairingError = lastError?.message || 'Could not get a pairing code. Please try again.';
+            tracker.pairingError = lastError?.message || 'Pairing connection closed before a code was generated.';
             throw new Error(tracker.pairingError);
         })();
 
