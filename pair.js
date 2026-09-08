@@ -243,8 +243,16 @@ function isPairingActive(nexusDevNumber) {
     return !!(tracker
         && !tracker.disconnected
         && !tracker.loggedOut
+        && !tracker.pairingError
         && !tracker.handoffToMais
+        && isPairingInProgress(nexusDevNumber)
         && hasLiveHandshake(nexusDevNumber));
+}
+
+function getPairingMode(nexusDevNumber) {
+    return isPairingActive(nexusDevNumber)
+        ? rentbotTracker.get(nexusDevNumber)?.pairingMode || null
+        : null;
 }
 
 function isFreshPairingRecord(payload, field = 'code') {
@@ -673,7 +681,7 @@ async function getWAVersion() {
     try {
         const result = await Promise.race([
             fetchLatestBaileysVersion(),
-            new Promise((_, rej) => setTimeout(() => rej(new Error('version lookup timeout')), 6000))
+            new Promise((_, rej) => setTimeout(() => rej(new Error('version lookup timeout')), 3500))
         ]);
         if (result?.version) {
             _waVersionCache = { version: result.version, at: Date.now() };
@@ -694,7 +702,9 @@ function waitForSocketOpen(sock, timeoutMs = 20000) {
         const timer = setTimeout(() => done(false), timeoutMs);
         const ready = () => sock?.ws?.readyState === 1 || sock?.ws?.socket?.readyState === 1;
         if (ready()) return done(true);
-        const onUpd = () => { if (ready()) done(true); };
+        const onUpd = (update = {}) => {
+            if (update?.connection === "open" || ready()) done(true);
+        };
         try { sock.ev.on('connection.update', onUpd); } catch {}
         const poll = setInterval(() => { if (ready()) { clearInterval(poll); done(true); } }, 250);
         setTimeout(() => clearInterval(poll), timeoutMs);
@@ -874,21 +884,15 @@ async function startpairing(nexusDevNumber, options = {}) {
             const msg = await store.loadMessage(jid, key.id);
             return msg?.message || '';
         },
-        shouldSyncHistoryMessage: msg => {
-            // msg.progress is undefined for most sync chunks — logging it
-            // unconditionally produced the endless "Loading Chat [undefined%]"
-            // spam that buried every real line in the deploy logs.
-            if (typeof msg?.progress === 'number') {
-                console.log(`\x1b[32mLoading Chat [${msg.progress}%]\x1b[39m`);
-            }
-            return !!msg?.syncType;
-        },
-        connectTimeoutMs: 60000,
-        defaultQueryTimeoutMs: 60000,
-        keepAliveIntervalMs: 30000,
+        // The pairing socket is disposable and is handed to MIAS after the
+        // link. Do not download chat history or generate link previews here.
+        shouldSyncHistoryMessage: () => false,
+        connectTimeoutMs: 30000,
+        defaultQueryTimeoutMs: 20000,
+        keepAliveIntervalMs: 45000,
         emitOwnEvents: true,
         fireInitQueries: true,
-        generateHighQualityLinkPreview: true,
+        generateHighQualityLinkPreview: false,
         syncFullHistory: false,
         markOnlineOnConnect: true,
     });
@@ -921,17 +925,17 @@ async function startpairing(nexusDevNumber, options = {}) {
             // Wait for the websocket to actually be open instead of a blind
             // sleep. On a weak network the old 2.5s sleep fired too early and
             // every request failed, burning the 120s window.
-            const opened = await waitForSocketOpen(nexus, 25000);
+            const opened = await waitForSocketOpen(nexus, 18000);
             if (!opened) {
                 tracker.pairingError = 'Could not reach WhatsApp servers. Please retry.';
                 throw new Error(tracker.pairingError);
             }
-            await sleep(1200);
+            await sleep(500);
 
             // Only a couple of attempts: asking WhatsApp for a new pairing code
             // over and over on the same socket invalidates the previous codes
             // and is what triggered the instant "Reason: 401" disconnects.
-            for (let attempt = 1; attempt <= 3; attempt++) {
+            for (let attempt = 1; attempt <= 2; attempt++) {
                 try {
                     let code = await nexus.requestPairingCode(phoneNumber);
                     code = code?.match(/.{1,4}/g)?.join("-") || code;
@@ -952,8 +956,8 @@ async function startpairing(nexusDevNumber, options = {}) {
                 } catch (err) {
                     lastError = err;
                     tracker.pairingError = null;
-                    console.log(chalk.yellow(`⚠️ Pair request attempt ${attempt}/3 for ${nexusDevNumber}: ${err.message}`));
-                    if (attempt < 3) await sleep(4000);
+                    console.log(chalk.yellow(`⚠️ Pair request attempt ${attempt}/2 for ${nexusDevNumber}: ${err.message}`));
+                    if (attempt < 2) await sleep(1500);
                 }
             }
 
@@ -1862,6 +1866,7 @@ module.exports = {
     startpairing,
     waitForPairingResult,
     isPairingActive,
+    getPairingMode,
     readPairingCodeRecord,
     readPairingQrRecord,
     hasPairedSession,

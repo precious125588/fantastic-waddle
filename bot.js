@@ -1250,15 +1250,22 @@ async function runTelegramPair(msg, senderNumber, mode) {
         const hasPairedSession = pairModule.hasPairedSession;
         const isSessionLive = pairModule.isSessionLive;
         const isPairingActive = pairModule.isPairingActive;
+        const getPairingMode = pairModule.getPairingMode;
         const unpairSession = pairModule.unpairSession || pairModule.forceCleanupSession;
         if (typeof startpairing !== 'function' || typeof waitForPairingResult !== 'function') {
             throw new Error('Pairing module is not loaded correctly');
         }
         if (typeof isPairingActive === 'function' && isPairingActive(jid)) {
-            return sendSafePhoto(chatId, IMAGES.bot, {
-                caption: `⏳ *A pairing session is already active* for \`${senderNumber}\`.\n\nUse the code or QR already issued, or wait for it to expire before starting another one.`,
-                parse_mode: 'Markdown'
-            });
+            const activeMode = typeof getPairingMode === 'function' ? getPairingMode(jid) : null;
+            if (activeMode && activeMode !== mode) {
+                return sendSafePhoto(chatId, IMAGES.bot, {
+                    caption: `⏳ *A ${activeMode === 'qr' ? 'QR' : 'pairing-code'} session is already active* for \`${senderNumber}\`.\n\nUse the existing method or wait for it to expire before switching methods.`,
+                    parse_mode: 'Markdown'
+                });
+            }
+            // Reuse the live socket below. This avoids opening a second
+            // connection while still allowing a fresh Telegram tap to receive
+            // the code/QR that is already being generated.
         }
 
         // A handoff-owned session is no longer tracked by pair.js, so
