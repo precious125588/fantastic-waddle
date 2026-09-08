@@ -533,6 +533,44 @@ const AUTH_DIR = process.env.AUTH_DIR
   : path.join(__dirname, "prezzy_auth");
 console.log(`[MAIS MDX] AUTH_DIR = ${AUTH_DIR}`);
 
+function cleanupLoggedOutRecords(numberOrJid) {
+  const raw = String(numberOrJid || path.basename(AUTH_DIR) || "");
+  const number = raw.split("@")[0].replace(/[^0-9]/g, "");
+  if (!number) return;
+  const jid = `${number}@s.whatsapp.net`;
+
+  // Remove every durable record that could make the server think this dead
+  // identity is still paired or selected for a bot.
+  try {
+    const registry = require("../nexstore/sessionRegistry");
+    registry.unregister(jid);
+    registry.unregister(number);
+    registry.flush?.();
+  } catch {}
+  try {
+    const selections = require("../deploy/botSelectionStore");
+    selections.clearSelection(number);
+    selections.clearPending(number);
+    selections.clearOwner?.(number);
+  } catch {}
+
+  // Keep the web pairing log truthful as well. This is deliberately
+  // best-effort: a failed bookkeeping write must never prevent the auth wipe.
+  try {
+    const pairFile = path.join(__dirname, "..", "nexstore", "web_pairs.json");
+    if (fs.existsSync(pairFile)) {
+      const rows = JSON.parse(fs.readFileSync(pairFile, "utf8"));
+      if (Array.isArray(rows)) {
+        const filtered = rows.filter((row) => {
+          const key = String(row?.number || row?.jid || "").split("@")[0].replace(/[^0-9]/g, "");
+          return key !== number;
+        });
+        fs.writeFileSync(pairFile, JSON.stringify(filtered, null, 2), "utf8");
+      }
+    }
+  } catch {}
+}
+
 const MAX_RUNTIME_LOGS = Math.max(100, parseInt(process.env.MAX_RUNTIME_LOGS || "400", 10) || 400);
 const runtimeLogs = [];
 const originalConsole = {
@@ -1931,28 +1969,24 @@ async function connectToWA(force = false) {
         console.log(`❌ Connection closed (code=${code}, msg=${errMsg || "n/a"}).`);
         cleanupSocket(sock);
 
-        // ─── v4.9.1 SESSION SAFETY NET ─────────────────────────────────
-        // If we've been connected for less than 60s AND the freshly-paired
-        // creds.json is younger than 5 minutes, treat the very first
-        // "loggedOut" as TRANSIENT — don't wipe. The pairing server in
-        // older versions (≤ v2.0.1) called sock.logout() after delivering
-        // the SESSION_ID, which made WhatsApp say "loggedOut" within 1-2
-        // seconds of the bot's first connect even though the device was
-        // still effectively linked. Wiping in that window forced an
-        // infinite re-pair loop. Now we tolerate the first such kick and
-        // simply reconnect — Baileys will replay handshake and recover.
+        // ─── CONFIRMED LOGOUT POLICY ────────────────────────────────────
+        // A real loggedOut/401 event is terminal: keep no dead credentials
+        // around and never let the launcher revive the same invalid session.
+        // The only exception is the short pairing handoff window, where the
+        // first 401 can be the old pairing socket being replaced.
         const isLoggedOut = (code === DisconnectReason.loggedOut || code === 401);
-        let credsAgeMs = Infinity;
+        let handoffSettling = false;
         try {
-          const credsPath = path.join(AUTH_DIR, "creds.json");
-          if (fs.existsSync(credsPath)) credsAgeMs = Date.now() - fs.statSync(credsPath).mtimeMs;
+          const ownerPath = path.join(AUTH_DIR, ".owner.json");
+          if (code === 401 && fs.existsSync(ownerPath)) {
+            const owner = JSON.parse(fs.readFileSync(ownerPath, "utf8")) || {};
+            const handedOffAt = owner.handedOffAt || owner.at || 0;
+            handoffSettling = owner.owner === "bot" &&
+              Date.now() - handedOffAt < 90 * 1000;
+          }
         } catch {}
-        const credsFresh = credsAgeMs < 30 * 60 * 1000; // <30 min old (tolerate reconnect after longer gaps)
-        const earlyKick  = !botConnected && reconnectAttempts < 3 && credsFresh;
-        // (botConnected was just flipped to false above; this captures
-        //  "we never had a stable session this run".)
 
-        if (isLoggedOut && !earlyKick) {
+        if (isLoggedOut && !handoffSettling) {
           clearReconnectTimer();
           console.log("🚪 Logged out — clearing session. Set a new SESSION_ID and restart.");
           // ── Notify via Telegram logout request file ─────────────────────
@@ -1970,30 +2004,16 @@ async function connectToWA(force = false) {
               authDir: AUTH_DIR,
             }));
           } catch {}
-          // __MAIS_GUARDED_SESSION_WIPE__ — do not wipe a session the pairing handoff is still settling.
-          let __MAIS_GUARDED_SESSION_WIPE___allowed = true;
-          try {
-            const _ownerPath = path.join(AUTH_DIR, '.owner.json');
-            if (fs.existsSync(_ownerPath)) {
-              const _own = JSON.parse(fs.readFileSync(_ownerPath, 'utf8')) || {};
-              const _handedOffAt = _own.handedOffAt || _own.at || 0;
-              // 90s settle window: the kick we get in here is the pairing
-              // socket being replaced by this very process, not a logout.
-              if (Date.now() - _handedOffAt < 90 * 1000) __MAIS_GUARDED_SESSION_WIPE___allowed = false;
-            }
-          } catch {}
-          if (__MAIS_GUARDED_SESSION_WIPE___allowed) {
-            try { fs.rmSync(AUTH_DIR, { recursive: true, force: true }); } catch {}
-            console.log('🧹 Session credentials removed after a confirmed logout.');
-          } else {
-            console.log('🛡️ Ignoring logout kick: this session was just handed over to me. Reconnecting instead of wiping.');
-            scheduleReconnect('post-handoff-401', 8000);
-            return;
-          }
+          cleanupLoggedOutRecords(sock?.user?.id || path.basename(AUTH_DIR));
+          // __MAIS_TERMINAL_LOGOUT_WIPE__ — handoff was handled above.
+          try { fs.rmSync(AUTH_DIR, { recursive: true, force: true }); } catch {}
+          console.log('🧹 Session credentials removed after a confirmed logout.');
           return;
         }
-        if (isLoggedOut && earlyKick) {
-          console.log(`⚠️  Got loggedOut but creds are ${Math.round(credsAgeMs/1000)}s old & this is attempt ${reconnectAttempts+1}. Tolerating as transient post-pair kick — reconnecting WITHOUT wiping.`);
+        if (isLoggedOut && handoffSettling) {
+          console.log('🛡️ Ignoring expected handoff 401; reconnecting without wiping the new session.');
+          scheduleReconnect('post-handoff-401', 8000);
+          return;
         }
 
         if (code === DisconnectReason.restartRequired) reconnectAttempts = 0;
