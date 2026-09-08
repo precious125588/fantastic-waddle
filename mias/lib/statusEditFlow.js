@@ -450,7 +450,11 @@ async function trimVideo(buffer) {
   const input = path.join(dir, "input.bin");
   const output = path.join(dir, "output.mp4");
   try {
-    const ffmpeg = require("ffmpeg-static");
+    let ffmpeg = process.env.FFMPEG_PATH || "ffmpeg";
+    try {
+      const bundled = require("ffmpeg-static");
+      if (bundled && fs.existsSync(bundled)) ffmpeg = bundled;
+    } catch {}
     await fs.promises.writeFile(input, buffer);
     await execFileAsync(ffmpeg, [
       "-hide_banner", "-loglevel", "error", "-y", "-i", input,
