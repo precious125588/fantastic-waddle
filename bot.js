@@ -8,8 +8,9 @@ const chalk = require('chalk');
 const os = require('os');
 const QRCode = require('qrcode');
 const { httpClient: axios } = require('./mias/lib/engineAccess.cjs');
-const { BOT_TOKEN } = require('./nexstore/token');
+const { getBotToken } = require('./nexstore/token');
 const { autoLoadPairs } = require('./autoload');
+const BOT_TOKEN = getBotToken();
 
 // Initialize bot — guard against missing token to prevent EFATAL spam
 if (!BOT_TOKEN || BOT_TOKEN.trim() === '') {
@@ -19,6 +20,13 @@ if (!BOT_TOKEN || BOT_TOKEN.trim() === '') {
   // Exit gracefully so the WhatsApp bot (index.js) keeps running
   process.exit(0);
 }
+
+global._telegramBotState = {
+  configured: true,
+  polling: false,
+  lastError: null,
+  startedAt: Date.now(),
+};
 // ── SINGLE-POLLER GUARD (fixes Telegram 409 Conflict) ────────────────────────
 // Telegram allows exactly ONE getUpdates poller per bot token. A 409
 // "terminated by other getUpdates request" happened because:
@@ -59,8 +67,12 @@ function logSafeError(label, err) {
   try { await bot.deleteWebHook({ drop_pending_updates: true }); } catch {}
   try {
     await bot.startPolling();
+    global._telegramBotState.polling = true;
+    global._telegramBotState.lastError = null;
     console.log(chalk.green('✅ [Telegram] Polling started.'));
   } catch (e) {
+    global._telegramBotState.polling = false;
+    global._telegramBotState.lastError = safeErrorMessage(e);
     logSafeError(chalk.red('[Telegram] Could not start polling:'), e);
   }
 })();
@@ -85,6 +97,7 @@ bot.on('polling_error', (err) => {
   if (err.code === 'EFATAL' || (err.message && err.message.includes('EFATAL'))) return;
 
   const msg = safeErrorMessage(err);
+  if (global._telegramBotState) global._telegramBotState.lastError = msg;
 
   // 409 Conflict — another poller holds the token (usually the old Railway
   // container during a rolling redeploy). Back off and let it die, then
@@ -99,6 +112,7 @@ bot.on('polling_error', (err) => {
       console.error(chalk.red('❌ [Telegram] Still conflicting after 20 tries — stopping poller.'));
       console.error(chalk.red('    Make sure only ONE deployment/instance uses this bot token.'));
       try { bot.stopPolling(); } catch {}
+      if (global._telegramBotState) global._telegramBotState.polling = false;
       return;
     }
     try { bot.stopPolling({ cancel: true }); } catch {}
@@ -120,6 +134,7 @@ bot.on('polling_error', (err) => {
       console.warn(chalk.yellow('    Fix: update TELEGRAM_BOT_TOKEN in Railway Variables.'));
       console.warn(chalk.yellow('    Web pairing still works fine without Telegram.'));
       try { bot.stopPolling(); } catch {}
+      if (global._telegramBotState) global._telegramBotState.polling = false;
     }
     return;
   }
@@ -1930,33 +1945,6 @@ bot.on('message', async (msg) => {
 (function _logoutNotificationConsumer() {
   const NOTIF_DIR = path.join(__dirname, 'nexstore', 'logout_notifications');
   try { fsSync.mkdirSync(NOTIF_DIR, { recursive: true }); } catch {}
-  const _pending = new Map(); // number → chatId awaiting reply
-
-  // Track which admins have pending logout-keep-or-delete choices
-  bot.on('message', async (tgMsg) => {
-    try {
-      const chatId = tgMsg.chat.id;
-      if (!_pending.has(String(chatId))) return;
-      const { number, authDir } = _pending.get(String(chatId));
-      const text = (tgMsg.text || '').trim().toUpperCase();
-      if (text !== '/KEEP' && text !== '/DELETE' &&
-          text !== 'KEEP' && text !== 'DELETE') return;
-
-      _pending.delete(String(chatId));
-      const keepFiles = (text === '/KEEP' || text === 'KEEP');
-
-      if (!keepFiles) {
-        try { if (authDir) fsSync.rmSync(authDir, { recursive: true, force: true }); } catch {}
-        await bot.sendMessage(chatId,
-          `🗑️ Session files for *+${number}* have been deleted.\n\nPair again via web panel or Telegram /pair`,
-          { parse_mode: 'Markdown' });
-      } else {
-        await bot.sendMessage(chatId,
-          `✅ Session files for *+${number}* have been kept.\n\nYou can re-pair anytime via /pair or web panel.`,
-          { parse_mode: 'Markdown' });
-      }
-    } catch {}
-  });
 
   async function _processNotifFile(file) {
     const full = path.join(NOTIF_DIR, file);
@@ -1965,7 +1953,7 @@ bot.on('message', async (msg) => {
     catch { try { fsSync.unlinkSync(full); } catch {} return; }
     try { fsSync.unlinkSync(full); } catch {}
 
-    const { number, name, reason, authDir } = payload || {};
+    const { number, name, reason } = payload || {};
     if (!number || number === 'unknown') return;
 
     // Notify all admins about the logout
@@ -1974,21 +1962,17 @@ bot.on('message', async (msg) => {
 
     for (const chatId of targets) {
       try {
-        const keepCmd  = `/keep_${number}`;
-        const deleteCmd = `/delete_${number}`;
         const msgText =
 `⚠️ *MAIS MDX — Bot Logged Out!*
 
 📱 *Number:* +${number}${name ? '\n👤 *Name:* ' + name : ''}
 💬 *Reason:* ${reason || 'Device removed from WhatsApp'}
 
-What do you want to do with the session files?
+🧹 The WhatsApp session was wiped automatically and will not be restarted.
 
-Type *KEEP* — keep files (re-pair later)
-Type *DELETE* — delete all session files`;
+Pair the number again via the web panel or Telegram /pair.`;
 
         await bot.sendMessage(chatId, msgText, { parse_mode: 'Markdown' });
-        _pending.set(String(chatId), { number, authDir });
       } catch {}
     }
   }

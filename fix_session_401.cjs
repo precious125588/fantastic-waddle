@@ -29,7 +29,7 @@ const path = require('path');
 
 const TARGET    = path.join(__dirname, 'mias', 'index.js');
 const NP_TARGET = path.join(__dirname, 'new-page', 'index.js');
-const MARKER    = '__MAIS_GUARDED_SESSION_WIPE__';
+const MARKER    = '__MAIS_TERMINAL_LOGOUT_WIPE__';
 
 const OLD = 'try { fs.rmSync(AUTH_DIR, { recursive: true, force: true }); } catch {}';
 

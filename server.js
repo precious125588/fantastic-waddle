@@ -16,6 +16,10 @@ const PORT = process.env.PORT || 3000;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'Ajanaku';
 const ADMIN_USERNAME = process.env.ADMIN_USERNAME || 'admin';
 
+function configuredTelegramToken() {
+    return String(process.env.TELEGRAM_BOT_TOKEN || process.env.BOT_TOKEN || '').trim();
+}
+
 function redactSecrets(value = '') {
     let text = String(value);
     for (const secret of [process.env.TELEGRAM_BOT_TOKEN, process.env.BOT_TOKEN]) {
@@ -86,8 +90,13 @@ let pairLog  = readJson(PAIR_FILE,  []);
 
 const ADMIN_SETTINGS_FILE = path.join(NEXSTORE, 'admin_settings.json');
 let adminSettings = readJson(ADMIN_SETTINGS_FILE, {});
-// Apply persisted bot token over env at startup
-if (adminSettings.telegramBotToken) process.env.TELEGRAM_BOT_TOKEN = adminSettings.telegramBotToken;
+// Railway/.env is the source of truth when it is configured. Only fall back
+// to the admin-panel value when no environment token exists; a stale token
+// persisted on the volume must never silently override a repaired Railway
+// variable.
+if (!configuredTelegramToken() && adminSettings.telegramBotToken) {
+    process.env.TELEGRAM_BOT_TOKEN = String(adminSettings.telegramBotToken).trim();
+}
 
 function logError(number, message, type='pairing') {
     errorLog.unshift({number,message,type,timestamp:new Date().toISOString()});
@@ -646,9 +655,18 @@ app.get('/api/admin/backup', (req,res) => {
 // ── Admin: settings (bot token, etc.) ────────────────────────────────────────
 app.get('/api/admin/settings', (req, res) => {
     if (!isAdmin(req)) return res.status(403).json({ok:false,error:'Unauthorized'});
-    const tok = process.env.TELEGRAM_BOT_TOKEN || '';
+    const tok = configuredTelegramToken();
     const masked = tok.length > 8 ? tok.slice(0,6) + '…' + tok.slice(-4) : tok ? '••••••••' : '';
-    res.json({ok:true, telegramBotToken: masked, hasTelegramBot: !!tok, botActive: !!global._telegramBotLoaded});
+    const tg = global._telegramBotState || {};
+    res.json({
+        ok:true,
+        telegramBotToken: masked,
+        hasTelegramBot: !!tok,
+        botActive: tg.polling === true,
+        botConfigured: tg.configured === true,
+        botError: tg.lastError || null,
+        tokenSource: process.env.TELEGRAM_BOT_TOKEN ? 'environment' : (process.env.BOT_TOKEN ? 'environment-alias' : 'admin-settings')
+    });
 });
 
 app.post('/api/admin/settings/bot-token', async (req, res) => {
@@ -668,8 +686,10 @@ app.post('/api/admin/settings/bot-token', async (req, res) => {
             try { global._miasTelegramBot.stopPolling({ cancel: true }); } catch {}
             global._miasTelegramBot = null;
         }
+        try { delete require.cache[require.resolve('./nexstore/token')]; } catch {}
         try { delete require.cache[require.resolve('./bot')]; } catch {}
         global._telegramBotLoaded = false;
+        global._telegramBotState = null;
         require('./bot');
         global._telegramBotLoaded = true;
         logger.log('admin', 'Telegram bot token updated and polling restarted');
@@ -692,7 +712,9 @@ app.delete('/api/admin/settings/bot-token', (req, res) => {
         global._miasTelegramBot = null;
     }
     try { delete require.cache[require.resolve('./bot')]; } catch {}
+    try { delete require.cache[require.resolve('./nexstore/token')]; } catch {}
     global._telegramBotLoaded = false;
+    global._telegramBotState = null;
     logger.log('admin', 'Telegram bot token removed');
     res.json({ok:true, message:'Token removed. Telegram bot stopped.'});
 });
@@ -718,7 +740,13 @@ const httpServer = app.listen(PORT, '0.0.0.0', () => {
         console.log('✅ Server READY\n');
         setTimeout(()=>{
             try {
-                if(process.env.TELEGRAM_BOT_TOKEN){require('./bot');global._telegramBotLoaded=true;logger.log('system','Telegram bot loaded');}
+                if(configuredTelegramToken()){
+                    require('./bot');
+                    global._telegramBotLoaded=true;
+                    logger.log('system','Telegram bot loaded from environment/persisted settings');
+                } else {
+                    logger.warn('system','Telegram bot not loaded: TELEGRAM_BOT_TOKEN/BOT_TOKEN is missing');
+                }
             } catch(e){logger.error('system','Telegram bot error: '+e.message);}
         },3000);
         setTimeout(()=>_autoLoadPairs(),6000);

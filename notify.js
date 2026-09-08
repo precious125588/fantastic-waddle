@@ -1,7 +1,7 @@
 // notify.js
 const fs = require('fs');
 const TelegramBot = require('node-telegram-bot-api');
-const { BOT_TOKEN } = require('./nexstore/token');
+const { getBotToken } = require('./nexstore/token');
 
 const adminFilePath = './nexstore/admin.json';
 
@@ -29,7 +29,12 @@ async function sendNotification(message, parseMode = 'Markdown') {
     }
 
     try {
-        const bot = new TelegramBot(BOT_TOKEN, { polling: false });
+        const botToken = getBotToken();
+        if (!botToken) {
+            console.warn('Telegram token is not configured; notification skipped.');
+            return;
+        }
+        const bot = new TelegramBot(botToken, { polling: false });
         for (const adminId of adminIDs) {
             try {
                 await bot.sendMessage(adminId, message, { parse_mode: parseMode });
@@ -218,7 +223,12 @@ You can also send /number any time.
 
     // Reuse the already-polling bot when it exists so we do not open a second
     // Telegram client for a single send.
-    const client = global._miasTelegramBot || new TelegramBot(BOT_TOKEN, { polling: false });
+    const botToken = getBotToken();
+    if (!botToken) {
+        console.warn('Telegram token is not configured; selection notification skipped.');
+        return;
+    }
+    const client = global._miasTelegramBot || new TelegramBot(botToken, { polling: false });
 
     for (const chatId of targets) {
         try {
