@@ -115,6 +115,14 @@ async function _launch(number, sessionDir, envOverrides = {}) {
             return;
         }
 
+        // A second MIAS child refused to open the same auth directory because
+        // another live process owns its runtime lock. Restarting it would
+        // recreate the exact connection-conflict loop we are preventing.
+        if (code === 78) {
+            console.log(chalk.gray(`${tag} duplicate runtime refused — leaving the existing session owner alone.`));
+            return;
+        }
+
         // Skip auto-restart if intentionally paused or clean stop
         if (paused.has(number)) {
             console.log(chalk.gray(`⏸ ${tag} is paused — no auto-restart.`));
