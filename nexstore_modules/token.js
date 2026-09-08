@@ -1,10 +1,18 @@
-// Bot token and startup config — loaded from .env
+// Keep the source copy in sync with nexstore/token.js. fix_all.cjs restores
+// this file into the persistent nexstore volume on every boot.
 require('dotenv').config();
 
-const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || process.env.BOT_TOKEN || '';
-const startupPassword = process.env.STARTUP_PASSWORD || 'mais';
+function getBotToken() {
+  return String(process.env.TELEGRAM_BOT_TOKEN || process.env.BOT_TOKEN || '').trim();
+}
 
-// Don't crash — WhatsApp bot works without Telegram token
-// Telegram pair-bot will simply stay offline if not configured
+function getStartupPassword() {
+  return process.env.STARTUP_PASSWORD || 'mais';
+}
 
-module.exports = { BOT_TOKEN, startupPassword };
+module.exports = {
+  getBotToken,
+  getStartupPassword,
+  get BOT_TOKEN() { return getBotToken(); },
+  get startupPassword() { return getStartupPassword(); },
+};
