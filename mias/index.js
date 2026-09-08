@@ -63,7 +63,6 @@ import {
 } from "./features/tiktok.js";
 import { createStatusEditFlow } from "./lib/statusEditFlow.js";
 import { createAnimeEditFlow } from "./features/animeEdits.js";
-import { prepareHdImage, HD_IMAGE_WIDTH } from "./lib/hdImage.js";
 import { normalizeInviteCode, approvalPrompt, adminNumberList, parseAdminChoice } from "./features/joinApproval.js";
 // ── BUTTON MODE — wizard & interactive menu (new design) ──────────────────────
 import { handleWizardInput }   from "./handlers/wizardHandler.js";
@@ -472,7 +471,31 @@ function normalizeConfiguredPrefix(value) {
   const raw = String(value ?? "").trim();
   return NO_PREFIX_VALUES.has(raw.toLowerCase()) ? "" : raw;
 }
+function botConfigPath() {
+  const authDir = process.env.AUTH_DIR
+    ? path.resolve(process.env.AUTH_DIR)
+    : path.join(__dirname, "prezzy_auth");
+  return path.join(authDir, "bot-config.json");
+}
+function readBotPrefixOverride() {
+  try {
+    const file = botConfigPath();
+    if (!fs.existsSync(file)) return null;
+    const config = JSON.parse(fs.readFileSync(file, "utf8"));
+    return Object.prototype.hasOwnProperty.call(config, "prefix")
+      ? normalizeConfiguredPrefix(config.prefix)
+      : null;
+  } catch {
+    return null;
+  }
+}
 function parseConfiguredPrefixes() {
+  // PREFIX is a bot setting, not a process-wide setting.  Each paired bot
+  // gets its own AUTH_DIR, so changing one bot cannot change every bot after
+  // a restart.
+  const override = readBotPrefixOverride();
+  if (override !== null) return override ? [override] : [];
+
   const hasPrefixesEnv = Object.prototype.hasOwnProperty.call(process.env, "PREFIXES");
   const hasPrefixEnv = Object.prototype.hasOwnProperty.call(process.env, "PREFIX");
   const raw = hasPrefixesEnv ? process.env.PREFIXES : process.env.PREFIX;
@@ -487,17 +510,20 @@ function parseConfiguredPrefixes() {
     const one = normalizeConfiguredPrefix(process.env.PREFIX);
     return one ? [one] : [];
   }
-  // Keep the historical aliases only when the user did not configure a
-  // prefix. Explicit customization must not silently add / or comma.
-  return [".", "/", ","];
+  // The only default prefix is a dot.  Never accept legacy aliases
+  // automatically: a custom prefix must belong to this bot instance only.
+  return ["."];
 }
+const INITIAL_PREFIX = readBotPrefixOverride();
 
 const CONFIG = {
   SESSION_ID:   process.env.SESSION_ID   || "",
   OWNER_NUMBER: (process.env.OWNER_NUMBER || process.env.OWNER || "").trim(),
   OWNER_JID: (process.env.OWNER_JID || process.env.OWNER_LID || "").trim(),
   BOT_NAME:     process.env.BOT_NAME || "MIAS MDX",
-  PREFIX:       Object.prototype.hasOwnProperty.call(process.env, "PREFIX")
+  PREFIX:       INITIAL_PREFIX !== null
+    ? INITIAL_PREFIX
+    : Object.prototype.hasOwnProperty.call(process.env, "PREFIX")
     ? normalizeConfiguredPrefix(process.env.PREFIX)
     : (Object.prototype.hasOwnProperty.call(process.env, "PREFIXES")
       ? normalizeConfiguredPrefix(String(process.env.PREFIXES).split(/\s*\|\s*|\s*,\s*/)[0])
@@ -5542,6 +5568,18 @@ const react = (sock, msg, emoji) => {
   if (msg.key.participant) _reactKey.participant = msg.key.participant;
   return sock.sendMessage(msg.key.remoteJid, { react: { text: emoji, key: _reactKey } }).catch(() => {});
 };
+// Selection/download feedback must not depend on the owner's autoReact
+// preference.  A TikTok format picker otherwise looks broken: the media may
+// be processing while no progress reaction is shown.
+const forceReaction = (sock, msg, emoji) => {
+  const key = {
+    remoteJid: msg.key.remoteJid,
+    fromMe: msg.key.fromMe ?? false,
+    id: msg.key.id,
+  };
+  if (msg.key.participant) key.participant = msg.key.participant;
+  return sock.sendMessage(msg.key.remoteJid, { react: { text: emoji, key } }).catch(() => {});
+};
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  ERROR NOTIFICATION SYSTEM — auto-DM owner when any command errors
@@ -8040,7 +8078,7 @@ cmd(["forward", "fwd"], { desc: "Forward a quoted message — .forward <number o
   let targetJid = "";
   if (rawTarget) {
     if (rawTarget.includes("@")) {
-      targetJid = resolveLid(rawTarget);
+      targetJid = String(resolveLid(rawTarget)).trim().toLowerCase();
       if (targetJid.endsWith("@lid") && isGroup(msg)) {
         try {
           const meta = await sock.groupMetadata(msg.key.remoteJid);
@@ -8063,7 +8101,20 @@ cmd(["forward", "fwd"], { desc: "Forward a quoted message — .forward <number o
 
   await react(sock, msg, "🌀").catch(() => {});
   const stanzaId = ctx?.stanzaId || `fwd_${Date.now()}`;
-  const targetLabel = targetJid.endsWith("@g.us") ? targetJid : `+${targetJid.split("@")[0]}`;
+  let targetLabel = `+${targetJid.split("@")[0]}`;
+  if (targetJid.endsWith("@g.us")) {
+    try {
+      const targetMeta = await sock.groupMetadata(targetJid);
+      if (targetMeta?.subject?.trim()) targetLabel = targetMeta.subject.trim();
+    } catch (error) {
+      console.log("[forward] group name lookup failed:", error?.message || error);
+    }
+    if (targetLabel.startsWith("+")) targetLabel = "group";
+  } else if (targetJid.endsWith("@s.whatsapp.net")) {
+    try {
+      targetLabel = await getDisplayName(sock, targetJid, isGroup(msg) ? msg.key.remoteJid : "");
+    } catch {}
+  }
   const confirmForward = async () => {
     await react(sock, msg, "✅").catch(() => {});
     await sendReply(sock, msg, `✅ Forwarded to ${targetLabel}`);
@@ -10394,7 +10445,9 @@ cmd("google", { desc: "Google search", category: "SEARCH" }, async (sock, msg, a
     await editMessage(sock, jid, srchKey, `🔍 *Search: ${q}*\n\n🔗 https://www.google.com/search?q=${encodeURIComponent(q)}`);
   }
 });
-cmd("img", { desc: "Image search", category: "SEARCH" }, async (sock, msg, args) => {
+// Legacy .img implementation disabled; .img is registered below as the same
+// Pinterest-only handler as .image.
+cmd("__legacy_img_disabled__", { desc: "Disabled legacy image search", category: "SEARCH" }, async (sock, msg, args) => {
   if (!args.length) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}img <query>`); return; }
   const q = args.join(" ");
   const jid = msg.key.remoteJid;
@@ -10468,7 +10521,7 @@ cmd("img", { desc: "Image search", category: "SEARCH" }, async (sock, msg, args)
 });
 
 // .image — David Cyril HD image search (five results)
-cmd("image", { desc: "Send five HD images from David Cyril — .image <query>", category: "SEARCH" }, async (sock, msg, args) => {
+cmd(["image", "img"], { desc: "Send up to five Pinterest images — .image <query>", category: "SEARCH" }, async (sock, msg, args) => {
   if (!args.length) {
     await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}image <query>\nExample: ${CONFIG.PREFIX}image Itachi`);
     return;
@@ -10478,79 +10531,86 @@ cmd("image", { desc: "Send five HD images from David Cyril — .image <query>", 
   const jid = msg.key.remoteJid;
   await react(sock, msg, "🖼️");
 
-  const imageUrls = [];
-  const addUrl = (value) => {
-    if (typeof value !== "string" || !/^https?:\/\//i.test(value)) return;
-    if (!imageUrls.includes(value)) imageUrls.push(value);
+  // Image search is intentionally Pinterest-only.  Do not fall back to
+  // wallpaper sites, Google, Wikipedia, or generated images: those providers
+  // were the reason this command returned unrelated sources.
+  const pins = [];
+  const seen = new Set();
+  const addPin = (item) => {
+    const image = typeof item === "string"
+      ? item
+      : item?.image || item?.image_url || item?.images_url || item?.url || "";
+    const source = typeof item === "object"
+      ? item?.source || item?.link || ""
+      : "";
+    if (!/^https?:\/\/(?:[^/]+\.)?pinimg\.com\//i.test(String(image))) return;
+    if (seen.has(image)) return;
+    seen.add(image);
+    pins.push({
+      image,
+      source: /^https?:\/\/(?:www\.)?pinterest\./i.test(String(source)) ? source : "",
+      caption: typeof item === "object" ? String(item?.caption || item?.title || "").trim() : "",
+    });
   };
   const addItems = (value) => {
     const items = Array.isArray(value)
       ? value
       : value && typeof value === "object"
-        ? (value.result || value.results || value.images || value.items || [])
+        ? (value.result || value.results || value.data || value.items || [])
         : [];
     for (const item of items) {
-      addUrl(typeof item === "string" ? item : item?.image || item?.url || item?.link);
-      if (imageUrls.length >= 10) break;
+      addPin(item);
+      if (pins.length >= 5) break;
     }
   };
 
-  // David Cyril's live endpoint uses `text` and returns result[].image.
   try {
-    const dc = await dcGet("/search/wallpaper", { text: query }, 30000);
-    addItems(dc.data?.result || dc.data?.data?.result || dc.data?.data || dc.data);
-  } catch {}
-
-  // Keep the command useful if David Cyril temporarily returns fewer results.
-  if (imageUrls.length < 5) {
-    try {
-      const fallback = await prexzyGet("/search/wallpaper", { query }, 20000);
-      addItems(fallback.data?.result || fallback.data?.data?.result || fallback.data?.data || fallback.data);
-    } catch {}
+    const dc = await dcGet("/search/pinterest", { text: query }, 30000);
+    addItems(dc.data?.result || dc.data?.results || dc.data?.data || dc.data);
+  } catch (error) {
+    console.error("[image/pinterest-search]", error?.message || error);
   }
 
-  // Download candidates concurrently. The old serial loop waited up to 30s
-  // for every dead URL, which looked like the command had frozen after the
-  // "found 5" progress message on slow connections.
-  const downloaded = await Promise.allSettled(imageUrls.map(async (url) => {
-    const response = await axios.get(url, {
+  const downloaded = await Promise.allSettled(pins.map(async (pin) => {
+    const response = await axios.get(pin.image, {
       responseType: "arraybuffer",
       timeout: 30000,
-      maxContentLength: 25 * 1024 * 1024,
+      maxContentLength: 20 * 1024 * 1024,
       maxRedirects: 5,
       headers: {
-        "User-Agent": "Mozilla/5.0 (WhatsApp/2.24; +MAIS)",
-        Referer: "https://www.bhdw.net/",
+        "User-Agent": "Mozilla/5.0 (WhatsApp; Pinterest image search)",
+        Referer: "https://www.pinterest.com/",
+        Accept: "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
       },
     });
     const buffer = Buffer.from(response.data || []);
-    const contentType = String(response.headers?.["content-type"] || "");
-    if (buffer.length <= 500 || (contentType && !contentType.startsWith("image/"))) {
-      throw new Error("response was not an image");
+    const contentType = String(response.headers?.["content-type"] || "").toLowerCase();
+    if (buffer.length < 1000 || (contentType && !contentType.startsWith("image/"))) {
+      throw new Error("Pinterest CDN did not return an image");
     }
-    const hd = await prepareHdImage(buffer);
-    return { ...hd, url };
+    return { ...pin, buffer };
   }));
+
   const images = downloaded
-    .filter((entry) => entry.status === "fulfilled" && entry.value?.width >= HD_IMAGE_WIDTH)
-    .map((entry) => entry.value)
+    .filter((result) => result.status === "fulfilled" && result.value?.buffer)
+    .map((result) => result.value)
     .slice(0, 5);
 
   if (!images.length) {
     await react(sock, msg, "❌");
+    await sendReply(sock, msg, `❌ No Pinterest images were available for *${query}*.`);
     return;
   }
 
   for (let index = 0; index < images.length; index += 1) {
-    await sock.sendMessage(
-      jid,
-      {
-        image: images[index].buffer,
-      },
-      { quoted: msg },
-    );
+    const item = images[index];
+    const caption = [
+      `📌 *Pinterest* (${index + 1}/${images.length})`,
+      item.caption ? `\n${item.caption.slice(0, 160)}` : "",
+    ].join("");
+    await sock.sendMessage(jid, { image: item.buffer, caption }, { quoted: msg });
   }
-  await react(sock, msg, "");
+  await react(sock, msg, "✅");
 });
 
 cmd("status", { desc: "Create short status edits with a guided picker", category: "MEDIA" }, async (sock, msg) => {
@@ -15566,20 +15626,27 @@ cmd(["setprefix", "prefix"], { desc: "Change bot prefix — use 'null' or 'none'
   const _requestedPrefix = String(args[0]).trim();
   CONFIG.PREFIX = normalizeConfiguredPrefix(_requestedPrefix);
   CONFIG.PREFIXES = CONFIG.PREFIX ? [CONFIG.PREFIX] : [];
+  process.env.PREFIX = CONFIG.PREFIX;
+  process.env.PREFIXES = CONFIG.PREFIX;
   const _pfxDisplay = CONFIG.PREFIX || "(none — commands work without any prefix)";
-  // Persist both variables so an older PREFIXES entry cannot override the
-  // newly selected prefix after restart. Empty PREFIX/PREFIXES means no-prefix.
+  // Persist inside this bot's AUTH_DIR.  Writing mias/.env made one bot's
+  // setting leak into every paired bot and was lost when the launcher supplied
+  // the root environment again.
   try {
-    const _pfxEnvPath = path.join(__dirname, ".env");
-    let _pfxEnvTxt = fs.existsSync(_pfxEnvPath) ? fs.readFileSync(_pfxEnvPath, "utf8") : "";
-    const _pfxLines = [`PREFIX=${CONFIG.PREFIX}`, `PREFIXES=${CONFIG.PREFIX}`];
-    for (const _line of _pfxLines) {
-      const _key = _line.split("=")[0];
-      const _re = new RegExp(`^${_key}=.*$`, "m");
-      _pfxEnvTxt = _re.test(_pfxEnvTxt) ? _pfxEnvTxt.replace(_re, _line) : `${_pfxEnvTxt.replace(/\s*$/, "")}\n${_line}\n`;
-    }
-    fs.writeFileSync(_pfxEnvPath, _pfxEnvTxt, "utf8");
-  } catch {}
+    const _pfxPath = botConfigPath();
+    fs.mkdirSync(path.dirname(_pfxPath), { recursive: true });
+    let _botConfig = {};
+    try {
+      if (fs.existsSync(_pfxPath)) {
+        const parsed = JSON.parse(fs.readFileSync(_pfxPath, "utf8"));
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) _botConfig = parsed;
+      }
+    } catch {}
+    _botConfig.prefix = CONFIG.PREFIX;
+    fs.writeFileSync(_pfxPath, `${JSON.stringify(_botConfig, null, 2)}\n`, "utf8");
+  } catch (error) {
+    console.error("[setprefix] failed to persist bot prefix:", error?.message || error);
+  }
   await sendReply(sock, msg, `✅ Prefix changed to: *${_pfxDisplay}*\n\n${CONFIG.PREFIX ? `Use: ${CONFIG.PREFIX}menu` : "Commands now work without a prefix, e.g. menu or ping."}`);
 });
   cmd("broadcast", { desc: "Broadcast message to all groups + DMs — .broadcast <msg>", ownerOnly: true, category: "OWNER" }, async (sock, msg, args) => {
@@ -17287,7 +17354,7 @@ cmd(["tiktok","tt","ttdl"], { desc: "Download TikTok video/audio — supports: .
     if (!isAudio && !args[1]) {
       try {
         const info = await fetchTikTokInfo(url);
-        __ttSelections.set(jid, { info, ts: Date.now(), sourceMessage: msg });
+        __ttSelections.set(jid, { info, url, ts: Date.now(), sourceMessage: msg });
         const menuCaption = formatTikTokMenu(info, CONFIG.PREFIX);
         // Show the TikTok cover together with the caption/menu so the
         // numbered choices are tied to the actual post the user sent.
@@ -20724,7 +20791,38 @@ function __miasHasPendingPicker(jid) {
 // Normalises what the user actually typed into a menu choice:
 // "*1.3*", "1 3", "1,3", "1-3", "hd", "audio", "voice note" -> "1.3" / "2.1" ...
 function __miasNormalizeChoice(raw) {
-  let v = String(raw || "")
+  let source = String(raw || "").trim();
+  // Native-flow replies are sometimes delivered as paramsJson instead of a
+  // plain selected id.  Pull the actual choice out before normalising it so
+  // a WhatsApp button reply cannot be mistaken for an ordinary message.
+  if (/^[\[{]/.test(source)) {
+    try {
+      const parsed = JSON.parse(source);
+      const queue = [parsed];
+      const seen = new Set();
+      while (queue.length) {
+        const current = queue.shift();
+        if (!current || (typeof current !== "object" && typeof current !== "string")) continue;
+        if (typeof current === "string") {
+          if (/^(?:[12](?:[.,\- ]\s*[1-7])?|sd|hd|audio|mp3|voice|vn)$/i.test(current.trim())) {
+            source = current.trim();
+            break;
+          }
+          continue;
+        }
+        if (seen.has(current)) continue;
+        seen.add(current);
+        for (const [key, value] of Object.entries(current)) {
+          if (/^(id|selectedid|selectedrowid|selectedbuttonid|displaytext|text|choice|option|reply)$/i.test(key)) {
+            queue.unshift(value);
+          } else if (value && typeof value === "object") {
+            queue.push(value);
+          }
+        }
+      }
+    } catch {}
+  }
+  let v = source
     .replace(/[*_~`>]/g, "")
     .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\uFE0F]/gu, "")
     .trim()
@@ -20837,15 +20935,66 @@ cmd(["pick", "p"], { desc: "Pick randomly from options (A|B|C) OR download adult
       await sendReply(sock, msg, "❌ That format is unavailable for this TikTok. Try *2.1* for audio or *1.1* for SD video.");
       return;
     }
-    await react(sock, msg, "🌀").catch(() => {});
+    await forceReaction(sock, msg, "⬇️");
     try {
-      const response = await axios.get(mediaUrl, {
-        responseType: "arraybuffer",
-        timeout: 90000,
-        maxContentLength: 80 * 1024 * 1024,
-        headers: { "User-Agent": "Mozilla/5.0", Referer: "https://www.tiktok.com/" },
-      });
-      const media = Buffer.from(response.data);
+      let media = null;
+      const candidateUrls = [mediaUrl];
+      // A TikWM URL can expire between the preview and the user's choice.
+      // Re-resolve the original TikTok URL once instead of leaving a silent
+      // picker failure.
+      const refreshSelection = async () => {
+        if (!ttPick.url) return;
+        const providers = [
+          async () => (await prexzyGet("/download/tiktok", { url: ttPick.url }, 30000)).data,
+          async () => (await dcGet("/download/tiktok", { url: ttPick.url }, 30000)).data,
+          async () => (await dcGet("/download/tiktokv2", { url: ttPick.url }, 30000)).data,
+          async () => (await dcGet("/download/tiktokv3", { url: ttPick.url }, 30000)).data,
+        ];
+        for (const provider of providers) {
+          try {
+            const payload = await provider();
+            const refreshed = extractDcTiktok(payload, ttMode.kind === "audio")
+              || (payload?.data?.hdplay || payload?.data?.play || payload?.hdplay || payload?.play || payload?.video || payload?.url);
+            if (refreshed) candidateUrls.push(refreshed);
+          } catch {}
+        }
+      };
+      for (const candidateUrl of candidateUrls) {
+        try {
+          const response = await axios.get(candidateUrl, {
+            responseType: "arraybuffer",
+            timeout: 90000,
+            maxContentLength: 80 * 1024 * 1024,
+            headers: { "User-Agent": "Mozilla/5.0", Referer: "https://www.tiktok.com/" },
+          });
+          const candidate = Buffer.from(response.data || []);
+          const head = candidate.slice(0, 64).toString("utf8").trim().toLowerCase();
+          if (candidate.length >= 2048 && !head.startsWith("<!doctype") && !head.startsWith("<html") && !head.startsWith("{")) {
+            media = candidate;
+            break;
+          }
+        } catch {}
+      }
+      if (!media) {
+        await refreshSelection();
+        for (const candidateUrl of candidateUrls.slice(1)) {
+          try {
+            const response = await axios.get(candidateUrl, {
+              responseType: "arraybuffer",
+              timeout: 90000,
+              maxContentLength: 80 * 1024 * 1024,
+              headers: { "User-Agent": "Mozilla/5.0", Referer: "https://www.tiktok.com/" },
+            });
+            const candidate = Buffer.from(response.data || []);
+            const head = candidate.slice(0, 64).toString("utf8").trim().toLowerCase();
+            if (candidate.length >= 2048 && !head.startsWith("<!doctype") && !head.startsWith("<html") && !head.startsWith("{")) {
+              media = candidate;
+              break;
+            }
+          } catch {}
+        }
+      }
+      if (!media) throw new Error("TikTok provider returned no downloadable media");
       if (media.length < 2048) throw new Error("provider returned an empty media file");
       const mediaHead = media.slice(0, 64).toString("utf8").trim().toLowerCase();
       if (mediaHead.startsWith("<!doctype") || mediaHead.startsWith("<html") || mediaHead.startsWith("{")) {
@@ -20878,12 +21027,12 @@ cmd(["pick", "p"], { desc: "Pick randomly from options (A|B|C) OR download adult
         }
       }
       __ttSelections.delete(jid);
-      await react(sock, msg, "✅");
+      await forceReaction(sock, msg, "✅");
     } catch (error) {
       // Keep the menu alive so the user can reply with another number instead
       // of resending the link.
       await sendReply(sock, msg, `❌ TikTok format failed: ${error.message}\n\nReply with another choice (e.g. *1.1* or *2.1*) — the menu is still active.`);
-      await react(sock, msg, "❌");
+      await forceReaction(sock, msg, "❌");
     }
     return;
   }
