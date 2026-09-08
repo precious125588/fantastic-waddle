@@ -212,6 +212,15 @@ function getOwner(numberOrJid) {
   return allOwners()[jidKey(numberOrJid)] || null;
 }
 
+function clearOwner(numberOrJid) {
+  const key = jidKey(numberOrJid);
+  if (!key) return false;
+  const data = allOwners();
+  if (!data[key]) return false;
+  delete data[key];
+  return _write(OWNERS_FILE, data);
+}
+
 function numbersOwnedBy(telegramUserId) {
   const id = String(telegramUserId);
   return Object.entries(allOwners())
@@ -269,6 +278,7 @@ module.exports = {
   listPending,
   setOwner,
   getOwner,
+  clearOwner,
   numbersOwnedBy,
   overview,
 };
