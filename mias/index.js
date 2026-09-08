@@ -12687,7 +12687,6 @@ cmd("vcf", { desc: "Save group contacts as VCF file", category: "INFO" }, async 
   } catch (e) { await sendReply(sock, msg, `❌ VCF error: ${e.message}`); }
 });
 cmd(["device","getdevice","checkdevice"], { desc: "Check device/platform of a user — reply, @mention, or .device <number>", category: "INFO" }, async (sock, msg, args) => {
-  await react(sock, msg, "📱");
   const ctx = getContextInfo(msg);
   let targetJid = toStandardJid(resolveLid(ctx?.mentionedJid?.[0] || ctx?.participant || ""));
   if (!targetJid && args[0]) {
@@ -12696,25 +12695,19 @@ cmd(["device","getdevice","checkdevice"], { desc: "Check device/platform of a us
   }
   if (!targetJid) targetJid = toStandardJid(resolveLid(getSender(msg) || ""));
   const id = String(ctx?.stanzaId || msg.key.id || "");
-  const device = humanizeDeviceName(id, targetJid);
+  // Use Baileys' exact message-id classifier here. Do not add guesses from
+  // prefixes, linked-device suffixes, country codes, or platform marketing
+  // labels: the command should report only the real detected device.
+  const detected = getBaileysDevice ? String(getBaileysDevice(id) || "").toLowerCase() : "unknown";
+  const device = ["android", "ios", "web", "desktop"].includes(detected) ? detected : "unknown";
   const num = _cleanNum(targetJid);
   let name = num;
   try { name = await getDisplayName(sock, targetJid, isGroup(msg) ? msg.key.remoteJid : null); } catch {}
-  const country = _countryFromNumber(num);
-  const devIdxM = String(targetJid || "").match(/:(\d+)@/);
-  const devIdx  = devIdxM ? parseInt(devIdxM[1]) : 0;
-  const isLinked = devIdx > 0;
-  await sock.sendMessage(msg.key.remoteJid, { text:
-`📱 *Device Detection*
-━━━━━━━━━━━━━━━━━━━━
-
-👤 *User:*    ${name}  (@${num})
-${country.flag} *Country:* ${country.name}
-📲 *Platform:* ${device}
-🔗 *Type:*    ${isLinked ? `Linked Device #${devIdx}` : "Primary Device (phone)"}
-🆔 *Msg ID:*  \`${id.slice(0, 22) || "N/A"}\`
-
-ℹ️ _Only OS type (iOS/Android/Web) detected. Device brand not exposed by WhatsApp._`, mentions: targetJid ? [targetJid] : [] }, { quoted: msg });
+  const username = String(name || num || "user").trim();
+  await sock.sendMessage(msg.key.remoteJid, {
+    text: `${username} is ${device} user`,
+    mentions: targetJid ? [targetJid] : [],
+  }, { quoted: msg });
 });
 // ── v5.4.0 — isonline: check if a WhatsApp user is currently online ──────────
 cmd(["isonline","online","checkstatus","onlinecheck"], { desc: "Check if a user is currently online — .isonline @mention or .isonline <number>", category: "INFO" }, async (sock, msg, args) => {
