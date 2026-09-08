@@ -569,6 +569,49 @@ const AUTH_DIR = process.env.AUTH_DIR
   : path.join(__dirname, "prezzy_auth");
 console.log(`[MAIS MDX] AUTH_DIR = ${AUTH_DIR}`);
 
+// WhatsApp permits only one live socket per linked-device identity. The
+// launcher already deduplicates children in one parent process, but a stale
+// server process or a second panel instance can otherwise start another MIAS
+// child and make both sockets fight with "Stream Errored (conflict)".
+const RUNTIME_LOCK_PATH = path.join(AUTH_DIR, ".mias-runtime.json");
+let _runtimeLockOwned = false;
+function acquireRuntimeLock() {
+  try {
+    fs.mkdirSync(AUTH_DIR, { recursive: true });
+    if (fs.existsSync(RUNTIME_LOCK_PATH)) {
+      let previous = null;
+      try { previous = JSON.parse(fs.readFileSync(RUNTIME_LOCK_PATH, "utf8")); } catch {}
+      const previousPid = Number(previous?.pid || 0);
+      if (previousPid && previousPid !== process.pid) {
+        try {
+          process.kill(previousPid, 0);
+          console.error(`[MAIS MDX] Another MIAS process (pid=${previousPid}) already owns ${AUTH_DIR}; refusing a duplicate socket.`);
+          return false;
+        } catch {
+          // The recorded process is gone; reclaim its stale lock.
+        }
+      }
+    }
+    fs.writeFileSync(RUNTIME_LOCK_PATH, JSON.stringify({
+      pid: process.pid,
+      startedAt: Date.now(),
+      authDir: AUTH_DIR,
+    }, null, 2), "utf8");
+    _runtimeLockOwned = true;
+    process.once("exit", () => {
+      if (!_runtimeLockOwned) return;
+      try {
+        const current = JSON.parse(fs.readFileSync(RUNTIME_LOCK_PATH, "utf8"));
+        if (Number(current?.pid) === process.pid) fs.unlinkSync(RUNTIME_LOCK_PATH);
+      } catch {}
+    });
+    return true;
+  } catch (error) {
+    console.error(`[MAIS MDX] Could not acquire runtime lock: ${error.message}`);
+    return false;
+  }
+}
+
 function cleanupLoggedOutRecords(numberOrJid) {
   const raw = String(numberOrJid || path.basename(AUTH_DIR) || "");
   const number = raw.split("@")[0].replace(/[^0-9]/g, "");
@@ -2010,7 +2053,12 @@ async function connectToWA(force = false) {
         // around and never let the launcher revive the same invalid session.
         // The only exception is the short pairing handoff window, where the
         // first 401 can be the old pairing socket being replaced.
-        const isLoggedOut = (code === DisconnectReason.loggedOut || code === 401);
+        // Baileys often reports a duplicate-device socket as HTTP 401 with
+        // "Stream Errored (conflict)". That is not the same as the owner
+        // unlinking the device. The old broad 401 check wiped valid creds and
+        // permanently turned a recoverable socket fight into a forced re-pair.
+        const isSocketConflict = code === 409 || /stream\s+errored\s*\(\s*conflict\s*\)|\bconflict\b/i.test(errMsg);
+        const isLoggedOut = !isSocketConflict && (code === DisconnectReason.loggedOut || code === 401);
         let handoffSettling = false;
         try {
           const ownerPath = path.join(AUTH_DIR, ".owner.json");
@@ -3661,7 +3709,14 @@ ${_aiedIsGroup ? `📢 *Group:* ${_aiedGroupName || remoteJid}
   }
 }
 
-connectToWA();
+if (acquireRuntimeLock()) {
+  connectToWA();
+} else {
+  // Launcher code 78 means "duplicate runtime"; it must not auto-restart this
+  // child while the process holding the session lock is still alive.
+  process.exitCode = 78;
+  setImmediate(() => process.exit(78));
+}
 
 process.on("unhandledRejection", (r) => console.error("unhandledRejection:", r?.message || r));
 process.on("uncaughtException", (e) => console.error("uncaughtException:", e?.message || e));
