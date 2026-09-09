@@ -530,8 +530,11 @@ async function trimVideo(buffer) {
   }
 }
 
-async function enforceDuration(buffer) {
+async function enforceDuration(buffer, { normalize = true } = {}) {
   const seconds = getMp4DurationSeconds(buffer);
+  if (!normalize) {
+    return seconds > MAX_DURATION_SECONDS + 0.5 ? null : buffer;
+  }
   // Always transcode to a normal MP4 before sending. Some approved feeds
   // return WebM/Matroska/odd MP4 variants; sending those as video/mp4 makes
   // playback work for the bot owner but fail for other WhatsApp clients.
@@ -541,7 +544,7 @@ async function enforceDuration(buffer) {
   return buffer.slice(4, 8).toString("ascii") === "ftyp" ? buffer : null;
 }
 
-async function resolveCandidate(item) {
+async function resolveCandidate(item, { normalize = true } = {}) {
   if (!item || !APPROVED_PLATFORMS.has(item.platform)
       || !hostMatches(item.sourceUrl, platformInfo(item.platform).domains)) {
     return null;
@@ -554,15 +557,30 @@ async function resolveCandidate(item) {
       : await pinterestPageDownload(item.sourceUrl);
     if (platformUrl) directUrls.push(platformUrl);
   } catch {}
-  const cobalt = await cobaltDownload(item.sourceUrl);
-  if (cobalt) directUrls.push(cobalt);
-  const fallback = await prexzyDownload(item.sourceUrl, item.platform);
-  if (fallback) directUrls.push(fallback);
+
+  // Try the source-specific URL before contacting generic fallbacks. The old
+  // order always waited for Cobalt and Prexzy even after TikWM/Pinterest had
+  // already returned a usable video, making a working edit look stuck for
+  // 60–90 seconds and often timing out before WhatsApp received anything.
   for (const url of [...new Set(directUrls)]) {
     try {
       const buffer = await downloadBuffer(url);
       if (!buffer) continue;
-      const limited = await enforceDuration(buffer);
+      const limited = await enforceDuration(buffer, { normalize });
+      if (limited) return { ...item, buffer: limited, duration: getMp4DurationSeconds(limited) };
+    } catch {}
+  }
+
+  const fallbackUrls = [];
+  const cobalt = await cobaltDownload(item.sourceUrl);
+  if (cobalt) fallbackUrls.push(cobalt);
+  const fallback = await prexzyDownload(item.sourceUrl, item.platform);
+  if (fallback) fallbackUrls.push(fallback);
+  for (const url of [...new Set(fallbackUrls)]) {
+    try {
+      const buffer = await downloadBuffer(url);
+      if (!buffer) continue;
+      const limited = await enforceDuration(buffer, { normalize });
       if (limited) return { ...item, buffer: limited, duration: getMp4DurationSeconds(limited) };
     } catch {}
   }
@@ -598,7 +616,7 @@ export function buildStatusVideoMessage(buffer) {
   };
 }
 
-export function createStatusEditFlow({ prefix = "." } = {}) {
+export function createStatusEditFlow({ prefix = ".", animeFlow = null } = {}) {
   const getPrefix = () => typeof prefix === "function" ? String(prefix() || "") : String(prefix || "");
   const expire = () => {
     const now = Date.now();
@@ -647,6 +665,19 @@ export function createStatusEditFlow({ prefix = "." } = {}) {
 
     if (session.stage === "topic") {
       session.topic = value.slice(0, 120);
+
+      // Anime titles use the same direct edit pipeline as the dedicated
+      // anime commands. This keeps `status` useful in no-prefix mode: replying
+      // "Naruto" to the first prompt immediately sends normal anime edits
+      // instead of forcing the user through a second platform picker.
+      const animeEntry = animeFlow?.resolve?.(session.topic);
+      if (animeEntry && typeof animeFlow.sendThree === "function") {
+        session.stage = "working";
+        sessions.delete(key);
+        await animeFlow.sendThree(sock, msg, animeEntry);
+        return true;
+      }
+
       session.stage = "platform";
       await prompt(sock, msg.key.remoteJid, formatPlatformMenu(getPrefix()), msg, session);
       return true;
