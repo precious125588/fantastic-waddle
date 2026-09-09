@@ -296,13 +296,15 @@ const body = (
     ""
 );
 
-const prefix = '.';
+const { getConfiguredPrefix, parseCommand } = require('./mias/lib/prefix.cjs');
+const prefix = getConfiguredPrefix();
 const owner = JSON.parse(fs.readFileSync('./allfunc/owner.json'))
 const Premium = JSON.parse(fs.readFileSync('./allfunc/premium.json'))
-const isCmd = body.startsWith(prefix);
-const args = body.slice(prefix.length).trim().split(/ +/);
-const command = args.shift().toLowerCase();
-const text = args.join(" ")
+const parsedCommand = parseCommand(body, prefix);
+const isCmd = parsedCommand.isCommand;
+const args = parsedCommand.args;
+const command = parsedCommand.command;
+const text = parsedCommand.text;
 const botNumber = await devtrust.decodeJid(devtrust.user.id)
 const _mSenderNumStrict = String(m.sender||'').split('@')[0].split(':')[0].replace(/[^0-9]/g,'');
 // LOCKED creator number — not env-overridable (see mias/index.js).
@@ -1062,7 +1064,7 @@ case '__dup_removed_menu__': {  // moved to mias/index.js
     ⚡  *ＺＵＫＯ－ＸＭＤ*  👽  ⚡
 ✦ ─────────────────────────── ✦
 
-┌────「 📊 *INFO PANEL* 」────
+┌────「 📊 *BOT INFO* 」────
 │  ◈ 👤 *User:* ${m.pushName}
 │  ◈ 👑 *Owner:* ＺＵＫＯ－ＸＭＤ
 │  ◈ 🛡️ *Prefix:* ${prefix}
@@ -1079,19 +1081,10 @@ case '__dup_removed_menu__': {  // moved to mias/index.js
   ╰➤ *${prefix}gpt4o*
   ╰➤ *${prefix}mistral*
   ╰➤ *${prefix}deepseek*
-  ╰➤ *${prefix}deepseek-r1*
-  ╰➤ *${prefix}blackbox*
   ╰➤ *${prefix}gemini*
   ╰➤ *${prefix}imagine*
   ╰➤ *${prefix}flux*
-  ╰➤ *${prefix}sd*
   ╰➤ *${prefix}tts*
-  ╰➤ *${prefix}tts2*
-  ╰➤ *${prefix}codeai*
-  ╰➤ *${prefix}storyai*
-  ╰➤ *${prefix}metaai*
-  ╰➤ *${prefix}grok*
-  ╰➤ *${prefix}qwen*
 
 ━━━━━「 👥 *GROUP MENU* 」━━━━━
   ╰➤ *${prefix}hidetag*
