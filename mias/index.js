@@ -28,9 +28,9 @@ import { loadAllData, saveAllData, startAutoSave } from "./database.js";
     if (typeof _S.setSetting === 'function') globalThis.__SET_SETTING__ = _S.setSetting.bind(_S);
   } catch {}
 })();
+
 globalThis.__MIAS_GET_SETTINGS__ = (jid) => { try { return typeof getSettings === 'function' ? getSettings(jid) : null; } catch(_) { return null; } };
 
-import { nixHandler } from "./nix/index.js"; // ── NIX ASSISTANT SYSTEM
 import APIs from "./api.js";
 import { dcGet, dcPost, dcRequest, dcGetBinary, extractDcSpotify, extractDcTiktok } from "./davidcyril.js";
 // ── KEVDRA STABILITY PATCHES ─────────────────────────────────────────────────
@@ -51,7 +51,6 @@ import {
 } from "./lib/kevdraPatches.js";
 // ── MIAS HANDLER SYSTEM — universal messaging abstraction ─────────────────────
 import { installHandlerGlobals, updateHandlerSock } from "./handlers/globals.js";
-import { setButtonMode, isButtonMode } from "./handlers/buttonHandler.js";
 import { isGktwAvailable } from "./handlers/gktwAdapter.js";
 import { sendMenu as sendMenuV2 } from "./handlers/menuHandler.js";
 import { installReactionForwarder } from "./features/reactionForward.js";
@@ -64,16 +63,17 @@ import {
 import { createStatusEditFlow } from "./lib/statusEditFlow.js";
 import { createAnimeEditFlow } from "./features/animeEdits.js";
 import { normalizeInviteCode, approvalPrompt, adminNumberList, parseAdminChoice } from "./features/joinApproval.js";
-// ── BUTTON MODE — wizard & interactive menu (new design) ──────────────────────
-import { handleWizardInput }   from "./handlers/wizardHandler.js";
-import {
-  sendButtonHomeScreen,
-  handleButtonResponse,
-}                              from "./handlers/buttonMenuHandler.js";
 // ─────────────────────────────────────────────────────────────────────────────
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
+// Legacy panel/button settings are retained only for backwards-compatible
+// settings reads. The button handler modules were intentionally removed from
+// this distribution; keeping a local no-op prevents old settings code from
+// crashing startup or re-enabling panel UI.
+let __buttonMode = false;
+function setButtonMode(value) { __buttonMode = Boolean(value); }
+function isButtonMode() { return __buttonMode; }
 let __miasPortableVideoModule = null;
 async function __miasNormalizeVideoBuffer(value) {
   if (!Buffer.isBuffer(value) || value.length < 1024) return value;
@@ -1807,7 +1807,7 @@ async function connectToWA(force = false) {
       }
     } catch {}
 
-    // ── NIX BRIDGE: expose contacts + auto-feature toggles to nix modules ──
+    // Expose contacts and the existing auto-feature toggles to the bot.
     try {
       sock._knownContacts = _knownContacts;
       globalThis.__BOT_TOGGLE_AUTO__ = (kind, on) => {
@@ -1934,7 +1934,7 @@ async function connectToWA(force = false) {
           // ── FIX: set owner name immediately from WhatsApp session pushName ───────────
           // Without this, the bot doesn't know the owner's name until the first
           // incoming message. Now it reads sock.user.name right when the socket
-          // opens, so .owner / NIX / all greetings work from the very first second.
+          // opens, so .owner and greetings work from the very first second.
           try {
             const _sessName = (sock.user?.name || sock.user?.verifiedName || '').trim();
             if (_sessName) {
@@ -1943,13 +1943,6 @@ async function connectToWA(force = false) {
                 pushNameCache.set(_ownerNumSess, _sessName);
                 try { saveContact(_ownerNumSess, _sessName); } catch {}
               }
-              // Propagate to NIX owner module so .nix commands know the name instantly
-              try {
-                const _nixOwnerMod = await import('./nix/owner.js');
-                if (typeof _nixOwnerMod?.setOwnerNameFromSession === 'function') {
-                  _nixOwnerMod.setOwnerNameFromSession(_sessName);
-                }
-              } catch (_e) {}
               console.log(`👤 Owner name detected from session: "${_sessName}"`);
             }
           } catch (_e) {}
@@ -3029,48 +3022,6 @@ ${_atBotAdmin ? "✅ Message deleted." : "⚠️ Make me admin to auto-delete."}
               }
             }
           } catch (_stE) { /* sticker trigger must never crash dispatcher */ }
-
-          // ── NIX ASSISTANT — handles "nix ..." and ".nix ..." before prefix check ──
-          try {
-            // Expose owner info to NIX so it can detect the linked owner
-            let __ownerNumNix = "";
-            try {
-              const __oj = (typeof getOwnerJid === "function") ? getOwnerJid() : "";
-              __ownerNumNix = String(__oj || sock.user?.id || CONFIG.OWNER_NUMBER || "")
-                .split(":")[0].split("@")[0].replace(/[^0-9]/g, "");
-            } catch {}
-            globalThis.__BOT_OWNER_NUMBER = __ownerNumNix;
-            globalThis.__BOT_OWNER_JID = __ownerNumNix ? (__ownerNumNix + "@s.whatsapp.net") : "";
-            const __nixSender = (() => { try { return getSender(msg); } catch { return ""; } })();
-            globalThis.__BOT_IS_OWNER = !!(msg.key.fromMe
-              || (typeof isOwner === "function" && isOwner(__nixSender))
-              || (typeof isSudo === "function" && isSudo(__nixSender))
-              || (typeof isCreator === "function" && isCreator(__nixSender)));
-
-            // Respect privateMode: if private and sender isn't owner/creator/sudo, skip NIX silently
-            let __nixPrivate = false;
-            try {
-              const __ownS = (typeof getSettings === "function") ? getSettings(globalThis.__BOT_OWNER_JID) : null;
-              __nixPrivate = !!(__ownS && (__ownS.privateMode || __ownS.workMode === "private"));
-            } catch {}
-            if (__nixPrivate && !globalThis.__BOT_IS_OWNER) {
-              // private mode: don't run NIX for non-owners
-            } else {
-              // NIX is a command too. Do not let its natural-language shortcut
-              // bypass a custom prefix: after `.setprefix +`, `nix ping` must
-              // be written as `+nix ping` (or use no prefix mode explicitly).
-              const __nixText = String(body || "").trim().toLowerCase();
-              const __nixPrefixes = Array.isArray(CONFIG.PREFIXES)
-                ? CONFIG.PREFIXES.filter((item) => typeof item === "string" && item.length > 0)
-                : [];
-              const __nixHasPrefix = __nixPrefixes.length === 0
-                || __nixPrefixes.some((item) => (
-                  __nixText === `${item.toLowerCase()}nix`
-                  || __nixText.startsWith(`${item.toLowerCase()}nix `)
-                ));
-              if (__nixHasPrefix && await nixHandler(sock, msg)) return;
-            }
-          } catch (_nixErr) { console.error("[NIX]", _nixErr?.message); }
 
           // ── Logout reply interceptor — MUST run BEFORE prefix gate ──────────
           // The logout prompt expects plain YES/NO (no prefix), so we intercept
@@ -6965,6 +6916,15 @@ const MENU_CATEGORIES = [
     "unsend","forward","block","unblock","clear","pinchat","unpinchat","pin","unpin","archive","unarchive","del",
     "channel","channelinfo","channelreact","channelreactlink","channelstats","channelupdate","chinfo","chnInfo","chnreact","creact","creactchannel","cupdate","reactchannel"] },
 ];
+
+// Keep the public menu focused on the working bot features. AI and panel
+// categories were legacy leftovers and their entries made the menu advertise
+// commands that are not part of this build.
+MENU_CATEGORIES.splice(
+  0,
+  MENU_CATEGORIES.length,
+  ...MENU_CATEGORIES.filter(({ name }) => !["AI", "PANEL"].includes(name)),
+);
 
 // ── Robust bot picture fetcher with validation + fallbacks ──────────────────
 // Includes 3 NEW local pics bundled in /assets/ (never expire) + remote fallbacks
@@ -15635,8 +15595,13 @@ cmd(["setprefix", "prefix"], { desc: "Change bot prefix — use 'null' or 'none'
     await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX || "."}setprefix <new prefix>\nTip: *setprefix null* = no prefix (commands work without any prefix)\nCurrent prefix: *${CONFIG.PREFIX || "(none)"}*`);
     return;
   }
-  const _requestedPrefix = String(args[0]).trim();
-  CONFIG.PREFIX = normalizeConfiguredPrefix(_requestedPrefix);
+  const _requestedPrefix = String(args.join(" ").trim());
+  const _normalizedPrefix = normalizeConfiguredPrefix(_requestedPrefix);
+  if (_normalizedPrefix.length > 8 || /\s/.test(_normalizedPrefix)) {
+    await sendReply(sock, msg, "❌ Prefix must be 8 characters or fewer and contain no spaces.");
+    return;
+  }
+  CONFIG.PREFIX = _normalizedPrefix;
   CONFIG.PREFIXES = CONFIG.PREFIX ? [CONFIG.PREFIX] : [];
   process.env.PREFIX = CONFIG.PREFIX;
   process.env.PREFIXES = CONFIG.PREFIX;
@@ -15654,7 +15619,7 @@ cmd(["setprefix", "prefix"], { desc: "Change bot prefix — use 'null' or 'none'
         if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) _botConfig = parsed;
       }
     } catch {}
-    _botConfig.prefix = CONFIG.PREFIX;
+    _botConfig.prefix = CONFIG.PREFIX || null;
     fs.writeFileSync(_pfxPath, `${JSON.stringify(_botConfig, null, 2)}\n`, "utf8");
   } catch (error) {
     console.error("[setprefix] failed to persist bot prefix:", error?.message || error);
@@ -38508,3 +38473,12 @@ globalThis.__MiasBlocklist = __MiasBlocklist;
     console.error("[LATE-PATCH-v22]", e?.message || e);
   }
 })();
+
+// Panel selling/ordering commands are not part of this bot build. Remove
+// every legacy alias after all late registrations have finished so they cannot
+// appear in menus or be dispatched by an old persisted command table.
+for (const panelCommand of [
+  "panel", "panelinfo", "buypanel", "panelprice", "panelfeatures", "panelorder",
+]) {
+  commands.delete(panelCommand);
+}
