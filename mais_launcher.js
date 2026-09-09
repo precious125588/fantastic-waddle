@@ -65,7 +65,15 @@ async function _launch(number, sessionDir, envOverrides = {}) {
 
     // Working directory: manifest cwd wins, else the entry's own folder, so each
     // bot resolves its own node_modules and relative asset paths correctly.
-    const botCwd = _botCwd ? path.resolve(__dirname, _botCwd) : path.dirname(botEntry);
+    // case.js and the legacy data files resolve from the repository root.
+    // Running the MIAS child from /mias made ./allfunc, ./database, and
+    // ./setting resolve to the wrong directory and left the child apparently
+    // connected but unable to process new chats.
+    const botCwd = _botCwd
+        ? path.resolve(__dirname, _botCwd)
+        : (path.resolve(botEntry) === path.resolve(MIAS_ENTRY)
+            ? __dirname
+            : path.dirname(botEntry));
     if (!fs.existsSync(botCwd)) throw new Error(`Bot cwd not found: ${botCwd}`);
 
     const env = {
