@@ -1,7 +1,7 @@
 // Anime edit command plugin.
 //
-// The resolver deliberately lives outside index.js so the two approved
-// shortcuts can be changed without touching the main bot dispatcher.
+// The resolver deliberately lives outside index.js so anime aliases and
+// provider behavior can be changed without touching the main dispatcher.
 
 import fs from "fs";
 import path from "path";
@@ -21,15 +21,27 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ANIME_ROOT = path.resolve(__dirname, "..", "..", "animes");
 const MAX_RESULTS = 3;
 const MAX_INPUT_BYTES = 90 * 1024 * 1024;
-const MAX_DURATION_SECONDS = 90;
+// Keep anime shortcuts aligned with the status wizard's hard three-minute
+// limit. The actual trim is performed by ffmpeg before anything is sent.
+const MAX_DURATION_SECONDS = 180;
 
-// Keep this feature intentionally small and predictable.  The command is a
-// shortcut for the two edit feeds requested by the owner, not a general anime
-// search command. In particular, do not silently fall back to local files or
-// unapproved social platforms when one of these feeds is unavailable.
+// These are safe built-in shortcuts. Catalog entries can add more registered
+// titles without changing the dispatcher.
 const BUILTIN_ALIASES = {
   naruto: ["naruto"],
-  jjk: ["jjk"],
+  jjk: ["jjk", "jujutsu kaisen"],
+  "one-piece": ["one piece"],
+  bleach: ["bleach"],
+  "demon-slayer": ["demon slayer", "kimetsu no yaiba"],
+  "dragon-ball": ["dragon ball", "dragonball"],
+  "attack-on-titan": ["attack on titan", "aot"],
+  "solo-leveling": ["solo leveling"],
+  "my-hero-academia": ["my hero academia", "bnha"],
+  "one-punch-man": ["one punch man"],
+  "black-clover": ["black clover"],
+  "chainsaw-man": ["chainsaw man"],
+  "tokyo-revengers": ["tokyo revengers"],
+  "blue-lock": ["blue lock"],
 };
 
 function cleanSlug(value) {
@@ -78,7 +90,8 @@ function loadCatalog() {
   // Keep the built-in commands available even when the optional /animes
   // media folder has not been created yet. Previously an empty folder meant
   // .naruto was never registered, so the only thing the user saw was the
-  // generic anime-usage message.
+  // Keep the title command available even when the optional /animes media
+  // folder has not been created yet.
   for (const [slug, aliases] of Object.entries(BUILTIN_ALIASES)) {
     const current = bySlug.get(slug) || {
       slug,
@@ -131,15 +144,6 @@ function loadCatalog() {
     bySlug.set(slug, current);
   }
   return [...bySlug.values()];
-}
-
-function shuffle(items) {
-  const copy = [...items];
-  for (let i = copy.length - 1; i > 0; i -= 1) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [copy[i], copy[j]] = [copy[j], copy[i]];
-  }
-  return copy;
 }
 
 function validVideoBuffer(buffer) {
@@ -205,32 +209,40 @@ async function remoteEdits(entry) {
   const seen = new Set();
 
   for (const query of queries) {
-    for (const platform of platforms) {
+    const platformResults = await Promise.all(platforms.map(async (platform) => {
       try {
-        const rows = await withTimeout(searchStatusCandidates(query, platform), 70000);
-        for (const row of rows || []) {
-          const key = row?.sourceUrl || row?.downloadUrl;
-          if (!key || seen.has(key)) continue;
-          seen.add(key);
-          candidates.push(row);
-        }
-      } catch {}
-      if (candidates.length >= 30) break;
+        return await withTimeout(searchStatusCandidates(query, platform), 80000);
+      } catch {
+        return [];
+      }
+    }));
+    for (const rows of platformResults) {
+      for (const row of rows || []) {
+        const key = row?.sourceUrl || row?.downloadUrl;
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        candidates.push(row);
+      }
     }
     if (candidates.length >= 30) break;
   }
 
   const resolved = [];
-  for (const candidate of shuffle(candidates)) {
-    if (resolved.length >= MAX_RESULTS) break;
-    try {
-      const item = await withTimeout(resolveStatusCandidate(candidate), 150000);
-      if (!item?.buffer) continue;
-      const hd = await normalizeHdVideo(item.buffer);
-      if (hd) resolved.push({ ...item, buffer: hd });
-    } catch {}
-  }
-  return resolved;
+  let cursor = 0;
+  const worker = async () => {
+    while (cursor < candidates.length && resolved.length < MAX_RESULTS) {
+      const candidate = candidates[cursor++];
+      try {
+        const item = await withTimeout(resolveStatusCandidate(candidate), 120000);
+        if (!item?.buffer) continue;
+        const hd = await withTimeout(normalizeHdVideo(item.buffer), 120000);
+        if (hd) resolved.push({ ...item, buffer: hd });
+      } catch {}
+    }
+  };
+  const workers = Math.min(3, candidates.length);
+  await Promise.all(Array.from({ length: workers }, () => worker()));
+  return resolved.slice(0, MAX_RESULTS);
 }
 
 function dedupeResults(items) {
@@ -263,12 +275,17 @@ export function createAnimeEditFlow({ prefix = "." } = {}) {
     // Never mix in local media: the owner asked for public TikTok/Pinterest
     // edits only, and exactly three results per request.
     const results = dedupeResults(await remoteEdits(entry));
-    if (results.length < MAX_RESULTS) {
+    if (!results.length) {
       await react("❌");
+      await sock.sendMessage(jid, {
+        text: `❌ I couldn't find a downloadable TikTok or Pinterest edit for ${entry.title} right now. Try ${getPrefix()}Naruto, ${getPrefix()}JJK, or another supported anime title again in a moment.`,
+      }, { quoted: msg });
       return false;
     }
 
-    // Send media only: no progress message, footer, or quoted text.
+    // Send the available media only: no progress message, footer, or quoted
+    // text. A provider may return one or two good candidates, so do not throw
+    // away usable edits merely because three were not available.
     for (const result of results) {
       await sock.sendMessage(jid, {
         video: result.buffer,
@@ -279,36 +296,13 @@ export function createAnimeEditFlow({ prefix = "." } = {}) {
     return true;
   }
 
-  async function handle(sock, msg, args, forcedEntry = null) {
-    const key = forcedEntry || commandKey(args.join(" "));
-    const entry = byCommand.get(key);
-    const query = args.join(" ").trim();
-    if (!entry && !query) {
-      await sock.sendMessage(msg.key.remoteJid, {
-        text: `🎌 *Anime edits*\n\nUse ${getPrefix()}Naruto or ${getPrefix()}jjk.`,
-      }, { quoted: msg });
-      return true;
-    }
-    const selected = entry || {
-      slug: cleanSlug(query),
-      title: query.slice(0, 100),
-      query: query.slice(0, 100),
-      aliases: [],
-    };
-    await sendThree(sock, msg, selected);
-    return true;
-  }
-
   function registerCommands(cmd) {
     for (const [alias, entry] of byCommand) {
       cmd(alias, {
         desc: `Send 3 random HD ${entry.title} edits`,
         category: "ANIME",
-      }, (sock, msg, args) => handle(sock, msg, args, entry));
+      }, (sock, msg) => sendThree(sock, msg, entry));
     }
-    // Do not register a generic anime search command.  This prevents
-    // `.animeedit`, `.animeclip`, etc. from fetching from an unapproved
-    // platform or query.
   }
 
   return {
