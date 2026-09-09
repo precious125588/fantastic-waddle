@@ -11,10 +11,10 @@ import {
 test("status platform choices accept numbers and names", () => {
   assert.equal(parseStatusPlatform("1"), "tiktok");
   assert.equal(parseStatusPlatform("Pinterest"), "pinterest");
-  assert.equal(parseStatusPlatform("option 3"), "youtube");
-  assert.equal(parseStatusPlatform("YouTube"), "youtube");
-  assert.equal(parseStatusPlatform("fb"), "facebook");
-  assert.equal(parseStatusPlatform("option 5"), null);
+  assert.equal(parseStatusPlatform("option 2"), "pinterest");
+  assert.equal(parseStatusPlatform("option 3"), null);
+  assert.equal(parseStatusPlatform("YouTube"), null);
+  assert.equal(parseStatusPlatform("fb"), null);
 });
 
 test("status videos never carry a caption and only use the approved mimetype", () => {
