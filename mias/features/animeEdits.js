@@ -25,8 +25,8 @@ const MAX_DURATION_SECONDS = 90;
 
 // Keep this feature intentionally small and predictable.  The command is a
 // shortcut for the two edit feeds requested by the owner, not a general anime
-// search command.  In particular, do not silently fall back to local files or
-// YouTube/Instagram/Facebook results when one of these feeds is unavailable.
+// search command. In particular, do not silently fall back to local files or
+// unapproved social platforms when one of these feeds is unavailable.
 const BUILTIN_ALIASES = {
   naruto: ["naruto"],
   jjk: ["jjk"],
@@ -189,18 +189,15 @@ async function normalizeHdVideo(input) {
 }
 
 function withTimeout(promise, timeoutMs = 130000) {
-  return Promise.race([
-    promise,
-    new Promise((resolve) => setTimeout(() => resolve(null), timeoutMs)),
-  ]);
+  let timer;
+  const timeout = new Promise((resolve) => {
+    timer = setTimeout(() => resolve(null), timeoutMs);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
 async function remoteEdits(entry) {
-  const queries = [
-    `${entry.query} anime edit`,
-    `${entry.query} AMV edit`,
-    `${entry.query} status edit`,
-  ];
+  const queries = [`${entry.query} anime edit`];
   // Source restriction is deliberate: anime edits must come from TikTok or
   // Pinterest only.  The status flow validates the host again before
   // downloading, so a search-engine redirect cannot widen this allow-list.
@@ -248,6 +245,7 @@ function dedupeResults(items) {
 }
 
 export function createAnimeEditFlow({ prefix = "." } = {}) {
+  const getPrefix = () => typeof prefix === "function" ? String(prefix() || "") : String(prefix || "");
   const entries = loadCatalog();
   const byCommand = new Map();
   for (const entry of entries) {
@@ -288,7 +286,7 @@ export function createAnimeEditFlow({ prefix = "." } = {}) {
     const query = args.join(" ").trim();
     if (!entry && !query) {
       await sock.sendMessage(msg.key.remoteJid, {
-        text: `🎌 *Anime edits*\n\nUse ${prefix}Naruto or ${prefix}jjk.`,
+        text: `🎌 *Anime edits*\n\nUse ${getPrefix()}Naruto or ${getPrefix()}jjk.`,
       }, { quoted: msg });
       return true;
     }
