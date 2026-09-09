@@ -30,6 +30,11 @@ test("status quantities are capped at five", () => {
   assert.equal(parseStatusQuantity("zero"), 0);
 });
 
+test("status videos use the three-minute ceiling", async () => {
+  const { MAX_DURATION_SECONDS } = await import("../mias/lib/statusEditFlow.js");
+  assert.equal(MAX_DURATION_SECONDS, 180);
+});
+
 test("malformed media does not report a duration", () => {
   assert.equal(getMp4DurationSeconds(Buffer.from("not an mp4")), 0);
 });
