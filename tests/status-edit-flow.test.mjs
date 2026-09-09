@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   createStatusEditFlow,
+  buildStatusVideoMessage,
   getMp4DurationSeconds,
   parseStatusPlatform,
   parseStatusQuantity,
@@ -9,9 +10,15 @@ import {
 
 test("status platform choices accept numbers and names", () => {
   assert.equal(parseStatusPlatform("1"), "tiktok");
-  assert.equal(parseStatusPlatform("YouTube"), "youtube");
-  assert.equal(parseStatusPlatform("option 7"), "auto");
-  assert.equal(parseStatusPlatform("not a platform"), null);
+  assert.equal(parseStatusPlatform("Pinterest"), "pinterest");
+  assert.equal(parseStatusPlatform("option 3"), null);
+  assert.equal(parseStatusPlatform("YouTube"), null);
+});
+
+test("status videos never carry a caption and only use the approved mimetype", () => {
+  const payload = buildStatusVideoMessage(Buffer.from("video"));
+  assert.equal(payload.mimetype, "video/mp4");
+  assert.equal(Object.hasOwn(payload, "caption"), false);
 });
 
 test("status quantities are capped at five", () => {
@@ -60,12 +67,12 @@ test("status wizard advances only from quoted bot prompts", async () => {
     key: { remoteJid: original.key.remoteJid },
     message: {
       extendedTextMessage: {
-        text: "3",
+        text: "2",
         contextInfo: { stanzaId: "prompt-2", quotedMessage: { conversation: "menu" } },
       },
     },
   };
-  assert.equal(await flow.handleReply(sock, platformReply, "3"), true);
+  assert.equal(await flow.handleReply(sock, platformReply, "2"), true);
   assert.match(sent.at(-1).content.text, /How many edits/i);
 
   const quantityReply = {
