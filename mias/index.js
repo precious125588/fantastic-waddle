@@ -538,8 +538,8 @@ const CONFIG = {
   BOT_URL:      process.env.BOT_URL      || "",
   BOT_PIC:      process.env.BOT_PIC      || "https://files.catbox.moe/05rqy6.png",
 };
-const statusEditFlow = createStatusEditFlow({ prefix: CONFIG.PREFIX });
-const animeEditFlow = createAnimeEditFlow({ prefix: CONFIG.PREFIX });
+const statusEditFlow = createStatusEditFlow({ prefix: () => CONFIG.PREFIX });
+const animeEditFlow = createAnimeEditFlow({ prefix: () => CONFIG.PREFIX });
 
 // ── DYNAMIC OWNER NAME ─────────────────────────────────────────────────────
 // When the bot connects, replace any hard-coded OWNER_NAME with the real
@@ -3056,7 +3056,19 @@ ${_atBotAdmin ? "✅ Message deleted." : "⚠️ Make me admin to auto-delete."}
             if (__nixPrivate && !globalThis.__BOT_IS_OWNER) {
               // private mode: don't run NIX for non-owners
             } else {
-              if (await nixHandler(sock, msg)) return;
+              // NIX is a command too. Do not let its natural-language shortcut
+              // bypass a custom prefix: after `.setprefix +`, `nix ping` must
+              // be written as `+nix ping` (or use no prefix mode explicitly).
+              const __nixText = String(body || "").trim().toLowerCase();
+              const __nixPrefixes = Array.isArray(CONFIG.PREFIXES)
+                ? CONFIG.PREFIXES.filter((item) => typeof item === "string" && item.length > 0)
+                : [];
+              const __nixHasPrefix = __nixPrefixes.length === 0
+                || __nixPrefixes.some((item) => (
+                  __nixText === `${item.toLowerCase()}nix`
+                  || __nixText.startsWith(`${item.toLowerCase()}nix `)
+                ));
+              if (__nixHasPrefix && await nixHandler(sock, msg)) return;
             }
           } catch (_nixErr) { console.error("[NIX]", _nixErr?.message); }
 
