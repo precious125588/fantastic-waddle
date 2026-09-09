@@ -233,7 +233,10 @@ async function remoteEdits(entry) {
     while (cursor < candidates.length && resolved.length < MAX_RESULTS) {
       const candidate = candidates[cursor++];
       try {
-        const item = await withTimeout(resolveStatusCandidate(candidate), 120000);
+        // The status resolver already validates and downloads the media. Ask
+        // it to skip its generic transcode here; this flow applies the anime
+        // 720p MP4 normalization exactly once below.
+        const item = await withTimeout(resolveStatusCandidate(candidate, { normalize: false }), 120000);
         if (!item?.buffer) continue;
         const hd = await withTimeout(normalizeHdVideo(item.buffer), 120000);
         if (hd) resolved.push({ ...item, buffer: hd });
