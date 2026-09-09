@@ -8,7 +8,7 @@ import path from "path";
 
 const require = createRequire(import.meta.url);
 const execFileAsync = promisify(execFile);
-const MAX_DURATION_SECONDS = 90;
+const MAX_DURATION_SECONDS = 180;
 const MAX_RESULTS = 5;
 const SESSION_TTL_MS = 10 * 60 * 1000;
 const MAX_VIDEO_BYTES = 90 * 1024 * 1024;
@@ -29,6 +29,7 @@ const PLATFORM_ALIASES = new Map([
 
 const sessions = new Map();
 const APPROVED_PLATFORMS = new Set(PLATFORMS.map((platform) => platform.id));
+let tikwmQueue = Promise.resolve();
 const QUALITY_QUERY_TERMS = [
   "viral trending popular high quality HD 4k anime edit",
   "best rated popular anime edit",
@@ -130,9 +131,22 @@ function trimHtmlUrl(value) {
   return String(value || "")
     .replace(/&amp;/g, "&")
     .replace(/&quot;/g, "\"")
+    .replace(/&#39;/g, "'")
+    .replace(/&#x27;/gi, "'")
     .replace(/&#x2F;/gi, "/")
     .replace(/\\u0026/g, "&")
     .trim();
+}
+
+function decodeSearchHtml(value) {
+  return String(value || "")
+    .replace(/&quot;/g, "\"")
+    .replace(/&#39;/g, "'")
+    .replace(/&#x27;/gi, "'")
+    .replace(/&amp;/g, "&")
+    .replace(/&#x2F;/gi, "/")
+    .replace(/\\u0026/g, "&")
+    .replace(/\\"/g, "\"");
 }
 
 function validHttpUrl(value) {
@@ -149,6 +163,27 @@ function hostMatches(url, domains = []) {
   try {
     const host = new URL(url).hostname.toLowerCase();
     return domains.some((domain) => host === domain || host.endsWith(`.${domain}`));
+  } catch {
+    return false;
+  }
+}
+
+function isConcreteSourceUrl(url, platform) {
+  try {
+    const parsed = new URL(url);
+    const pathname = parsed.pathname.toLowerCase();
+    if (platform === "tiktok") {
+      // Tag/search landing pages cannot be downloaded as an individual edit.
+      return /\/@[^/]+\/video\/\d+/.test(pathname)
+        || /\/video\/\d+/.test(pathname);
+    }
+    if (platform === "pinterest") {
+      // A pin is a concrete source; ideas, boards, and collection pages are
+      // landing pages and almost always fail the media resolver.
+      return parsed.hostname === "pin.it"
+        || /\/pin\/[^/]+/.test(pathname);
+    }
+    return false;
   } catch {
     return false;
   }
@@ -193,6 +228,7 @@ function candidate(sourceUrl, extra = {}) {
   if (!APPROVED_PLATFORMS.has(platform) || !hostMatches(source, platformInfo(platform).domains)) {
     return null;
   }
+  if (!isConcreteSourceUrl(source, platform)) return null;
   const title = cleanText(extra.title || "Status edit").slice(0, 120);
   if (LOW_QUALITY_PATTERN.test(title) || hasLowEngagement(extra)) return null;
   return {
@@ -261,11 +297,26 @@ async function bingSearch(query, platform) {
       timeout: 18000,
       headers: { "User-Agent": "Mozilla/5.0", Accept: "text/html,application/xhtml+xml" },
     });
-    const html = String(data || "");
+    const html = decodeSearchHtml(data);
     const pageFound = [];
     const pattern = /href=["'](https?:\/\/[^"'<> ]+)/gi;
     let match;
     while ((match = pattern.exec(html)) && pageFound.length < 15) {
+      const link = trimHtmlUrl(match[1]);
+      if (hostMatches(link, info.domains)) {
+        pageFound.push(candidate(link, {
+          platform,
+          title: `${query} viral high quality edit`,
+          qualityScore: 65,
+        }));
+      }
+    }
+    // Bing's video results are commonly embedded in HTML as escaped
+    // `pgurl`/`murl` JSON instead of normal anchors. Parse those URLs too or
+    // the search appears empty even though Bing returned real TikTok/Pinterest
+    // videos.
+    const embeddedPattern = /"(?:pgurl|murl)"\s*:\s*"(https?:\/\/[^"]+)"/gi;
+    while ((match = embeddedPattern.exec(html)) && pageFound.length < 30) {
       const link = trimHtmlUrl(match[1]);
       if (hostMatches(link, info.domains)) {
         pageFound.push(candidate(link, {
@@ -326,6 +377,52 @@ async function prexzyDownload(sourceUrl, platform) {
       headers: { "User-Agent": "Mozilla/5.0", Accept: "application/json" },
     });
     return deepUrl(response.data);
+  } catch {
+    return "";
+  }
+}
+
+async function tikwmDownload(sourceUrl) {
+  // TikWM currently exposes a lightweight JSON resolver for TikTok pages.
+  // Serialize calls because its free endpoint enforces roughly one request
+  // per second; concurrent anime workers would otherwise trip its limiter.
+  const request = tikwmQueue.then(async () => {
+    const response = await axios.get("https://www.tikwm.com/api/", {
+      params: { url: sourceUrl, hd: 1 },
+      timeout: 30000,
+      headers: { "User-Agent": "Mozilla/5.0", Accept: "application/json" },
+    });
+    if (Number(response.data?.code) !== 0) return "";
+    return deepUrl(response.data?.data);
+  });
+  tikwmQueue = request.catch(() => {});
+  return request;
+}
+
+async function pinterestPageDownload(sourceUrl) {
+  try {
+    const response = await axios.get(sourceUrl, {
+      timeout: 30000,
+      headers: {
+        "User-Agent": "Mozilla/5.0",
+        Accept: "text/html,application/xhtml+xml",
+      },
+    });
+    const html = decodeSearchHtml(response.data);
+    const urls = [];
+    const add = (value) => {
+      const url = trimHtmlUrl(value);
+      if (/^https?:\/\//i.test(url) && /\.(?:mp4|webm)(?:[?#]|$)/i.test(url)) {
+        urls.push(url);
+      }
+    };
+    for (const match of html.matchAll(
+      /<(?:meta|source)[^>]+(?:content|src)=["'](https?:\/\/[^"']+)["']/gi,
+    )) add(match[1]);
+    for (const match of html.matchAll(
+      /"(?:url|src|content)"\s*:\s*"(https?:\/\/[^"]+\.(?:mp4|webm)[^"]*)"/gi,
+    )) add(match[1]);
+    return [...new Set(urls)][0] || "";
   } catch {
     return "";
   }
@@ -455,6 +552,12 @@ async function resolveCandidate(item) {
   }
   const directUrls = [];
   if (item.downloadUrl) directUrls.push(item.downloadUrl);
+  try {
+    const platformUrl = item.platform === "tiktok"
+      ? await tikwmDownload(item.sourceUrl)
+      : await pinterestPageDownload(item.sourceUrl);
+    if (platformUrl) directUrls.push(platformUrl);
+  } catch {}
   const cobalt = await cobaltDownload(item.sourceUrl);
   if (cobalt) directUrls.push(cobalt);
   const fallback = await prexzyDownload(item.sourceUrl, item.platform);
@@ -480,7 +583,7 @@ function formatPlatformMenu(prefix) {
     "4. Facebook",
     "",
     `Reply to this message with *1*, *2*, *3*, or *4*.`,
-    `_Videos longer than 1:30 are trimmed or skipped._`,
+    `_Videos longer than 3:00 are trimmed or skipped._`,
     "_Only popular, high-quality edits from the selected platform are accepted._",
   ].join("\n");
 }
@@ -490,7 +593,7 @@ function formatQuantityPrompt() {
     "🔢 *How many edits should I send?*",
     "",
     "Reply to this message with a number from *1 to 5*.",
-    "_Each video is limited to 1:30 maximum._",
+    "_Each video is limited to 3:00 maximum._",
   ].join("\n");
 }
 
