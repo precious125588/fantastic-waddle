@@ -13,6 +13,15 @@ test(".Naruto is routed to the remote anime-edit shortcut", () => {
   assert.equal(flow.resolve(parsed.command)?.query, "Naruto");
 });
 
+test("raw anime commands resolve when no prefix is configured", () => {
+  const flow = createAnimeEditFlow({ prefix: "" });
+  const parsed = parseCommand("Naruto", null);
+
+  assert.equal(parsed.isCommand, true);
+  assert.equal(parsed.command, "naruto");
+  assert.equal(flow.resolve(parsed.command)?.slug, "naruto");
+});
+
 test("built-in anime shortcuts all resolve through the same pipeline", () => {
   const flow = createAnimeEditFlow({ prefix: "." });
   for (const command of [

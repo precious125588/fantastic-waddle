@@ -94,3 +94,43 @@ test("status wizard advances only from quoted bot prompts", async () => {
   assert.equal(await flow.handleReply(sock, quantityReply, "0"), true);
   assert.match(sent.at(-1).content.text, /1 to 5/i);
 });
+
+test("an anime topic reply goes straight to the normal anime-edit pipeline", async () => {
+  let animeDownloads = 0;
+  const sent = [];
+  const sock = {
+    async sendMessage(jid, content, options) {
+      const message = { key: { id: `anime-prompt-${sent.length + 1}`, remoteJid: jid } };
+      sent.push({ jid, content, options, message });
+      return message;
+    },
+  };
+  const animeFlow = {
+    resolve(value) {
+      return String(value).toLowerCase() === "naruto" ? { title: "Naruto" } : null;
+    },
+    async sendThree() {
+      animeDownloads += 1;
+    },
+  };
+  const flow = createStatusEditFlow({ prefix: "", animeFlow });
+  const original = {
+    key: { remoteJid: "2349000000000@s.whatsapp.net" },
+    message: { conversation: "status" },
+  };
+
+  await flow.start(sock, original);
+  const topicReply = {
+    key: { remoteJid: original.key.remoteJid },
+    message: {
+      extendedTextMessage: {
+        text: "Naruto",
+        contextInfo: { stanzaId: "anime-prompt-1", quotedMessage: { conversation: "prompt" } },
+      },
+    },
+  };
+
+  assert.equal(await flow.handleReply(sock, topicReply, "Naruto"), true);
+  assert.equal(animeDownloads, 1);
+  assert.equal(sent.length, 1);
+});
