@@ -31,7 +31,6 @@ const BUILTIN_ALIASES = {
   naruto: ["naruto"],
   jjk: ["jjk"],
 };
-const ENABLED_ANIME_SLUGS = new Set(Object.keys(BUILTIN_ALIASES));
 
 function cleanSlug(value) {
   return String(value || "")
@@ -67,7 +66,7 @@ function loadCatalog() {
   const bySlug = new Map();
   for (const item of Array.isArray(configured) ? configured : []) {
     const slug = cleanSlug(item?.slug || item?.folder || item?.title);
-    if (!slug || !ENABLED_ANIME_SLUGS.has(slug)) continue;
+     if (!slug) continue;
     bySlug.set(slug, {
       slug,
       title: String(item.title || displayName(slug)).trim(),
@@ -98,7 +97,7 @@ function loadCatalog() {
     for (const entry of fs.readdirSync(ANIME_ROOT, { withFileTypes: true })) {
       if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
       const slug = cleanSlug(entry.name);
-      if (!slug || !ENABLED_ANIME_SLUGS.has(slug)) continue;
+       if (!slug) continue;
       const current = bySlug.get(slug) || {
         slug,
         title: displayName(slug),
