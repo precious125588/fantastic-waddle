@@ -5,7 +5,6 @@ import { promisify } from "util";
 import fs from "fs";
 import os from "os";
 import path from "path";
-import { dcGet } from "../davidcyril.js";
 
 const require = createRequire(import.meta.url);
 const execFileAsync = promisify(execFile);
@@ -16,25 +15,21 @@ const MAX_VIDEO_BYTES = 90 * 1024 * 1024;
 
 const PLATFORMS = [
   { id: "tiktok", label: "TikTok", domains: ["tiktok.com"] },
-  { id: "facebook", label: "Facebook", domains: ["facebook.com", "fb.watch"] },
-  { id: "youtube", label: "YouTube", domains: ["youtube.com", "youtu.be"] },
   { id: "pinterest", label: "Pinterest", domains: ["pinterest.com", "pin.it"] },
-  { id: "instagram", label: "Instagram", domains: ["instagram.com"] },
-  { id: "twitter", label: "X / Twitter", domains: ["x.com", "twitter.com"] },
-  { id: "auto", label: "Auto (best available)", domains: [] },
 ];
 
 const PLATFORM_ALIASES = new Map([
   ["1", "tiktok"], ["tiktok", "tiktok"], ["tt", "tiktok"],
-  ["2", "facebook"], ["facebook", "facebook"], ["fb", "facebook"], ["meta", "facebook"],
-  ["3", "youtube"], ["youtube", "youtube"], ["yt", "youtube"],
-  ["4", "pinterest"], ["pinterest", "pinterest"], ["pin", "pinterest"],
-  ["5", "instagram"], ["instagram", "instagram"], ["ig", "instagram"],
-  ["6", "twitter"], ["twitter", "twitter"], ["x", "twitter"],
-  ["7", "auto"], ["auto", "auto"], ["best", "auto"],
+  ["2", "pinterest"], ["pinterest", "pinterest"], ["pin", "pinterest"],
 ]);
 
 const sessions = new Map();
+const APPROVED_PLATFORMS = new Set(PLATFORMS.map((platform) => platform.id));
+const QUALITY_QUERY_TERMS = [
+  "viral trending popular high quality HD 4k anime edit",
+  "best rated popular anime edit",
+];
+const LOW_QUALITY_PATTERN = /\b(?:low[\s-]?quality|low[\s-]?effort|no[\s-]?likes?|1[\s-]?like|flop(?:ped)?|bad[\s-]?edit|ugly[\s-]?edit)\b/i;
 
 function cleanText(value) {
   return String(value || "")
@@ -108,7 +103,8 @@ function parsePlatform(value) {
   const normalized = cleanText(value).toLowerCase()
     .replace(/^(option|choice|platform|number|no\.?)\s*[:.)-]?\s*/i, "")
     .trim();
-  return PLATFORM_ALIASES.get(normalized) || null;
+  const platform = PLATFORM_ALIASES.get(normalized) || null;
+  return platform && APPROVED_PLATFORMS.has(platform) ? platform : null;
 }
 
 export function parseStatusPlatform(value) {
@@ -139,9 +135,6 @@ function validHttpUrl(value) {
   try {
     const url = new URL(String(value || ""));
     if (!/^https?:$/.test(url.protocol)) return "";
-    if (/youtube\.com$/i.test(url.hostname) && /^\/watch\/[A-Za-z0-9_-]{11}$/i.test(url.pathname)) {
-      return `https://www.youtube.com/watch?v=${url.pathname.slice("/watch/".length)}`;
-    }
     return url.toString();
   } catch {
     return "";
@@ -192,11 +185,18 @@ function deepUrl(value, preferred = false, depth = 0) {
 function candidate(sourceUrl, extra = {}) {
   const source = validHttpUrl(sourceUrl);
   if (!source) return null;
+  const platform = String(extra.platform || "").toLowerCase();
+  if (!APPROVED_PLATFORMS.has(platform) || !hostMatches(source, platformInfo(platform).domains)) {
+    return null;
+  }
+  const title = cleanText(extra.title || "Status edit").slice(0, 120);
+  if (LOW_QUALITY_PATTERN.test(title) || hasLowEngagement(extra)) return null;
   return {
     sourceUrl: source,
     downloadUrl: validHttpUrl(extra.downloadUrl || ""),
-    title: cleanText(extra.title || "Status edit").slice(0, 120),
-    platform: extra.platform || "auto",
+    title,
+    platform,
+    qualityScore: qualityScore({ ...extra, title }),
   };
 }
 
@@ -210,40 +210,46 @@ function uniqueCandidates(items) {
   });
 }
 
-async function ytSearch(query) {
-  try {
-    const module = require("yt-search");
-    const search = typeof module === "function" ? module : module.default;
-    const results = await search(query);
-    return (results?.videos || results?.all || []).slice(0, 8).map((item) => candidate(
-      item.url || item.link,
-      { title: item.title, platform: "youtube" },
-    )).filter(Boolean);
-  } catch {
-    return [];
-  }
+function numericMetric(value) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  const text = String(value || "").replace(/,/g, "").trim().toLowerCase();
+  const match = text.match(/^([\d.]+)\s*([km])?/);
+  if (!match) return 0;
+  const multiplier = match[2] === "m" ? 1_000_000 : match[2] === "k" ? 1_000 : 1;
+  return Number(match[1]) * multiplier;
 }
 
-async function vredenYoutubeSearch(query) {
-  try {
-    const module = require("@vreden/youtube_scraper");
-    const result = await module.search(query);
-    const rows = result?.results || result?.result || result?.data || [];
-    return (Array.isArray(rows) ? rows : []).slice(0, 8).map((item) => candidate(
-      item?.url || item?.link,
-      { title: item?.title, platform: "youtube" },
-    )).filter(Boolean);
-  } catch {
-    return [];
-  }
+function qualityScore(item = {}) {
+  const title = String(item.title || "").toLowerCase();
+  const views = numericMetric(item.views ?? item.viewCount ?? item.playCount);
+  const likes = numericMetric(item.likes ?? item.likeCount);
+  const rating = numericMetric(item.rating ?? item.score);
+  let score = 50;
+  if (/\b(?:viral|trending|popular|best|4k|hd|amv)\b/.test(title)) score += 15;
+  if (views >= 100_000) score += 20;
+  if (likes >= 10_000) score += 15;
+  if (rating >= 4) score += 10;
+  if (LOW_QUALITY_PATTERN.test(title)) score -= 60;
+  return score;
+}
+
+function hasLowEngagement(item = {}) {
+  const views = numericMetric(item.views ?? item.viewCount ?? item.playCount);
+  const likes = numericMetric(item.likes ?? item.likeCount);
+  const rating = numericMetric(item.rating ?? item.score);
+  return (views > 0 && views < 1_000)
+    || (likes > 0 && likes < 10)
+    || (rating > 0 && rating < 3);
 }
 
 async function bingSearch(query, platform) {
   const info = platformInfo(platform);
-  const domainQuery = info.domains.length ? ` site:${info.domains[0]}` : "";
+  const domainQuery = ` site:${info.domains[0]}`;
   const queries = [
-    `https://www.bing.com/videos/search?q=${encodeURIComponent(`${query} edit${domainQuery}`)}`,
-    `https://html.duckduckgo.com/html/?q=${encodeURIComponent(`${query} edit${domainQuery}`)}`,
+    ...QUALITY_QUERY_TERMS.map((quality) =>
+      `https://www.bing.com/videos/search?q=${encodeURIComponent(`${query} ${quality}${domainQuery}`)}`),
+    ...QUALITY_QUERY_TERMS.map((quality) =>
+      `https://html.duckduckgo.com/html/?q=${encodeURIComponent(`${query} ${quality}${domainQuery}`)}`),
   ];
   const found = [];
   for (const url of queries) try {
@@ -257,63 +263,37 @@ async function bingSearch(query, platform) {
     let match;
     while ((match = pattern.exec(html)) && pageFound.length < 15) {
       const link = trimHtmlUrl(match[1]);
-      if (hostMatches(link, info.domains)) pageFound.push(candidate(link, { platform, title: `${query} edit` }));
+      if (hostMatches(link, info.domains)) {
+        pageFound.push(candidate(link, {
+          platform,
+          title: `${query} viral high quality edit`,
+          qualityScore: 65,
+        }));
+      }
     }
     for (const encoded of html.matchAll(/uddg=([^&"]+)/gi)) {
       try {
         const link = trimHtmlUrl(decodeURIComponent(encoded[1]));
-        if (hostMatches(link, info.domains)) pageFound.push(candidate(link, { platform, title: `${query} edit` }));
+        if (hostMatches(link, info.domains)) {
+          pageFound.push(candidate(link, {
+            platform,
+            title: `${query} viral high quality edit`,
+            qualityScore: 65,
+          }));
+        }
       } catch {}
     }
     const results = uniqueCandidates(pageFound);
-    if (results.length) return results;
+    if (results.length) return results.sort((a, b) => b.qualityScore - a.qualityScore);
   } catch {}
   return [];
 }
 
-async function davidCyrilSearch(query, platform) {
-  const found = [];
-  if (platform === "pinterest" || platform === "auto") {
-    try {
-      const response = await dcGet("/search/pinterest", { text: query }, 25000);
-      const rows = response.ok
-        ? (response.data?.result || response.data?.results || response.data?.data || [])
-        : [];
-      for (const row of rows) {
-        const source = row?.source || row?.url || "";
-        const item = candidate(source, { title: row?.caption || row?.fullName || query, platform: "pinterest" });
-        if (item) found.push(item);
-      }
-    } catch {}
-  }
-  if (platform === "youtube" || platform === "auto") {
-    try {
-      const response = await dcGet("/play", { query: `${query} edit`, type: "video" }, 30000);
-      const direct = deepUrl(response.ok ? response.data : null);
-      const source = validHttpUrl(response.data?.result?.url || response.data?.result?.videoUrl || "");
-      const item = candidate(source || direct, {
-        downloadUrl: direct,
-        title: response.data?.result?.title || `${query} edit`,
-        platform: "youtube",
-      });
-      if (item) found.push(item);
-    } catch {}
-  }
-  return found;
-}
-
 async function searchCandidates(query, platform) {
-  const providers = [];
-  if (platform === "youtube" || platform === "auto") {
-    providers.push(() => ytSearch(`${query} edit`));
-    providers.push(() => vredenYoutubeSearch(`${query} edit`));
-  }
-  if (platform !== "auto") providers.push(() => bingSearch(query, platform));
-  else {
-    providers.push(() => bingSearch(query, "tiktok"));
-    providers.push(() => bingSearch(query, "instagram"));
-  }
-  providers.unshift(() => davidCyrilSearch(query, platform));
+  const platforms = [platform];
+  const providers = platforms
+    .filter((item) => APPROVED_PLATFORMS.has(item))
+    .map((item) => () => bingSearch(query, item));
   const all = [];
   for (const provider of providers) {
     try {
@@ -322,34 +302,16 @@ async function searchCandidates(query, platform) {
       if (uniqueCandidates(all).length >= 10) break;
     } catch {}
   }
-  return uniqueCandidates(all).slice(0, 15);
-}
-
-async function davidCyrilDownload(sourceUrl, platform) {
-  const endpointByPlatform = {
-    tiktok: "/download/tiktok",
-    facebook: "/download/facebook",
-    pinterest: "/download/pinterest",
-    instagram: "/download/instagram",
-    twitter: "/download/twitter",
-  };
-  const endpoint = endpointByPlatform[platform];
-  if (!endpoint) return "";
-  try {
-    const response = await dcGet(endpoint, { url: sourceUrl }, 35000);
-    return deepUrl(response.ok ? response.data : null);
-  } catch {
-    return "";
-  }
+  return uniqueCandidates(all)
+    .filter((item) => item.qualityScore >= 50)
+    .sort((a, b) => b.qualityScore - a.qualityScore)
+    .slice(0, 15);
 }
 
 async function prexzyDownload(sourceUrl, platform) {
   const endpointByPlatform = {
     tiktok: "/download/tiktok",
-    facebook: "/download/facebook",
     pinterest: "/download/pinterest",
-    instagram: "/download/instagram",
-    twitter: "/download/twitter",
   };
   const endpoint = endpointByPlatform[platform];
   if (!endpoint) return "";
@@ -473,34 +435,26 @@ async function trimVideo(buffer) {
 
 async function enforceDuration(buffer) {
   const seconds = getMp4DurationSeconds(buffer);
-  if (seconds > MAX_DURATION_SECONDS + 0.5) {
-    return (await trimVideo(buffer)) || null;
-  }
-  return buffer;
+  // Always transcode to a normal MP4 before sending. Some approved feeds
+  // return WebM/Matroska/odd MP4 variants; sending those as video/mp4 makes
+  // playback work for the bot owner but fail for other WhatsApp clients.
+  const normalized = await trimVideo(buffer);
+  if (normalized) return normalized;
+  if (seconds > MAX_DURATION_SECONDS + 0.5) return null;
+  return buffer.slice(4, 8).toString("ascii") === "ftyp" ? buffer : null;
 }
 
 async function resolveCandidate(item) {
+  if (!item || !APPROVED_PLATFORMS.has(item.platform)
+      || !hostMatches(item.sourceUrl, platformInfo(item.platform).domains)) {
+    return null;
+  }
   const directUrls = [];
   if (item.downloadUrl) directUrls.push(item.downloadUrl);
-  if (item.platform === "youtube") {
-    try {
-      const response = await dcGet("/ytmp4", { url: item.sourceUrl }, 60000);
-      const direct = deepUrl(response.ok ? response.data : null);
-      if (direct) directUrls.push(direct);
-    } catch {}
-    try {
-      const response = await dcGet("/play", { query: item.sourceUrl, type: "video" }, 45000);
-      const direct = deepUrl(response.ok ? response.data : null);
-      if (direct) directUrls.push(direct);
-    } catch {}
-  } else {
-    const direct = await davidCyrilDownload(item.sourceUrl, item.platform);
-    if (direct) directUrls.push(direct);
-    const fallback = await prexzyDownload(item.sourceUrl, item.platform);
-    if (fallback) directUrls.push(fallback);
-  }
   const cobalt = await cobaltDownload(item.sourceUrl);
   if (cobalt) directUrls.push(cobalt);
+  const fallback = await prexzyDownload(item.sourceUrl, item.platform);
+  if (fallback) directUrls.push(fallback);
   for (const url of [...new Set(directUrls)]) {
     try {
       const buffer = await downloadBuffer(url);
@@ -517,15 +471,11 @@ function formatPlatformMenu(prefix) {
     "🎬 *Choose the platform for the edits*",
     "",
     "1. TikTok",
-    "2. Facebook",
-    "3. YouTube",
-    "4. Pinterest",
-    "5. Instagram",
-    "6. X / Twitter",
-    "7. Auto (best available)",
+    "2. Pinterest",
     "",
-    `Reply to this message with a number or name, e.g. *3* or *YouTube*.`,
+    `Reply to this message with *1* or *2*.`,
     `_Videos longer than 1:30 are trimmed or skipped._`,
+    "_Only popular, high-quality edits from TikTok and Pinterest are accepted._",
   ].join("\n");
 }
 
@@ -538,7 +488,15 @@ function formatQuantityPrompt() {
   ].join("\n");
 }
 
+export function buildStatusVideoMessage(buffer) {
+  return {
+    video: buffer,
+    mimetype: "video/mp4",
+  };
+}
+
 export function createStatusEditFlow({ prefix = "." } = {}) {
+  const getPrefix = () => typeof prefix === "function" ? String(prefix() || "") : String(prefix || "");
   const expire = () => {
     const now = Date.now();
     for (const [key, value] of sessions) {
@@ -581,19 +539,19 @@ export function createStatusEditFlow({ prefix = "." } = {}) {
     const session = sessions.get(key);
     if (!session || !isQuotedPrompt(msg, session)) return false;
     const value = cleanText(body);
-    if (!value || value.startsWith(prefix)) return false;
+    if (!value || (getPrefix() && value.startsWith(getPrefix()))) return false;
     session.updatedAt = Date.now();
 
     if (session.stage === "topic") {
       session.topic = value.slice(0, 120);
       session.stage = "platform";
-      await prompt(sock, msg.key.remoteJid, formatPlatformMenu(prefix), msg, session);
+      await prompt(sock, msg.key.remoteJid, formatPlatformMenu(getPrefix()), msg, session);
       return true;
     }
     if (session.stage === "platform") {
       const platform = parsePlatform(value);
       if (!platform) {
-        await prompt(sock, msg.key.remoteJid, "❌ Choose a platform from *1 to 7* or reply with its name.", msg, session);
+        await prompt(sock, msg.key.remoteJid, "❌ Choose *1 for TikTok* or *2 for Pinterest*.", msg, session);
         return true;
       }
       session.platform = platform;
@@ -623,19 +581,18 @@ export function createStatusEditFlow({ prefix = "." } = {}) {
         }
         if (!results.length) {
           await sock.sendMessage(msg.key.remoteJid, {
-            text: "❌ I could not find downloadable edits right now. Try another topic or choose *Auto*.",
+            text: "❌ I could not find a popular downloadable edit right now. Try another topic or choose TikTok/Pinterest.",
           }, { quoted: msg });
           sessions.delete(key);
           return true;
         }
         for (let index = 0; index < results.length; index += 1) {
           const result = results[index];
-          const seconds = result.duration ? `\n⏱ ${Math.min(90, Math.round(result.duration))}s` : "";
-          await sock.sendMessage(msg.key.remoteJid, {
-            video: result.buffer,
-            mimetype: "video/mp4",
-            caption: `🎬 *${session.topic} edit*\n📍 ${platformInfo(session.platform).label}\n📦 ${index + 1}/${results.length}${seconds}\n_Powered by David Cyril + fallback providers_`,
-          }, { quoted: msg });
+          await sock.sendMessage(
+            msg.key.remoteJid,
+            buildStatusVideoMessage(result.buffer),
+            { quoted: msg },
+          );
         }
         sessions.delete(key);
       } catch (error) {
