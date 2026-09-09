@@ -84,6 +84,34 @@ function commandFromMessage(msg) {
   return { body, ...parseCommand(body) };
 }
 
+function startPresenceHeartbeat(sock) {
+  let stopped = false;
+  let busy = false;
+
+  const publish = async () => {
+    if (stopped || busy || !sock?.user) return;
+    busy = true;
+    try {
+      // markOnlineOnConnect covers the initial handshake; this heartbeat
+      // keeps the linked device visibly online while it is idle.
+      await sock.sendPresenceUpdate("available");
+    } catch (error) {
+      console.warn(`[MIAS] Presence heartbeat failed: ${error?.message || error}`);
+    } finally {
+      busy = false;
+    }
+  };
+
+  void publish();
+  const timer = setInterval(() => void publish(), 25_000);
+  timer.unref?.();
+
+  return () => {
+    stopped = true;
+    clearInterval(timer);
+  };
+}
+
 function isOwner(msg, sock) {
   const sender = decodeJid(msg?.key?.participant || msg?.key?.remoteJid);
   const owner = String(process.env.OWNER_NUMBER || "").replace(/\D/g, "");
@@ -199,6 +227,7 @@ async function connect() {
   const statusFlow = createStatusEditFlow({ prefix: getConfiguredPrefix });
   const animeFlow = createAnimeEditFlow({ prefix: getConfiguredPrefix });
   let closing = false;
+  let stopPresenceHeartbeat = () => {};
 
   globalThis.__GET_SETTING__ = getSetting;
   globalThis.__SET_SETTING__ = setSetting;
@@ -213,9 +242,13 @@ async function connect() {
   sock.ev.on("connection.update", ({ connection, lastDisconnect }) => {
     if (connection === "open") {
       closing = false;
+      stopPresenceHeartbeat();
+      stopPresenceHeartbeat = startPresenceHeartbeat(sock);
       console.log(`[MIAS] Connected as ${decodeJid(sock.user?.id)}`);
     }
     if (connection === "close") {
+      stopPresenceHeartbeat();
+      stopPresenceHeartbeat = () => {};
       stopWatchdog();
       const statusCode = lastDisconnect?.error?.output?.statusCode
         ?? lastDisconnect?.error?.statusCode;
@@ -250,6 +283,8 @@ async function connect() {
 
   for (const signal of ["SIGTERM", "SIGINT"]) {
     process.once(signal, () => {
+      stopPresenceHeartbeat();
+      stopPresenceHeartbeat = () => {};
       stopWatchdog();
       releaseRuntimeLock();
       try { sock.ws?.close?.(); } catch {}
