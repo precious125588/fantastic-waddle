@@ -1,7 +1,7 @@
 {
   "name": "draxen-ai-bot",
   "version": "5.3.1",
-  "description": "MIAS MDX Bot \u2014 powered by @itsliaaa/baileys (aliased as @whiskeysockets/baileys)",
+  "description": "MIAS MDX Bot — powered by @itsliaaa/baileys (aliased as @whiskeysockets/baileys)",
   "private": true,
   "type": "module",
   "scripts": {
