@@ -1655,7 +1655,7 @@ async function startpairing(nexusDevNumber, options = {}) {
                 try { nexus.end(); } catch {}
                 try { nexus.ws?.close(); } catch {}
                 await sleep(6000);
-                await launcher.launch(`${nexusDevNumber}@s.whatsapp.net`, sessionDir, {
+                await launcher.launch(nexusDevNumber, sessionDir, {
                     BOT_ENTRY: 'mias/index.js',
                     BOT_ID: 'mias-mdx',
                     BOT_NAME: process.env.BOT_NAME || 'MIAS MDX',

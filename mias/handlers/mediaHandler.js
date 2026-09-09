@@ -189,6 +189,10 @@ export async function sendVideo(sock, jid, video, opts = {}) {
 
     if (opts.gifPlayback) content.gifPlayback = true;
     if (opts.viewOnce)    content.viewOnce    = true;
+    if (opts.videoNote) {
+      content.ptv = true;
+      content.caption = "";
+    }
     if (opts.mentions?.length) content.mentions = opts.mentions;
 
     const autoThumb = opts.autoThumb !== false;

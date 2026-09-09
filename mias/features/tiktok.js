@@ -52,7 +52,11 @@ const MODE_ALIASES = {
 
 // Accepts "1.3", " 1.3 ", "*1.3*", "1 3", "1,3", "1-3", "hd", "audio", ...
 export function normalizeTikTokMode(value) {
-  let v = String(value || "").replace(/[*_~`>]/g, "").trim().toLowerCase();
+  let v = String(value || "")
+    .replace(/[*_~`>]/g, "")
+    .replace(/^(?:option|choice)\s*/i, "")
+    .trim()
+    .toLowerCase();
   v = v.replace(/[.)]+$/, "").trim();
   if (MODE_ALIASES[v.replace(/\s+/g, "")]) return MODE_ALIASES[v.replace(/\s+/g, "")];
   const m = v.match(/^(\d+)\s*(?:[.,\-/ ]\s*(\d+))?$/);
@@ -64,6 +68,23 @@ export function parseTikTokMode(value) {
   const id = normalizeTikTokMode(value);
   const mode = MODES[id];
   return mode ? { ...mode, id } : null;
+}
+
+export function extractTikTokUrl(value) {
+  const text = String(value || "");
+  const matches = text.match(/(?:https?:\/\/)?(?:www\.|vm\.|vt\.)?tiktok\.com\/[^\s"'<>]+/gi) || [];
+  for (const raw of matches) {
+    const candidate = raw.replace(/[\].,;!?)'"`]+$/g, "");
+    try {
+      const url = new URL(/^https?:\/\//i.test(candidate) ? candidate : `https://${candidate}`);
+      const host = url.hostname.toLowerCase();
+      if (
+        host === "tiktok.com"
+        || host.endsWith(".tiktok.com")
+      ) return url.toString();
+    } catch {}
+  }
+  return null;
 }
 
 export function formatTikTokMenu(info, prefix = ".") {
@@ -93,14 +114,24 @@ export function formatTikTokMenu(info, prefix = ".") {
 export async function fetchTikTokInfo(url, fetchImpl = fetch) {
   let lastError;
   for (const endpoint of PROVIDERS) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 30_000);
     try {
-      const response = await fetchImpl(endpoint(url), { headers: { "User-Agent": "MIAS/1.0" } });
+      const response = await fetchImpl(endpoint(url), {
+        headers: {
+          Accept: "application/json",
+          "User-Agent": "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 MIAS/5.3",
+        },
+        signal: controller.signal,
+      });
       if (!response.ok) throw new Error(`TikTok provider returned ${response.status}`);
       const json = await response.json();
       const info = normalizeTikTokResponse(json);
       if (info.videoHd || info.videoSd || info.audio) return info;
     } catch (error) {
       lastError = error;
+    } finally {
+      clearTimeout(timer);
     }
   }
   throw lastError || new Error("No TikTok provider returned media");

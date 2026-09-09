@@ -46,8 +46,13 @@ const OWNER_BOT     = 'bot';
 const HANDOFF_SETTLE_MS = 90 * 1000;
 
 function sessionDirFor(numberOrJid) {
-  const key = String(numberOrJid || '').split('@')[0].replace(/[^0-9]/g, '');
-  return path.join(PAIRING_ROOT, key);
+  const digits = String(numberOrJid || '').split('@')[0].replace(/[^0-9]/g, '');
+  return path.join(PAIRING_ROOT, `${digits}@s.whatsapp.net`);
+}
+
+function legacySessionDirFor(numberOrJid) {
+  const digits = String(numberOrJid || '').split('@')[0].replace(/[^0-9]/g, '');
+  return path.join(PAIRING_ROOT, digits);
 }
 
 function ownerFile(sessionDir) {
@@ -55,17 +60,18 @@ function ownerFile(sessionDir) {
 }
 
 function readOwner(sessionDirOrNumber) {
-  const dir = path.isAbsolute(String(sessionDirOrNumber))
-    ? String(sessionDirOrNumber)
-    : sessionDirFor(sessionDirOrNumber);
-  try {
-    const raw = fs.readFileSync(ownerFile(dir), 'utf8');
-    const payload = JSON.parse(raw);
-    if (!payload || !payload.owner) return null;
-    return payload;
-  } catch {
-    return null;
+  const rawValue = String(sessionDirOrNumber);
+  const dirs = path.isAbsolute(rawValue)
+    ? [rawValue]
+    : [sessionDirFor(sessionDirOrNumber), legacySessionDirFor(sessionDirOrNumber)];
+  for (const dir of [...new Set(dirs)]) {
+    try {
+      const raw = fs.readFileSync(ownerFile(dir), 'utf8');
+      const payload = JSON.parse(raw);
+      if (payload?.owner) return payload;
+    } catch {}
   }
+  return null;
 }
 
 function writeOwner(sessionDirOrNumber, owner, extra = {}) {
@@ -130,10 +136,13 @@ function mayWipe(numberOrJid, who) {
 
 /** Called on an explicit user unlink / admin delete, which overrides ownership. */
 function release(numberOrJid) {
-  const dir = path.isAbsolute(String(numberOrJid))
-    ? String(numberOrJid)
-    : sessionDirFor(numberOrJid);
-  try { fs.unlinkSync(ownerFile(dir)); } catch {}
+  const rawValue = String(numberOrJid);
+  const dirs = path.isAbsolute(rawValue)
+    ? [rawValue]
+    : [sessionDirFor(numberOrJid), legacySessionDirFor(numberOrJid)];
+  for (const dir of [...new Set(dirs)]) {
+    try { fs.unlinkSync(ownerFile(dir)); } catch {}
+  }
 }
 
 module.exports = {

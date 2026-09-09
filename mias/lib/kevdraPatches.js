@@ -344,6 +344,12 @@ export async function kevdraMessageHook(sock, msg, body, isOwner) {
   const remoteJid = msg?.key?.remoteJid;
   if (!remoteJid) return false;
 
+  // Explicit commands are handled by the main dispatcher. In particular,
+  // .tiktok/.tt needs its reply-based quality picker instead of being
+  // intercepted by the generic URL downloader.
+  const prefix = String(process.env.PREFIX || ".");
+  if (String(body || "").trim().startsWith(prefix)) return false;
+
   // Record message activity for watchdog silent-failure detector
   try { recordMessageReceived(); } catch {}
 
