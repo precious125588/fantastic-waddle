@@ -538,8 +538,11 @@ const CONFIG = {
   BOT_URL:      process.env.BOT_URL      || "",
   BOT_PIC:      process.env.BOT_PIC      || "https://files.catbox.moe/05rqy6.png",
 };
-const statusEditFlow = createStatusEditFlow({ prefix: () => CONFIG.PREFIX });
 const animeEditFlow = createAnimeEditFlow({ prefix: () => CONFIG.PREFIX });
+const statusEditFlow = createStatusEditFlow({
+  prefix: () => CONFIG.PREFIX,
+  animeFlow: animeEditFlow,
+});
 
 // ── DYNAMIC OWNER NAME ─────────────────────────────────────────────────────
 // When the bot connects, replace any hard-coded OWNER_NAME with the real
