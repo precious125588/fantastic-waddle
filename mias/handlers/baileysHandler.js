@@ -83,7 +83,6 @@ export * from "./statusHandler.js";
 export * from "./forwardHandler.js";
 export * from "./menuHandler.js";
 export * from "./codeHandler.js";
-export * from "./buttonHandler.js";
 export * from "./utilityHandler.js";
 
 // ── New v4 layers ──────────────────────────────────────────────────────────────

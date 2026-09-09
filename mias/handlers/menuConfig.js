@@ -2,13 +2,13 @@
  * MIAS — Menu Configuration  v2
  *
  * Single source of truth for all bot menu categories and their commands.
- * Both menuHandler.js, buttonMenuHandler.js, and uiHandler.js read from here.
+ * menuHandler.js and uiHandler.js read from here.
  *
  * To add a new category or command:
  *   1. Add an entry to MENU_CATEGORIES below.
  *   2. No other menu code needs to change.
  *
- * Architecture:  menuConfig.js → menuHandler, buttonMenuHandler, uiHandler
+ * Architecture:  menuConfig.js → menuHandler, uiHandler
  */
 
 // ─── Category definitions ─────────────────────────────────────────────────────
@@ -71,14 +71,14 @@ export const MENU_CATEGORIES = [
     cmds: [
       { name: "ai",      desc: "AI assistant chat",            wizard: true },
       { name: "gpt",     desc: "ChatGPT conversation",         wizard: true },
-      { name: "chatgpt", desc: "ChatGPT conversation",         wizard: true },
-      { name: "gemi",    desc: "Google Gemini AI",             wizard: true },
-      { name: "gemini",  desc: "Google Gemini AI",             wizard: true },
-      { name: "claude",  desc: "Anthropic Claude AI",          wizard: true },
-      { name: "bing",    desc: "Bing AI chat",                 wizard: true },
       { name: "gpt4",    desc: "GPT-4 conversation",           wizard: true },
+      { name: "gpt4o",   desc: "GPT-4o conversation",          wizard: true },
+      { name: "mistral", desc: "Mistral AI chat",              wizard: true },
+      { name: "deepseek",desc: "DeepSeek AI chat",              wizard: true },
+      { name: "gemini",  desc: "Google Gemini AI",             wizard: true },
       { name: "imagine", desc: "AI image generation",          wizard: true },
-      { name: "dalle",   desc: "DALL-E image creation",        wizard: true },
+      { name: "flux",    desc: "Flux image generation",        wizard: true },
+      { name: "tts",     desc: "Text to speech",                wizard: true },
     ],
   },
   {

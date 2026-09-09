@@ -101,8 +101,7 @@ const AI_COMMANDS = new Set([
   "deepseek", "gemini", "imagine", "flux", "tts",
 ]);
 const REMOVED_COMMANDS = new Set([
-  "panel", "panels", "button", "buttons", "buttonmode", "nix",
-  "setnixowner", "nixmenu", "nixhelp",
+  "panel", "panels", "button", "buttons", "buttonmode",
 ]);
 
 function commandIsDisabled(command) {
@@ -112,8 +111,7 @@ function commandIsDisabled(command) {
     "chatgpt", "claude", "copilot", "blackbox", "deepseek-r1",
     "sd", "tts2", "codeai", "storyai", "metaai", "grok", "qwen",
   ];
-  return removedAi.includes(normalized) || (AI_COMMANDS.has(normalized) === false
-    && normalized.startsWith("nix"));
+  return removedAi.includes(normalized);
 }
 
 async function dispatch(sock, msg, store, statusFlow, animeFlow) {

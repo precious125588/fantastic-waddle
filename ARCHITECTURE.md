@@ -3,7 +3,7 @@
 ## Messaging Architecture
 
 ```
-Commands (case.js / mias/index.js / mias/nix/ / mias/nexray_bot.cjs)
+Commands (case.js / mias/index.js / mias/nexray_bot.cjs)
         ↓
 MIAS Handlers (mias/handlers/baileysHandler.js — single import point)
         ↓
@@ -45,18 +45,6 @@ mias/
 │   ├── codeHandler.js    — Code viewer (text + document fallback)
 │   ├── utilityHandler.js — JID utils, text extraction, timing helpers
 │   └── README.md         — Full API reference
-├── nix/                  — NIX Assistant System
-│   ├── index.js          — Command router
-│   ├── menu.js           — Nix menu
-│   ├── ui.js             — Typing indicators, staged send
-│   └── modules/
-│       ├── ai.js
-│       ├── media.js      — Uses handlers (no direct Baileys)
-│       ├── account.js
-│       ├── whatsapp.js
-│       ├── groups.js
-│       ├── system.js
-│       └── ...
 ├── lib/
 │   ├── kevdraPatches.js  — Stability: session health, resource monitor
 │   ├── stickerCmd.js     — Sticker-to-command binding system
@@ -115,7 +103,7 @@ The project has two contexts:
 
 | Context | Files | Module System |
 |---------|-------|---------------|
-| **mias/** | `mias/index.js`, `mias/nix/`, `mias/handlers/` (except bridge.cjs) | **ESM** (`type: module`) |
+| **mias/** | `mias/index.js`, `mias/handlers/` (except bridge.cjs) | **ESM** (`type: module`) |
 | **Root** | `case.js`, `bot.js`, `server.js`, `nexray_bot.cjs` | **CommonJS** |
 
 ### Bridge Pattern

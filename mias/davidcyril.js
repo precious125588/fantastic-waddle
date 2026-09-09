@@ -2,7 +2,7 @@
 //
 // The public API currently exposes hundreds of endpoints with a mix of GET,
 // POST, JSON, text, and binary responses. Keep all calls behind this boundary
-// so commands, NIX, and auto-downloaders use the same URL validation, query
+// so commands and auto-downloaders use the same URL validation, query
 // encoding, timeout, and response handling.
 import { httpClient as axios } from "./lib/engineAccess.js";
 

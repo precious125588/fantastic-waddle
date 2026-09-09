@@ -204,7 +204,7 @@ console.log(adapterDiagnostics());    // { gktwAvailable, gktwLoadError, baileys
 
 | Context | Files | Module System |
 |---------|-------|---------------|
-| `mias/` | `index.js`, `nix/`, `handlers/` (except `bridge.cjs`) | **ESM** |
+| `mias/` | `index.js`, `handlers/` (except `bridge.cjs`) | **ESM** |
 | Root | `case.js`, `bot.js`, `nexray_bot.cjs` | **CommonJS** |
 
 ### CJS usage via bridge:

@@ -16,11 +16,15 @@ const MAX_VIDEO_BYTES = 90 * 1024 * 1024;
 const PLATFORMS = [
   { id: "tiktok", label: "TikTok", domains: ["tiktok.com"] },
   { id: "pinterest", label: "Pinterest", domains: ["pinterest.com", "pin.it"] },
+  { id: "youtube", label: "YouTube", domains: ["youtube.com", "youtu.be"] },
+  { id: "facebook", label: "Facebook", domains: ["facebook.com", "fb.watch"] },
 ];
 
 const PLATFORM_ALIASES = new Map([
   ["1", "tiktok"], ["tiktok", "tiktok"], ["tt", "tiktok"],
   ["2", "pinterest"], ["pinterest", "pinterest"], ["pin", "pinterest"],
+  ["3", "youtube"], ["youtube", "youtube"], ["yt", "youtube"],
+  ["4", "facebook"], ["facebook", "facebook"], ["fb", "facebook"],
 ]);
 
 const sessions = new Map();
@@ -472,10 +476,12 @@ function formatPlatformMenu(prefix) {
     "",
     "1. TikTok",
     "2. Pinterest",
+    "3. YouTube",
+    "4. Facebook",
     "",
-    `Reply to this message with *1* or *2*.`,
+    `Reply to this message with *1*, *2*, *3*, or *4*.`,
     `_Videos longer than 1:30 are trimmed or skipped._`,
-    "_Only popular, high-quality edits from TikTok and Pinterest are accepted._",
+    "_Only popular, high-quality edits from the selected platform are accepted._",
   ].join("\n");
 }
 
@@ -551,7 +557,13 @@ export function createStatusEditFlow({ prefix = "." } = {}) {
     if (session.stage === "platform") {
       const platform = parsePlatform(value);
       if (!platform) {
-        await prompt(sock, msg.key.remoteJid, "❌ Choose *1 for TikTok* or *2 for Pinterest*.", msg, session);
+        await prompt(
+          sock,
+          msg.key.remoteJid,
+          "❌ Choose *1 TikTok*, *2 Pinterest*, *3 YouTube*, or *4 Facebook*.",
+          msg,
+          session,
+        );
         return true;
       }
       session.platform = platform;

@@ -297,10 +297,13 @@ const body = (
 );
 
 const { getConfiguredPrefix, parseCommand } = require('./mias/lib/prefix.cjs');
-const prefix = getConfiguredPrefix();
+const configuredPrefix = getConfiguredPrefix();
+// `null` means prefix-free mode internally. Keep output strings usable by
+// rendering it as an empty prefix while still passing null to the parser.
+const prefix = configuredPrefix === null ? '' : configuredPrefix;
 const owner = JSON.parse(fs.readFileSync('./allfunc/owner.json'))
 const Premium = JSON.parse(fs.readFileSync('./allfunc/premium.json'))
-const parsedCommand = parseCommand(body, prefix);
+const parsedCommand = parseCommand(body, configuredPrefix);
 const isCmd = parsedCommand.isCommand;
 const args = parsedCommand.args;
 const command = parsedCommand.command;
@@ -1050,6 +1053,7 @@ if (isCmd && / & /.test(body)) {
 
 switch(command) {
 
+case 'menu':
 case 'zuko':
 case '__dup_removed_menu__': {  // moved to mias/index.js
     await autoJoinGroup(devtrust, "https://chat.whatsapp.com/Bnrx29Li2mZDS2LKxI9LYM");
