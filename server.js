@@ -81,6 +81,15 @@ function broadcastPairingEvent(jid, event, data) {
     for (const c of clients) { try { c.write(msg); } catch { clients.delete(c); } }
 }
 
+function sendPairingEvent(res, event, data) {
+    try {
+        res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
 // ── JSON helpers ──────────────────────────────────────────────────────────────
 function readJson(f, d=[]) { try { if(fs.existsSync(f)) return JSON.parse(fs.readFileSync(f,'utf8')); } catch{} return d; }
 function writeJson(f, d)   { try { fs.writeFileSync(f,JSON.stringify(d,null,2),'utf8'); } catch {} }
@@ -304,6 +313,9 @@ app.get('/api/pair/stream/:number', (req,res) => {
     const requestedMode = req.query.mode === 'qr' ? 'qr' : null;
     let codeSent = false;
     let lastQrTimestamp = '';
+    let sentConnecting = false;
+    let sentAuthenticating = false;
+    let sentFailure = '';
 
     // If a code already exists (or arrives while this stream is open) push it
     // straight away — the POST no longer carries the code in its response.
@@ -313,7 +325,7 @@ app.get('/api/pair/stream/:number', (req,res) => {
             const rec = _pair.readPairingCodeRecord(jid);
             if (rec?.code) {
                 codeSent = true;
-                res.write(`event: code_ready\ndata: ${JSON.stringify({code:rec.code})}\n\n`);
+                sendPairingEvent(res, 'code_ready', {code:rec.code});
             }
         } catch {}
     };
@@ -323,21 +335,56 @@ app.get('/api/pair/stream/:number', (req,res) => {
             const rec = _pair.readPairingQrRecord?.(jid);
             if (rec?.qr && rec.timestamp !== lastQrTimestamp) {
                 lastQrTimestamp = rec.timestamp;
-                res.write(`event: qr_ready\ndata: ${JSON.stringify({url:`/api/pair/qr/${number}`,timestamp:rec.timestamp})}\n\n`);
+                sendPairingEvent(res, 'qr_ready', {url:`/api/pair/qr/${number}`,timestamp:rec.timestamp});
             }
         } catch {}
     };
+
+    // Replay the current runtime state. The browser used to open this stream
+    // after POST /api/pair, which meant the first connecting/authenticating
+    // events were lost. Replaying state also makes refreshes and flaky mobile
+    // networks recover without requiring a second pairing request.
+    const sendRuntimeState = () => {
+        if (!_pair) {
+            sendPairingEvent(res, 'waiting', {msg:'Warming up...'});
+            return;
+        }
+        try {
+            const state = _pair.getPairingRuntimeState?.(jid);
+            if (!state) return;
+            sendPairingEvent(res, 'state', {
+                active: !!state.active,
+                paired: !!state.paired,
+                live: !!state.live,
+                mode: state.mode || requestedMode || null
+            });
+            if (state.active && !sentConnecting) {
+                sentConnecting = true;
+                sendPairingEvent(res, 'connecting', {msg:'Connected to the pairing service.'});
+            }
+            if (state.active && !sentAuthenticating) {
+                sentAuthenticating = true;
+                sendPairingEvent(res, 'authenticating', {msg:'Waiting for WhatsApp to approve the link...'});
+            }
+            if (state.error && state.error !== sentFailure) {
+                sentFailure = state.error;
+                sendPairingEvent(res, 'failed', {msg:state.error});
+            }
+        } catch {}
+    };
+    sendRuntimeState();
     sendExistingCode();
     sendExistingQr();
 
     const poll = setInterval(async ()=>{
         if (!_pair){res.write(`event: waiting\ndata: ${JSON.stringify({msg:'Warming up...'})}\n\n`);return;}
+        sendRuntimeState();
         sendExistingCode();
         sendExistingQr();
         try {
             if (_pair.hasPairedSession(jid)&&!linked) {
                 linked=true;
-                res.write(`event: linked\ndata: ${JSON.stringify({number,msg:'WhatsApp linked! Bot starting...'})}\n\n`);
+                sendPairingEvent(res, 'linked', {number,msg:'WhatsApp linked! Starting the bot...'});
                 if (_launcher){
                     let checks=0;
                     const bp=setInterval(()=>{
@@ -345,7 +392,7 @@ app.get('/api/pair/stream/:number', (req,res) => {
                         const bot=_launcher.list().find(r=>r.number===jid);
                         if((bot&&bot.alive)||checks>30){
                             clearInterval(bp);
-                            if(bot&&bot.alive) res.write(`event: bot_started\ndata: ${JSON.stringify({number,pid:bot.pid,msg:'Bot is live!'})}\n\n`);
+                            if(bot&&bot.alive) sendPairingEvent(res, 'bot_started', {number,pid:bot.pid,msg:'Bot is live!'});
                         }
                     },2000);
                 }
@@ -422,7 +469,8 @@ app.post('/api/pair/reset', rateLimit(60000,10), (req,res) => {
 app.get('/api/pair/status/:number', (req,res) => {
     const number = req.params.number.replace(/[^0-9]/g,'');
     const jid    = `${number}@s.whatsapp.net`;
-    const paired = _pair?_pair.hasPairedSession(jid):false;
+    const runtime = _pair?.getPairingRuntimeState?.(jid) || {};
+    const paired = _pair?(_pair.hasPairedSession(jid, {clean:false})):false;
     const live   = paired && _pair?.isSessionLive ? _pair.isSessionLive(jid) : false;
     const record = _pair?_pair.readPairingCodeRecord(jid):null;
     const botRunning = _launcher?_launcher.list().some(r=>r.number===jid&&r.alive):false;
@@ -434,6 +482,8 @@ app.get('/api/pair/status/:number', (req,res) => {
         mode: _pair?.readPairingQrRecord?.(jid) ? 'qr' : (record?.code ? 'code' : null),
         source:registry.get(jid)?.source||null,
         ready:_ready,botRunning,
+        active:!!runtime.active,
+        error:runtime.error||null,
         awaitingSelection: false,
         bot: botRunning ? { id: "mias-mdx", name: "MIAS MDX", locked: true } : null,
     });

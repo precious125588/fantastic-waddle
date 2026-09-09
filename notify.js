@@ -4,6 +4,14 @@ const TelegramBot = require('node-telegram-bot-api');
 const { getBotToken } = require('./nexstore/token');
 
 const adminFilePath = './nexstore/admin.json';
+const TELEGRAM_SEND_TIMEOUT_MS = 10000;
+
+function withTimeout(promise, ms = TELEGRAM_SEND_TIMEOUT_MS) {
+    return Promise.race([
+        promise,
+        new Promise((_, reject) => setTimeout(() => reject(new Error('Telegram request timed out')), ms))
+    ]);
+}
 
 async function sendNotification(message, parseMode = 'Markdown') {
     const envAdmins = (process.env.ADMIN_IDS || '')
@@ -37,7 +45,7 @@ async function sendNotification(message, parseMode = 'Markdown') {
         const bot = new TelegramBot(botToken, { polling: false });
         for (const adminId of adminIDs) {
             try {
-                await bot.sendMessage(adminId, message, { parse_mode: parseMode });
+                await withTimeout(bot.sendMessage(adminId, message, { parse_mode: parseMode }));
                 console.log(`✓ Notification sent to admin: ${adminId}`);
             } catch (err) {
                 console.error(`Failed to send to admin ${adminId}:`, err.message);

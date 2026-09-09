@@ -195,6 +195,30 @@ function getSessionState(nexusDevNumber) {
     };
 }
 
+// A small, read-only snapshot for the web status stream. Do not use this for
+// cleanup decisions: status polling must never delete a half-written pairing
+// session just because the browser refreshed.
+function getPairingRuntimeState(nexusDevNumber) {
+    const tracker = rentbotTracker.get(nexusDevNumber);
+    let code = null;
+    let qr = false;
+    try { code = readPairingCodeRecord(nexusDevNumber)?.code || null; } catch {}
+    try { qr = !!readPairingQrRecord(nexusDevNumber)?.qr; } catch {}
+    let paired = false;
+    try { paired = hasPairedSession(nexusDevNumber, { clean: false }); } catch {}
+    return {
+        active: isPairingActive(nexusDevNumber),
+        inProgress: isPairingInProgress(nexusDevNumber),
+        mode: tracker?.pairingMode || null,
+        paired,
+        live: paired && isSessionLive(nexusDevNumber),
+        code,
+        qr,
+        error: tracker?.pairingError || null,
+        disconnected: !!tracker?.disconnected,
+    };
+}
+
 // Explicit unlink — used by the web UI so a user can re-pair a dead number.
 function unpairSession(nexusDevNumber) {
     endPairingWindow(nexusDevNumber);
@@ -477,11 +501,13 @@ const CONNECTION_DELAY = 100;
 // Connection queue system
 const connectionQueue = [];
 let activeConnections = 0;
+const queuedNumbers = new Set();
 
 function processQueue() {
     if (activeConnections < MAX_CONCURRENT_CONNECTIONS && connectionQueue.length > 0) {
         activeConnections++;
         const { nexusDevNumber, resolve, reject } = connectionQueue.shift();
+        queuedNumbers.delete(nexusDevNumber);
         
         startpairing(nexusDevNumber)
             .then(result => {
@@ -498,7 +524,11 @@ function processQueue() {
 }
 
 function queuePairing(nexusDevNumber) {
+    if (queuedNumbers.has(nexusDevNumber) || pairingInFlight.has(nexusDevNumber)) {
+        return Promise.resolve(rentbotTracker.get(nexusDevNumber)?.connection || null);
+    }
     return new Promise((resolve, reject) => {
+        queuedNumbers.add(nexusDevNumber);
         connectionQueue.push({ nexusDevNumber, resolve, reject });
         processQueue();
     });
@@ -840,6 +870,8 @@ async function startpairing(nexusDevNumber, options = {}) {
     }
     
     const tracker = rentbotTracker.get(nexusDevNumber);
+    tracker.socketGeneration = (tracker.socketGeneration || 0) + 1;
+    const socketGeneration = tracker.socketGeneration;
     tracker.retryCount++;
     tracker.disconnected = false;
     tracker.lastActivity = Date.now();
@@ -1433,6 +1465,10 @@ async function startpairing(nexusDevNumber, options = {}) {
     nexus.ev.on("connection.update", async (update) => {
         const { connection, lastDisconnect, qr } = update;
         const tracker = rentbotTracker.get(nexusDevNumber);
+        // Baileys can emit a late close for a socket that has already been
+        // replaced. Never let that stale event reconnect or wipe the new
+        // socket's credentials.
+        if (!tracker || tracker.socketGeneration !== socketGeneration) return;
 
         // QR mode emits the raw QR payload through connection.update. Store it
         // by session and expose only an image endpoint from the web server.
@@ -1495,7 +1531,8 @@ async function startpairing(nexusDevNumber, options = {}) {
                 }
                 console.log(chalk.red.bold(`❌ ${nexusDevNumber} logged out/unauthorized (401) — clearing session`));
                 try {
-                    await sendUserDisconnected(nexusDevNumber, 'Reason: 401 — logged out/unlinked', { reconnecting: false });
+            void Promise.resolve(sendUserDisconnected(nexusDevNumber, 'Reason: 401 — logged out/unlinked', { reconnecting: false }))
+                .catch(() => {});
                 } catch {}
                 if (tracker) {
                     tracker.loggedOut = true;
@@ -1514,7 +1551,8 @@ async function startpairing(nexusDevNumber, options = {}) {
             // trying to pair — those closes are part of the normal handshake
             // (401/515) and the bot retries by itself.
             if (!pairingStillPending) {
-                await sendUserDisconnected(nexusDevNumber, `Reason: ${reason}`);
+                void Promise.resolve(sendUserDisconnected(nexusDevNumber, `Reason: ${reason}`))
+                    .catch(() => {});
             }
 
             // ── 401 DURING PAIRING ───────────────────────────────────────
@@ -1639,7 +1677,11 @@ async function startpairing(nexusDevNumber, options = {}) {
             tracker.lastActivity = Date.now();
             try { fs.unlinkSync(getPairingQrPath(nexusDevNumber)); } catch {}
             try { fs.unlinkSync(getPairingCodePath(nexusDevNumber)); } catch {}
-            await sendUserConnected(nexusDevNumber);
+            // Telegram notifications are useful, but a slow Telegram API must
+            // never hold the WhatsApp handoff open. The old await left the
+            // pairing socket alive while the browser waited and made successful
+            // links look frozen on deployments with weak outbound networking.
+            void Promise.resolve(sendUserConnected(nexusDevNumber)).catch(() => {});
 
             // One paired MD owns exactly one MIAS process. There is no bot
             // selector: pairing always launches the canonical MIAS entrypoint.
@@ -1881,6 +1923,7 @@ module.exports = {
     endPairingWindow,
     isSessionLive,
     getSessionState,
+    getPairingRuntimeState,
     unpairSession,
     forceCleanupSession,
     listPairedDevices,

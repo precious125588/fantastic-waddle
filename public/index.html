@@ -379,6 +379,8 @@ footer a:hover{color:var(--cyan);}
 let currentCode = '';
 let currentMode = 'qr';
 let pairingSse = null;
+let fallbackPoll = null;
+let lastStreamNotice = '';
 const pairBtn  = document.getElementById('pairBtn');
 const alertBox = document.getElementById('alertBox');
 const codeWrap = document.getElementById('codeWrap');
@@ -515,8 +517,12 @@ async function requestPairCode(force = false) {
   qrWrap.style.display = 'none';
   logWrap.style.display = 'none';
   logBody.innerHTML = '';
+  lastStreamNotice = '';
   setLoading(true, 'Connecting to WhatsApp');
   setStep(1);
+  // Subscribe before POST /api/pair. This prevents the initial connection
+  // events from being emitted before the browser is listening.
+  startSSE(number, currentMode);
   try {
     const resp = await fetch('/api/pair', {
       method: 'POST',
@@ -545,6 +551,7 @@ async function requestPairCode(force = false) {
       } else {
         showAlert(data.error || 'Pairing failed. Please try again.', type);
       }
+      closePairingStreams();
       setStep(1);
       return;
     }
@@ -566,11 +573,9 @@ async function requestPairCode(force = false) {
     }
     setStep(2);
     addLog('Waiting for WhatsApp link…', 'info');
-    // The code now arrives over the live stream, so the request can never
-    // time out before WhatsApp answers.
-    startSSE(number, currentMode);
   } catch (err) {
     setLoading(false);
+    closePairingStreams();
     showAlert('Network error — check your connection and try again.');
     setStep(1);
   }
@@ -610,22 +615,39 @@ function startSSE(number, mode = currentMode) {
       addLog('🔒 Bot locked: '+(d?.botName||d?.botId||'selected'), 'ok');
       hideSelectionNotice();
     });
+    pairingSse.addEventListener('waiting',       e => { const d=tryParse(e.data); addLog('⏳ '+(d?.msg||'Waiting for server…'), 'info'); });
+    pairingSse.addEventListener('state',         e => { const d=tryParse(e.data); if(d?.active) addLogOnce('🔗 Pairing session is active', 'info'); });
     pairingSse.addEventListener('linked',        e => { const d=tryParse(e.data); addLog('🎉 '+(d?.msg||'WhatsApp Linked!'), 'ok'); setStep(3); });
     pairingSse.addEventListener('bot_started',   e => {
       const d=tryParse(e.data); addLog('🤖 '+(d?.msg||'Bot is live!'), 'ok');
-      pairingSse.close(); pairingSse = null;
+      closePairingStreams();
       setTimeout(showSuccess, 900);
     });
-    pairingSse.addEventListener('failed',  e => { const d=tryParse(e.data); addLog('❌ '+(d?.msg||'Failed.'), 'fail'); pairingSse.close(); pairingSse = null; });
-    pairingSse.addEventListener('timeout', () => { addLog('⏰ Timed out. Try again.', 'fail'); pairingSse.close(); pairingSse = null; });
-    pairingSse.onerror = () => { if (pairingSse) { pairingSse.close(); pairingSse = null; } startFallbackPoll(number); };
+    pairingSse.addEventListener('failed',  e => { const d=tryParse(e.data); addLog('❌ '+(d?.msg||'Failed.'), 'fail'); });
+    pairingSse.addEventListener('timeout', () => { addLog('⏰ Timed out. Try again.', 'fail'); closePairingStreams(); });
+    pairingSse.onerror = () => {
+      addLogOnce('📡 Live updates interrupted — switching to status polling.', 'info');
+      startFallbackPoll(number);
+    };
   } catch { startFallbackPoll(number); }
 }
 
+function addLogOnce(msg, type = '') {
+  if (lastStreamNotice === msg) return;
+  lastStreamNotice = msg;
+  addLog(msg, type);
+}
+
+function closePairingStreams() {
+  if (pairingSse) { pairingSse.close(); pairingSse = null; }
+  if (fallbackPoll) { clearInterval(fallbackPoll); fallbackPoll = null; }
+}
+
 function startFallbackPoll(number) {
-  addLog('📡 Switched to poll mode…', 'info');
+  if (fallbackPoll) return;
+  addLogOnce('📡 Switched to poll mode…', 'info');
   let count = 0;
-  const t = setInterval(async () => {
+  fallbackPoll = setInterval(async () => {
     count++;
     try {
       const r = await fetch(`/api/pair/status/${number}`);
@@ -640,14 +662,20 @@ function startFallbackPoll(number) {
       }
       if (d.awaitingSelection) showSelectionNotice();
       if (d.bot) hideSelectionNotice();
+      if (d.error) addLogOnce('❌ '+d.error, 'fail');
       if (d.paired) {
-        clearInterval(t);
+        clearInterval(fallbackPoll);
+        fallbackPoll = null;
         addLog('✅ WhatsApp linked!', 'ok');
         setStep(3);
         setTimeout(showSuccess, d.botRunning ? 900 : 3000);
       }
     } catch {}
-    if (count >= 150) clearInterval(t);
+    if (count >= 300) {
+      clearInterval(fallbackPoll);
+      fallbackPoll = null;
+      addLog('⏰ Status polling timed out. Try a fresh pairing.', 'fail');
+    }
   }, 4000);
 }
 
