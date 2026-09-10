@@ -41,7 +41,11 @@ const MAX_DURATION_SECONDS = 180;
 // Naruto is intentionally restricted to these TikTok hashtag searches. Do
 // not broaden this to a generic web/search-engine query: that was the source
 // of unrelated clips and unreliable downloads.
-export const NARUTO_HASHTAGS = Object.freeze([
+//
+// Keep the seed list readable and let uniqueHashtags() remove repeated tags
+// case-insensitively. TikTok treats hashtag casing as equivalent, so entries
+// such as #Ninetails and #nineTails must not create duplicate searches.
+const NARUTO_HASHTAG_SEED = [
   "#Naruto",
   "#Narutoshipuden",
   "#Narutouzumaki",
@@ -76,7 +80,228 @@ export const NARUTO_HASHTAGS = Object.freeze([
   "#Pain",
   "#Yaiko",
   "#nagato",
-]);
+  "#sasukeuchiha",
+  "#sasukes",
+  "#sasukedit",
+  "#sakura",
+  "#sakuraharuno",
+  "#kakashihatake",
+  "#itachi",
+  "#itachiuchiha",
+  "#itachiedit",
+  "#madarauchiha",
+  "#obitouchiha",
+  "#minatonamikaze",
+  "#jiraiya",
+  "#tsunade",
+  "#gaara",
+  "#mightguy",
+  "#guy",
+  "#neji",
+  "#ino",
+  "#choji",
+  "#hinata",
+  "#hinatahyuga",
+  "#borutouzumaki",
+  "#kawaki",
+  "#sarada",
+  "#mitsuki",
+  "#konohamaru",
+  "#shisui",
+  "#shisuiuchiha",
+  "#hashiramasenju",
+  "#hiruzen",
+  "#orochimaru",
+  "#kabuto",
+  "#deidara",
+  "#kisame",
+  "#konan",
+  "#hidan",
+  "#kakuzu",
+  "#sasori",
+  "#zabuza",
+  "#haku",
+  "#killerbee",
+  "#borutonarutonextgenerations",
+  "#borutoedit",
+  "#borutoedits",
+  "#borutotiktok",
+  "#borutokawaki",
+  "#saradauchiha",
+  "#borutotwobluevortex",
+  "#tbv",
+  "#twobluevortex",
+  "#narutoshippuden",
+  "#animeedit",
+  "#akatsuki",
+  "#sharingan",
+  "#rinnegan",
+  "#rasengan",
+  "#susanoo",
+  "#chakra",
+  "#narutoedits",
+  "#uchiha",
+  "#uchihaclan",
+  "#uzumaki",
+  "#uzumakiclan",
+  "#senju",
+  "#senjucan",
+  "#hyuga",
+  "#hyugaclan",
+  "#akatsukiedit",
+  "#akatsukimemes",
+  "#team7",
+  "#team10",
+  "#team8",
+  "#teamguy",
+  "#konoha",
+  "#hiddenleaf",
+  "#leafvillage",
+  "#shinobi",
+  "#ninja",
+  "#narutoverse",
+  "#shinobiworld",
+  "#sharing",
+  "#mangekyosharingan",
+  "#eternalms",
+  "#byakugan",
+  "#rinnesharingan",
+  "#baryonmode",
+  "#sixpath",
+  "#sixpaths",
+  "#sixpathsofpain",
+  "#sageMode",
+  "#sixpathsage",
+  "#rasenshuriken",
+  "#chidori",
+  "#amaterasu",
+  "#kamui",
+  "#izanagi",
+  "#izanami",
+  "#genjutsu",
+  "#taijutsu",
+  "#ninjutsu",
+  "#kagebunshin",
+  "#shadowclone",
+  "#woodstyle",
+  "#firestyle",
+  "#waterstyle",
+  "#lightningstyle",
+  "#earthstyle",
+  "#windstyle",
+  "#otsutsuki",
+  "#otsutsukiclan",
+  "#otsutsukiedit",
+  "#otsutsukiedits",
+  "#otsutsukimoments",
+  "#otsutsukimemes",
+  "#otsutsukipower",
+  "#otsutsukipowers",
+  "#kaguya",
+  "#kaguyatsutsuki",
+  "#kaguyaroot",
+  "#kaguyaedit",
+  "#kaguyaedits",
+  "#momoshiki",
+  "#momoshikiotsutsuki",
+  "#momoshikiedit",
+  "#momoshikiedits",
+  "#kinshiki",
+  "#kinshikiotsutsuki",
+  "#kinshikiedit",
+  "#isshiki",
+  "#isshikiootsutsuki",
+  "#isshikiedit",
+  "#isshikiedits",
+  "#jigen",
+  "#jigenedit",
+  "#urashiki",
+  "#urashikiedit",
+  "#toneri",
+  "#toneriotsutsuki",
+  "#toneriedit",
+  "#hagoromo",
+  "#hagoromootsutsuki",
+  "#hagoromoedit",
+  "#sageofsixpaths",
+  "#hamura",
+  "#hamuraotsutsuki",
+  "#hamuraedit",
+  "#shibai",
+  "#shibaiotsutsuki",
+  "#shibaiotsutsukiedit",
+  "#code",
+  "#daemon",
+  "#daemonedit",
+  "#eida",
+  "#edaedit",
+  "#otsutsukilore",
+  "#otsutsukigod",
+  "#shinjutsu",
+  "#shinjutsupowers",
+  "#divinepower",
+  "#godofshinobi",
+  "#sixpathssage",
+  "#tenseigan",
+  "#jougan",
+  "#karma",
+  "#karmaseal",
+  "#rinnegans",
+  "#narutoamv",
+  "#narutoamvedit",
+  "#narutoshippudenedit",
+  "#narutoanimeedit",
+  "#naruto4k",
+  "#naruto4kedit",
+  "#narutoedit4k",
+  "#narutoeditz",
+  "#narutoedits4k",
+  "#itachiedits",
+  "#madaraedit",
+  "#madaraedits",
+  "#obitoedit",
+  "#obitoedits",
+  "#sasukeedit",
+  "#sasukeedits",
+  "#shisuiedit",
+  "#otsutsukiclan",
+  "#kaguyautsutsuki",
+  "#shibaiedit",
+  "#kiba",
+  "#eternalmangekyosharingan",
+  "#rinnegansharingan",
+  "#perfectsusanoo",
+  "#narutoaura",
+  "#animeaura",
+  "#animepower",
+  "#animepowers",
+  "#painedit",
+  "#nagatoedit",
+  "#minatoedit",
+  "#jiraiyaedit",
+  "#hashiramaedit",
+  "#tobiramaedit",
+  "#mightguyedit",
+  "#rockleeedit",
+  "#gaaraedit",
+  "#deidaraedit",
+  "#tentails",
+  "#tentailsedits",
+  "#tenten",
+  "#temari",
+];
+
+function uniqueHashtags(items) {
+  const seen = new Set();
+  return items.filter((hashtag) => {
+    const key = normalizeHashtag(hashtag);
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+export const NARUTO_HASHTAGS = Object.freeze(uniqueHashtags(NARUTO_HASHTAG_SEED));
 
 // TikWM treats `/api/feed/search` (without the trailing slash) as a protected
 // web route and returns HTTP 403. The actual JSON endpoint is the slash form.
@@ -305,6 +530,17 @@ function normalizeHashtag(value) {
   return String(value || "").trim().toLowerCase().replace(/^#+/, "").replace(/[^a-z0-9]+/g, "");
 }
 
+function canonicalUrl(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  try {
+    const url = new URL(raw);
+    return `${url.protocol.toLowerCase()}//${url.host.toLowerCase()}${url.pathname.replace(/\/+$/, "")}`;
+  } catch {
+    return raw.replace(/[?#].*$/, "").replace(/\/+$/, "").toLowerCase();
+  }
+}
+
 export function isNarutoEditTitle(value) {
   const title = String(value || "").trim();
   const normalized = title.toLowerCase().replace(/[^a-z0-9]+/g, " ");
@@ -334,6 +570,7 @@ function narutoCandidate(row, hashtag) {
   if (!sourceUrl || !isNarutoEditTitle(title)) return null;
   return {
     sourceUrl,
+    videoId: String(videoId || "").trim(),
     hashtag,
     title,
     author: String(author || "TikTok creator").trim(),
@@ -378,8 +615,11 @@ async function collectNarutoCandidates() {
     ));
     for (const rows of rowsByQuery) {
       for (const row of rows || []) {
-        if (seen.has(row.sourceUrl)) continue;
-        seen.add(row.sourceUrl);
+        const key = row.videoId
+          ? `id:${row.videoId}`
+          : `url:${canonicalUrl(row.sourceUrl)}`;
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
         candidates.push(row);
       }
     }
@@ -570,7 +810,9 @@ async function remoteEdits(entry) {
 function dedupeResults(items) {
   const seen = new Set();
   return items.filter((item) => {
-    const key = item.sourceUrl || item.downloadUrl;
+    const key = item.videoId
+      ? `id:${item.videoId}`
+      : `url:${canonicalUrl(item.sourceUrl || item.downloadUrl)}`;
     if (!key || seen.has(key)) return false;
     seen.add(key);
     return true;
@@ -641,6 +883,7 @@ export {
   NARUTO_RESULTS,
   NARUTO_SEARCH_ANCHOR,
   TIKWM_SEARCH_ENDPOINTS,
+  canonicalUrl,
   cleanSlug,
   commandKey,
   displayName,
