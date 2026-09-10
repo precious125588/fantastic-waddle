@@ -15,6 +15,10 @@
  * Nothing bypasses or evades WhatsApp enforcement.
  */
 
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
+
 const NON_USER_SUFFIXES = [
   "@g.us",            // groups
   "@broadcast",       // status@broadcast + broadcast lists
@@ -22,6 +26,13 @@ const NON_USER_SUFFIXES = [
   "@call",
   "@bot",
 ];
+const NAMES_DB_PATH = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "..",
+  "..",
+  "database",
+  "names.js",
+);
 
 /** Digits only, no leading +, 7..15 digits (E.164 max). */
 export function normalizeNumber(input) {
@@ -105,6 +116,89 @@ export function extractBlockTargetCandidates(msg, args = []) {
   return candidates;
 }
 
+function contactStores(sock) {
+  return [
+    sock?.store?.contacts,
+    sock?.contactStore?.contacts,
+    sock?.contacts,
+  ].filter(Boolean);
+}
+
+function contactEntries(store) {
+  if (store instanceof Map) return [...store.entries()];
+  if (typeof store === "object") return Object.entries(store);
+  return [];
+}
+
+function contactNumbers(key, contact) {
+  const values = [
+    contact?.jid,
+    contact?.id,
+    contact?.pn,
+    contact?.phone,
+    contact?.phoneNumber,
+    key,
+  ].filter((value) => !String(value || "").toLowerCase().endsWith("@lid"));
+  return values
+    .map((value) => normalizeNumber(value))
+    .filter(Boolean);
+}
+
+function cleanContactName(value) {
+  const name = String(value || "").replace(/\s+/g, " ").trim();
+  if (!name || /^\+?\d[\d\s-]*$/.test(name) || name.includes("@")) return "";
+  return name;
+}
+
+function nameKey(value) {
+  return cleanContactName(String(value || "").trim().replace(/^@+/, ""))
+    .toLocaleLowerCase()
+    .replace(/\s+/g, " ");
+}
+
+function readNamesDb() {
+  try {
+    const raw = fs.readFileSync(NAMES_DB_PATH, "utf8");
+    const match = raw.match(/=\s*(\{[\s\S]*\})\s*;?\s*$/);
+    return JSON.parse(match ? match[1] : raw);
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Resolve an exact contact name to one WhatsApp user only.
+ * Ambiguous names are rejected rather than guessing the wrong person.
+ */
+export function findContactByName(sock, input) {
+  const wanted = nameKey(input);
+  if (!wanted || /\d/.test(wanted)) return "";
+  const matches = new Set();
+  for (const store of contactStores(sock)) {
+    for (const [key, contact] of contactEntries(store)) {
+      const jid = contactNumbers(key, contact)
+        .map((number) => `${number}@s.whatsapp.net`)
+        .find(Boolean) || "";
+      if (!jid) continue;
+      const names = [
+        contact?.name,
+        contact?.notify,
+        contact?.verifiedName,
+        contact?.displayName,
+      ].map(cleanContactName).filter(Boolean);
+      if (names.some((name) => nameKey(name) === wanted)) matches.add(jid);
+    }
+  }
+  const db = readNamesDb();
+  for (const [num, value] of Object.entries(db || {})) {
+    if (nameKey(value) === wanted) {
+      const jid = normalizeUserJid(`${num}@s.whatsapp.net`);
+      if (jid) matches.add(jid);
+    }
+  }
+  return matches.size === 1 ? [...matches][0] : "";
+}
+
 /**
  * Resolve a raw target (jid, @lid, mention, phone string) to a jid WhatsApp
  * will accept for block/unblock. Verifies existence via onWhatsApp when
@@ -128,6 +222,8 @@ export async function resolveBlockTarget(sock, ...inputs) {
       const mapped = await resolveLidToPhone(sock, raw);
       if (mapped) return { jid: mapped, num: normalizeNumber(mapped), reason: "" };
     }
+    const named = findContactByName(sock, raw);
+    if (named) return { jid: named, num: normalizeNumber(named), reason: "" };
   }
   return { jid: "", num: "", reason: tried.length ? "unresolvable" : "no-target" };
 }
@@ -319,6 +415,7 @@ export default {
   normalizeUserJid,
   isBlockableTarget,
   resolveBlockTarget,
+  findContactByName,
   fetchBlocklist,
   isBlockedNumber,
   isBlockedJid,

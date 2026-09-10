@@ -38629,11 +38629,93 @@ globalThis.__MiasBlocklist = __MiasBlocklist;
       (typeof isCreator === "function" && isCreator(sender));
 
     async function __v22Target(sock, msg, args) {
-      // Only use a mention, a quoted sender, or an explicit number. The old
+      // Use a mention, quoted sender, exact contact name, or explicit number.
+      // The old
       // resolveCommandTarget fallback could return msg.key.participant, which
       // is the command sender (often the bot account itself).
       const candidates = BL.extractBlockTargetCandidates(msg, args);
       return BL.resolveBlockTarget(sock, candidates);
+    }
+
+    function __v22UsableName(value) {
+      const name = String(value || "").replace(/\s+/g, " ").trim();
+      if (!name || name.includes("@") || /^\+?\d[\d\s-]*$/.test(name)) return "";
+      return name.replace(/[*_`]/g, "").slice(0, 80);
+    }
+
+    function __v22NamesDb() {
+      try {
+        const file = path.join(__dirname, "..", "database", "names.js");
+        const raw = fs.readFileSync(file, "utf8");
+        const match = raw.match(/=\s*(\{[\s\S]*\})\s*;?\s*$/);
+        return JSON.parse(match ? match[1] : raw);
+      } catch {
+        return {};
+      }
+    }
+
+    async function __v22DisplayName(sock, msg, jid) {
+      const cleanJid = String(jid || "").replace(/:\d+(?=@)/, "");
+      const number = cleanJid.split("@")[0].replace(/[^0-9]/g, "");
+      const direct = [
+        msg?.quoted?.pushName,
+        msg?.quoted?.name,
+        msg?.quoted?.notify,
+      ].map(__v22UsableName).find(Boolean);
+      if (direct) return direct;
+
+      const stores = [
+        sock?.store?.contacts,
+        sock?.contactStore?.contacts,
+        sock?.contacts,
+      ].filter(Boolean);
+      for (const store of stores) {
+        const contact = store instanceof Map
+          ? store.get(cleanJid) || store.get(`${number}@s.whatsapp.net`)
+          : store[cleanJid] || store[`${number}@s.whatsapp.net`];
+        const name = __v22UsableName(
+          contact?.name || contact?.notify || contact?.verifiedName || contact?.displayName,
+        );
+        if (name) return name;
+
+        // Newer WhatsApp stores may keep the visible contact under an @lid
+        // key while exposing the phone number only as pn/phone/id. Scan those
+        // records by their phone-bearing fields so the UI never leaks a LID.
+        const entries = store instanceof Map ? [...store.entries()] : Object.entries(store);
+        for (const [key, candidate] of entries) {
+          const numbers = [
+            key,
+            candidate?.jid,
+            candidate?.id,
+            candidate?.pn,
+            candidate?.phone,
+            candidate?.phoneNumber,
+          ].map((value) => String(value || "").replace(/[^0-9]/g, ""));
+          if (!numbers.includes(number)) continue;
+          const candidateName = __v22UsableName(
+            candidate?.name
+              || candidate?.notify
+              || candidate?.verifiedName
+              || candidate?.displayName,
+          );
+          if (candidateName) return candidateName;
+        }
+      }
+
+      try {
+        if (typeof getDisplayName === "function") {
+          const name = __v22UsableName(await getDisplayName(sock, cleanJid, null));
+          if (name) return name;
+        }
+      } catch {}
+      try {
+        const cached = typeof pushNameCache !== "undefined" && pushNameCache?.get?.(number);
+        const name = __v22UsableName(cached);
+        if (name) return name;
+      } catch {}
+
+      const stored = __v22UsableName(__v22NamesDb()?.[number]);
+      return stored || "this contact";
     }
 
     const __v22Block = async (sock, msg, args = []) => {
@@ -38646,21 +38728,22 @@ globalThis.__MiasBlocklist = __MiasBlocklist;
       if (!jid) {
         await sendReply(sock, msg, reason === "not-a-user"
           ? "❌ Groups, status and channels can't be blocked — target an individual user."
-          : `Usage: *${CONFIG.PREFIX}block @user*  •  reply to them  •  *${CONFIG.PREFIX}block <number>*`);
+          : `Usage: *${CONFIG.PREFIX}block @user*  •  reply to them  •  *${CONFIG.PREFIX}block <contact name>*  •  *${CONFIG.PREFIX}block <number>*`);
         return;
       }
       await react(sock, msg, "⏳");
       const res = await BL.setBlockStatus(sock, jid, "block");
       if (res.ok) {
         await react(sock, msg, "🚫");
+        const name = await __v22DisplayName(sock, msg, res.jid);
         const verify = res.verified === true ? "\n✅ Confirmed on WhatsApp's blocklist."
                      : res.verified === null ? "\n_Blocklist read-back unavailable on this build._" : "";
         await sendReply(sock, msg, res.alreadyInState
-          ? `ℹ️ +${res.num} is *already blocked*.`
-          : `🚫 *Blocked* +${res.num}.${verify}`, [res.jid]);
+          ? `ℹ️ *${name}* is *already blocked*.`
+          : `🚫 *Blocked* *${name}*.${verify}`, [res.jid]);
       } else {
         await react(sock, msg, "❌");
-        await sendReply(sock, msg, `❌ Block failed for +${res.num || "?"}.\n📌 ${res.error}${res.code ? ` (${res.code})` : ""}`);
+        await sendReply(sock, msg, `❌ Block failed for the selected contact.\n📌 ${res.error}${res.code ? ` (${res.code})` : ""}`);
       }
     };
 
@@ -38674,21 +38757,22 @@ globalThis.__MiasBlocklist = __MiasBlocklist;
       if (!jid) {
         await sendReply(sock, msg, reason === "not-a-user"
           ? "❌ That target isn't an individual WhatsApp user."
-          : `Usage: *${CONFIG.PREFIX}unblock @user*  •  *${CONFIG.PREFIX}unblock <number>*`);
+          : `Usage: *${CONFIG.PREFIX}unblock @user*  •  *${CONFIG.PREFIX}unblock <contact name>*  •  *${CONFIG.PREFIX}unblock <number>*`);
         return;
       }
       await react(sock, msg, "⏳");
       const res = await BL.setBlockStatus(sock, jid, "unblock");
       if (res.ok) {
         await react(sock, msg, "✅");
+        const name = await __v22DisplayName(sock, msg, res.jid);
         const verify = res.verified === true ? "\n✅ Confirmed removed from WhatsApp's blocklist."
                      : res.verified === null ? "\n_Blocklist read-back unavailable on this build._" : "";
         await sendReply(sock, msg, res.alreadyInState
-          ? `ℹ️ +${res.num} was *not blocked* — nothing to undo.`
-          : `🔓 *Unblocked* +${res.num}.${verify}`, [res.jid]);
+          ? `ℹ️ *${name}* was *not blocked* — nothing to undo.`
+          : `🔓 *Unblocked* *${name}*.${verify}`, [res.jid]);
       } else {
         await react(sock, msg, "❌");
-        await sendReply(sock, msg, `❌ Unblock failed for +${res.num || "?"}.\n📌 ${res.error}${res.code ? ` (${res.code})` : ""}`);
+        await sendReply(sock, msg, `❌ Unblock failed for the selected contact.\n📌 ${res.error}${res.code ? ` (${res.code})` : ""}`);
       }
     };
 
@@ -38701,9 +38785,21 @@ globalThis.__MiasBlocklist = __MiasBlocklist;
       const list = await BL.fetchBlocklist(sock, { force: true });
       if (!list) { await sendReply(sock, msg, "❌ This build can't read the WhatsApp blocklist."); return; }
       const arr = [...list];
-      await sendReply(sock, msg, arr.length
-        ? `🚫 *Blocked contacts (${arr.length})*\n\n` + arr.map((n, i) => `${i + 1}. +${n}`).join("\n")
-        : "✅ Your blocklist is empty.");
+      if (!arr.length) {
+        await sendReply(sock, msg, "✅ Your blocklist is empty.");
+        return;
+      }
+      const named = await Promise.all(arr.map(async (n) => ({
+        jid: `${n}@s.whatsapp.net`,
+        name: await __v22DisplayName(sock, msg, `${n}@s.whatsapp.net`),
+      })));
+      await sendReply(
+        sock,
+        msg,
+        `🚫 *Blocked contacts (${arr.length})*\n\n` +
+          named.map((item, i) => `${i + 1}. *${item.name}*`).join("\n"),
+        named.map((item) => item.jid),
+      );
     };
 
     for (const [name, handler, desc] of [

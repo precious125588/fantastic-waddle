@@ -14,6 +14,10 @@ import {
   searchStatusCandidates,
   resolveStatusCandidate,
 } from "../lib/statusEditFlow.js";
+import {
+  candidateText,
+  isAllowedAnimeCandidate,
+} from "../lib/animeContentFilter.js";
 
 const require = createRequire(import.meta.url);
 const axios = require("axios");
@@ -22,6 +26,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ANIME_ROOT = path.resolve(__dirname, "..", "..", "animes");
 const MAX_RESULTS = 3;
 const NARUTO_RESULTS = 2;
+const DEMON_SLAYER_RESULTS = 2;
 const MAX_INPUT_BYTES = 90 * 1024 * 1024;
 const NARUTO_SEARCH_ANCHORS = Object.freeze(["#narutoedit", "#narutoedits"]);
 const NARUTO_SEARCH_BATCH_SIZE = 1;
@@ -33,7 +38,6 @@ const DC_TIKTOK_ENDPOINTS = [
 ];
 const MAX_PORTABLE_MP4_BYTES = 12 * 1024 * 1024;
 const MAX_PORTABLE_OUTPUT_BYTES = 16 * 1024 * 1024;
-const AI_OR_NON_EDIT_PATTERN = /\b(?:a\.?i\.?|ai[-_\s]?(?:generated|art|video)|generated|cartoon|3d|baby|kids?|meme|what\s*if)\b/i;
 // Keep anime shortcuts aligned with the status wizard's hard three-minute
 // limit. The actual trim is performed by ffmpeg before anything is sent.
 const MAX_DURATION_SECONDS = 180;
@@ -291,6 +295,32 @@ const NARUTO_HASHTAG_SEED = [
   "#temari",
 ];
 
+// Supplied Demon Slayer / Kimetsu no Yaiba hashtag pool. Keep this list
+// explicit: the command must stay inside the requested TikTok source set.
+const DEMON_SLAYER_HASHTAG_SEED = [
+  "#demonslayer", "#kimetsunoyaiba", "#kny", "#knyedit", "#knyedits",
+  "#demonslayer4k", "#demonslayer4kedit", "#demonslayeramv", "#demonslayeramvedit",
+  "#tanjiro", "#tanjiroedit", "#tanjiroedits", "#tanjiro4k", "#tanjiroaura",
+  "#hinokamikagura", "#sunbreathing", "#zenitsu", "#zenitsuedit", "#zenitsuedits",
+  "#zenitsu4k", "#zenitsuaura", "#thunderbreathing", "#rengoku", "#rengokuedit",
+  "#rengokuedits", "#rengoku4k", "#rengokuaura", "#flamebreathing", "#tengen",
+  "#tengenedit", "#tengenedits", "#tengen4k", "#tengenaura", "#soundbreathing",
+  "#giyu", "#giyuedit", "#giyuedits", "#giyu4k", "#giyuaura", "#muichiro",
+  "#muichiroedit", "#muichiroedits", "#muichiro4k", "#muichiroaura",
+  "#mistbreathing", "#sanemi", "#sanemiedit", "#sanemiedits", "#sanemiaura",
+  "#windbreathing", "#gyomei", "#gyomeiedit", "#gyomeiedits", "#gyomeiaura",
+  "#stonebreathing", "#mitsuri", "#mitsuriedit", "#mitsuriedits", "#mitsuriaura",
+  "#obanai", "#obanaiedit", "#shinobu", "#shinobuedit", "#shinobuedits",
+  "#shinobuaura", "#muzan", "#muzanedit", "#muzanedits", "#muzanaura",
+  "#kokushibo", "#kokushiboedit", "#kokushiboedits", "#kokushiboaura", "#douma",
+  "#doumaedit", "#doumaedits", "#doumaaura", "#akaza", "#akazaedit", "#akazaedits",
+  "#akazaaura", "#hantengu", "#hantenguedit", "#gyokko", "#gyokkoedit", "#nakime",
+  "#nakimeedit", "#uppermoon", "#uppermoonedit", "#uppermoonedits", "#uppermoons",
+  "#twelvekizuki", "#moonbreathing", "#demonmark", "#demonslayeredits4k",
+  "#demonslayeredit4k", "#demonslayeredits", "#demonslayeredit", "#infinitycastle",
+  "#kny",
+];
+
 function uniqueHashtags(items) {
   const seen = new Set();
   return items.filter((hashtag) => {
@@ -302,6 +332,15 @@ function uniqueHashtags(items) {
 }
 
 export const NARUTO_HASHTAGS = Object.freeze(uniqueHashtags(NARUTO_HASHTAG_SEED));
+const DEMON_SLAYER_HASHTAGS = Object.freeze(uniqueHashtags(DEMON_SLAYER_HASHTAG_SEED));
+const DEMON_SLAYER_SEARCH_ANCHORS = Object.freeze([
+  "#demonslayeredit",
+  "#demonslayeredits",
+  "#knyedit",
+  "#knyedits",
+  "#demonslayer4kedit",
+  "#demonslayeramvedit",
+]);
 
 // TikWM treats `/api/feed/search` (without the trailing slash) as a protected
 // web route and returns HTTP 403. The actual JSON endpoint is the slash form.
@@ -542,9 +581,11 @@ function canonicalUrl(value) {
 }
 
 export function isNarutoEditTitle(value) {
-  const title = String(value || "").trim();
+  const title = typeof value === "object"
+    ? candidateText(value)
+    : String(value || "").trim();
   const normalized = title.toLowerCase().replace(/[^a-z0-9]+/g, " ");
-  return /\bnarutoedits?\b/.test(normalized) && !AI_OR_NON_EDIT_PATTERN.test(title);
+  return /\bnarutoedits?\b/.test(normalized) && isAllowedAnimeCandidate(title);
 }
 
 export function buildNarutoSearchQueries() {
@@ -553,6 +594,26 @@ export function buildNarutoSearchQueries() {
   const secondaryHashtags = NARUTO_HASHTAGS
     .filter((hashtag) => !anchorNames.has(normalizeHashtag(hashtag)));
   return shuffle(secondaryHashtags)
+    .map((hashtag) => `${anchor} ${hashtag}`);
+}
+
+export function isDemonSlayerEditTitle(value) {
+  const title = typeof value === "object"
+    ? candidateText(value)
+    : String(value || "").trim();
+  const normalized = title.toLowerCase().replace(/[^a-z0-9]+/g, " ");
+  const series = /\b(?:demon\s+slayer|kimetsu(?:\s+no\s+yaiba)?|kny|tanjiro|zenitsu|rengoku|tengen|giyu|muzan|akaza|kokushibo|douma|shinobu|mitsuri|muichiro)\b/.test(normalized);
+  const edit = /\b(?:edit|edits|amv|4k|aura|breathing|infinity\s+castle)\b/.test(normalized);
+  return series && edit && isAllowedAnimeCandidate(title);
+}
+
+export function buildDemonSlayerSearchQueries() {
+  const anchor = DEMON_SLAYER_SEARCH_ANCHORS[
+    Math.floor(Math.random() * DEMON_SLAYER_SEARCH_ANCHORS.length)
+  ];
+  const anchorNames = new Set(DEMON_SLAYER_SEARCH_ANCHORS.map(normalizeHashtag));
+  return shuffle(DEMON_SLAYER_HASHTAGS)
+    .filter((hashtag) => !anchorNames.has(normalizeHashtag(hashtag)))
     .map((hashtag) => `${anchor} ${hashtag}`);
 }
 
@@ -569,7 +630,33 @@ function narutoCandidate(row, hashtag) {
     author && videoId ? `https://www.tiktok.com/@${author}/video/${videoId}` : "",
   );
   const title = String(row?.title || row?.desc || "").trim().slice(0, 140);
-  if (!sourceUrl || !isNarutoEditTitle(title)) return null;
+  if (!sourceUrl || !isNarutoEditTitle({ ...row, title })) return null;
+  return {
+    sourceUrl,
+    videoId: String(videoId || "").trim(),
+    hashtag,
+    title,
+    author: String(author || "TikTok creator").trim(),
+    views: row?.play_count || row?.playCount || row?.views || 0,
+    likes: row?.digg_count || row?.diggCount || row?.likes || 0,
+    row,
+  };
+}
+
+function demonSlayerCandidate(row, hashtag) {
+  const author = row?.author?.unique_id
+    || row?.author?.uniqueId
+    || row?.author?.nickname
+    || row?.author?.uniqueId;
+  const videoId = row?.video_id || row?.aweme_id || row?.awemeId || row?.id;
+  const sourceUrl = firstUrl(
+    row?.share_url,
+    row?.shareUrl,
+    row?.url,
+    author && videoId ? `https://www.tiktok.com/@${author}/video/${videoId}` : "",
+  );
+  const title = String(row?.title || row?.desc || "").trim().slice(0, 180);
+  if (!sourceUrl || !isDemonSlayerEditTitle({ ...row, title })) return null;
   return {
     sourceUrl,
     videoId: String(videoId || "").trim(),
@@ -603,6 +690,27 @@ async function searchNarutoHashtag(query) {
   return [];
 }
 
+async function searchDemonSlayerHashtag(query) {
+  for (const endpoint of TIKWM_SEARCH_ENDPOINTS) {
+    try {
+      const payload = await tikwmRequest(endpoint, {
+        keywords: query,
+        count: 20,
+        cursor: 0,
+        web: 1,
+        HD: 1,
+      });
+      if (Number(payload?.code) !== 0 && payload?.data == null) continue;
+      const rows = payload?.data?.videos || payload?.data?.data || payload?.data || [];
+      const candidates = (Array.isArray(rows) ? rows : [])
+        .map((row) => demonSlayerCandidate(row, query))
+        .filter(Boolean);
+      if (candidates.length) return candidates;
+    } catch {}
+  }
+  return [];
+}
+
 async function collectNarutoCandidates() {
   const candidates = [];
   const seen = new Set();
@@ -624,6 +732,25 @@ async function collectNarutoCandidates() {
         seen.add(key);
         candidates.push(row);
       }
+    }
+    if (candidates.length >= NARUTO_CANDIDATE_TARGET) break;
+  }
+  return shuffle(candidates);
+}
+
+async function collectDemonSlayerCandidates() {
+  const candidates = [];
+  const seen = new Set();
+  const queries = buildDemonSlayerSearchQueries();
+  for (const query of queries) {
+    const rows = await withTimeout(searchDemonSlayerHashtag(query), 15000);
+    for (const row of rows || []) {
+      const key = row.videoId
+        ? `id:${row.videoId}`
+        : `url:${canonicalUrl(row.sourceUrl)}`;
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      candidates.push(row);
     }
     if (candidates.length >= NARUTO_CANDIDATE_TARGET) break;
   }
@@ -722,15 +849,22 @@ async function downloadNarutoVideo(candidate) {
     || await downloadTikwmVideo(candidate);
 }
 
-async function narutoEdits() {
-  const candidates = await collectNarutoCandidates();
+async function resolveHashtagEdits(collectCandidates, resultCount) {
+  const candidates = await collectCandidates();
   const resolved = [];
   let cursor = 0;
   const worker = async () => {
-    while (cursor < candidates.length && resolved.length < NARUTO_RESULTS) {
+    while (cursor < candidates.length && resolved.length < resultCount) {
       const candidate = candidates[cursor++];
       try {
-        const source = await withTimeout(downloadNarutoVideo(candidate), 75000);
+        // Re-check immediately before download as a second gate. This keeps
+        // a mutable/shared candidate object from bypassing the metadata rule.
+        if (!isAllowedAnimeCandidate(candidate)) continue;
+        const source = await withTimeout(
+          (async () => await downloadDavidCyrilVideo(candidate)
+            || await downloadTikwmVideo(candidate))(),
+          75000,
+        );
         if (!source) continue;
         // Normalize downloads concurrently and preserve portrait/landscape
         // orientation. If transcoding fails, only pass through a real MP4;
@@ -741,19 +875,30 @@ async function narutoEdits() {
         const buffer = normalized && normalized.length <= MAX_PORTABLE_OUTPUT_BYTES
           ? normalized
           : (isMp4Buffer(source) && source.length <= MAX_PORTABLE_OUTPUT_BYTES ? source : null);
-        if (buffer && validVideoBuffer(buffer)) resolved.push({ ...candidate, buffer });
+        if (buffer && validVideoBuffer(buffer) && isAllowedAnimeCandidate(candidate)) {
+          resolved.push({ ...candidate, buffer });
+        }
       } catch {}
     }
   };
   await Promise.all(Array.from(
-    { length: Math.min(NARUTO_RESULTS, candidates.length) },
+    { length: Math.min(resultCount, candidates.length) },
     () => worker(),
   ));
-  return resolved.slice(0, NARUTO_RESULTS);
+  return resolved.slice(0, resultCount);
+}
+
+async function narutoEdits() {
+  return resolveHashtagEdits(collectNarutoCandidates, NARUTO_RESULTS);
+}
+
+async function demonSlayerEdits() {
+  return resolveHashtagEdits(collectDemonSlayerCandidates, DEMON_SLAYER_RESULTS);
 }
 
 async function remoteEdits(entry) {
   if (entry.slug === "naruto") return narutoEdits();
+  if (entry.slug === "demon-slayer") return demonSlayerEdits();
 
   // Search the exact title first so a request for Naruto cannot come back
   // with an unrelated clip.
@@ -776,7 +921,7 @@ async function remoteEdits(entry) {
     for (const rows of platformResults) {
       for (const row of rows || []) {
         const key = row?.sourceUrl || row?.downloadUrl;
-        if (!key || seen.has(key)) continue;
+        if (!key || seen.has(key) || !isAllowedAnimeCandidate(row)) continue;
         seen.add(key);
         candidates.push(row);
       }
@@ -833,7 +978,9 @@ export function createAnimeEditFlow({ prefix = "." } = {}) {
 
   async function sendThree(sock, msg, entry) {
     const jid = msg.key.remoteJid;
-    const resultLimit = entry.slug === "naruto" ? NARUTO_RESULTS : MAX_RESULTS;
+    const resultLimit = entry.slug === "naruto"
+      ? NARUTO_RESULTS
+      : entry.slug === "demon-slayer" ? DEMON_SLAYER_RESULTS : MAX_RESULTS;
     const react = (text) => sock.sendMessage(jid, {
       react: { text, key: msg.key },
     }).catch(() => {});
@@ -866,7 +1013,11 @@ export function createAnimeEditFlow({ prefix = "." } = {}) {
   function registerCommands(cmd) {
     for (const [alias, entry] of byCommand) {
       cmd(alias, {
-        desc: `Send ${entry.slug === "naruto" ? NARUTO_RESULTS : MAX_RESULTS} random HD ${entry.title} edits`,
+        desc: `Send ${
+          entry.slug === "naruto" || entry.slug === "demon-slayer"
+            ? 2
+            : MAX_RESULTS
+        } random HD ${entry.title} edits`,
         category: "ANIME",
       }, (sock, msg) => sendThree(sock, msg, entry));
     }
@@ -883,6 +1034,9 @@ export function createAnimeEditFlow({ prefix = "." } = {}) {
 export {
   ANIME_ROOT,
   NARUTO_RESULTS,
+  DEMON_SLAYER_RESULTS,
+  DEMON_SLAYER_HASHTAGS,
+  DEMON_SLAYER_SEARCH_ANCHORS,
   NARUTO_SEARCH_ANCHORS,
   TIKWM_SEARCH_ENDPOINTS,
   canonicalUrl,

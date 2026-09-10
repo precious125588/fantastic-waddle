@@ -6,8 +6,13 @@ import {
   NARUTO_HASHTAGS,
   NARUTO_RESULTS,
   NARUTO_SEARCH_ANCHORS,
+  DEMON_SLAYER_HASHTAGS,
+  DEMON_SLAYER_RESULTS,
+  DEMON_SLAYER_SEARCH_ANCHORS,
   TIKWM_SEARCH_ENDPOINTS,
+  buildDemonSlayerSearchQueries,
   canonicalUrl,
+  isDemonSlayerEditTitle,
   isNarutoEditTitle,
 } from "../mias/features/animeEdits.js";
 import { parseCommand } from "../mias/lib/prefix.cjs";
@@ -130,4 +135,43 @@ test("Naruto rejects plain and AI-style clips without the edit hashtag", () => {
   assert.equal(isNarutoEditTitle("Naruto AI generated animation"), false);
   assert.equal(isNarutoEditTitle("Obito edit #narutoedit #naruto"), true);
   assert.equal(isNarutoEditTitle("Sasuke edit #narutoedits #uchiha"), true);
+});
+
+test("Demon Slayer uses the supplied hashtag pool and two-result limit", () => {
+  assert.equal(DEMON_SLAYER_RESULTS, 2);
+  const normalized = DEMON_SLAYER_HASHTAGS.map((tag) =>
+    tag.replace(/^#+/, "").toLowerCase(),
+  );
+  assert.equal(new Set(normalized).size, normalized.length);
+  for (const tag of [
+    "#demonslayer",
+    "#kimetsunoyaiba",
+    "#tanjiroaura",
+    "#rengoku4k",
+    "#uppermoon",
+    "#infinitycastle",
+  ]) {
+    assert.ok(normalized.includes(tag.slice(1)), `missing requested hashtag: ${tag}`);
+  }
+  assert.equal(DEMON_SLAYER_SEARCH_ANCHORS.length, 6);
+  const queries = buildDemonSlayerSearchQueries();
+  assert.ok(queries.length > DEMON_SLAYER_SEARCH_ANCHORS.length);
+  assert.ok(queries.every((query) =>
+    DEMON_SLAYER_SEARCH_ANCHORS.includes(query.split(" ")[0].toLowerCase()),
+  ));
+});
+
+test("both anime filters reject AI and animation markers", () => {
+  for (const title of [
+    "Tanjiro edit #demonslayeredit #aianime",
+    "Rengoku animated edit #rengokuedit",
+    "Naruto edit #narutoedit AI generated",
+    "Sasuke edit #narutoedits 3D render",
+  ]) {
+    assert.equal(isDemonSlayerEditTitle(title) || isNarutoEditTitle(title), false, title);
+  }
+  assert.equal(
+    isDemonSlayerEditTitle("Tanjiro aura edit #demonslayeredit #kny"),
+    true,
+  );
 });

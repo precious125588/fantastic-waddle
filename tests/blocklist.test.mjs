@@ -179,3 +179,45 @@ test("target extraction prefers explicit mention and never command sender", () =
     ["2349068551055@s.whatsapp.net"],
   );
 });
+
+test("exact contact names resolve safely for block and unblock", () => {
+  const sock = makeSock();
+  sock.store = {
+    contacts: {
+      "2349068551055@s.whatsapp.net": { name: "Hope", notify: "Hope J." },
+      "2348012345678@s.whatsapp.net": { name: "Hope", notify: "Hope 2" },
+      "2348123456789@s.whatsapp.net": { name: "Ada" },
+    },
+  };
+  assert.equal(BL.findContactByName(sock, "Ada"), "2348123456789@s.whatsapp.net");
+  assert.equal(BL.findContactByName(sock, "Hope"), "");
+  assert.equal(BL.findContactByName(sock, "@Ada"), "2348123456789@s.whatsapp.net");
+});
+
+test("named targets are accepted by resolveBlockTarget", async () => {
+  const sock = makeSock();
+  sock.store = {
+    contacts: {
+      "2349068551055@s.whatsapp.net": { name: "Demon Admin" },
+    },
+  };
+  const target = await BL.resolveBlockTarget(sock, "Demon Admin");
+  assert.equal(target.jid, "2349068551055@s.whatsapp.net");
+  assert.equal(target.num, "2349068551055");
+});
+
+test("LID-keyed contacts resolve by their phone mapping and name", () => {
+  const sock = makeSock();
+  sock.store = {
+    contacts: {
+      "987654321@lid": {
+        name: "LID Contact",
+        pn: "2349068551055@s.whatsapp.net",
+      },
+    },
+  };
+  assert.equal(
+    BL.findContactByName(sock, "LID Contact"),
+    "2349068551055@s.whatsapp.net",
+  );
+});
