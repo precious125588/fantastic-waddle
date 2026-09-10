@@ -200,11 +200,13 @@ function withTimeout(promise, timeoutMs = 130000) {
 }
 
 async function remoteEdits(entry) {
-  const queries = [`${entry.query} anime edit`];
-  // Source restriction is deliberate: anime edits must come from TikTok or
-  // Pinterest only.  The status flow validates the host again before
-  // downloading, so a search-engine redirect cannot widen this allow-list.
-  const platforms = ["tiktok", "pinterest"];
+  // Search the exact title first so a request for Naruto cannot come back
+  // with an unrelated clip.
+  const queries = [`${entry.query} anime edit`, `${entry.query} edit`, entry.query];
+  // Source restriction is deliberate: anime edits come from TikTok only.
+  // The status flow validates the host again before downloading, so a
+  // search-engine redirect cannot widen this allow-list.
+  const platforms = ["tiktok"];
   const candidates = [];
   const seen = new Set();
 
@@ -224,7 +226,7 @@ async function remoteEdits(entry) {
         candidates.push(row);
       }
     }
-    if (candidates.length >= 30) break;
+    if (candidates.length >= 12) break;
   }
 
   const resolved = [];
@@ -279,13 +281,13 @@ export function createAnimeEditFlow({ prefix = "." } = {}) {
     }).catch(() => {});
     await react("🎬");
 
-    // Never mix in local media: the owner asked for public TikTok/Pinterest
-    // edits only, and exactly three results per request.
+    // Never mix in local media: the owner asked for public TikTok edits
+    // only, and exactly three results per request.
     const results = dedupeResults(await remoteEdits(entry));
     if (!results.length) {
       await react("❌");
       await sock.sendMessage(jid, {
-        text: `❌ I couldn't find a downloadable TikTok or Pinterest edit for ${entry.title} right now. Try ${getPrefix()}Naruto, ${getPrefix()}JJK, or another supported anime title again in a moment.`,
+        text: `❌ I couldn't find a downloadable TikTok edit for ${entry.title} right now. Try ${getPrefix()}Naruto, ${getPrefix()}JJK, or another supported anime title again in a moment.`,
       }, { quoted: msg });
       return false;
     }
