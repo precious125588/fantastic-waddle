@@ -23,6 +23,17 @@ const ANIME_ROOT = path.resolve(__dirname, "..", "..", "animes");
 const MAX_RESULTS = 3;
 const NARUTO_RESULTS = 2;
 const MAX_INPUT_BYTES = 90 * 1024 * 1024;
+const NARUTO_SEARCH_ANCHOR = "#narutoedit";
+const NARUTO_SEARCH_BATCH_SIZE = 1;
+const NARUTO_CANDIDATE_TARGET = 4;
+const DC_TIKTOK_ENDPOINTS = [
+  "/download/tiktokdl-rapid",
+  "/download/tiktok",
+  "/download/savetik",
+];
+const MAX_PORTABLE_MP4_BYTES = 12 * 1024 * 1024;
+const MAX_PORTABLE_OUTPUT_BYTES = 16 * 1024 * 1024;
+const AI_OR_NON_EDIT_PATTERN = /\b(?:a\.?i\.?|ai[-_\s]?(?:generated|art|video)|generated|cartoon|3d|baby|kids?|meme|what\s*if)\b/i;
 // Keep anime shortcuts aligned with the status wizard's hard three-minute
 // limit. The actual trim is performed by ffmpeg before anything is sent.
 const MAX_DURATION_SECONDS = 180;
@@ -79,6 +90,7 @@ const TIKWM_DETAIL_ENDPOINTS = [
   "https://tikwm.com/api/",
 ];
 let tikwmQueue = Promise.resolve();
+let davidCyrilClientPromise;
 
 // These are safe built-in shortcuts. Catalog entries can add more registered
 // titles without changing the dispatcher.
@@ -209,6 +221,10 @@ function validVideoBuffer(buffer) {
     || (header[0] === 0x1a && header[1] === 0x45 && header[2] === 0xdf && header[3] === 0xa3);
 }
 
+function isMp4Buffer(buffer) {
+  return validVideoBuffer(buffer) && buffer.slice(4, 8).toString("ascii") === "ftyp";
+}
+
 function ffmpegBinary() {
   try {
     const bundled = require("ffmpeg-static");
@@ -229,11 +245,13 @@ async function normalizeHdVideo(input) {
       "-i", source,
       "-t", String(MAX_DURATION_SECONDS),
       "-map", "0:v:0", "-map", "0:a:0?",
-      // Normalize every delivered edit to a stable 720p HD MP4. This also
-      // prevents odd codecs/container variants from failing on WhatsApp.
-      "-vf", "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1",
-      "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
-      "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart",
+      // Cap the longest edge at 1280 without padding. TikTok edits are
+      // normally portrait; forcing 1280x720 made them arrive with large
+      // black bars and a poor WhatsApp preview.
+      "-vf", "scale=720:720:force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2,setsar=1",
+      "-r", "30",
+      "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28", "-pix_fmt", "yuv420p",
+      "-c:a", "aac", "-b:a", "64k", "-movflags", "+faststart",
       "-f", "mp4", output,
     ], { timeout: 120000, maxBuffer: 1024 * 1024 });
     const result = await fs.promises.readFile(output);
@@ -283,6 +301,23 @@ function firstUrl(...values) {
   return values.find((value) => typeof value === "string" && /^https?:\/\//i.test(value)) || "";
 }
 
+function normalizeHashtag(value) {
+  return String(value || "").trim().toLowerCase().replace(/^#+/, "").replace(/[^a-z0-9]+/g, "");
+}
+
+export function isNarutoEditTitle(value) {
+  const title = String(value || "").trim();
+  const normalized = title.toLowerCase().replace(/[^a-z0-9]+/g, " ");
+  return /\bnarutoedit\b/.test(normalized) && !AI_OR_NON_EDIT_PATTERN.test(title);
+}
+
+export function buildNarutoSearchQueries() {
+  const secondaryHashtags = NARUTO_HASHTAGS
+    .filter((hashtag) => normalizeHashtag(hashtag) !== normalizeHashtag(NARUTO_SEARCH_ANCHOR));
+  return shuffle(secondaryHashtags)
+    .map((hashtag) => `${NARUTO_SEARCH_ANCHOR} ${hashtag}`);
+}
+
 function narutoCandidate(row, hashtag) {
   const author = row?.author?.unique_id
     || row?.author?.uniqueId
@@ -295,11 +330,12 @@ function narutoCandidate(row, hashtag) {
     row?.url,
     author && videoId ? `https://www.tiktok.com/@${author}/video/${videoId}` : "",
   );
-  if (!sourceUrl) return null;
+  const title = String(row?.title || row?.desc || "").trim().slice(0, 140);
+  if (!sourceUrl || !isNarutoEditTitle(title)) return null;
   return {
     sourceUrl,
     hashtag,
-    title: String(row?.title || row?.desc || `${hashtag} Naruto edit`).trim().slice(0, 140),
+    title,
     author: String(author || "TikTok creator").trim(),
     views: row?.play_count || row?.playCount || row?.views || 0,
     likes: row?.digg_count || row?.diggCount || row?.likes || 0,
@@ -311,7 +347,7 @@ async function searchNarutoHashtag(hashtag) {
   for (const endpoint of TIKWM_SEARCH_ENDPOINTS) {
     try {
       const payload = await tikwmRequest(endpoint, {
-        keywords: hashtag,
+        keywords: `${NARUTO_SEARCH_ANCHOR} ${hashtag}`,
         count: 20,
         cursor: 0,
         web: 1,
@@ -331,17 +367,23 @@ async function searchNarutoHashtag(hashtag) {
 async function collectNarutoCandidates() {
   const candidates = [];
   const seen = new Set();
-  // Start with random tags and only expand when the first batch is too small.
-  // Every accepted URL came from a TikWM search whose keyword is one of the
-  // allow-listed hashtags above.
-  for (const hashtag of shuffle(NARUTO_HASHTAGS)) {
-    const rows = await withTimeout(searchNarutoHashtag(hashtag), 35000);
-    for (const row of rows || []) {
-      if (seen.has(row.sourceUrl)) continue;
-      seen.add(row.sourceUrl);
-      candidates.push(row);
+  // Every query contains #narutoedit plus one randomly rotated hashtag from
+  // the full handwritten pool. Search a small batch in parallel so a quiet
+  // tag does not make the command wait through the entire pool.
+  const queries = buildNarutoSearchQueries();
+  for (let offset = 0; offset < queries.length; offset += NARUTO_SEARCH_BATCH_SIZE) {
+    const batch = queries.slice(offset, offset + NARUTO_SEARCH_BATCH_SIZE);
+    const rowsByQuery = await Promise.all(batch.map((query) =>
+      withTimeout(searchNarutoHashtag(query), 15000),
+    ));
+    for (const rows of rowsByQuery) {
+      for (const row of rows || []) {
+        if (seen.has(row.sourceUrl)) continue;
+        seen.add(row.sourceUrl);
+        candidates.push(row);
+      }
     }
-    if (candidates.length >= 12) break;
+    if (candidates.length >= NARUTO_CANDIDATE_TARGET) break;
   }
   return shuffle(candidates);
 }
@@ -391,21 +433,80 @@ async function downloadTikwmVideo(candidate) {
   return null;
 }
 
+async function downloadDavidCyrilVideo(candidate) {
+  const client = await (davidCyrilClientPromise ||= import("../davidcyril.js")).catch(() => null);
+  if (!client?.dcGet) return null;
+  const extractPortableUrl = (payload) => {
+    const data = payload?.data?.data || payload?.data || payload?.result || payload || {};
+    return firstUrl(data?.play, data?.video, data?.url, data?.wmplay, data?.hdplay);
+  };
+  const urls = [];
+  const primary = await client.dcGet(DC_TIKTOK_ENDPOINTS[0], { url: candidate.sourceUrl }, 15000).catch(() => null);
+  const primaryUrl = primary?.ok ? extractPortableUrl(primary.data) : "";
+  if (primaryUrl) urls.push(primaryUrl);
+
+  if (!urls.length) {
+    const fallbackResults = await Promise.all(DC_TIKTOK_ENDPOINTS.slice(1).map(async (endpoint) => {
+      const response = await client.dcGet(endpoint, { url: candidate.sourceUrl }, 15000).catch(() => null);
+      return response?.ok ? extractPortableUrl(response.data) : "";
+    }));
+    urls.push(...fallbackResults.filter(Boolean));
+  }
+
+  for (const url of [...new Set(urls)]) {
+    try {
+      const response = await axios.get(url, {
+        responseType: "arraybuffer",
+        timeout: 60000,
+        maxContentLength: MAX_INPUT_BYTES,
+        maxBodyLength: MAX_INPUT_BYTES,
+        headers: {
+          "User-Agent": "Mozilla/5.0",
+          Referer: "https://www.tiktok.com/",
+          Accept: "video/*,application/octet-stream,*/*",
+        },
+      });
+      const buffer = Buffer.from(response.data || []);
+      if (validVideoBuffer(buffer)) return buffer;
+    } catch {}
+  }
+  return null;
+}
+
+async function downloadNarutoVideo(candidate) {
+  // David Cyril is the fast primary path. TikWM remains a provider fallback
+  // because public downloader availability changes over time.
+  return await downloadDavidCyrilVideo(candidate)
+    || await downloadTikwmVideo(candidate);
+}
+
 async function narutoEdits() {
   const candidates = await collectNarutoCandidates();
   const resolved = [];
-  for (const candidate of candidates) {
-    if (resolved.length >= NARUTO_RESULTS) break;
-    try {
-      const source = await withTimeout(downloadTikwmVideo(candidate), 120000);
-      if (!source) continue;
-      // TikWM's hd=1 URL is preferred. Normalize it to a stable 720p MP4 so
-      // WhatsApp does not receive the tiny preview/low-resolution variant.
-      const hd = await withTimeout(normalizeHdVideo(source), 120000);
-      const buffer = hd || source;
-      if (validVideoBuffer(buffer)) resolved.push({ ...candidate, buffer });
-    } catch {}
-  }
+  let cursor = 0;
+  const worker = async () => {
+    while (cursor < candidates.length && resolved.length < NARUTO_RESULTS) {
+      const candidate = candidates[cursor++];
+      try {
+        const source = await withTimeout(downloadNarutoVideo(candidate), 75000);
+        if (!source) continue;
+        // Normalize downloads concurrently and preserve portrait/landscape
+        // orientation. If transcoding fails, only pass through a real MP4;
+        // never label WebM/HTML as video/mp4.
+        const normalized = isMp4Buffer(source) && source.length <= MAX_PORTABLE_MP4_BYTES
+          ? null
+          : await withTimeout(normalizeHdVideo(source), 25000);
+        const buffer = normalized && normalized.length <= MAX_PORTABLE_OUTPUT_BYTES
+          ? normalized
+          : (isMp4Buffer(source) && source.length <= MAX_PORTABLE_OUTPUT_BYTES ? source : null);
+        if (buffer && validVideoBuffer(buffer)) resolved.push({ ...candidate, buffer });
+      } catch {}
+    }
+  };
+  await Promise.all(Array.from(
+    { length: Math.min(NARUTO_RESULTS, candidates.length) },
+    () => worker(),
+  ));
   return resolved.slice(0, NARUTO_RESULTS);
 }
 
@@ -538,6 +639,7 @@ export function createAnimeEditFlow({ prefix = "." } = {}) {
 export {
   ANIME_ROOT,
   NARUTO_RESULTS,
+  NARUTO_SEARCH_ANCHOR,
   TIKWM_SEARCH_ENDPOINTS,
   cleanSlug,
   commandKey,
