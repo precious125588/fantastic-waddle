@@ -92,10 +92,120 @@ async function __miasNormalizeVideoBuffer(value) {
   return value;
 }
 const __ttSelections = new Map();
+// The picker used to live only in memory with a 5 minute window, so any
+// restart (Railway redeploy, crash-shield restart) silently threw the menu
+// away and a reply like "1.3" did nothing at all. Persist it and give the
+// user a realistic window instead.
+const __TT_PICKER_TTL_MS = 30 * 60 * 1000;
+const __TT_PICKER_FILE = path.join(process.cwd(), "database", "tt-picker.json");
 function __miasPickerKey(jid) {
   // WhatsApp can expose a linked-device suffix on one message and omit it on
   // the next. Picker state belongs to the chat, not to a particular device.
   return String(jid || "").replace(/:\d+(?=@)/, "");
+}
+function __ttSaveSelections() {
+  try {
+    fs.mkdirSync(path.dirname(__TT_PICKER_FILE), { recursive: true });
+    const now = Date.now();
+    const out = {};
+    for (const [key, value] of __ttSelections) {
+      if (!value || now - value.ts > __TT_PICKER_TTL_MS) continue;
+      out[key] = { info: value.info, url: value.url, ts: value.ts, promptId: value.promptId || "" };
+    }
+    fs.writeFileSync(__TT_PICKER_FILE, JSON.stringify(out));
+  } catch {}
+}
+function __ttLoadSelections() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(__TT_PICKER_FILE, "utf8"));
+    const now = Date.now();
+    for (const [key, value] of Object.entries(raw || {})) {
+      if (value?.info && now - Number(value.ts || 0) <= __TT_PICKER_TTL_MS) {
+        __ttSelections.set(key, value);
+      }
+    }
+  } catch {}
+}
+__ttLoadSelections();
+function __ttRememberSelection(jid, entry) {
+  __ttSelections.set(__miasPickerKey(jid), entry);
+  __ttSaveSelections();
+}
+function __ttForgetSelection(jid) {
+  __ttSelections.delete(__miasPickerKey(jid));
+  __ttSaveSelections();
+}
+function __ttGetSelection(jid) {
+  const entry = __ttSelections.get(__miasPickerKey(jid));
+  if (!entry) return null;
+  if (Date.now() - Number(entry.ts || 0) > __TT_PICKER_TTL_MS) {
+    __ttForgetSelection(jid);
+    return null;
+  }
+  return entry;
+}
+// Reply context helpers: a numbered reply that quotes the picker message must
+// work even when the in-memory menu was lost, so the original TikTok link is
+// recovered from the quoted message when possible.
+function __ttQuotedContext(msg) {
+  const message = msg?.message || {};
+  return message.extendedTextMessage?.contextInfo
+    || message.imageMessage?.contextInfo
+    || message.videoMessage?.contextInfo
+    || message.documentMessage?.contextInfo
+    || message.buttonsResponseMessage?.contextInfo
+    || message.listResponseMessage?.contextInfo
+    || message.interactiveResponseMessage?.contextInfo
+    || null;
+}
+function __ttQuotedText(msg) {
+  const ctx = __ttQuotedContext(msg);
+  let quoted = ctx?.quotedMessage || null;
+  for (let i = 0; i < 4 && quoted; i += 1) {
+    const inner = quoted.ephemeralMessage?.message
+      || quoted.viewOnceMessage?.message
+      || quoted.viewOnceMessageV2?.message
+      || quoted.documentWithCaptionMessage?.message;
+    if (!inner) break;
+    quoted = inner;
+  }
+  if (!quoted) return "";
+  return String(
+    quoted.conversation
+      || quoted.extendedTextMessage?.text
+      || quoted.imageMessage?.caption
+      || quoted.videoMessage?.caption
+      || quoted.documentMessage?.caption
+      || "",
+  );
+}
+function __ttFindUrl(text) {
+  const match = String(text || "").match(
+    /https?:\/\/(?:[\w-]+\.)*(?:tiktok\.com|vm\.tiktok\.com|vt\.tiktok\.com)\/[^\s"'<>]+/i,
+  );
+  return match ? match[0] : "";
+}
+// Rebuilds a lost picker from the quoted message so the user never has to
+// resend the link after a restart or an expired menu.
+async function __ttRestoreFromQuote(msg) {
+  try {
+    const jid = msg?.key?.remoteJid;
+    if (!jid) return null;
+    const ctx = __ttQuotedContext(msg);
+    if (!ctx?.quotedMessage) return null;
+    const quotedText = __ttQuotedText(msg);
+    const looksLikePicker = /reply with the number you want/i.test(quotedText)
+      || /\b1\.3 hd video\b/i.test(quotedText);
+    const url = __ttFindUrl(quotedText) || (looksLikePicker ? __ttFindUrl(ctx?.quotedMessage?.extendedTextMessage?.matchedText || "") : "");
+    if (!url) return null;
+    const info = await fetchTikTokInfo(url);
+    if (!info) return null;
+    const entry = { info, url, ts: Date.now(), promptId: ctx?.stanzaId || "" };
+    __ttRememberSelection(jid, entry);
+    return entry;
+  } catch {
+    return null;
+  }
 }
 const __joinApprovals = new Map();
 // ── NexRay API wrapper — primary endpoint for all supported commands ──────────
@@ -2538,6 +2648,19 @@ Save my contact:` }).catch(() => {});
           // The old check only guarded prefixed commands, so automatic
           // features could still answer non-owner messages in private mode.
           if (shouldSilenceForPrivateMode(msg)) return;
+          // ── PICKER REPLY (highest priority) ────────────────────────────────
+          // A menu choice such as "1.3" must be consumed before the
+          // auto-download / reply-to-link hook, otherwise that hook treats the
+          // reply as a fresh link request and the chosen format is never sent.
+          try {
+            const _pkChoice = __miasNormalizeChoice(body);
+            if (_pkChoice && body && !isCommandBody(body)) {
+              const _pkQuoted = !!__ttQuotedContext(msg)?.quotedMessage;
+              if (__miasHasPendingPicker(msg.key.remoteJid) || _pkQuoted) {
+                if (await __miasHandleBareNumberReply(sock, msg, body)) return;
+              }
+            }
+          } catch (_pkErr) { console.error("[picker-reply]", _pkErr?.message || _pkErr); }
           // 2) Auto-download / Status forward / Reply-to-link hook (only for non-cmd messages)
           try {
             const _kSender = getSender(msg);
@@ -17381,7 +17504,7 @@ cmd(["tiktok","tt","ttdl"], { desc: "Download TikTok video/audio — supports: .
     if (!isAudio && !args[1]) {
       try {
         const info = await fetchTikTokInfo(url);
-        __ttSelections.set(__miasPickerKey(jid), { info, url, ts: Date.now(), sourceMessage: msg });
+        __ttRememberSelection(jid, { info, url, ts: Date.now(), sourceMessage: msg });
         const menuCaption = formatTikTokMenu(info, CONFIG.PREFIX);
         // Show the TikTok cover together with the caption/menu so the
         // numbered choices are tied to the actual post the user sent.
@@ -20806,7 +20929,7 @@ function __miasHasPendingPicker(jid) {
   try {
     const now = Date.now();
     const tt = __ttSelections.get(__miasPickerKey(jid));
-    if (tt && now - tt.ts <= 5 * 60 * 1000) return true;
+    if (tt && now - tt.ts <= __TT_PICKER_TTL_MS) return true;
     const pl = _playPickStore.get(__miasPickerKey(jid)) || _playPickStore.get(jid);
     if (pl && now - pl.ts <= 10 * 60 * 1000) return true;
     if (_lastAdultResults.get(__miasPickerKey(jid)) || _lastAdultResults.get(jid)) return true;
@@ -20882,8 +21005,12 @@ async function __miasHandleBareNumberReply(sock, msg, body) {
   const jid = msg.key.remoteJid;
   const now = Date.now();
 
-  const ttPick = __ttSelections.get(__miasPickerKey(jid));
-  if (ttPick && now - ttPick.ts <= 5 * 60 * 1000) {
+  let ttPick = __ttGetSelection(jid);
+  if (!ttPick && /^\d+(?:\.\d+)?$/.test(value)) {
+    // No live menu: try to rebuild it from the quoted picker message.
+    ttPick = await __ttRestoreFromQuote(msg);
+  }
+  if (ttPick) {
     // A bare group number ("1" or "2") means the default of that group rather
     // than silently doing nothing.
     let ttValue = value;
@@ -20956,9 +21083,10 @@ cmd(["pick", "p"], { desc: "Pick randomly from options (A|B|C) OR download adult
 
   // ── Mode 2: Number input — try text-menu first, then adult download ───────
   const n = parseInt(args[0] || "", 10);
-  const ttPick = __ttSelections.get(__miasPickerKey(jid));
+  let ttPick = __ttGetSelection(jid);
   const ttMode = parseTikTokMode(raw);
-  if (ttPick && Date.now() - ttPick.ts <= 5 * 60 * 1000 && ttMode) {
+  if (!ttPick && ttMode) ttPick = await __ttRestoreFromQuote(msg);
+  if (ttPick && ttMode) {
     const mediaUrl = selectTikTokUrl(ttPick.info, ttMode)
       || (ttMode.kind === "audio" ? ttPick.info.audio : (ttPick.info.videoHd || ttPick.info.videoSd || ttPick.info.videoWatermark));
     if (!mediaUrl) {
@@ -21076,7 +21204,7 @@ cmd(["pick", "p"], { desc: "Pick randomly from options (A|B|C) OR download adult
           }, { quoted: msg });
         }
       }
-      __ttSelections.delete(__miasPickerKey(jid));
+      __ttForgetSelection(jid);
       await updateTtStatus(`✅ *Here is your ${ttChoiceLabel}* (${ttMode.id}).`);
       await forceReaction(sock, msg, "✅");
     } catch (error) {
@@ -21090,8 +21218,8 @@ cmd(["pick", "p"], { desc: "Pick randomly from options (A|B|C) OR download adult
     }
     return;
   }
-  if (ttPick && Date.now() - ttPick.ts > 5 * 60 * 1000) {
-    __ttSelections.delete(__miasPickerKey(jid));
+  if (ttPick && Date.now() - ttPick.ts > __TT_PICKER_TTL_MS) {
+    __ttForgetSelection(jid);
   }
   const stash = _lastAdultResults.get(jid);
   if (!isNaN(n) && n > 0) {
