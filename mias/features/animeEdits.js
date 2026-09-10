@@ -67,9 +67,12 @@ export const NARUTO_HASHTAGS = Object.freeze([
   "#nagato",
 ]);
 
+// TikWM treats `/api/feed/search` (without the trailing slash) as a protected
+// web route and returns HTTP 403. The actual JSON endpoint is the slash form.
+// Keep both hostnames because either one can be rate-limited independently.
 const TIKWM_SEARCH_ENDPOINTS = [
-  "https://www.tikwm.com/api/feed/search",
-  "https://tikwm.com/api/feed/search",
+  "https://www.tikwm.com/api/feed/search/",
+  "https://tikwm.com/api/feed/search/",
 ];
 const TIKWM_DETAIL_ENDPOINTS = [
   "https://www.tikwm.com/api/",
@@ -534,6 +537,8 @@ export function createAnimeEditFlow({ prefix = "." } = {}) {
 
 export {
   ANIME_ROOT,
+  NARUTO_RESULTS,
+  TIKWM_SEARCH_ENDPOINTS,
   cleanSlug,
   commandKey,
   displayName,
