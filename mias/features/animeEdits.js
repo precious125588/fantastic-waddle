@@ -67,7 +67,7 @@ export const NARUTO_HASHTAGS = Object.freeze([
   "#Akatsukiedits",
   "#Madara",
   "#kurenal",
-  "#Shadowclontsutsu",
+  "#Shadowclonetsutsu",
   "#kurama",
   "#Hashirama",
   "#tobirama",
