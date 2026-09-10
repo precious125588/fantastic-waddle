@@ -23,7 +23,7 @@ const ANIME_ROOT = path.resolve(__dirname, "..", "..", "animes");
 const MAX_RESULTS = 3;
 const NARUTO_RESULTS = 2;
 const MAX_INPUT_BYTES = 90 * 1024 * 1024;
-const NARUTO_SEARCH_ANCHOR = "#narutoedit";
+const NARUTO_SEARCH_ANCHORS = Object.freeze(["#narutoedit", "#narutoedits"]);
 const NARUTO_SEARCH_BATCH_SIZE = 1;
 const NARUTO_CANDIDATE_TARGET = 4;
 const DC_TIKTOK_ENDPOINTS = [
@@ -544,14 +544,16 @@ function canonicalUrl(value) {
 export function isNarutoEditTitle(value) {
   const title = String(value || "").trim();
   const normalized = title.toLowerCase().replace(/[^a-z0-9]+/g, " ");
-  return /\bnarutoedit\b/.test(normalized) && !AI_OR_NON_EDIT_PATTERN.test(title);
+  return /\bnarutoedits?\b/.test(normalized) && !AI_OR_NON_EDIT_PATTERN.test(title);
 }
 
 export function buildNarutoSearchQueries() {
+  const anchor = NARUTO_SEARCH_ANCHORS[Math.floor(Math.random() * NARUTO_SEARCH_ANCHORS.length)];
+  const anchorNames = new Set(NARUTO_SEARCH_ANCHORS.map(normalizeHashtag));
   const secondaryHashtags = NARUTO_HASHTAGS
-    .filter((hashtag) => normalizeHashtag(hashtag) !== normalizeHashtag(NARUTO_SEARCH_ANCHOR));
+    .filter((hashtag) => !anchorNames.has(normalizeHashtag(hashtag)));
   return shuffle(secondaryHashtags)
-    .map((hashtag) => `${NARUTO_SEARCH_ANCHOR} ${hashtag}`);
+    .map((hashtag) => `${anchor} ${hashtag}`);
 }
 
 function narutoCandidate(row, hashtag) {
@@ -580,11 +582,11 @@ function narutoCandidate(row, hashtag) {
   };
 }
 
-async function searchNarutoHashtag(hashtag) {
+async function searchNarutoHashtag(query) {
   for (const endpoint of TIKWM_SEARCH_ENDPOINTS) {
     try {
       const payload = await tikwmRequest(endpoint, {
-        keywords: `${NARUTO_SEARCH_ANCHOR} ${hashtag}`,
+        keywords: query,
         count: 20,
         cursor: 0,
         web: 1,
@@ -593,7 +595,7 @@ async function searchNarutoHashtag(hashtag) {
       if (Number(payload?.code) !== 0 && payload?.data == null) continue;
       const rows = payload?.data?.videos || payload?.data?.data || payload?.data || [];
       const candidates = (Array.isArray(rows) ? rows : [])
-        .map((row) => narutoCandidate(row, hashtag))
+        .map((row) => narutoCandidate(row, query))
         .filter(Boolean);
       if (candidates.length) return candidates;
     } catch {}
@@ -604,8 +606,8 @@ async function searchNarutoHashtag(hashtag) {
 async function collectNarutoCandidates() {
   const candidates = [];
   const seen = new Set();
-  // Every query contains #narutoedit plus one randomly rotated hashtag from
-  // the full handwritten pool. Search a small batch in parallel so a quiet
+  // Every command randomly selects #narutoedit or #narutoedits once, then pairs
+  // that anchor with randomly rotated tags from the full handwritten pool. Search a small batch in parallel so a quiet
   // tag does not make the command wait through the entire pool.
   const queries = buildNarutoSearchQueries();
   for (let offset = 0; offset < queries.length; offset += NARUTO_SEARCH_BATCH_SIZE) {
@@ -881,7 +883,7 @@ export function createAnimeEditFlow({ prefix = "." } = {}) {
 export {
   ANIME_ROOT,
   NARUTO_RESULTS,
-  NARUTO_SEARCH_ANCHOR,
+  NARUTO_SEARCH_ANCHORS,
   TIKWM_SEARCH_ENDPOINTS,
   canonicalUrl,
   cleanSlug,

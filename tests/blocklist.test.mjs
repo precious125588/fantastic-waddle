@@ -68,13 +68,27 @@ test("unblock actually clears the state and is verified", async () => {
   assert.equal(BL.isBlockedJid("2349068551055"), false);
 });
 
-test("unblock that WhatsApp accepts but does not apply is reported as a failure", async () => {
+test("an accepted operation remains successful while WhatsApp read-back is syncing", async () => {
   BL._resetCacheForTests();
   const sock = makeSock({ blocklist: ["2349068551055"], applies: false });
   const res = await BL.setBlockStatus(sock, "2349068551055", "unblock");
-  assert.equal(res.ok, false);
-  assert.equal(res.verified, false);
-  assert.equal(res.code, "not-applied");
+  assert.equal(res.ok, true);
+  assert.equal(res.verified, null);
+  assert.equal(res.code, "pending-sync");
+});
+
+test("a pending typed-number block can be unblocked without a false nothing-to-undo result", async () => {
+  BL._resetCacheForTests();
+  const sock = makeSock({ applies: false });
+  const blocked = await BL.setBlockStatus(sock, "2349068551055", "block");
+  const unblocked = await BL.setBlockStatus(sock, "2349068551055", "unblock");
+  assert.equal(blocked.ok, true);
+  assert.equal(unblocked.ok, true);
+  assert.equal(unblocked.alreadyInState, false);
+  assert.deepEqual(sock.calls, [
+    ["2349068551055@s.whatsapp.net", "block"],
+    ["2349068551055@s.whatsapp.net", "unblock"],
+  ]);
 });
 
 test("API errors are surfaced transparently, never swallowed", async () => {

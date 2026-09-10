@@ -5,7 +5,7 @@ import {
   buildNarutoSearchQueries,
   NARUTO_HASHTAGS,
   NARUTO_RESULTS,
-  NARUTO_SEARCH_ANCHOR,
+  NARUTO_SEARCH_ANCHORS,
   TIKWM_SEARCH_ENDPOINTS,
   canonicalUrl,
   isNarutoEditTitle,
@@ -93,16 +93,25 @@ test("Naruto uses exactly two hashtag results and the working TikWM search route
   assert.match(naruto.metadata.desc, /Send 2 random HD Naruto edits/);
 });
 
-test("Naruto search always anchors on #narutoedit and rotates every secondary hashtag", () => {
-  const queries = buildNarutoSearchQueries();
-  const expected = new Set(
-    NARUTO_HASHTAGS
-      .filter((hashtag) => hashtag.toLowerCase() !== NARUTO_SEARCH_ANCHOR)
-      .map((hashtag) => hashtag.toLowerCase()),
-  );
-  assert.equal(queries.length, expected.size);
-  assert.deepEqual(new Set(queries.map((query) => query.split(" ")[1].toLowerCase())), expected);
-  assert.ok(queries.every((query) => query.toLowerCase().startsWith(`${NARUTO_SEARCH_ANCHOR} `)));
+test("Naruto search randomly uses one edit anchor and rotates every secondary hashtag", () => {
+  const seenAnchors = new Set();
+  const originalRandom = Math.random;
+  try {
+    for (const randomValue of [0, 0.999]) {
+      Math.random = () => randomValue;
+      const queries = buildNarutoSearchQueries();
+      const anchors = new Set(queries.map((query) => query.split(" ")[0].toLowerCase()));
+      assert.equal(anchors.size, 1);
+      const anchor = [...anchors][0];
+      assert.ok(NARUTO_SEARCH_ANCHORS.includes(anchor));
+      seenAnchors.add(anchor);
+      assert.ok(queries.every((query) => query.split(" ").length === 2));
+      assert.ok(queries.every((query) => !NARUTO_SEARCH_ANCHORS.includes(query.split(" ")[1].toLowerCase())));
+    }
+  } finally {
+    Math.random = originalRandom;
+  }
+  assert.deepEqual(seenAnchors, new Set(NARUTO_SEARCH_ANCHORS));
 });
 
 test("canonical URL keys collapse duplicate TikTok links", () => {
@@ -120,4 +129,5 @@ test("Naruto rejects plain and AI-style clips without the edit hashtag", () => {
   assert.equal(isNarutoEditTitle("Naruto"), false);
   assert.equal(isNarutoEditTitle("Naruto AI generated animation"), false);
   assert.equal(isNarutoEditTitle("Obito edit #narutoedit #naruto"), true);
+  assert.equal(isNarutoEditTitle("Sasuke edit #narutoedits #uchiha"), true);
 });
