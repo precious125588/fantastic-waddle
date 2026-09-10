@@ -53,6 +53,9 @@ const MODE_ALIASES = {
 // Accepts "1.3", " 1.3 ", "*1.3*", "1 3", "1,3", "1-3", "hd", "audio", ...
 export function normalizeTikTokMode(value) {
   let v = String(value || "").replace(/[*_~`>]/g, "").trim().toLowerCase();
+  // WhatsApp users sometimes include the bot prefix when replying to a
+  // numbered picker, e.g. ".1.3". Treat it as the same format choice.
+  v = v.replace(/^[.!#$\/]+\s*/, "").trim();
   v = v.replace(/[.)]+$/, "").trim();
   if (MODE_ALIASES[v.replace(/\s+/g, "")]) return MODE_ALIASES[v.replace(/\s+/g, "")];
   const m = v.match(/^(\d+)\s*(?:[.,\-/ ]\s*(\d+))?$/);
