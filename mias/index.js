@@ -57,6 +57,7 @@ import { installReactionForwarder } from "./features/reactionForward.js";
 import {
   fetchTikTokInfo,
   formatTikTokMenu,
+  buildTikTokPickerSections,
   parseTikTokMode,
   selectTikTokUrl,
 } from "./features/tiktok.js";
@@ -103,6 +104,15 @@ function __miasPickerKey(jid) {
   // the next. Picker state belongs to the chat, not to a particular device.
   return String(jid || "").replace(/:\d+(?=@)/, "");
 }
+function __miasPickerKeys(jid) {
+  const raw = String(jid || "");
+  const keys = [__miasPickerKey(raw), raw];
+  try {
+    const resolved = typeof resolveLid === "function" ? resolveLid(raw) : raw;
+    keys.push(__miasPickerKey(resolved), resolved);
+  } catch {}
+  return [...new Set(keys.filter(Boolean))];
+}
 function __ttSaveSelections() {
   try {
     fs.mkdirSync(path.dirname(__TT_PICKER_FILE), { recursive: true });
@@ -128,15 +138,17 @@ function __ttLoadSelections() {
 }
 __ttLoadSelections();
 function __ttRememberSelection(jid, entry) {
-  __ttSelections.set(__miasPickerKey(jid), entry);
+  for (const key of __miasPickerKeys(jid)) __ttSelections.set(key, entry);
   __ttSaveSelections();
 }
 function __ttForgetSelection(jid) {
-  __ttSelections.delete(__miasPickerKey(jid));
+  for (const key of __miasPickerKeys(jid)) __ttSelections.delete(key);
   __ttSaveSelections();
 }
 function __ttGetSelection(jid) {
-  const entry = __ttSelections.get(__miasPickerKey(jid));
+  const entry = __miasPickerKeys(jid)
+    .map((key) => __ttSelections.get(key))
+    .find(Boolean);
   if (!entry) return null;
   if (Date.now() - Number(entry.ts || 0) > __TT_PICKER_TTL_MS) {
     __ttForgetSelection(jid);
@@ -17506,24 +17518,41 @@ cmd(["tiktok","tt","ttdl"], { desc: "Download TikTok video/audio — supports: .
         const info = await fetchTikTokInfo(url);
         __ttRememberSelection(jid, { info, url, ts: Date.now(), sourceMessage: msg });
         const menuCaption = formatTikTokMenu(info, CONFIG.PREFIX);
-        // Show the TikTok cover together with the caption/menu so the
-        // numbered choices are tied to the actual post the user sent.
+        // Prefer a native WhatsApp single-select ("radio") picker. Its row
+        // ids are 1.1–2.3, so a tap and a typed reply use the same path.
+        let thumb = null;
         if (info.thumbnail) {
           try {
-            const thumb = Buffer.from((await axios.get(info.thumbnail, {
+            thumb = Buffer.from((await axios.get(info.thumbnail, {
               responseType: "arraybuffer", timeout: 15000,
               headers: { "User-Agent": "Mozilla/5.0", Referer: "https://www.tiktok.com/" },
             })).data);
-            if (thumb.length > 1024) {
-              await sock.sendMessage(jid, { image: thumb, caption: menuCaption }, { quoted: msg });
-            } else {
-              await sendReply(sock, msg, menuCaption);
-            }
-          } catch {
+            if (thumb.length <= 1024) thumb = null;
+          } catch {}
+        }
+        let pickerSent = false;
+        try {
+          await sendNativeFlowListMenu(
+            sock,
+            jid,
+            msg,
+            menuCaption,
+            buildTikTokPickerSections(),
+            [],
+            `${CONFIG.BOT_NAME} • TikTok`,
+            { headerImage: thumb, headerText: "TikTok format picker" },
+          );
+          pickerSent = true;
+        } catch (_pickerErr) {
+          console.warn("[tiktok-picker] native radio menu unavailable:", _pickerErr?.message || _pickerErr);
+        }
+        if (!pickerSent) {
+          // Older WhatsApp clients still get the same working numbered flow.
+          if (thumb) {
+            await sock.sendMessage(jid, { image: thumb, caption: menuCaption }, { quoted: msg });
+          } else {
             await sendReply(sock, msg, menuCaption);
           }
-        } else {
-          await sendReply(sock, msg, menuCaption);
         }
         await react(sock, msg, "✅");
         return;
@@ -20928,7 +20957,9 @@ for (const [acmd, cfg] of Object.entries(_ADULT_QUICK)) {
 function __miasHasPendingPicker(jid) {
   try {
     const now = Date.now();
-    const tt = __ttSelections.get(__miasPickerKey(jid));
+    const tt = __miasPickerKeys(jid)
+      .map((key) => __ttSelections.get(key))
+      .find(Boolean);
     if (tt && now - tt.ts <= __TT_PICKER_TTL_MS) return true;
     const pl = _playPickStore.get(__miasPickerKey(jid)) || _playPickStore.get(jid);
     if (pl && now - pl.ts <= 10 * 60 * 1000) return true;
@@ -21087,8 +21118,24 @@ cmd(["pick", "p"], { desc: "Pick randomly from options (A|B|C) OR download adult
   const ttMode = parseTikTokMode(raw);
   if (!ttPick && ttMode) ttPick = await __ttRestoreFromQuote(msg);
   if (ttPick && ttMode) {
-    const mediaUrl = selectTikTokUrl(ttPick.info, ttMode)
+    let mediaUrl = selectTikTokUrl(ttPick.info, ttMode)
       || (ttMode.kind === "audio" ? ttPick.info.audio : (ttPick.info.videoHd || ttPick.info.videoSd || ttPick.info.videoWatermark));
+    // TikWM URLs are short-lived. Refresh the same TikWM record before
+    // rejecting a valid radio choice, especially after the picker has been
+    // open for a while.
+    if (!mediaUrl && ttPick.url) {
+      try {
+        const refreshedInfo = await fetchTikTokInfo(ttPick.url);
+        if (refreshedInfo) {
+          ttPick.info = refreshedInfo;
+          mediaUrl = selectTikTokUrl(refreshedInfo, ttMode)
+            || (ttMode.kind === "audio"
+              ? refreshedInfo.audio
+              : (refreshedInfo.videoHd || refreshedInfo.videoSd || refreshedInfo.videoWatermark));
+          if (mediaUrl) __ttRememberSelection(jid, ttPick);
+        }
+      } catch {}
+    }
     if (!mediaUrl) {
       await sendReply(sock, msg, "❌ That format is unavailable for this TikTok. Try *2.1* for audio or *1.1* for SD video.");
       return;
@@ -21119,6 +21166,18 @@ cmd(["pick", "p"], { desc: "Pick randomly from options (A|B|C) OR download adult
       // picker failure.
       const refreshSelection = async () => {
         if (!ttPick.url) return;
+        try {
+          const refreshedInfo = await fetchTikTokInfo(ttPick.url);
+          if (refreshedInfo) {
+            const refreshedUrl = selectTikTokUrl(refreshedInfo, ttMode)
+              || (ttMode.kind === "audio"
+                ? refreshedInfo.audio
+                : (refreshedInfo.videoHd || refreshedInfo.videoSd || refreshedInfo.videoWatermark));
+            if (refreshedUrl) candidateUrls.push(refreshedUrl);
+            ttPick.info = refreshedInfo;
+            __ttRememberSelection(jid, ttPick);
+          }
+        } catch {}
         const providers = [
           async () => (await prexzyGet("/download/tiktok", { url: ttPick.url }, 30000)).data,
           async () => (await dcGet("/download/tiktok", { url: ttPick.url }, 30000)).data,
