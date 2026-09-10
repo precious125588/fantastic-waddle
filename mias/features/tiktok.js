@@ -93,6 +93,34 @@ export function formatTikTokMenu(info, prefix = ".") {
   ].filter(Boolean).join("\n");
 }
 
+// Native WhatsApp single-select menus are the reliable "radio" path. The
+// selected row id is the same value accepted by normalizeTikTokMode, so both
+// taps and typed replies share one handler.
+export function buildTikTokPickerSections() {
+  return [
+    {
+      title: "Video",
+      rows: [
+        { title: "1.1 SD Video", description: "MP4 video", rowId: "1.1" },
+        { title: "1.2 SD Document", description: "Send as MP4 document", rowId: "1.2" },
+        { title: "1.3 HD Video", description: "Best quality MP4", rowId: "1.3" },
+        { title: "1.4 HD Document", description: "Send HD MP4 as document", rowId: "1.4" },
+        { title: "1.5 SD Watermark", description: "SD video with watermark", rowId: "1.5" },
+        { title: "1.6 HD Watermark", description: "HD video with watermark", rowId: "1.6" },
+        { title: "1.7 HD Video Note", description: "Send as a video note", rowId: "1.7" },
+      ],
+    },
+    {
+      title: "Music",
+      rows: [
+        { title: "2.1 Audio", description: "MP3 audio", rowId: "2.1" },
+        { title: "2.2 Document Audio", description: "Send audio as a file", rowId: "2.2" },
+        { title: "2.3 Voice Note", description: "Send as a voice note", rowId: "2.3" },
+      ],
+    },
+  ];
+}
+
 export async function fetchTikTokInfo(url, fetchImpl = fetch) {
   let lastError;
   for (const endpoint of PROVIDERS) {
