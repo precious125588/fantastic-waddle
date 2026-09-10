@@ -16,14 +16,66 @@ import {
 } from "../lib/statusEditFlow.js";
 
 const require = createRequire(import.meta.url);
+const axios = require("axios");
 const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ANIME_ROOT = path.resolve(__dirname, "..", "..", "animes");
 const MAX_RESULTS = 3;
+const NARUTO_RESULTS = 2;
 const MAX_INPUT_BYTES = 90 * 1024 * 1024;
 // Keep anime shortcuts aligned with the status wizard's hard three-minute
 // limit. The actual trim is performed by ffmpeg before anything is sent.
 const MAX_DURATION_SECONDS = 180;
+
+// Naruto is intentionally restricted to these TikTok hashtag searches. Do
+// not broaden this to a generic web/search-engine query: that was the source
+// of unrelated clips and unreliable downloads.
+export const NARUTO_HASHTAGS = Object.freeze([
+  "#Naruto",
+  "#Narutoshipuden",
+  "#Narutouzumaki",
+  "#Ninetails",
+  "#narutoedit",
+  "#rasengannaruto",
+  "#boruto",
+  "#sasuke",
+  "#Obito",
+  "#Obitoedits",
+  "#shikamaru",
+  "#narutovspain",
+  "#ObitoUchiha",
+  "#Uchiha",
+  "#Shinuchiha",
+  "#Minato",
+  "#kakashi",
+  "#kakashiedit",
+  "#Jiraya",
+  "#Jirayaedits",
+  "#Minatoedit",
+  "#Akatsuki",
+  "#Akatsukiedits",
+  "#Madara",
+  "#kurenal",
+  "#Shadowclontsutsu",
+  "#kurama",
+  "#Hashirama",
+  "#tobirama",
+  "#Rocklee",
+  "#Guysensei",
+  "#Pain",
+  "#Yaiko",
+  "#nagato",
+]);
+
+const TIKWM_SEARCH_ENDPOINTS = [
+  "https://www.tikwm.com/api/feed/search",
+  "https://tikwm.com/api/feed/search",
+];
+const TIKWM_DETAIL_ENDPOINTS = [
+  "https://www.tikwm.com/api/",
+  "https://tikwm.com/api/",
+];
+let tikwmQueue = Promise.resolve();
 
 // These are safe built-in shortcuts. Catalog entries can add more registered
 // titles without changing the dispatcher.
@@ -199,7 +251,164 @@ function withTimeout(promise, timeoutMs = 130000) {
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
+function tikwmRequest(url, params) {
+  const request = tikwmQueue.then(async () => {
+    const response = await axios.get(url, {
+      params,
+      timeout: 25000,
+      headers: {
+        "User-Agent": "Mozilla/5.0",
+        Accept: "application/json",
+      },
+    });
+    return response.data;
+  });
+  tikwmQueue = request.catch(() => {});
+  return request;
+}
+
+function shuffle(items) {
+  const output = [...items];
+  for (let index = output.length - 1; index > 0; index -= 1) {
+    const swap = Math.floor(Math.random() * (index + 1));
+    [output[index], output[swap]] = [output[swap], output[index]];
+  }
+  return output;
+}
+
+function firstUrl(...values) {
+  return values.find((value) => typeof value === "string" && /^https?:\/\//i.test(value)) || "";
+}
+
+function narutoCandidate(row, hashtag) {
+  const author = row?.author?.unique_id
+    || row?.author?.uniqueId
+    || row?.author?.nickname
+    || row?.author?.uniqueId;
+  const videoId = row?.video_id || row?.aweme_id || row?.awemeId || row?.id;
+  const sourceUrl = firstUrl(
+    row?.share_url,
+    row?.shareUrl,
+    row?.url,
+    author && videoId ? `https://www.tiktok.com/@${author}/video/${videoId}` : "",
+  );
+  if (!sourceUrl) return null;
+  return {
+    sourceUrl,
+    hashtag,
+    title: String(row?.title || row?.desc || `${hashtag} Naruto edit`).trim().slice(0, 140),
+    author: String(author || "TikTok creator").trim(),
+    views: row?.play_count || row?.playCount || row?.views || 0,
+    likes: row?.digg_count || row?.diggCount || row?.likes || 0,
+    row,
+  };
+}
+
+async function searchNarutoHashtag(hashtag) {
+  for (const endpoint of TIKWM_SEARCH_ENDPOINTS) {
+    try {
+      const payload = await tikwmRequest(endpoint, {
+        keywords: hashtag,
+        count: 20,
+        cursor: 0,
+        web: 1,
+        HD: 1,
+      });
+      if (Number(payload?.code) !== 0 && payload?.data == null) continue;
+      const rows = payload?.data?.videos || payload?.data?.data || payload?.data || [];
+      const candidates = (Array.isArray(rows) ? rows : [])
+        .map((row) => narutoCandidate(row, hashtag))
+        .filter(Boolean);
+      if (candidates.length) return candidates;
+    } catch {}
+  }
+  return [];
+}
+
+async function collectNarutoCandidates() {
+  const candidates = [];
+  const seen = new Set();
+  // Start with random tags and only expand when the first batch is too small.
+  // Every accepted URL came from a TikWM search whose keyword is one of the
+  // allow-listed hashtags above.
+  for (const hashtag of shuffle(NARUTO_HASHTAGS)) {
+    const rows = await withTimeout(searchNarutoHashtag(hashtag), 35000);
+    for (const row of rows || []) {
+      if (seen.has(row.sourceUrl)) continue;
+      seen.add(row.sourceUrl);
+      candidates.push(row);
+    }
+    if (candidates.length >= 12) break;
+  }
+  return shuffle(candidates);
+}
+
+function tikwmVideoUrls(payload) {
+  const data = payload?.data || payload?.result || payload || {};
+  return [
+    data.hdplay,
+    data.play_hd,
+    data.hd,
+    data.download_url,
+    data.downloadUrl,
+    data.play,
+    data.play_url,
+    data.wmplay,
+  ].filter((url, index, values) =>
+    typeof url === "string" && /^https?:\/\//i.test(url) && values.indexOf(url) === index);
+}
+
+async function downloadTikwmVideo(candidate) {
+  for (const endpoint of TIKWM_DETAIL_ENDPOINTS) {
+    try {
+      const payload = await tikwmRequest(endpoint, {
+        url: candidate.sourceUrl,
+        hd: 1,
+      });
+      const urls = tikwmVideoUrls(payload);
+      for (const url of urls) {
+        try {
+          const response = await axios.get(url, {
+            responseType: "arraybuffer",
+            timeout: 90000,
+            maxContentLength: MAX_INPUT_BYTES,
+            maxBodyLength: MAX_INPUT_BYTES,
+            headers: {
+              "User-Agent": "Mozilla/5.0",
+              Referer: "https://www.tiktok.com/",
+              Accept: "video/*,application/octet-stream,*/*",
+            },
+          });
+          const buffer = Buffer.from(response.data || []);
+          if (validVideoBuffer(buffer)) return buffer;
+        } catch {}
+      }
+    } catch {}
+  }
+  return null;
+}
+
+async function narutoEdits() {
+  const candidates = await collectNarutoCandidates();
+  const resolved = [];
+  for (const candidate of candidates) {
+    if (resolved.length >= NARUTO_RESULTS) break;
+    try {
+      const source = await withTimeout(downloadTikwmVideo(candidate), 120000);
+      if (!source) continue;
+      // TikWM's hd=1 URL is preferred. Normalize it to a stable 720p MP4 so
+      // WhatsApp does not receive the tiny preview/low-resolution variant.
+      const hd = await withTimeout(normalizeHdVideo(source), 120000);
+      const buffer = hd || source;
+      if (validVideoBuffer(buffer)) resolved.push({ ...candidate, buffer });
+    } catch {}
+  }
+  return resolved.slice(0, NARUTO_RESULTS);
+}
+
 async function remoteEdits(entry) {
+  if (entry.slug === "naruto") return narutoEdits();
+
   // Search the exact title first so a request for Naruto cannot come back
   // with an unrelated clip.
   const queries = [`${entry.query} anime edit`, `${entry.query} edit`, entry.query];
@@ -276,14 +485,15 @@ export function createAnimeEditFlow({ prefix = "." } = {}) {
 
   async function sendThree(sock, msg, entry) {
     const jid = msg.key.remoteJid;
+    const resultLimit = entry.slug === "naruto" ? NARUTO_RESULTS : MAX_RESULTS;
     const react = (text) => sock.sendMessage(jid, {
       react: { text, key: msg.key },
     }).catch(() => {});
     await react("🎬");
 
     // Never mix in local media: the owner asked for public TikTok edits
-    // only, and exactly three results per request.
-    const results = dedupeResults(await remoteEdits(entry));
+    // only. Naruto is restricted to exactly two random hashtag results.
+    const results = dedupeResults(await remoteEdits(entry)).slice(0, resultLimit);
     if (!results.length) {
       await react("❌");
       await sock.sendMessage(jid, {
@@ -308,7 +518,7 @@ export function createAnimeEditFlow({ prefix = "." } = {}) {
   function registerCommands(cmd) {
     for (const [alias, entry] of byCommand) {
       cmd(alias, {
-        desc: `Send 3 random HD ${entry.title} edits`,
+        desc: `Send ${entry.slug === "naruto" ? NARUTO_RESULTS : MAX_RESULTS} random HD ${entry.title} edits`,
         category: "ANIME",
       }, (sock, msg) => sendThree(sock, msg, entry));
     }
