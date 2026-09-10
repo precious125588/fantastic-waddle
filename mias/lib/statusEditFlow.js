@@ -13,15 +13,18 @@ const MAX_RESULTS = 5;
 const SESSION_TTL_MS = 10 * 60 * 1000;
 const MAX_VIDEO_BYTES = 90 * 1024 * 1024;
 
+// TikTok is the only approved source for status/anime edits. Pinterest was
+// removed because its pin pages rarely resolve to a real video and it was the
+// main reason unrelated clips were delivered.
 const PLATFORMS = [
-  { id: "tiktok", label: "TikTok", domains: ["tiktok.com"] },
-  { id: "pinterest", label: "Pinterest", domains: ["pinterest.com", "pin.it"] },
+  { id: "tiktok", label: "TikTok", domains: ["tiktok.com", "vm.tiktok.com", "vt.tiktok.com"] },
 ];
 
 const PLATFORM_ALIASES = new Map([
   ["1", "tiktok"], ["tiktok", "tiktok"], ["tt", "tiktok"],
-  ["2", "pinterest"], ["pinterest", "pinterest"], ["pin", "pinterest"],
 ]);
+
+const DEFAULT_PLATFORM = "tiktok";
 
 const sessions = new Map();
 const APPROVED_PLATFORMS = new Set(PLATFORMS.map((platform) => platform.id));
@@ -173,12 +176,6 @@ function isConcreteSourceUrl(url, platform) {
       return /\/@[^/]+\/video\/\d+/.test(pathname)
         || /\/video\/\d+/.test(pathname);
     }
-    if (platform === "pinterest") {
-      // A pin is a concrete source; ideas, boards, and collection pages are
-      // landing pages and almost always fail the media resolver.
-      return parsed.hostname === "pin.it"
-        || /\/pin\/[^/]+/.test(pathname);
-    }
     return false;
   } catch {
     return false;
@@ -278,6 +275,88 @@ function hasLowEngagement(item = {}) {
     || (rating > 0 && rating < 3);
 }
 
+// ── Relevance ────────────────────────────────────────────────────────────
+// The old flow accepted every TikTok link found on a search results page, so
+// a "naruto" request happily returned random unrelated videos. Every
+// candidate now has to actually mention the requested topic.
+const STOP_WORDS = new Set(["the", "a", "an", "edit", "edits", "anime", "video", "videos", "status", "of", "and"]);
+
+function queryTokens(query) {
+  return String(query || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .split(" ")
+    .filter((token) => token.length >= 3 && !STOP_WORDS.has(token));
+}
+
+function matchesQuery(query, ...texts) {
+  const tokens = queryTokens(query);
+  if (!tokens.length) return true;
+  const haystack = texts.map((text) => String(text || "").toLowerCase().replace(/[^a-z0-9]+/g, " ")).join(" ");
+  const compact = haystack.replace(/\s+/g, "");
+  return tokens.some((token) => haystack.includes(token) || compact.includes(token));
+}
+
+async function tikwmRequest(url, params) {
+  const request = tikwmQueue.then(async () => {
+    const response = await axios.get(url, {
+      params,
+      timeout: 30000,
+      headers: { "User-Agent": "Mozilla/5.0", Accept: "application/json" },
+    });
+    return response.data;
+  });
+  tikwmQueue = request.catch(() => {});
+  return request;
+}
+
+// Keyword search straight from TikTok's index: real titles, real view counts
+// and a direct playable URL, so results genuinely match the topic.
+async function tikwmSearch(query) {
+  const results = [];
+  for (const keywords of [`${query} edit`, query]) {
+    try {
+      const data = await tikwmRequest("https://tikwm.com/api/feed/search", {
+        keywords,
+        count: 20,
+        cursor: 0,
+        HD: 1,
+      });
+      const rows = data?.data?.videos || data?.data || [];
+      for (const row of Array.isArray(rows) ? rows : []) {
+        const author = row?.author?.unique_id || row?.author?.uniqueId || "";
+        const videoId = row?.video_id || row?.aweme_id || row?.id;
+        if (!author || !videoId) continue;
+        const title = String(row?.title || row?.desc || "").trim();
+        if (!matchesQuery(query, title, author)) continue;
+        const item = candidate(`https://www.tiktok.com/@${author}/video/${videoId}`, {
+          platform: "tiktok",
+          title: title || `${query} edit`,
+          views: row?.play_count,
+          likes: row?.digg_count,
+          downloadUrl: row?.hdplay || row?.play || "",
+        });
+        if (item) results.push(item);
+      }
+    } catch {}
+    if (results.length >= 8) break;
+  }
+  return uniqueCandidates(results).sort((a, b) => b.qualityScore - a.qualityScore);
+}
+
+// Confirms a scraped link really is about the requested topic before it is
+// downloaded.
+async function isRelevantTikTok(item, query) {
+  try {
+    const data = await tikwmRequest("https://www.tikwm.com/api//", { url: item.sourceUrl, hd: 1 });
+    if (Number(data?.code) !== 0) return false;
+    const info = data?.data || {};
+    return matchesQuery(query, info.title, info.author?.unique_id, info.author?.nickname);
+  } catch {
+    return false;
+  }
+}
+
 async function bingSearch(query, platform) {
   const info = platformInfo(platform);
   const domainQuery = ` site:${info.domains[0]}`;
@@ -340,19 +419,21 @@ async function bingSearch(query, platform) {
   return [];
 }
 
-async function searchCandidates(query, platform) {
-  const platforms = [platform];
-  const providers = platforms
-    .filter((item) => APPROVED_PLATFORMS.has(item))
-    .map((item) => () => bingSearch(query, item));
-  const all = [];
-  for (const provider of providers) {
-    try {
-      const results = await provider();
-      all.push(...results);
+async function searchCandidates(query, platform = DEFAULT_PLATFORM) {
+  const target = APPROVED_PLATFORMS.has(platform) ? platform : DEFAULT_PLATFORM;
+  const primary = await tikwmSearch(query).catch(() => []);
+  const all = [...primary];
+
+  // Search-engine scraping is only a fallback now, and every scraped link is
+  // checked against the topic before it can be delivered.
+  if (uniqueCandidates(all).length < 5) {
+    const scraped = await bingSearch(query, target).catch(() => []);
+    for (const item of scraped.slice(0, 12)) {
       if (uniqueCandidates(all).length >= 10) break;
-    } catch {}
+      if (await isRelevantTikTok(item, query)) all.push(item);
+    }
   }
+
   return uniqueCandidates(all)
     .filter((item) => item.qualityScore >= 50)
     .sort((a, b) => b.qualityScore - a.qualityScore)
@@ -360,10 +441,7 @@ async function searchCandidates(query, platform) {
 }
 
 async function prexzyDownload(sourceUrl, platform) {
-  const endpointByPlatform = {
-    tiktok: "/download/tiktok",
-    pinterest: "/download/pinterest",
-  };
+  const endpointByPlatform = { tiktok: "/download/tiktok" };
   const endpoint = endpointByPlatform[platform];
   if (!endpoint) return "";
   try {
@@ -393,35 +471,6 @@ async function tikwmDownload(sourceUrl) {
   });
   tikwmQueue = request.catch(() => {});
   return request;
-}
-
-async function pinterestPageDownload(sourceUrl) {
-  try {
-    const response = await axios.get(sourceUrl, {
-      timeout: 30000,
-      headers: {
-        "User-Agent": "Mozilla/5.0",
-        Accept: "text/html,application/xhtml+xml",
-      },
-    });
-    const html = decodeSearchHtml(response.data);
-    const urls = [];
-    const add = (value) => {
-      const url = trimHtmlUrl(value);
-      if (/^https?:\/\//i.test(url) && /\.(?:mp4|webm)(?:[?#]|$)/i.test(url)) {
-        urls.push(url);
-      }
-    };
-    for (const match of html.matchAll(
-      /<(?:meta|source)[^>]+(?:content|src)=["'](https?:\/\/[^"']+)["']/gi,
-    )) add(match[1]);
-    for (const match of html.matchAll(
-      /"(?:url|src|content)"\s*:\s*"(https?:\/\/[^"]+\.(?:mp4|webm)[^"]*)"/gi,
-    )) add(match[1]);
-    return [...new Set(urls)][0] || "";
-  } catch {
-    return "";
-  }
 }
 
 async function cobaltDownload(sourceUrl) {
@@ -552,9 +601,7 @@ async function resolveCandidate(item, { normalize = true } = {}) {
   const directUrls = [];
   if (item.downloadUrl) directUrls.push(item.downloadUrl);
   try {
-    const platformUrl = item.platform === "tiktok"
-      ? await tikwmDownload(item.sourceUrl)
-      : await pinterestPageDownload(item.sourceUrl);
+    const platformUrl = await tikwmDownload(item.sourceUrl);
     if (platformUrl) directUrls.push(platformUrl);
   } catch {}
 
@@ -592,9 +639,8 @@ function formatPlatformMenu(prefix) {
     "🎬 *Choose the platform for the edits*",
     "",
     "1. TikTok",
-    "2. Pinterest",
     "",
-    "Reply to this message with *1* or *2*.",
+    "Reply to this message with *1*.",
     `_Videos longer than 3:00 are trimmed or skipped._`,
     "_Only popular, high-quality edits from the selected platform are accepted._",
   ].join("\n");
@@ -678,15 +724,17 @@ export function createStatusEditFlow({ prefix = ".", animeFlow = null } = {}) {
         return true;
       }
 
-      session.stage = "platform";
-      await prompt(sock, msg.key.remoteJid, formatPlatformMenu(getPrefix()), msg, session);
+      // TikTok is the only source now, so the platform question is skipped.
+      session.platform = DEFAULT_PLATFORM;
+      session.stage = "quantity";
+      await prompt(sock, msg.key.remoteJid, formatQuantityPrompt(), msg, session);
       return true;
     }
     if (session.stage === "platform") {
       const platform = parsePlatform(value);
       if (!platform) {
         await prompt(sock, msg.key.remoteJid,
-          "❌ Choose *1 TikTok* or *2 Pinterest*.", msg, session);
+          "❌ Reply with *1* for TikTok.", msg, session);
         return true;
       }
       session.platform = platform;
@@ -716,7 +764,7 @@ export function createStatusEditFlow({ prefix = ".", animeFlow = null } = {}) {
         }
         if (!results.length) {
           await sock.sendMessage(msg.key.remoteJid, {
-            text: "❌ I could not find a popular downloadable edit right now. Try another topic or choose TikTok/Pinterest.",
+            text: "❌ I could not find a matching TikTok edit right now. Try another topic or spelling.",
           }, { quoted: msg });
           sessions.delete(key);
           return true;
