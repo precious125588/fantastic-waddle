@@ -29,7 +29,11 @@ export function normalizeTikTokResponse(payload = {}) {
     title: pick(data.title, data.desc, data.description, "TikTok video"),
     author: pick(data.author?.nickname, data.author?.unique_id, data.author, data.author_name, "Unknown author"),
     duration: data.duration || data.duration_sec || "",
-    thumbnail: pick(data.cover, data.thumbnail, data.origin_cover, data.music_info?.cover),
+    thumbnail: pick(data.cover, data.thumbnail, data.origin_cover, data.ai_dynamic_cover, data.dynamic_cover, data.music_info?.cover),
+    // Every cover candidate, so the caller can try the next one when a CDN
+    // link 403s — the picker should always carry the video image.
+    covers: [data.cover, data.thumbnail, data.origin_cover, data.ai_dynamic_cover, data.dynamic_cover, data.music_info?.cover]
+      .filter((value) => typeof value === "string" && value),
     videoHd: pick(data.hdplay, data.hd, data.play_hd, data.download_url),
     videoSd: pick(data.play, data.sd, data.wmplay),
     videoWatermark: pick(data.wmplay, data.play),
