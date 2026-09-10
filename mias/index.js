@@ -17521,13 +17521,16 @@ cmd(["tiktok","tt","ttdl"], { desc: "Download TikTok video/audio — supports: .
         // Prefer a native WhatsApp single-select ("radio") picker. Its row
         // ids are 1.1–2.3, so a tap and a typed reply use the same path.
         let thumb = null;
-        if (info.thumbnail) {
+        const _coverCandidates = (Array.isArray(info.covers) && info.covers.length)
+          ? info.covers
+          : (info.thumbnail ? [info.thumbnail] : []);
+        for (const _cover of _coverCandidates) {
           try {
-            thumb = Buffer.from((await axios.get(info.thumbnail, {
-              responseType: "arraybuffer", timeout: 15000,
+            const _buf = Buffer.from((await axios.get(_cover, {
+              responseType: "arraybuffer", timeout: 15000, maxRedirects: 5,
               headers: { "User-Agent": "Mozilla/5.0", Referer: "https://www.tiktok.com/" },
             })).data);
-            if (thumb.length <= 1024) thumb = null;
+            if (_buf && _buf.length > 1024) { thumb = _buf; break; }
           } catch {}
         }
         let pickerSent = false;
@@ -17540,14 +17543,15 @@ cmd(["tiktok","tt","ttdl"], { desc: "Download TikTok video/audio — supports: .
             buildTikTokPickerSections(),
             [],
             `${CONFIG.BOT_NAME} • TikTok`,
-            { headerImage: thumb, headerText: "TikTok format picker" },
+            { headerImage: thumb, headerText: info.title ? String(info.title).slice(0, 60) : "TikTok", headerSubtitle: "🎬 pick a format below" },
           );
           pickerSent = true;
         } catch (_pickerErr) {
           console.warn("[tiktok-picker] native radio menu unavailable:", _pickerErr?.message || _pickerErr);
         }
         if (!pickerSent) {
-          // Older WhatsApp clients still get the same working numbered flow.
+          // Older WhatsApp clients still get the same working numbered flow —
+          // with the video image attached so the options never arrive bare.
           if (thumb) {
             await sock.sendMessage(jid, { image: thumb, caption: menuCaption }, { quoted: msg });
           } else {
@@ -22077,6 +22081,8 @@ try {
                 footer: proto.Message.InteractiveMessage.Footer.create({ text: footer || `${CONFIG.BOT_NAME} • v${CONFIG.VERSION}` }),
                 header: proto.Message.InteractiveMessage.Header.create({
                   hasMediaAttachment: true,
+                  ...(opts?.headerText ? { title: String(opts.headerText).slice(0, 60) } : {}),
+                  ...(opts?.headerSubtitle ? { subtitle: String(opts.headerSubtitle).slice(0, 60) } : {}),
                   imageMessage: {
                     url: upload.url,
                     directPath: upload.directPath,
@@ -22102,13 +22108,17 @@ try {
 
   if (typeof sendNativeFlowListMenu === "function" && typeof getBotPic === "function") {
     const _origList = sendNativeFlowListMenu;
-    sendNativeFlowListMenu = async function _listWithPic(sock, jid, quoted, bodyText, sections, quickButtons = [], footer) {
+    sendNativeFlowListMenu = async function _listWithPic(sock, jid, quoted, bodyText, sections, quickButtons = [], footer, opts = {}) {
       try {
-        if (!generateWAMessageFromContent || !proto) return _origList(sock, jid, quoted, bodyText, sections, quickButtons, footer);
-        const buf = await getBotPic().catch(() => null);
-        if (!buf) return _origList(sock, jid, quoted, bodyText, sections, quickButtons, footer);
+        if (!generateWAMessageFromContent || !proto) return _origList(sock, jid, quoted, bodyText, sections, quickButtons, footer, opts);
+        // A caller-supplied cover (e.g. the TikTok video thumbnail) always wins
+        // over the bot profile picture, so ".tt" menus show the actual video.
+        const buf = (opts && Buffer.isBuffer(opts.headerImage))
+          ? opts.headerImage
+          : await getBotPic().catch(() => null);
+        if (!buf) return _origList(sock, jid, quoted, bodyText, sections, quickButtons, footer, opts);
         const upload = await sock.waUploadToServer(buf, { mediaType: "image" }).catch(() => null);
-        if (!upload) return _origList(sock, jid, quoted, bodyText, sections, quickButtons, footer);
+        if (!upload) return _origList(sock, jid, quoted, bodyText, sections, quickButtons, footer, opts);
         const nativeButtons = [];
         if (Array.isArray(sections) && sections.length) {
           nativeButtons.push({ name: "single_select", buttonParamsJson: JSON.stringify({ title: "📂 Open Categories", sections }) });
@@ -22142,7 +22152,7 @@ try {
         return wam;
       } catch (e) {
         console.log("[LIST_PIC] fallback:", e?.message);
-        return _origList(sock, jid, quoted, bodyText, sections, quickButtons, footer);
+        return _origList(sock, jid, quoted, bodyText, sections, quickButtons, footer, opts);
       }
     };
   }
