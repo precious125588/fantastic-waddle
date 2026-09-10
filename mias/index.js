@@ -855,7 +855,33 @@ function normalizeAIText(payload) {
     }
   }
 
-  return text;
+  // Some free AI endpoints return their web error page with HTTP 200. Never
+  // forward that page to WhatsApp as if it were an AI answer. If an endpoint
+  // returned a small HTML fragment, keep only its readable text; a full error
+  // page is rejected so freeAI can continue to the next provider.
+  const looksLikeHtml = /<!doctype\s+html|<html\b|<head\b|<body\b|<script\b|<style\b/i.test(text);
+  if (looksLikeHtml || /<\s*(?:div|p|br|strong|em)\b[^>]*>/i.test(text)) {
+    const cleaned = text
+      .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ")
+      .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, " ")
+      .replace(/<br\s*\/?>/gi, "\n")
+      .replace(/<[^>]+>/g, " ")
+      .replace(/&nbsp;/gi, " ")
+      .replace(/&amp;/gi, "&")
+      .replace(/&lt;/gi, "<")
+      .replace(/&gt;/gi, ">")
+      .replace(/&quot;/gi, '"')
+      .replace(/&#39;/gi, "'")
+      .replace(/[ \t]+\n/g, "\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+    if (!cleaned || /^(error|bad gateway|gateway timeout|not found|access denied|cloudflare)/i.test(cleaned)) {
+      return "";
+    }
+    text = cleaned;
+  }
+
+  return text.trim();
 }
 
 function isLikelyTruncated(text) {
@@ -9521,8 +9547,8 @@ cmd("recipe", { desc: "Get recipe — .recipe <dish>", category: "AI" }, async (
     await sendReply(sock, msg, `🍳 *${meal.strMeal}*\n\n🌍 ${meal.strCategory} | ${meal.strArea}\n\n📋 *Ingredients:*\n${ingredients.slice(0, 10).join("\n")}\n\n📝 *Instructions:*\n${meal.strInstructions?.slice(0, 400)}...\n\n🔗 ${meal.strYoutube || meal.strSource || ""}`);
   } catch { await sendReply(sock, msg, `❌ Could not fetch recipe for: *${dish}*`); }
 });
-cmd(["chatbot", "duckai"], { desc: "Chat with AI", category: "AI" }, async (sock, msg, args) => {
-  if (!args.length) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}chatbot <message>`); return; }
+cmd(["ai", "chatbot", "duckai"], { desc: "Chat with AI", category: "AI" }, async (sock, msg, args) => {
+  if (!args.length) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}ai <message>`); return; }
   await react(sock, msg, "💬");
   const jid = msg.key.remoteJid;
   const statusMsg = await sock.sendMessage(jid, { text: `💬 *MIAS MDX Chatbot*
@@ -9538,8 +9564,7 @@ cmd(["chatbot", "duckai"], { desc: "Chat with AI", category: "AI" }, async (sock
       const _pr = await prexzyGet("/ai/aichat", { prompt: _chatPrompt }, 20000);
       if (_pr.ok) {
         const _pd = _pr.data?.data || _pr.data;
-        reply = _pd?.text || _pd?.message || _pd?.result || _pd?.response || _pd?.answer ||
-                (typeof _pd === "string" ? _pd : null);
+        reply = normalizeAIText(_pd);
       }
     } catch {}
     // 2) DavidCyril chatbot fallbacks (multiple free AI endpoints)
@@ -9559,14 +9584,19 @@ cmd(["chatbot", "duckai"], { desc: "Chat with AI", category: "AI" }, async (sock
           const _r = await dcGet(_ep.path, _ep.param, 18000);
           if (_r.ok && _r.data) {
             const _d = _r.data?.data || _r.data?.result || _r.data;
-            const _t = _d?.text || _d?.message || _d?.result || _d?.response || _d?.answer ||
-                       _d?.content || _d?.output || (typeof _d === "string" ? _d : null);
-            if (_t && typeof _t === "string" && _t.length > 3) reply = _t;
+            const _t = normalizeAIText(
+              typeof _d === "string"
+                ? _d
+                : (_d?.text || _d?.message || _d?.result || _d?.response || _d?.answer ||
+                   _d?.content || _d?.output || "")
+            );
+            if (_t.length > 3) reply = _t;
           }
         } catch {}
       }
     }
     // 3) freeAI last resort
+    reply = normalizeAIText(reply);
     if (!reply) reply = await freeAI(_chatPrompt, "You are a friendly chatbot. Respond casually and helpfully.");
     if (reply) {
       await editMessage(sock, jid, cbKey, `💬 *MIAS MDX Chatbot*
@@ -17261,22 +17291,29 @@ async function _addVideoWatermark(videoBuf, label) {
     const _sfx = `${Date.now()}_${Math.random().toString(36).slice(2)}`;
     const tmpIn  = `/tmp/_wm_in_${_sfx}.mp4`;
     const tmpOut = `/tmp/_wm_out_${_sfx}.mp4`;
-    await fs.promises.writeFile(tmpIn, videoBuf);
-    await new Promise((resolve, reject) => {
-      execFile("ffmpeg", [
-        "-y", "-i", tmpIn,
-        "-vf",
-        // Small "×TT" or "×YT" at bottom-left; shadow for readability on any background
-        `drawtext=text='x':x=12:y=h-28:fontsize=18:fontcolor=white@0.90:shadowcolor=black@0.65:shadowx=1:shadowy=1`,
-        "-c:a", "copy",
-        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28",
-        tmpOut,
-      ], { timeout: 90000 }, (err) => (err ? reject(err) : resolve()));
-    });
-    const result = await fs.promises.readFile(tmpOut);
-    fs.promises.unlink(tmpIn).catch(() => {});
-    fs.promises.unlink(tmpOut).catch(() => {});
-    return result.length > 10000 ? result : videoBuf;
+    try {
+      await fs.promises.writeFile(tmpIn, videoBuf);
+      await new Promise((resolve, reject) => {
+        execFile("ffmpeg", [
+          "-y", "-i", tmpIn,
+          "-vf",
+          // Small "×TT" or "×YT" at bottom-left; shadow for readability on any background
+          `drawtext=text='x':x=12:y=h-28:fontsize=18:fontcolor=white@0.90:shadowcolor=black@0.65:shadowx=1:shadowy=1`,
+          "-c:a", "copy",
+          "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28",
+          tmpOut,
+        ], { timeout: 90000 }, (err) => (err ? reject(err) : resolve()));
+      });
+      const result = await fs.promises.readFile(tmpOut);
+      return result.length > 10000 ? result : videoBuf;
+    } finally {
+      // Always remove both files. A failed conversion used to leave media in
+      // /tmp on every request until the container ran out of space.
+      await Promise.all([
+        fs.promises.unlink(tmpIn).catch(() => {}),
+        fs.promises.unlink(tmpOut).catch(() => {}),
+      ]);
+    }
   } catch (_wmErr) {
     try { console.log("[watermark] ffmpeg unavailable or failed, skipping:", _wmErr?.message); } catch {}
     return videoBuf; // graceful fallback — always send the video
@@ -22380,9 +22417,19 @@ cmd(["aio","alldl","universaldl"], { desc: "Universal downloader — TikTok, IG,
 
   await editMessage(sock, jid, aioKey, `📥 ${_platformName}... downloading 🎬`);
 
-  const _aioResp = await axios.get(dlUrl, { responseType: "arraybuffer", timeout: 90000, headers: { "User-Agent": "Mozilla/5.0" } });
+  const _aioResp = await axios.get(dlUrl, {
+    responseType: "arraybuffer",
+    timeout: 90000,
+    maxContentLength: 80 * 1024 * 1024,
+    maxBodyLength: 80 * 1024 * 1024,
+    headers: { "User-Agent": "Mozilla/5.0" },
+  });
   const buf = Buffer.from(_aioResp.data);
   const _aioCt = ((_aioResp.headers?.["content-type"] || "")).toLowerCase();
+  const _aioHead = buf.slice(0, 128).toString("utf8").trim().toLowerCase();
+  if (!buf.length || _aioHead.startsWith("<!doctype") || _aioHead.startsWith("<html") || _aioHead.startsWith("{")) {
+    throw new Error("provider returned an error page instead of media");
+  }
   const _urlLow = dlUrl.toLowerCase().split("?")[0];
   const _hasM4A  = buf.length >= 12 && buf.slice(4, 8).toString("ascii") === "ftyp";
   const isVideo  = _aioCt.includes("video") || _urlLow.match(/\.(mp4|webm|mov|mkv|avi|flv)$/)
@@ -28736,12 +28783,11 @@ cmd(["dcjail","jaildc","jaileffect"], { desc: "Apply jail bars over image via DC
     if (q) {
       try {
         const m = await sock.downloadMediaMessage({ message: { imageMessage: q } });
-        const tmp = `/tmp/dcjail_${Date.now()}.jpg`;
-        const fs = (await import("fs")).default || require("fs");
-        fs.writeFileSync(tmp, m);
         const FormData = (await import("form-data")).default || require("form-data");
         const fd = new FormData();
-        fd.append("file", fs.createReadStream(tmp));
+        // Upload the downloaded bytes directly. A throwaway /tmp file for
+        // every image command could accumulate until the bot hit ENOSPC.
+        fd.append("file", m, { filename: "image.jpg", contentType: "image/jpeg" });
          const upload = await dcRequest("/uploader/catbox", { method: "POST", body: fd, headers: fd.getHeaders(), timeout: 30000 });
          imgUrl = upload.data?.url || upload.data?.data?.url;
       } catch {}
@@ -28957,12 +29003,9 @@ cmd(["dcanitrace","aniguesser","dctrace"], { desc: "Find anime scene from image 
     if (q) {
       try {
         const m = await sock.downloadMediaMessage({ message: { imageMessage: q } });
-        const tmp = `/tmp/trace_${Date.now()}.jpg`;
-        const fs = (await import("fs")).default || require("fs");
-        fs.writeFileSync(tmp, m);
         const FormData = (await import("form-data")).default || require("form-data");
         const fd = new FormData();
-        fd.append("file", fs.createReadStream(tmp));
+        fd.append("file", m, { filename: "image.jpg", contentType: "image/jpeg" });
          const upload = await dcRequest("/uploader/catbox", { method: "POST", body: fd, headers: fd.getHeaders(), timeout: 30000 });
          imgUrl = upload.data?.url || upload.data?.data?.url;
       } catch {}
@@ -29728,12 +29771,9 @@ cmd(["dcsaucenao","saucenaodc","dcrevsearch"], { desc: "Reverse image search via
     if (q) {
       try {
         const m = await sock.downloadMediaMessage({ message: { imageMessage: q } });
-        const tmp = `/tmp/sauce_${Date.now()}.jpg`;
-        const fs = (await import("fs")).default || require("fs");
-        fs.writeFileSync(tmp, m);
         const FormData = (await import("form-data")).default || require("form-data");
         const fd = new FormData();
-        fd.append("file", fs.createReadStream(tmp));
+        fd.append("file", m, { filename: "image.jpg", contentType: "image/jpeg" });
          const upload = await dcRequest("/uploader/catbox", { method: "POST", body: fd, headers: fd.getHeaders(), timeout: 30000 });
          imgUrl = upload.data?.url || upload.data?.data?.url;
       } catch {}
@@ -37588,10 +37628,12 @@ try {
         if (!buf || buf.length < 100) return null;
         if (isVideo) {
           // Try ffmpeg for video thumbnail
+          let tmpIn = null;
+          let tmpOut = null;
           try {
             const os = await import("os");
-            const tmpIn  = path.join(os.tmpdir(), `mv23_${Date.now()}.mp4`);
-            const tmpOut = path.join(os.tmpdir(), `mv23_${Date.now()}.jpg`);
+            tmpIn  = path.join(os.tmpdir(), `mv23_${Date.now()}_${Math.random().toString(36).slice(2)}.mp4`);
+            tmpOut = path.join(os.tmpdir(), `mv23_${Date.now()}_${Math.random().toString(36).slice(2)}.jpg`);
             fs.writeFileSync(tmpIn, buf);
             await new Promise((resolve, reject) => {
               const ffp = (() => { try { return require("ffmpeg-static"); } catch { return "ffmpeg"; } })();
@@ -37603,11 +37645,12 @@ try {
             });
             if (fs.existsSync(tmpOut)) {
               const thumb = fs.readFileSync(tmpOut);
-              try { fs.unlinkSync(tmpIn); } catch {}
-              try { fs.unlinkSync(tmpOut); } catch {}
               if (thumb.length > 100) return thumb;
             }
-          } catch {}
+          } catch {} finally {
+            try { if (tmpIn) fs.unlinkSync(tmpIn); } catch {}
+            try { if (tmpOut) fs.unlinkSync(tmpOut); } catch {}
+          }
           return null;
         }
         // Image thumbnail via Jimp
