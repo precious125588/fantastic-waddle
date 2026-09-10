@@ -210,10 +210,6 @@ export const MENU_CATEGORIES = [
   },
 ];
 
-// AI commands are intentionally not exposed in the user menu for this build.
-const aiCategoryIndex = MENU_CATEGORIES.findIndex((category) => category.id === "cat_ai");
-if (aiCategoryIndex !== -1) MENU_CATEGORIES.splice(aiCategoryIndex, 1);
-
 // ─── Lookup helpers ───────────────────────────────────────────────────────────
 
 /** Get a category by its id string */
