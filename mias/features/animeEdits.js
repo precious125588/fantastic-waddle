@@ -239,7 +239,11 @@ async function remoteEdits(entry) {
         const item = await withTimeout(resolveStatusCandidate(candidate, { normalize: false }), 120000);
         if (!item?.buffer) continue;
         const hd = await withTimeout(normalizeHdVideo(item.buffer), 120000);
-        if (hd) resolved.push({ ...item, buffer: hd });
+        // HD transcoding is an enhancement, not a requirement for delivery.
+        // If ffmpeg is unavailable or times out, keep the validated source
+        // video instead of reporting that no downloadable edit exists.
+        const output = hd || item.buffer;
+        if (validVideoBuffer(output)) resolved.push({ ...item, buffer: output });
       } catch {}
     }
   };
