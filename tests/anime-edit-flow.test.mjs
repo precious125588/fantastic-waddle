@@ -7,6 +7,7 @@ import {
   NARUTO_RESULTS,
   NARUTO_SEARCH_ANCHOR,
   TIKWM_SEARCH_ENDPOINTS,
+  canonicalUrl,
   isNarutoEditTitle,
 } from "../mias/features/animeEdits.js";
 import { parseCommand } from "../mias/lib/prefix.cjs";
@@ -61,6 +62,24 @@ test("unknown anime-title commands are not routed to the edit pipeline", () => {
 test("Naruto uses exactly two hashtag results and the working TikWM search route", () => {
   assert.equal(NARUTO_RESULTS, 2);
   assert.ok(NARUTO_HASHTAGS.length >= 2);
+  const normalizedHashtags = NARUTO_HASHTAGS.map((hashtag) =>
+    hashtag.replace(/^#+/, "").toLowerCase(),
+  );
+  assert.equal(new Set(normalizedHashtags).size, normalizedHashtags.length);
+  for (const hashtag of [
+    "#sakuraharuno",
+    "#borutotwobluevortex",
+    "#otsutsukiedits",
+    "#shinjutsupowers",
+    "#narutoedits4k",
+    "#perfectsusanoo",
+    "#tentailsedits",
+  ]) {
+    assert.ok(
+      normalizedHashtags.includes(hashtag.slice(1)),
+      `missing requested hashtag: ${hashtag}`,
+    );
+  }
   assert.ok(
     TIKWM_SEARCH_ENDPOINTS.every((endpoint) => endpoint.endsWith("/api/feed/search/")),
     "TikWM hashtag search must use the slash JSON endpoint",
@@ -84,6 +103,17 @@ test("Naruto search always anchors on #narutoedit and rotates every secondary ha
   assert.equal(queries.length, expected.size);
   assert.deepEqual(new Set(queries.map((query) => query.split(" ")[1].toLowerCase())), expected);
   assert.ok(queries.every((query) => query.toLowerCase().startsWith(`${NARUTO_SEARCH_ANCHOR} `)));
+});
+
+test("canonical URL keys collapse duplicate TikTok links", () => {
+  assert.equal(
+    canonicalUrl("HTTPS://WWW.TIKTOK.COM/@creator/video/123/?is_from_webapp=1"),
+    "https://www.tiktok.com/@creator/video/123",
+  );
+  assert.equal(
+    canonicalUrl("https://www.tiktok.com/@creator/video/123#share"),
+    "https://www.tiktok.com/@creator/video/123",
+  );
 });
 
 test("Naruto rejects plain and AI-style clips without the edit hashtag", () => {
