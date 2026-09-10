@@ -4607,13 +4607,10 @@ function _menuButtonsPayload() {
 }
 // ─── per-chat text-menu pick store (.pm N selects option when buttonsMode OFF) ──
 const _menuPickStore = new Map(); // jid → { ts: number, items: Array<{text,type?,url?,value?,id?}> }
-async function _sendTextMenuPick(sock, jid, quoted, headerText, items, _footer) {
-  if (!Array.isArray(items) || !items.length) return;
-  const _NUMS = ["1️⃣","2️⃣","3️⃣","4️⃣","5️⃣","6️⃣","7️⃣","8️⃣","9️⃣","🔟"];
-  let _out = `${headerText}\n\n`;
-  items.forEach((it, i) => { _out += `${_NUMS[i] || `${i + 1}.`} ${it.text || it.display_text || "Option"}\n`; });
-  _out += `\n_Type *${CONFIG.PREFIX}pm <number>* to pick_`;
-  _menuPickStore.set(jid, { ts: Date.now(), items });
+async function _sendTextMenuPick(sock, jid, quoted, headerText, _items, _footer) {
+  // Numbered ".pm <number>" pickers were removed — just send the plain message.
+  const _out = String(headerText || "").replace(/\n?_Reply to the [^\n]*_/g, "").trim();
+  if (!_out) return;
   return sock.sendMessage(jid, { text: _out }, { quoted });
 }
 
@@ -4640,8 +4637,8 @@ async function sendNativeFlowButtons(sock, jid, quoted, bodyText, buttons, foote
   } catch (_btnErr) {
     // Fallback for normal (non-Business) WhatsApp — send plain numbered text
     try {
-      const _btnLines = buttons.map((b, i) => `${i+1}. ${b.text || b.id || "Option"}`).join("\n");
-      await sock.sendMessage(jid, { text: `${bodyText}\n\n${_btnLines}\n\n_${footer}_` }, { quoted });
+      const _plain = String(bodyText || "").replace(/\n?_Reply to the [^\n]*_/g, "").trim();
+      if (_plain) await sock.sendMessage(jid, { text: _plain }, { quoted });
     } catch {}
   }
   return wam; // may be null if interactive failed — callers handle null safely
@@ -9630,16 +9627,6 @@ cmd(["removebg", "rmbg", "rmwbg", "bgremove"], { desc: "Remove image background"
 
     await sock.sendMessage(jid, { image: resultBuf, caption: `🖼️ *Background Removed!*` }, { quoted: msg });
     await react(sock, msg, "✅");
-    try {
-      await sendNativeFlowButtons(sock, jid, msg,
-        `🖼️ *Background removed!*\n_Reply to the image above with:_`,
-        [
-          { text: "📤 Upload to URL",  id: `${CONFIG.PREFIX}tourl` },
-          { text: "🔄 Remove Another", id: `${CONFIG.PREFIX}removebg` },
-        ],
-        `${CONFIG.BOT_NAME} • RemoveBG`
-      );
-    } catch {}
   } catch (e) {
     await sock.sendMessage(jid, { delete: bgKey }).catch(() => {});
     await sendReply(sock, msg, `❌ *RemoveBG failed:* ${e.message}\n🔗 Try: https://remove.bg`);
@@ -14459,13 +14446,6 @@ cmd(["sticker", "s"], { desc: "Image/video → sticker", category: "MEDIA" }, as
     await editMessage(sock, jid, stkKey, `✨ *MIAS MDX Sticker*\n\n⬢ Downloading media... ✅\n⬢ Converting to WebP... ✅\n⬡ Sending...`);
     await sock.sendMessage(jid, { sticker: _stkWebpBuf, stickerPackName: packName, stickerAuthor: CONFIG.OWNER_NAME || "MIAS MDX" }, { quoted: msg });
     await editMessage(sock, jid, stkKey, `✨ *MIAS MDX Sticker*\n\n⬢ Downloading image... ✅\n⬢ Converting to sticker... ✅\n\n✅ *Done!*`);
-    try {
-      await sendNativeFlowButtons(sock, jid, msg,
-        `✨ *Sticker created!*\n_Reply to the sticker above with:_`,
-        [{ text: "🖼️ Convert Back to Image", id: `${CONFIG.PREFIX}toimg` }],
-        `${CONFIG.BOT_NAME} • Sticker`
-      );
-    } catch {}
   } catch (e) {
     await editMessage(sock, jid, stkKey, `✨ *MIAS MDX Sticker*\n\n❌ Sticker failed: ${e?.message || e}\n\n💡 Make sure ffmpeg is installed on your server.`);
   }
@@ -14518,13 +14498,6 @@ cmd(["tomp3", "toaudio"], { desc: "Video/Audio → MP3", category: "MEDIA" }, as
     } catch { await sock.sendMessage(msg.key.remoteJid, { audio: buf, mimetype: "audio/mpeg", ptt: false }, { quoted: msg }); }
     try { fs.unlinkSync(inPath); fs.unlinkSync(outPath); } catch {}
     await react(sock, msg, "✅");
-    try {
-      await sendNativeFlowButtons(sock, msg.key.remoteJid, msg,
-        `🎵 *MP3 ready!*\n_Reply to the audio above with:_`,
-        [{ text: "📤 Upload to URL", id: `${CONFIG.PREFIX}tourl` }],
-        `${CONFIG.BOT_NAME} • Converter`
-      );
-    } catch {}
   } catch (e) { await sendReply(sock, msg, "❌ Conversion failed: " + e.message); }
 });
 cmd("toptt", { desc: "Audio → Voice Note", category: "MEDIA" }, async (sock, msg) => {
@@ -21384,7 +21357,7 @@ cmd(["pm","pickmenu"], { desc: "Pick option N from last text menu — .pm <numbe
   const jid = msg.key.remoteJid;
   const stash = _menuPickStore.get(jid);
   if (!stash || (Date.now() - stash.ts) > 10 * 60 * 1000) {
-    await sendReply(sock, msg, `❌ No recent menu found in this chat.\n_Run a command first, then use *${CONFIG.PREFIX}pm <number>* to pick an option._`);
+    await sendReply(sock, msg, "❌ No recent menu found in this chat.");
     return;
   }
   const n = parseInt(args[0] || "", 10);
@@ -21392,7 +21365,6 @@ cmd(["pm","pickmenu"], { desc: "Pick option N from last text menu — .pm <numbe
     const _NUMS = ["1️⃣","2️⃣","3️⃣","4️⃣","5️⃣","6️⃣","7️⃣","8️⃣","9️⃣","🔟"];
     let _listOut = `📋 *Available Options:*\n\n`;
     stash.items.forEach((it, i) => { _listOut += `${_NUMS[i] || `${i + 1}.`} ${it.text || "Option"}\n`; });
-    _listOut += `\n_Type *${CONFIG.PREFIX}pm <number>* to pick_`;
     await sendReply(sock, msg, _listOut);
     return;
   }
@@ -21446,7 +21418,6 @@ cmd(["pmlist","showmenu","menulist"], { desc: "Re-display the last text menu for
   const _agoStr = _ago < 60 ? `${_ago}s ago` : `${Math.round(_ago / 60)}m ago`;
   let _out = `📋 *Last Menu* _(${_agoStr})_\n\n`;
   stash.items.forEach((it, i) => { _out += `${_NUMS[i] || `${i + 1}.`} ${it.text || "Option"}\n`; });
-  _out += `\n_Type *${CONFIG.PREFIX}pm <number>* to pick_`;
   await sendReply(sock, msg, _out);
 });
 
@@ -38715,7 +38686,27 @@ globalThis.__MiasBlocklist = __MiasBlocklist;
       } catch {}
 
       const stored = __v22UsableName(__v22NamesDb()?.[number]);
-      return stored || "this contact";
+      if (stored) return stored;
+
+      // Ask WhatsApp directly (business / verified name) before giving up.
+      try {
+        if (typeof sock?.onWhatsApp === "function" && number) {
+          const [info] = (await sock.onWhatsApp(`${number}@s.whatsapp.net`)) || [];
+          const name = __v22UsableName(info?.name || info?.verifiedName
+            || info?.verifiedName?.details?.verifiedName);
+          if (name) return name;
+        }
+      } catch {}
+      try {
+        if (typeof sock?.getBusinessProfile === "function" && number) {
+          const biz = await sock.getBusinessProfile(`${number}@s.whatsapp.net`);
+          const name = __v22UsableName(biz?.business_name || biz?.name);
+          if (name) return name;
+        }
+      } catch {}
+
+      // Last resort: show the actual phone number, never a vague placeholder.
+      return number ? `+${number}` : "Unknown contact";
     }
 
     const __v22Block = async (sock, msg, args = []) => {
