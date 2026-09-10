@@ -1,33 +1,22 @@
 MIAS replacement files
 ======================
 
-These files address the two reported behaviours:
+These replacement files address the Naruto hashtag fetch and TikTok picker:
 
-1. TikTok numbered replies such as `1.3`, `.1.3`, `2.1`, and button/native-flow
-   variants are routed to the pending picker, even when WhatsApp changes the
-   linked-device suffix on the chat JID. The download reaction is forced before
-   media retrieval, the status message says exactly what is being downloaded
-   and uploaded, and the same status is edited to `Here is your ...` on success.
-   Failures keep the picker available.
-2. AIO/TikTok media downloads now check temporary disk space, clean only known
-   stale MIAS temporary files, enforce a 64 MB default media limit, and return
-   a visible WhatsApp error instead of leaving `Catching link...` hanging on
-   ENOSPC.
+1. `.Naruto` and its aliases search only the supplied Naruto TikTok hashtag
+   allow-list, shuffle candidates, resolve them through TikWM with HD enabled,
+   and send exactly two random edits. Videos are normalized to a stable 720p
+   MP4 when ffmpeg is available.
+2. TikTok format selection uses a native WhatsApp single-select/radio menu.
+   Typed replies such as `1.3`, `.1.3`, `2.1`, and button/native-flow replies
+   use the same picker handler. Picker state survives linked-device JID
+   changes, and TikWM URLs are refreshed before a valid choice is rejected.
 
 Copy these paths over the matching paths in the project:
 
   mias/index.js
+  mias/features/animeEdits.js
   mias/features/tiktok.js
-  mias/lib/diskGuard.js
-
-The test file is included for local verification:
-
-  tests/tiktok-picker-and-disk.test.mjs
-
-Optional environment values:
-
-  DOWNLOAD_MAX_MB=64       maximum downloaded media size
-  DOWNLOAD_MIN_FREE_MB=128 minimum free temporary disk space to keep reserved
 
 Do not copy `.env`, auth folders, session folders, node_modules, or generated
 package-lock files from the development workspace.
