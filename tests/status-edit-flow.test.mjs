@@ -8,11 +8,12 @@ import {
   parseStatusQuantity,
 } from "../mias/lib/statusEditFlow.js";
 
-test("status platform choices accept numbers and names", () => {
+test("status platform choices only accept TikTok", () => {
   assert.equal(parseStatusPlatform("1"), "tiktok");
-  assert.equal(parseStatusPlatform("Pinterest"), "pinterest");
-  assert.equal(parseStatusPlatform("option 2"), "pinterest");
-  assert.equal(parseStatusPlatform("option 3"), null);
+  assert.equal(parseStatusPlatform("TikTok"), "tiktok");
+  assert.equal(parseStatusPlatform("tt"), "tiktok");
+  assert.equal(parseStatusPlatform("Pinterest"), null);
+  assert.equal(parseStatusPlatform("option 2"), null);
   assert.equal(parseStatusPlatform("YouTube"), null);
   assert.equal(parseStatusPlatform("fb"), null);
 });
@@ -67,19 +68,8 @@ test("status wizard advances only from quoted bot prompts", async () => {
       },
     },
   };
+  // TikTok is the only source, so the topic reply goes straight to quantity.
   assert.equal(await flow.handleReply(sock, topicReply, "Naruto"), true);
-  assert.match(sent.at(-1).content.text, /TikTok/);
-
-  const platformReply = {
-    key: { remoteJid: original.key.remoteJid },
-    message: {
-      extendedTextMessage: {
-        text: "2",
-        contextInfo: { stanzaId: "prompt-2", quotedMessage: { conversation: "menu" } },
-      },
-    },
-  };
-  assert.equal(await flow.handleReply(sock, platformReply, "2"), true);
   assert.match(sent.at(-1).content.text, /How many edits/i);
 
   const quantityReply = {
@@ -87,7 +77,7 @@ test("status wizard advances only from quoted bot prompts", async () => {
     message: {
       extendedTextMessage: {
         text: "0",
-        contextInfo: { stanzaId: "prompt-3", quotedMessage: { conversation: "quantity" } },
+        contextInfo: { stanzaId: "prompt-2", quotedMessage: { conversation: "quantity" } },
       },
     },
   };
