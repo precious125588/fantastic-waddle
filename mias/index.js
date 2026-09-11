@@ -661,6 +661,7 @@ const CONFIG = {
   VERSION:      "4.9.9",
   GIFTED_KEY:   process.env.GIFTED_KEY || "gifted",
   MOVIE_API:    "https://movieapi.giftedtech.co.ke/api/v2",
+  MYNETNAIJA_API: process.env.MYNETNAIJA_API || "https://apis.davidcyril.name.ng/mynetnaija",
   GIFTED_API:   "https://api.giftedtech.co.ke",
   PREXZY_API:   "https://apis.prexzyvilla.site",
   OWNER_NAME:   process.env.OWNER_NAME || LOCKED_OWNER_NAME,
@@ -6960,7 +6961,7 @@ const MENU_CATEGORIES = [
     "instagram","ig","igdl","igstory","instastory","ighighlights","instahighlights",
     "play","play2","ytv","video","yt","ytdl","videodl","viddl",
     "snapchat","snap","snapdl","capcut","threads","threadsdl","threadsdl2","threadsv2",
-    "music","song","songs","songdoc","moviedl","trending","trending2",
+    "music","song","songs","songdoc","savetube","moviedl","trending","trending2",
     "pinterest","pin2","pinsearch","pindl","pindlv2","pinterestdl2","pinterest2","pin2dl",
     "mediafire","mediafiredl","mfdl","mediafire2","mfdl2",
     "soundcloud","sc","scdl","apk","reddit","redditdl","pdf","aio","alldl","unzip","extract","zipextract","fileextract",
@@ -9173,13 +9174,14 @@ async function _fetchYtAudioBuf(videoUrl, preferFmt = "mp3") {
       const hasOggS     = buf.length >= 4 && buf.slice(0, 4).toString("utf8") === "OggS";
       const hasRiff     = buf.length >= 4 && buf.slice(0, 4).toString("utf8") === "RIFF";
       const hasM4A      = buf.length >= 12 && buf.slice(4, 8).toString("ascii") === "ftyp";
+      const hasWebm     = buf.length >= 4 && buf[0] === 0x1a && buf[1] === 0x45 && buf[2] === 0xdf && buf[3] === 0xa3;
       const ctOk        = /audio|mpeg|mp3|ogg|m4a|aac|wav|octet-stream|binary/i.test(ct);
-      const looksAudio  = hasId3 || hasMpegSync || hasOggS || hasRiff || hasM4A || (ctOk && !looksHtml);
+      const looksAudio  = hasId3 || hasMpegSync || hasOggS || hasRiff || hasM4A || hasWebm || (ctOk && !looksHtml);
       if (!looksAudio) continue;
       // Determine detected format
-      const detectedFmt = hasM4A ? "m4a" : hasOggS ? "ogg" : hasRiff ? "wav" : "mp3";
-      const detectedMime = hasM4A ? "audio/mp4" : hasOggS ? "audio/ogg; codecs=opus" : hasRiff ? "audio/wav" : "audio/mpeg";
-      const detectedExt  = hasM4A ? ".m4a" : hasOggS ? ".ogg" : hasRiff ? ".wav" : ".mp3";
+      const detectedFmt = hasM4A ? "m4a" : hasOggS ? "ogg" : hasRiff ? "wav" : hasWebm ? "webm" : "mp3";
+      const detectedMime = hasM4A ? "audio/mp4" : hasOggS ? "audio/ogg; codecs=opus" : hasRiff ? "audio/wav" : hasWebm ? "audio/webm" : "audio/mpeg";
+      const detectedExt  = hasM4A ? ".m4a" : hasOggS ? ".ogg" : hasRiff ? ".wav" : hasWebm ? ".webm" : ".mp3";
       return { buf, detectedFmt, detectedMime, detectedExt };
     } catch {}
   }
@@ -11085,10 +11087,103 @@ cmd("ud", { desc: "Urban Dictionary", category: "SEARCH" }, async (sock, msg, ar
     await sendReply(sock, msg, `📖 *${entry.word}*\n\n${entry.definition?.slice(0, 500)}\n\n📌 Example: ${entry.example?.slice(0, 300) || "N/A"}\n\n👍 ${entry.thumbs_up} | 👎 ${entry.thumbs_down}`);
   } catch { await sendReply(sock, msg, "❌ Urban Dictionary lookup failed."); }
 });
+// ── MYNETNAIJA MOVIE API ─────────────────────────────────────────────────────
+// David Cyril's search endpoint returns stable movie-page URLs.  The matching
+// /info endpoint resolves those pages to the real hosted file URL, so we do
+// not send a web page or a "download" landing page as the movie file.
+const _mynetMoviePicks = new Map();
+
+function _mynetMovieList(data) {
+  const list = data?.results || data?.data?.results || data?.data || data?.movies || [];
+  return Array.isArray(list) ? list.filter((item) => item && (item.url || item.link)) : [];
+}
+
+function _mynetMovieInfo(data) {
+  const d = data?.data || data;
+  const download = d?.download || {};
+  const fileUrl = download?.url || download?.download_url || download?.direct_url || d?.download_url || d?.file_url;
+  return {
+    title: d?.title || d?.name || "Movie",
+    description: d?.description || d?.overview || "",
+    thumbnail: d?.thumbnail || d?.poster || d?.image || "",
+    genre: d?.genre || d?.genres || "",
+    sourceUrl: d?.source_url || d?.url || "",
+    fileUrl: typeof fileUrl === "string" && /^https?:\/\//i.test(fileUrl) ? fileUrl : null,
+    fileName: download?.file_name || "",
+    fileExt: String(download?.file_ext || "").toLowerCase(),
+    fileSize: download?.file_size || "",
+    host: download?.host || "",
+  };
+}
+
+async function _fetchMynetMovieInfo(pageUrl) {
+  if (!pageUrl || !/^https?:\/\/(?:www\.)?mynetnaija\.ng\//i.test(pageUrl)) return null;
+  const { data } = await axios.get(`${CONFIG.MYNETNAIJA_API}/info`, {
+    params: { url: pageUrl },
+    timeout: 30000,
+    headers: { "User-Agent": "Mozilla/5.0", Accept: "application/json" },
+  });
+  if (!data?.success) return null;
+  return _mynetMovieInfo(data);
+}
+
+function _movieMime(ext = "") {
+  const value = String(ext).toLowerCase().replace(/^\./, "");
+  return value === "mp4" || value === "m4v" ? "video/mp4"
+    : value === "mkv" ? "video/x-matroska"
+    : value === "webm" ? "video/webm"
+    : value === "avi" ? "video/x-msvideo"
+    : "application/octet-stream";
+}
+
+function _looksLikeMovieFile(buf, contentType = "") {
+  if (!Buffer.isBuffer(buf) || buf.length < 1024) return false;
+  const head = buf.subarray(0, 32).toString("utf8").toLowerCase();
+  if (/^<!doctype|^<html|^\s*[{[]/.test(head)) return false;
+  const isMp4 = buf.length >= 12 && buf.subarray(4, 8).toString("ascii") === "ftyp";
+  const isMkv = buf.length >= 4 && buf[0] === 0x1a && buf[1] === 0x45 && buf[2] === 0xdf && buf[3] === 0xa3;
+  return isMp4 || isMkv || /video\/|octet-stream|application\/x-matroska|binary/i.test(contentType);
+}
+
 cmd("movie", { desc: "Search & download movies", category: "SEARCH" }, async (sock, msg, args) => {
   if (!args.length) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}movie <name>`); return; }
   await react(sock, msg, "🎬");
   const q = args.join(" ");
+
+  // Primary source: MynetNaija search.  Keep the URLs in a short-lived,
+  // per-chat picker so ".moviedl 1" downloads the exact selected result.
+  try {
+    const { data } = await axios.get(`${CONFIG.MYNETNAIJA_API}/search`, {
+      params: { q },
+      timeout: 30000,
+      headers: { "User-Agent": "Mozilla/5.0", Accept: "application/json" },
+    });
+    const results = _mynetMovieList(data).slice(0, 10);
+    if (data?.success && results.length) {
+      const jid = msg.key.remoteJid;
+      _mynetMoviePicks.set(jid, { ts: Date.now(), results });
+      setTimeout(() => {
+        const current = _mynetMoviePicks.get(jid);
+        if (current && Date.now() - current.ts >= 10 * 60 * 1000) _mynetMoviePicks.delete(jid);
+      }, 10 * 60 * 1000 + 1000).unref?.();
+
+      let text = `🎬 *MynetNaija Movie Search*\n🔎 *${q}*\n\n`;
+      results.forEach((item, index) => {
+        const title = item.title || item.name || "Untitled movie";
+        text += `*${index + 1}.* ${title}\n`;
+        text += `   📥 ${CONFIG.PREFIX}moviedl ${index + 1}\n\n`;
+      });
+      text += `_Reply with a number or use the download command shown above._\n\n> Powered by David Cyril`;
+      await sendReply(sock, msg, text);
+      await react(sock, msg, "✅");
+      return;
+    }
+  } catch (error) {
+    console.warn("[movie] MynetNaija search failed:", error?.message || error);
+  }
+
+  // Existing fallbacks remain available if the primary API is temporarily
+  // unavailable.
   let items = null;
   try {
     const r = await prexzyGet("/moviesearch", { query: q }, 20000);
@@ -11200,6 +11295,74 @@ cmd("moviedl", { desc: "Get movie download links — .moviedl <title or IMDB ID>
   await react(sock, msg, "📥");
   const query = args.join(" ");
   const jid = msg.key.remoteJid;
+
+  // MynetNaija direct-file path.  This runs before the older link providers so
+  // the command sends the actual movie bytes, not an HTML download page.
+  try {
+    const cached = _mynetMoviePicks.get(jid);
+    const selected = /^\d+$/.test(query) && cached && Date.now() - cached.ts <= 10 * 60 * 1000
+      ? cached.results[Number(query) - 1]
+      : null;
+    const pageUrl = selected?.url || selected?.link || (/^https?:\/\/(?:www\.)?mynetnaija\.ng\//i.test(query) ? query : null);
+    if (pageUrl) {
+      const info = await _fetchMynetMovieInfo(pageUrl);
+      if (!info) throw new Error("movie details were not returned by the API");
+      const caption = [
+        `🎬 *${info.title}*`,
+        info.genre ? `🏷️ ${Array.isArray(info.genre) ? info.genre.join(", ") : info.genre}` : "",
+        info.fileSize ? `📦 ${info.fileSize}` : "",
+        info.description ? `\n📝 ${String(info.description).slice(0, 500)}` : "",
+        "\n> Powered by David Cyril",
+      ].filter(Boolean).join("\n");
+
+      if (info.thumbnail && /^https?:\/\//i.test(info.thumbnail)) {
+        try {
+          const poster = await axios.get(info.thumbnail, {
+            responseType: "arraybuffer", timeout: 15000, maxRedirects: 5,
+            headers: { "User-Agent": "Mozilla/5.0" },
+          });
+          await sock.sendMessage(jid, { image: Buffer.from(poster.data), caption }, { quoted: msg });
+        } catch {}
+      }
+
+      if (!info.fileUrl) {
+        const fallback = info.sourceUrl || pageUrl;
+        await sendReply(sock, msg, `⚠️ *${info.title}* was found, but the provider did not return a direct file URL yet.\n\n🔗 ${fallback}`);
+        return;
+      }
+
+      const status = await sock.sendMessage(jid, { text: `⬇️ Downloading *${info.title}*...\nPlease wait while I fetch the real movie file.` }, { quoted: msg });
+      const response = await axios.get(info.fileUrl, {
+        responseType: "arraybuffer", timeout: 300000, maxRedirects: 5,
+        headers: { "User-Agent": "Mozilla/5.0", Accept: "*/*" },
+        validateStatus: (code) => code >= 200 && code < 400,
+      });
+      const movieBuf = Buffer.from(response.data || []);
+      if (!_looksLikeMovieFile(movieBuf, response.headers?.["content-type"])) {
+        throw new Error("the provider returned a web page instead of a movie file");
+      }
+      const ext = String(info.fileExt || path.extname(info.fileName || "") || ".mp4").toLowerCase();
+      const safeName = String(info.fileName || info.title || "movie")
+        .replace(/\.[a-z0-9]{2,5}$/i, "")
+        .replace(/[^\w\s.-]/g, "_")
+        .trim().slice(0, 80) || "movie";
+      await sock.sendMessage(jid, {
+        document: movieBuf,
+        fileName: `${safeName}${ext.startsWith(".") ? ext : `.${ext}`}`,
+        mimetype: _movieMime(ext),
+        caption,
+      }, { quoted: msg });
+      try { await sock.sendMessage(jid, { delete: status.key }); } catch {}
+      _mynetMoviePicks.delete(jid);
+      await react(sock, msg, "✅");
+      return;
+    }
+  } catch (error) {
+    console.warn("[moviedl] MynetNaija direct download failed:", error?.message || error);
+    await sendReply(sock, msg, `❌ MynetNaija download failed: ${error?.message || "unknown error"}\n\nTry the command again or use a direct MynetNaija result number.`);
+    return;
+  }
+
   // (status message removed for speed)
   let m = null, dlLinks = [];
 
@@ -21122,6 +21285,20 @@ async function __miasHandleBareNumberReply(sock, msg, body) {
     }
     await sendReply(sock, msg, `❌ *${value}* is not on that list. Reply with a choice like *1.3* (HD video) or *2.1* (audio).`);
     return true;
+  }
+
+  const moviePick = _mynetMoviePicks.get(jid);
+  if (moviePick && now - moviePick.ts <= 10 * 60 * 1000) {
+    const movieNumber = Number(value);
+    if (Number.isInteger(movieNumber) && movieNumber >= 1 && movieNumber <= moviePick.results.length) {
+      const entry = commands.get("moviedl");
+      if (entry?.handler) {
+        await entry.handler(sock, msg, [String(movieNumber)]);
+        return true;
+      }
+    }
+  } else if (moviePick) {
+    _mynetMoviePicks.delete(jid);
   }
 
   const playPick = _playPickStore.get(jid);
@@ -39020,8 +39197,37 @@ const __preciousPlayBrand = "𝑷𝑹𝑬𝑪𝑰𝑶𝑼𝑺 x";
 
 async function __preciousResolvePlayTarget(query) {
   const raw = String(query || "").trim();
-  if (/^https?:\/\//i.test(raw)) return { videoUrl: raw, title: raw };
+  if (/^https?:\/\//i.test(raw)) {
+    try {
+      const r = await dcGet("/download/ytmp3", { url: raw }, 30000);
+      const d = r?.data?.result || r?.data?.data || r?.data || {};
+      return {
+        videoUrl: raw,
+        title: d?.title || d?.name || raw,
+        author: d?.author || d?.artist || d?.channel || "",
+        duration: d?.duration || d?.timestamp || "",
+        views: d?.views || "",
+        published: d?.published || d?.publishedAt || "",
+        thumbnail: d?.thumbnail || d?.thumb || d?.image || d?.cover || "",
+      };
+    } catch {}
+    return { videoUrl: raw, title: raw };
+  }
   const searchers = [
+    async () => {
+      const r = await dcGet("/play", { query: raw }, 30000);
+      const d = r?.data?.result || r?.data?.data || r?.data || {};
+      const videoUrl = d?.video_url || d?.videoUrl || d?.youtube_url || d?.url;
+      return videoUrl ? {
+        videoUrl,
+        title: d?.title || d?.name || raw,
+        author: d?.author || d?.artist || d?.channel || "",
+        duration: d?.duration || d?.timestamp || "",
+        views: d?.views || "",
+        published: d?.published || d?.publishedAt || "",
+        thumbnail: d?.thumbnail || d?.thumb || d?.image || d?.cover || "",
+      } : null;
+    },
     async () => {
       if (!CONFIG.GIFTED_API) return null;
       const { data } = await axios.get(
@@ -39030,7 +39236,7 @@ async function __preciousResolvePlayTarget(query) {
       );
       const item = data?.result?.[0] || data?.results?.[0];
       return item && (item.url || item.link)
-        ? { videoUrl: item.url || item.link, title: item.title || raw }
+        ? { videoUrl: item.url || item.link, title: item.title || raw, thumbnail: item.thumbnail || item.image || "", author: item.author || item.channel || "", duration: item.duration || item.timestamp || "", views: item.views || "", published: item.published || "" }
         : null;
     },
     async () => {
@@ -39040,13 +39246,13 @@ async function __preciousResolvePlayTarget(query) {
       );
       const item = data?.data?.[0] || data?.result?.[0];
       return item && (item.url || item.link)
-        ? { videoUrl: item.url || item.link, title: item.title || raw }
+        ? { videoUrl: item.url || item.link, title: item.title || raw, thumbnail: item.thumbnail || item.image || "", author: item.author || item.channel || "", duration: item.duration || item.timestamp || "", views: item.views || "", published: item.published || "" }
         : null;
     },
     async () => {
       const result = await ytSearch(raw);
       return result?.[0]?.url
-        ? { videoUrl: result[0].url, title: result[0].title || raw }
+        ? { videoUrl: result[0].url, title: result[0].title || raw, thumbnail: result[0].thumbnail || result[0].image || "", author: result[0].author || result[0].channel || "", duration: result[0].duration || result[0].timestamp || "", views: result[0].views || "", published: result[0].published || "" }
         : null;
     },
   ];
@@ -39057,6 +39263,44 @@ async function __preciousResolvePlayTarget(query) {
     } catch {}
   }
   return null;
+}
+
+async function __preciousTranscodeAudio(buffer, sourceExt = "bin") {
+  if (!Buffer.isBuffer(buffer) || buffer.length < 1024) throw new Error("audio buffer is empty");
+  const suffix = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const input = path.join(os.tmpdir(), `precious_audio_${suffix}.${String(sourceExt).replace(/^\./, "") || "bin"}`);
+  const output = path.join(os.tmpdir(), `precious_audio_${suffix}.mp3`);
+  try {
+    fs.writeFileSync(input, buffer);
+    const ffmpeg = (() => {
+      try { return require("ffmpeg-static"); } catch { return "ffmpeg"; }
+    })();
+    await new Promise((resolve, reject) => {
+      const child = require("child_process").spawn(ffmpeg, [
+        "-hide_banner", "-loglevel", "error", "-y",
+        "-i", input, "-map", "0:a:0", "-vn",
+        "-c:a", "libmp3lame", "-b:a", "128k", "-ar", "44100", "-ac", "2",
+        "-f", "mp3", output,
+      ], { stdio: "ignore" });
+      const timer = setTimeout(() => {
+        try { child.kill("SIGKILL"); } catch {}
+        reject(new Error("audio conversion timed out"));
+      }, 120000);
+      child.once("error", (error) => { clearTimeout(timer); reject(error); });
+      child.once("close", (code) => {
+        clearTimeout(timer);
+        code === 0 ? resolve() : reject(new Error(`audio conversion failed (${code})`));
+      });
+    });
+    const converted = fs.readFileSync(output);
+    if (converted.length < 1024 || converted.subarray(0, 3).toString("ascii") !== "ID3" && !(converted[0] === 0xff && (converted[1] & 0xe0) === 0xe0)) {
+      throw new Error("audio conversion returned an invalid MP3");
+    }
+    return converted;
+  } finally {
+    try { fs.unlinkSync(input); } catch {}
+    try { fs.unlinkSync(output); } catch {}
+  }
 }
 
 async function __preciousVoiceBuffer(buffer, sourceExt = "mp3") {
@@ -39106,25 +39350,164 @@ async function __preciousPlayPicker(sock, msg, args) {
   _playPickStore.set(jid, {
     videoUrl: target.videoUrl,
     title: String(target.title || query).slice(0, 100),
+    author: target.author || "",
+    duration: target.duration || "",
+    views: target.views || "",
+    published: target.published || "",
+    thumbnail: target.thumbnail || "",
     ts: Date.now(),
     picker: "output",
   });
   const body = [
     `*${__preciousPlayBrand} SONG*`,
     "",
-    `*${String(target.title || query).slice(0, 80)}*`,
+    `*${String(target.title || query).slice(0, 90)}*`,
     "",
-    "Choose how to receive it:",
+    "╭────────────────────────╮",
+    `│ 🎵 *Title:* ${String(target.title || query).slice(0, 70)}`,
+    `│ ⏱️ *Duration:* ${target.duration || "Unknown"}`,
+    `│ 👁️ *Views:* ${target.views || "Unknown"}`,
+    `│ 📅 *Release Ago:* ${target.published || "Unknown"}`,
+    `│ 👤 *Author:* ${target.author || "Unknown"}`,
+    `│ 🔗 *Url:* ${target.videoUrl}`,
+    "╰────────────────────────╯",
+    "",
+    "🔢 *Please reply with the number you want to select:*",
   ].join("\n");
   // Deliberately use the numbered text menu shown in the requested flow.
   // The user can reply to/quote this menu with 1, 2, or 3; the pending
   // selection is routed by __miasHandleBareNumberReply.
-  await _sendTextMenuPick(sock, jid, msg, body, [
+  const items = [
     { text: "Audio Type", id: `${CONFIG.PREFIX}playgetmode audio` },
     { text: "Document Type", id: `${CONFIG.PREFIX}playgetmode document` },
     { text: "Voice Type", id: `${CONFIG.PREFIX}playgetmode voice` },
-  ], `${__preciousPlayBrand} • Song`);
+  ];
+  const numberedBody = `${body}\n\n${items.map((item, index) => `${index + 1}. ${item.text}`).join("\n")}`;
+  const thumb = target.thumbnail ? await fetchPlayThumb(target.thumbnail).catch(() => null) : null;
+  if (thumb) {
+    await sock.sendMessage(jid, { image: thumb, caption: numberedBody }, { quoted: msg });
+  } else {
+    await _sendTextMenuPick(sock, jid, msg, body, items, `${__preciousPlayBrand} • Song`);
+  }
 }
+
+// ── savetube — direct SaveTube CDN downloader ───────────────────────────────
+// SaveTube encrypts its /v2/info response with AES-128-CBC.  The key is part
+// of the public client protocol; no user credential is involved.
+function __saveTubeDecrypt(encoded) {
+  const key = Buffer.from("C5D58EF67A7584E4A29F6C35BBC4EB12", "hex");
+  const raw = Buffer.from(String(encoded || "").replace(/\s/g, ""), "base64");
+  if (raw.length <= 16) throw new Error("SaveTube returned invalid metadata");
+  const decipher = crypto.createDecipheriv("aes-128-cbc", key, raw.subarray(0, 16));
+  return JSON.parse(Buffer.concat([decipher.update(raw.subarray(16)), decipher.final()]).toString("utf8"));
+}
+
+async function __saveTubeResolve(url, type, requestedQuality = "") {
+  let cdnResponse = null;
+  let lastCdnError = null;
+  for (const base of ["https://media.savetube.vip", "https://media.savetube.me"]) {
+    try {
+      cdnResponse = await axios.get(`${base}/api/random-cdn`, {
+        timeout: 20000, headers: { "User-Agent": "Mozilla/5.0", Accept: "application/json" },
+      });
+      if (cdnResponse.data?.cdn) break;
+    } catch (error) {
+      lastCdnError = error;
+    }
+  }
+  if (!cdnResponse?.data?.cdn) throw new Error(lastCdnError?.message || "SaveTube CDN is unavailable");
+  const cdn = cdnResponse.data?.cdn;
+  if (!cdn) throw new Error("SaveTube did not return a CDN");
+  const headers = {
+    "Content-Type": "application/json",
+    origin: "https://ytsave.savetube.me",
+    referer: "https://ytsave.savetube.me/",
+    "User-Agent": "Mozilla/5.0",
+  };
+  const infoResponse = await axios.post(`https://${cdn}/v2/info`, { url }, { headers, timeout: 40000 });
+  if (!infoResponse.data?.status) throw new Error("SaveTube could not read that URL");
+  const info = __saveTubeDecrypt(infoResponse.data.data);
+  const formats = Array.isArray(info[`${type}_formats`]) ? info[`${type}_formats`] : [];
+  if (!formats.length) throw new Error(`SaveTube has no ${type} format for this URL`);
+  const wanted = String(requestedQuality || "").replace(/[^\d]/g, "");
+  const selected = wanted
+    ? (formats.find((item) => String(item.quality) === wanted) || formats[0])
+    : type === "audio"
+      ? [...formats].sort((a, b) => Number(b.quality || 0) - Number(a.quality || 0))[0]
+      : (formats.find((item) => Number(item.quality) === 720) || formats.find((item) => Number(item.quality) === 480) || formats[0]);
+  const downloadResponse = await axios.post(`https://${cdn}/download`, {
+    id: info.id,
+    key: info.key,
+    downloadType: type,
+    quality: String(selected.quality),
+  }, { headers, timeout: 40000 });
+  const downloadUrl = downloadResponse.data?.data?.downloadUrl || downloadResponse.data?.downloadUrl;
+  if (!downloadUrl) throw new Error("SaveTube did not return a download URL");
+  return { info, selected, downloadUrl, type };
+}
+
+cmd("savetube", { desc: "Download YouTube media with SaveTube", category: "DOWNLOAD" }, async (sock, msg, args) => {
+  if (!args.length) {
+    await sendReply(sock, msg,
+      `📥 *SaveTube*\n\nUsage: ${CONFIG.PREFIX}savetube <YouTube URL> [audio|video|doc] [quality]\n\nExamples:\n• ${CONFIG.PREFIX}savetube https://youtu.be/... audio\n• ${CONFIG.PREFIX}savetube https://youtu.be/... video 720\n• ${CONFIG.PREFIX}savetube https://youtu.be/... doc 1080`);
+    return;
+  }
+  const url = args.find((item) => /^https?:\/\//i.test(item));
+  if (!url) { await sendReply(sock, msg, `❌ Send a valid YouTube URL.\nExample: ${CONFIG.PREFIX}savetube https://youtu.be/... audio`); return; }
+  const mode = args.map((item) => item.toLowerCase()).includes("audio") || args.map((item) => item.toLowerCase()).includes("mp3")
+    ? "audio" : "video";
+  const asDocument = args.map((item) => item.toLowerCase()).includes("doc") || args.map((item) => item.toLowerCase()).includes("document");
+  const requestedQuality = args.find((item) => /^\d{2,4}p?$/i.test(item)) || "";
+  const jid = msg.key.remoteJid;
+  await react(sock, msg, "📥");
+  const status = await sock.sendMessage(jid, { text: `📥 *SaveTube*\n\n🔎 Reading media information...` }, { quoted: msg });
+  try {
+    const result = await __saveTubeResolve(url, mode, requestedQuality);
+    const title = String(result.info.title || "SaveTube download").slice(0, 100);
+    const thumb = result.info.thumbnail ? await fetchPlayThumb(result.info.thumbnail).catch(() => null) : null;
+    const meta = `📥 *${title}*\n⏱️ Duration: ${result.info.duration || "Unknown"}\n🎞️ Format: ${result.selected.label || `${result.selected.quality} ${mode}`}`;
+    if (thumb) await sock.sendMessage(jid, { image: thumb, caption: meta }, { quoted: msg });
+    await editMessage(sock, jid, status.key, `${meta}\n\n⬇️ Fetching the real file...`);
+    const response = await axios.get(result.downloadUrl, {
+      responseType: "arraybuffer", timeout: 300000, maxRedirects: 5,
+      headers: { "User-Agent": "Mozilla/5.0", Accept: "*/*" },
+      validateStatus: (code) => code >= 200 && code < 400,
+    });
+    let media = Buffer.from(response.data || []);
+    const contentType = String(response.headers?.["content-type"] || "").toLowerCase();
+    if (media.length < 1024 || /^<!doctype|^<html|\s*[{[]/.test(media.subarray(0, 32).toString("utf8").toLowerCase())) {
+      throw new Error("SaveTube returned a web page instead of media");
+    }
+    if (mode === "audio") {
+      const isMp3 = media.subarray(0, 3).toString("ascii") === "ID3" || (media[0] === 0xff && (media[1] & 0xe0) === 0xe0);
+      if (!isMp3) media = await __preciousTranscodeAudio(media, "bin");
+      await sock.sendMessage(jid, {
+        audio: media, mimetype: "audio/mpeg", ptt: false,
+        fileName: `${title.replace(/[^\w\s.-]/g, "_").slice(0, 70)}.mp3`,
+      }, { quoted: msg });
+    } else {
+      const isMp4 = media.length >= 12 && media.subarray(4, 8).toString("ascii") === "ftyp";
+      const isWebm = media.length >= 4 && media[0] === 0x1a && media[1] === 0x45 && media[2] === 0xdf && media[3] === 0xa3;
+      if (!isMp4 && !isWebm && !/video|octet-stream|binary/i.test(contentType)) throw new Error("SaveTube returned an invalid video file");
+      const ext = isWebm ? ".webm" : ".mp4";
+      const fileName = `${title.replace(/[^\w\s.-]/g, "_").slice(0, 70)}${ext}`;
+      if (asDocument || media.length > 55 * 1024 * 1024) {
+        await sock.sendMessage(jid, { document: media, fileName, mimetype: isWebm ? "video/webm" : "video/mp4", caption: meta }, { quoted: msg });
+      } else {
+        try {
+          await sock.sendMessage(jid, { video: media, mimetype: isWebm ? "video/webm" : "video/mp4", caption: meta }, { quoted: msg });
+        } catch {
+          await sock.sendMessage(jid, { document: media, fileName, mimetype: isWebm ? "video/webm" : "video/mp4", caption: meta }, { quoted: msg });
+        }
+      }
+    }
+    await sock.sendMessage(jid, { delete: status.key }).catch(() => {});
+    await react(sock, msg, "✅");
+  } catch (error) {
+    await editMessage(sock, jid, status.key, `❌ *SaveTube failed:* ${error?.message || "download failed"}\n\nCheck the URL and try again.`).catch(() => {});
+    await react(sock, msg, "❌");
+  }
+});
 
 cmd("playgetmode", {
   desc: "Internal play output picker",
@@ -39157,6 +39540,13 @@ cmd("playgetmode", {
       }
       mimetype = "audio/ogg; codecs=opus";
       extension = ".ogg";
+    } else if (result.detectedFmt !== "mp3") {
+      // WhatsApp is strict about inline audio.  Providers often return WebM,
+      // M4A, or WAV bytes while labelling the URL as MP3; transcode those
+      // bytes instead of sending a mismatched MIME type.
+      payloadBuffer = await __preciousTranscodeAudio(result.buf, extension);
+      mimetype = "audio/mpeg";
+      extension = ".mp3";
     }
     const safeName = String(stored.title || "audio")
       .replace(/[^\w\s.-]/g, "_")
