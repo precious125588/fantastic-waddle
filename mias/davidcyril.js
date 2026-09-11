@@ -147,6 +147,34 @@ export function extractDcSpotify(data) {
   };
 }
 
+// Normalise DavidCyril Play / YouTube-MP3 responses.
+//   GET /play?query=<search>      -> result{title,video_url,thumbnail,duration,views,published,download_url}
+//   GET /download/ytmp3?url=<url> -> result{title,thumbnail,format,type,download_url}
+// Both shapes are documented at https://apis.davidcyril.name.ng/docs/#
+export function extractDcPlay(data) {
+  if (!data || typeof data !== "object") return null;
+  const r = data.result || data.data || data;
+  if (!r || typeof r !== "object") return null;
+  const dlUrl = r.download_url || r.downloadUrl || r.url || r.audio || r.mp3 || r.link || null;
+  if (!dlUrl || typeof dlUrl !== "string" || !/^https?:\/\//i.test(dlUrl)) return null;
+  const fmt = String(r.format || r.quality || "mp3").toLowerCase();
+  const isM4a = /m4a|mp4a/.test(fmt);
+  const isOpus = /opus|ogg|webm/.test(fmt);
+  const thumbUrl = r.thumbnail || r.thumb || r.image || r.cover || null;
+  return {
+    dlUrl,
+    title: r.title || r.name || null,
+    artists: r.author || r.artist || r.channel || null,
+    duration: r.duration || r.timestamp || null,
+    views: r.views || null,
+    published: r.published || r.publishedAt || null,
+    videoUrl: r.video_url || r.videoUrl || r.youtube_url || null,
+    thumbUrl: typeof thumbUrl === "string" && /^https?:\/\//i.test(thumbUrl) ? thumbUrl : null,
+    mimetype: isM4a ? "audio/mp4" : isOpus ? "audio/ogg; codecs=opus" : "audio/mpeg",
+    ext: isM4a ? ".m4a" : isOpus ? ".ogg" : ".mp3",
+  };
+}
+
 // Resolve video download URL from DC TikTok API responses
 export function extractDcTiktok(data, isAudio = false) {
   if (!data) return null;
@@ -164,4 +192,5 @@ export default {
   dcPostBinary,
   extractDcSpotify,
   extractDcTiktok,
+  extractDcPlay,
 };
