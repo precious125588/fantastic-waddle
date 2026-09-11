@@ -40,13 +40,13 @@ test("group / status targets are refused before any API call", async () => {
   assert.equal(sock.calls.length, 0);
 });
 
-test("self target is refused", async () => {
+test("the bot's own explicit JID is a valid block target", async () => {
   BL._resetCacheForTests();
   const sock = makeSock({ me: "111222333444" });
   const res = await BL.setBlockStatus(sock, "111222333444@s.whatsapp.net", "block");
-  assert.equal(res.ok, false);
-  assert.equal(res.code, "self-target");
-  assert.equal(sock.calls.length, 0);
+  assert.equal(res.ok, true);
+  assert.equal(res.num, "111222333444");
+  assert.deepEqual(sock.calls, [["111222333444@s.whatsapp.net", "block"]]);
 });
 
 test("block sends a bare user jid and is verified against the blocklist", async () => {

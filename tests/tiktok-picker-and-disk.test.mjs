@@ -16,6 +16,7 @@ test("TikTok picker accepts normal and prefixed choices", () => {
   assert.equal(normalizeTikTokMode(".1.3"), "1.3");
   assert.equal(normalizeTikTokMode("*2.3*"), "2.3");
   assert.equal(parseTikTokMode("hd")?.id, "1.3");
+  assert.equal(parseTikTokMode("sticker")?.id, "3.1");
 });
 
 test("TikTok picker chooses the requested media URL", () => {
@@ -28,6 +29,7 @@ test("TikTok picker chooses the requested media URL", () => {
   assert.equal(selectTikTokUrl(info, parseTikTokMode("1.3")), info.videoHd);
   assert.equal(selectTikTokUrl(info, parseTikTokMode("1.1")), info.videoSd);
   assert.equal(selectTikTokUrl(info, parseTikTokMode("2.3")), info.audio);
+  assert.equal(selectTikTokUrl(info, parseTikTokMode("3.1")), info.videoHd);
 });
 
 test("disk guard exposes usable space and classifies ENOSPC", () => {
