@@ -44,6 +44,13 @@ export function normalizeNumber(input) {
   return digits;
 }
 
+function normalizedLid(input) {
+  const raw = String(input == null ? "" : input).trim().toLowerCase();
+  if (!raw.endsWith("@lid")) return "";
+  const number = normalizeNumber(raw);
+  return number ? `${number}@lid` : "";
+}
+
 /**
  * Normalize any target to a blockable user jid, or "" when it is not a valid
  * individual WhatsApp user (group / status / broadcast / newsletter / junk).
@@ -229,20 +236,34 @@ export async function resolveBlockTarget(sock, ...inputs) {
 }
 
 async function resolveLidToPhone(sock, lidJid) {
+  const lid = normalizedLid(lidJid);
+  if (!lid) return "";
   try {
     const store = sock?.signalRepository?.lidMapping;
     if (store && typeof store.getPNForLID === "function") {
-      const pn = await store.getPNForLID(lidJid);
+      const pn = await store.getPNForLID(lid);
       const jid = normalizeUserJid(pn);
       if (jid) return jid;
     }
   } catch {}
+  // Some Baileys stores expose the mapping as a contact record rather than
+  // through signalRepository.lidMapping.
+  for (const contacts of contactStores(sock)) {
+    for (const [key, contact] of contactEntries(contacts)) {
+      if (normalizedLid(key) !== lid && normalizedLid(contact?.jid || contact?.id) !== lid) continue;
+      const mapped = [contact?.pn, contact?.phone, contact?.phoneNumber]
+        .map(normalizeUserJid)
+        .find(Boolean);
+      if (mapped) return mapped;
+    }
+  }
   try {
-    const num = normalizeNumber(lidJid);
-    if (num && typeof sock?.onWhatsApp === "function") {
-      const res = (await sock.onWhatsApp(`+${num}`)) || [];
+    // Prefer the LID itself when asking Baileys. Never reinterpret an
+    // unresolved LID number as a phone number: that can block the wrong user.
+    if (typeof sock?.onWhatsApp === "function") {
+      const res = (await sock.onWhatsApp(lid)) || [];
       for (const r of res) {
-        const jid = normalizeUserJid(r?.jid);
+        const jid = normalizeUserJid(r?.jid || r?.pn);
         if (jid && r?.exists !== false) return jid;
       }
     }
@@ -277,7 +298,10 @@ export async function fetchBlocklist(sock, { force = false } = {}) {
     const list = (await sock.fetchBlocklist()) || [];
     const set = new Set();
     for (const j of list) {
-      const n = normalizeNumber(j);
+      const mapped = String(j).toLowerCase().endsWith("@lid")
+        ? await resolveLidToPhone(sock, j)
+        : j;
+      const n = normalizeNumber(mapped);
       if (n) set.add(n);
     }
     cache.jids = set;
@@ -349,11 +373,6 @@ export async function setBlockStatus(sock, target, action) {
       : "could not resolve that target to a valid WhatsApp number";
     return { ok: false, jid: "", num: "", verified: null, error: msg, code: "invalid-target", alreadyInState: false };
   }
-  const myNum = normalizeNumber(sock?.user?.id || "");
-  if (myNum && myNum === num) {
-    return { ok: false, jid, num, verified: null, error: "cannot block the bot's own account", code: "self-target", alreadyInState: false };
-  }
-
   const pendingEntry = pending.get(num);
   const pendingAction = pendingEntry && Date.now() - pendingEntry.at < PENDING_TTL_MS
     ? pendingEntry.action
