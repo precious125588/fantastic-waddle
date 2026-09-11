@@ -32,7 +32,7 @@ import { loadAllData, saveAllData, startAutoSave } from "./database.js";
 globalThis.__MIAS_GET_SETTINGS__ = (jid) => { try { return typeof getSettings === 'function' ? getSettings(jid) : null; } catch(_) { return null; } };
 
 import APIs from "./api.js";
-import { dcGet, dcPost, dcRequest, dcGetBinary, extractDcSpotify, extractDcTiktok } from "./davidcyril.js";
+import { dcGet, dcPost, dcRequest, dcGetBinary, extractDcSpotify, extractDcTiktok, extractDcPlay } from "./davidcyril.js";
 // ── KEVDRA STABILITY PATCHES ─────────────────────────────────────────────────
 import {
   initKevdraPatches,
@@ -648,7 +648,7 @@ const CONFIG = {
   SESSION_ID:   process.env.SESSION_ID   || "",
   OWNER_NUMBER: (process.env.OWNER_NUMBER || process.env.OWNER || "").trim(),
   OWNER_JID: (process.env.OWNER_JID || process.env.OWNER_LID || "").trim(),
-  BOT_NAME:     process.env.BOT_NAME || "MIAS MDX",
+  BOT_NAME:     process.env.BOT_NAME || "𝑷𝑹𝑬𝑪𝑰𝑶𝑼𝑺 x",
   PREFIX:       INITIAL_PREFIX !== null
     ? INITIAL_PREFIX
     : Object.prototype.hasOwnProperty.call(process.env, "PREFIX")
@@ -8529,6 +8529,30 @@ async function ytSearch(query) {
   } catch { return []; }
 }
 
+// ── Bot branding used in Play output cards ───────────────────────────────────
+const PLAY_BRAND = process.env.BOT_BRAND || "𝑷𝑹𝑬𝑪𝑰𝑶𝑼𝑺 x";
+
+// Download + validate a Play thumbnail/cover image. Returns a Buffer only when
+// the response really is an image; any failure returns null so the audio is
+// still sent (never crashes, never sent as the audio itself).
+async function fetchPlayThumb(url, timeout = 12000) {
+  if (!url || typeof url !== "string" || !/^https?:\/\//i.test(url)) return null;
+  try {
+    const res = await axios.get(url, {
+      responseType: "arraybuffer", timeout, maxRedirects: 5,
+      headers: { "User-Agent": "Mozilla/5.0" },
+    });
+    const buf = Buffer.from(res.data || []);
+    if (buf.length < 512) return null;
+    const ct = String(res.headers?.["content-type"] || "").toLowerCase();
+    const isJpg = buf[0] === 0xFF && buf[1] === 0xD8;
+    const isPng = buf.slice(0, 8).toString("hex") === "89504e470d0a1a0a";
+    const isWebp = buf.slice(0, 4).toString("ascii") === "RIFF" && buf.slice(8, 12).toString("ascii") === "WEBP";
+    if (!isJpg && !isPng && !isWebp && !/^image\//.test(ct)) return null;
+    return buf;
+  } catch { return null; }
+}
+
 cmd(["play", "music", "song"], { desc: "Play/download song (audio)", category: "DOWNLOAD" }, async (sock, msg, args) => {
   if (!args.length) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}play <song name or URL>`); return; }
   await react(sock, msg, "🌀");
@@ -8540,57 +8564,66 @@ cmd(["play", "music", "song"], { desc: "Play/download song (audio)", category: "
     const statusMsg = await sock.sendMessage(jid, { text: `🌀 *MIAS MDX Player*\n\n🔍 Searching for *"${query}"*...` }, { quoted: msg });
     const statusKey = statusMsg.key;
 
-    // ── NEXORA FAST PATH — direct MP3, highest priority ────────────────────────
-    if (!isUrl) {
-      try {
-        const nexRes = await dcGet("/play", { query }, 30000);
-        const nex = nexRes.ok ? nexRes.data : null;
-        if (nex?.status && nex?.result?.download_url) {
-          const nexAudio = await axios.get(nex.result.download_url, {
-            responseType: "arraybuffer", timeout: 120000, maxRedirects: 5,
-            headers: { "User-Agent": "Mozilla/5.0" }
-          });
-          const nexBuf = Buffer.from(nexAudio.data || []);
-          if (nexBuf.length > 8000) {
-            const songTitle = (nex.result.title || query).slice(0, 80);
-            const _nexThumb = nex?.result?.thumbnail || nex?.result?.cover || "";
-            const _dur = nex?.result?.duration || '';
-            const _artst = nex?.result?.artist || nex?.result?.author || '';
-            const _nexVidUrl = nex?.result?.videoUrl || nex?.result?.url || '';
-            // ── Single combined message: audio + thumbnail card in ONE bubble ──
-            // (externalAdReply renders a thumbnail/title/body card attached to
-            // the same message instead of sending a separate image message.)
-            const _audioPayload = {
-              audio: nexBuf, mimetype: "audio/mpeg", ptt: false,
-              fileName: `${songTitle.replace(/[^a-zA-Z0-9 ]/g, "")}.mp3`,
+    // ── DAVID CYRIL API — PRIMARY SOURCE ──────────────────────────────────────
+    // Documented endpoints (https://apis.davidcyril.name.ng/docs/#):
+    //   GET /play?query=<search>       -> result{title,video_url,thumbnail,duration,views,download_url}
+    //   GET /download/ytmp3?url=<url>  -> result{title,thumbnail,format,download_url}
+    // Any failure here (network/timeout/bad response/missing or unusable media)
+    // simply falls through to the existing fallback providers below.
+    try {
+      const dcRes = isUrl
+        ? await dcGet("/download/ytmp3", { url: query }, 30000)
+        : await dcGet("/play", { query }, 30000);
+      const dc = dcRes?.ok ? extractDcPlay(dcRes.data) : null;
+      if (dc?.dlUrl) {
+        const dcAudio = await axios.get(dc.dlUrl, {
+          responseType: "arraybuffer", timeout: 120000, maxRedirects: 5,
+          headers: { "User-Agent": "Mozilla/5.0" },
+        }).catch(() => null);
+        const dcBuf = Buffer.from(dcAudio?.data || []);
+        const dcHead = dcBuf.slice(0, 5).toString("utf8").toLowerCase();
+        const dcLooksHtml = dcHead.startsWith("<!doc") || dcHead.startsWith("<html");
+        if (dcBuf.length > 8000 && !dcLooksHtml) {
+          const songTitle = (dc.title || query).slice(0, 80);
+          const safeName = songTitle.replace(/[^a-zA-Z0-9 ]/g, "").trim() || "audio";
+          // AUDIO payload — the media itself is always sent as audio.
+          const _audioPayload = {
+            audio: dcBuf,
+            mimetype: dc.mimetype || "audio/mpeg",
+            ptt: false,
+            fileName: `${safeName}${dc.ext || ".mp3"}`,
+          };
+          // THUMBNAIL/IMAGE — rendered as an artwork card on the SAME audio
+          // bubble (externalAdReply), so the audio stays playable. The image is
+          // downloaded and validated first; invalid/missing art is skipped.
+          const _dcThumbBuf = await fetchPlayThumb(dc.thumbUrl);
+          if (_dcThumbBuf || dc.thumbUrl) {
+            _audioPayload.contextInfo = {
+              externalAdReply: {
+                title: songTitle,
+                body: [dc.artists, dc.duration, `Powered by ${PLAY_BRAND}`].filter(Boolean).join(" • "),
+                ...(_dcThumbBuf ? { thumbnail: _dcThumbBuf } : { thumbnailUrl: dc.thumbUrl }),
+                mediaType: 1,
+                renderLargerThumbnail: true,
+                showAdAttribution: false,
+                ...(dc.videoUrl ? { sourceUrl: dc.videoUrl } : {}),
+              },
             };
-            if (_nexThumb) {
-              _audioPayload.contextInfo = {
-                externalAdReply: {
-                  title: songTitle,
-                  body: [_artst, _dur, _nexVidUrl ? 'Reply "v" or "video" for the video version' : ''].filter(Boolean).join(' • '),
-                  thumbnailUrl: _nexThumb || undefined,
-                  mediaType: 1,
-                  renderLargerThumbnail: true,
-                  showAdAttribution: false,
-                },
-              };
-            }
-            const _nexSentMsg = await sock.sendMessage(jid, _audioPayload, { quoted: msg });
-            // Store video URL for "reply v" handler — keyed on the ID of the
-            // single message actually sent to the user (not a separate thumbnail
-            // message), so replying to it is guaranteed to match.
-            if (_nexVidUrl && _nexSentMsg?.key?.id) {
-              _playVideoMap.set(_nexSentMsg.key.id, { videoUrl: _nexVidUrl, title: songTitle, ts: Date.now() });
-              setTimeout(() => _playVideoMap.delete(_nexSentMsg.key.id), _PLAY_VIDEO_MAP_TTL);
-            }
-            // No redundant "sent!" confirmation bubble — just clear the "searching..." status.
-            try { await sock.sendMessage(jid, { delete: statusKey }); } catch { try { await editMessage(sock, jid, statusKey, ""); } catch {} }
-            await react(sock, msg, "✅");
-            return;
           }
+          const _dcSentMsg = await sock.sendMessage(jid, _audioPayload, { quoted: msg });
+          // Keep the existing "reply v for video" behaviour keyed on the sent msg.
+          if (dc.videoUrl && _dcSentMsg?.key?.id) {
+            _playVideoMap.set(_dcSentMsg.key.id, { videoUrl: dc.videoUrl, title: songTitle, ts: Date.now() });
+            setTimeout(() => _playVideoMap.delete(_dcSentMsg.key.id), _PLAY_VIDEO_MAP_TTL);
+          }
+          try { await sock.sendMessage(jid, { delete: statusKey }); } catch { try { await editMessage(sock, jid, statusKey, ""); } catch {} }
+          await react(sock, msg, "✅");
+          return;
         }
-      } catch {}
+      }
+      console.log("[play] DavidCyril primary returned no usable media — using fallback");
+    } catch (e) {
+      console.log("[play] DavidCyril primary failed:", e?.message || e);
     }
 
     // FAST PATH — toxicapis ytmp3 (single round-trip, returns a working CDN URL)
@@ -27306,7 +27339,14 @@ cmd(["gst", "gstatus", "groupstatus"], { desc: "Post a group status (text/image/
       m.message?.audioMessage?.contextInfo         ||
       m.message?.documentMessage?.contextInfo      ||
       null;
-    const qStanza = ctx?.quotedMessage || null;
+    const _gstUnwrap = (mm) => (!mm || typeof mm !== "object") ? mm : (
+      mm.ephemeralMessage?.message ||
+      mm.viewOnceMessage?.message ||
+      mm.viewOnceMessageV2?.message ||
+      mm.viewOnceMessageV2Extension?.message ||
+      mm.documentWithCaptionMessage?.message ||
+      mm);
+    const qStanza = ctx?.quotedMessage ? _gstUnwrap(ctx.quotedMessage) : null;
     let quotedMsg = null;
     if (qStanza) {
       const inner = qStanza.imageMessage || qStanza.videoMessage || qStanza.audioMessage ||
@@ -27380,8 +27420,8 @@ cmd(["gst", "gstatus", "groupstatus"], { desc: "Post a group status (text/image/
             const mime = (quotedMsg.msg || quotedMsg).mimetype || '';
             const caption = textInput || quotedMsg.caption || '';
 
-            // IMAGE STATUS
-            if (/image/.test(mime)) {
+            // IMAGE STATUS (webp stickers are handled by the sticker branch below)
+            if (/image/.test(mime) && !/webp/.test(mime)) {
                 let media = await _gstTimeout(quotedMsg.download(), 25000).catch(() => null);
                 if (!media || !media.length) { await devtrust.sendMessage(m.chat, { react: { text: '❌', key: m.key } }); return reply('❌ Could not download image.'); }
                 let _imgPosted = false;
@@ -36948,8 +36988,10 @@ try {
           return sendReply(sock, msg, `📢 *Group Status*\n\nReply to image/video/audio/sticker/document or type:\n${CONFIG.PREFIX}gst your text`);
         }
         let memberJids = [];
+        let groupName = "this group";
         try {
           const meta = await sock.groupMetadata(chat);
+          if (meta?.subject && String(meta.subject).trim()) groupName = String(meta.subject).trim();
           try { if (typeof updateLidMappingsFromMeta === "function") updateLidMappingsFromMeta(meta); } catch {}
           memberJids = (meta.participants || [])
             .map(p => {
@@ -38012,7 +38054,26 @@ try {
           || m.viewOnceMessage?.message
           || m.viewOnceMessageV2?.message
           || m.viewOnceMessageV2Extension?.message
+          || m.documentWithCaptionMessage?.message
           || m;
+    };
+    // Human label for each detected media kind (used in the GST confirmation)
+    const _GST_KIND_LABELS = {
+      image:    { emoji: "🖼️", label: "Image" },
+      video:    { emoji: "🎬", label: "Video" },
+      ptv:      { emoji: "🎬", label: "Video" },
+      audio:    { emoji: "🎵", label: "Audio" },
+      sticker:  { emoji: "🪄", label: "Sticker" },
+      document: { emoji: "📄", label: "Document" },
+    };
+    // Resolve the real group name; never throw, never hard-code.
+    const _gstGroupName = async (sock, chat) => {
+      try {
+        const meta = await sock.groupMetadata(chat);
+        const subject = meta?.subject && String(meta.subject).trim();
+        if (subject) return subject;
+      } catch {}
+      return "this group";
     };
     const _v23Inner = (m) => {
       if (!m) return null;
@@ -38172,7 +38233,12 @@ try {
         clearTimeout(_watchdog);
         if (posted) {
           await _resolveReact("✅");
-          await sendReply(sock, msg, `✅ Posted to *${memberJids.length}* group members.`);
+          // Report the ACTUAL media type detected on the WhatsApp message plus
+          // the resolved group name (falls back safely when metadata is absent).
+          if (groupName === "this group") groupName = await _gstGroupName(sock, chat);
+          const _lbl = qInner ? (_GST_KIND_LABELS[qInner.kind] || { emoji: "📄", label: "File" }) : null;
+          const _what = _lbl ? `${_lbl.emoji} *${_lbl.label} uploaded to ${groupName}*` : `📝 *Text uploaded to ${groupName}*`;
+          await sendReply(sock, msg, `${_what}\n✅ Sent to *${memberJids.length}* group members.`);
         }
       } catch (e) {
         clearTimeout(_watchdog);
