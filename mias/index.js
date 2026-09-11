@@ -4609,10 +4609,25 @@ function _menuButtonsPayload() {
 // ─── per-chat text-menu pick store (.pm N selects option when buttonsMode OFF) ──
 const _menuPickStore = new Map(); // jid → { ts: number, items: Array<{text,type?,url?,value?,id?}> }
 async function _sendTextMenuPick(sock, jid, quoted, headerText, _items, _footer) {
-  // Numbered ".pm <number>" pickers were removed — just send the plain message.
+  // Keep a short-lived choice store for clients that do not render native
+  // WhatsApp buttons.  Previously the fallback only printed the menu, so a
+  // user's plain "1"/"2"/"3" reply was silently discarded.
+  const items = Array.isArray(_items) ? _items.filter(Boolean).slice(0, 10) : [];
+  if (items.length) {
+    _menuPickStore.set(jid, { ts: Date.now(), items });
+    setTimeout(() => {
+      const current = _menuPickStore.get(jid);
+      if (current?.ts && Date.now() - current.ts >= 10 * 60 * 1000) {
+        _menuPickStore.delete(jid);
+      }
+    }, 10 * 60 * 1000 + 1000).unref?.();
+  }
   const _out = String(headerText || "").replace(/\n?_Reply to the [^\n]*_/g, "").trim();
   if (!_out) return;
-  return sock.sendMessage(jid, { text: _out }, { quoted });
+  const _options = items.length
+    ? `\n\n${items.map((item, index) => `${index + 1}. ${String(item.text || item.title || "Option")}`).join("\n")}\n\nReply with the number you want:`
+    : "";
+  return sock.sendMessage(jid, { text: _out + _options }, { quoted });
 }
 
 async function sendNativeFlowButtons(sock, jid, quoted, bodyText, buttons, footer = `${CONFIG.BOT_NAME} • v${CONFIG.VERSION}`) {
@@ -9267,15 +9282,11 @@ cmd(["playget"], { desc: "Internal: deliver audio after play! format pick", cate
     await sendReply(sock, msg, `⚠️ No pending song found.\nUse *${CONFIG.PREFIX}play! <song>* first, then pick a format.`); return;
   }
   const { videoUrl, title } = stored;
-  const fmtLabel = fmt === "doc" ? "MP3 Doc" : fmt.toUpperCase();
-  await react(sock, msg, "⏳");
-  const statusMsg = await sock.sendMessage(jid, { text: `🎵 *Downloading as ${fmtLabel}...*\n\n📌 *${title.slice(0, 55)}*\n⏳ Please wait...` }, { quoted: msg });
-  const statusKey = statusMsg.key;
   try {
     const preferFmt = fmt === "doc" ? "mp3" : fmt;
     const result = await _fetchYtAudioBuf(videoUrl, preferFmt);
     if (!result) {
-      await editMessage(sock, jid, statusKey, `🎵 *${fmtLabel} Download Failed*\n\n❌ All providers returned no valid audio.\n_Try a different format or use *${CONFIG.PREFIX}play! ${title.slice(0,40)}* again_`);
+      await sendReply(sock, msg, `❌ All providers returned no valid audio. Try *${CONFIG.PREFIX}play! ${title.slice(0,40)}* again.`);
       return;
     }
     const { buf, detectedMime, detectedExt } = result;
@@ -9284,20 +9295,19 @@ cmd(["playget"], { desc: "Internal: deliver audio after play! format pick", cate
       // Force audio/mpeg so the document is a proper playable MP3 file
       await sock.sendMessage(jid, {
         document: buf, mimetype: "audio/mpeg", fileName: `${safeName}.mp3`,
-        caption: `🎵 *${title.slice(0, 70)}*\n📁 _Sent as document — tap to download_`,
-      }, { quoted: msg });
+      });
     } else if (fmt === "m4a") {
       // M4A sent as audio/mp4 — user chose it explicitly so WA "unusual format" is expected
       await sock.sendMessage(jid, {
         audio: buf, mimetype: "audio/mp4", ptt: false, fileName: `${safeName}.m4a`
-      }, { quoted: msg }).catch(async () => {
-        await sock.sendMessage(jid, { document: buf, mimetype: "audio/mp4", fileName: `${safeName}.m4a`, caption: `🎵 *${title.slice(0,70)}*\n📦 _M4A sent as document_` }, { quoted: msg });
+      }).catch(async () => {
+        await sock.sendMessage(jid, { document: buf, mimetype: "audio/mp4", fileName: `${safeName}.m4a` });
       });
     } else if (fmt === "ogg") {
       await sock.sendMessage(jid, {
         audio: buf, mimetype: "audio/ogg; codecs=opus", ptt: false, fileName: `${safeName}.ogg`
-      }, { quoted: msg }).catch(async () => {
-        await sock.sendMessage(jid, { document: buf, mimetype: "audio/ogg", fileName: `${safeName}.ogg`, caption: `🎵 *${title.slice(0,70)}*\n🎶 _OGG sent as document_` }, { quoted: msg });
+      }).catch(async () => {
+        await sock.sendMessage(jid, { document: buf, mimetype: "audio/ogg", fileName: `${safeName}.ogg` });
       });
     } else {
       // mp3 — only force audio/mpeg if the buffer is actually MP3.
@@ -9307,16 +9317,14 @@ cmd(["playget"], { desc: "Internal: deliver audio after play! format pick", cate
       const useMime = isRealMp3 ? "audio/mpeg" : result.detectedMime;
       const useExt  = isRealMp3 ? ".mp3"        : result.detectedExt;
       try {
-        await sock.sendMessage(jid, { audio: buf, mimetype: useMime, ptt: false, fileName: `${safeName}${useExt}` }, { quoted: msg });
+        await sock.sendMessage(jid, { audio: buf, mimetype: useMime, ptt: false, fileName: `${safeName}${useExt}` });
       } catch {
-        await sock.sendMessage(jid, { document: buf, mimetype: useMime, fileName: `${safeName}${useExt}`, caption: `🎵 *${title.slice(0,70)}*\n📄 _Sent as document_` }, { quoted: msg });
+        await sock.sendMessage(jid, { document: buf, mimetype: useMime, fileName: `${safeName}${useExt}` });
       }
     }
-    await editMessage(sock, jid, statusKey, `🎵 *${fmtLabel} — Done!*\n\n✅ *${title.slice(0, 55)}* sent!`);
-    await react(sock, msg, "✅");
     _playPickStore.delete(jid);
   } catch (e) {
-    await editMessage(sock, jid, statusKey, `❌ Download error: ${e.message}`).catch(() => {});
+    await sendReply(sock, msg, `❌ Download error: ${e.message}`).catch(() => {});
   }
 });
 
@@ -9329,14 +9337,10 @@ cmd(["playgetdoc"], { desc: "Internal: deliver audio doc after play2! format pic
     await sendReply(sock, msg, `⚠️ No pending song found.\nUse *${CONFIG.PREFIX}play2! <song>* first, then pick a format.`); return;
   }
   const { videoUrl, title } = stored;
-  const fmtLabel = fmt.toUpperCase() + " Doc";
-  await react(sock, msg, "⏳");
-  const statusMsg = await sock.sendMessage(jid, { text: `🎼 *Downloading as ${fmtLabel}...*\n\n📌 *${title.slice(0, 55)}*\n⏳ Please wait...` }, { quoted: msg });
-  const statusKey = statusMsg.key;
   try {
     const result = await _fetchYtAudioBuf(videoUrl, fmt);
     if (!result) {
-      await editMessage(sock, jid, statusKey, `🎼 *${fmtLabel} Download Failed*\n\n❌ All providers returned no valid audio.\n_Try a different format or use *${CONFIG.PREFIX}play2! ${title.slice(0,40)}* again_`);
+      await sendReply(sock, msg, `❌ All providers returned no valid audio. Try *${CONFIG.PREFIX}play2! ${title.slice(0,40)}* again.`);
       return;
     }
     const { buf } = result;
@@ -9352,13 +9356,10 @@ cmd(["playgetdoc"], { desc: "Internal: deliver audio doc after play2! format pic
     const pgdExt  = matches ? reqExt  : result.detectedExt;
     await sock.sendMessage(jid, {
       document: buf, mimetype: pgdMime, fileName: `${safeName}${pgdExt}`,
-      caption: `🎼 *${title.slice(0, 70)}*\n📁 _Sent as document — tap to download_${matches ? "" : `\n_(format auto-corrected from ${fmt.toUpperCase()} → ${result.detectedFmt.toUpperCase()} so the file actually plays)_`}`,
-    }, { quoted: msg });
-    await editMessage(sock, jid, statusKey, `🎼 *${fmtLabel} — Done!*\n\n✅ *${title.slice(0, 55)}* sent as document!`);
-    await react(sock, msg, "✅");
+    });
     _playPickStore.delete(jid);
   } catch (e) {
-    await editMessage(sock, jid, statusKey, `❌ Download error: ${e.message}`).catch(() => {});
+    await sendReply(sock, msg, `❌ Download error: ${e.message}`).catch(() => {});
   }
 });
 
@@ -21126,10 +21127,15 @@ async function __miasHandleBareNumberReply(sock, msg, body) {
   const playPick = _playPickStore.get(jid);
   if (playPick && now - playPick.ts <= 10 * 60 * 1000) {
     const n = Number(value);
-    const picker = playPick.picker === "document" ? "playgetdoc" : "playget";
-    const formats = playPick.picker === "document"
-      ? ["mp3", "m4a", "ogg"]
-      : ["mp3", "m4a", "ogg", "doc"];
+    const outputPicker = playPick.picker === "output";
+    const picker = outputPicker
+      ? "playgetmode"
+      : (playPick.picker === "document" ? "playgetdoc" : "playget");
+    const formats = outputPicker
+      ? ["audio", "document", "voice"]
+      : (playPick.picker === "document"
+        ? ["mp3", "m4a", "ogg"]
+        : ["mp3", "m4a", "ogg", "doc"]);
     if (Number.isInteger(n) && n >= 1 && n <= formats.length) {
       const entry = commands.get(picker);
       if (entry?.handler) {
@@ -38077,6 +38083,7 @@ try {
     // Patch the play commands
     for (const name of _PLAY_CMDS) {
       const entry = commands.get(name);
+      if (entry?.__preciousPlayPicker) continue;
       if (entry && typeof (entry._origHandler || entry.handler) === "function") {
         const orig = entry._origHandler || entry.handler;
         const wrapped = _wrapPlayHandler(orig);
@@ -39001,4 +39008,176 @@ for (const panelCommand of [
   "panel", "panelinfo", "buypanel", "panelprice", "panelfeatures", "panelorder",
 ]) {
   commands.delete(panelCommand);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// PRECIOUS x PLAY OUTPUT PICKER
+// The default play command must ask for the delivery type before downloading.
+// A successful choice sends only the selected media payload: no progress text,
+// caption, quote, or completion message.
+// ════════════════════════════════════════════════════════════════════════════
+const __preciousPlayBrand = "𝑷𝑹𝑬𝑪𝑰𝑶𝑼𝑺 x";
+
+async function __preciousResolvePlayTarget(query) {
+  const raw = String(query || "").trim();
+  if (/^https?:\/\//i.test(raw)) return { videoUrl: raw, title: raw };
+  const searchers = [
+    async () => {
+      if (!CONFIG.GIFTED_API) return null;
+      const { data } = await axios.get(
+        `${CONFIG.GIFTED_API}/api/search/ytsearch?apikey=${CONFIG.GIFTED_KEY || ""}&q=${encodeURIComponent(raw)}`,
+        { timeout: 15000 },
+      );
+      const item = data?.result?.[0] || data?.results?.[0];
+      return item && (item.url || item.link)
+        ? { videoUrl: item.url || item.link, title: item.title || raw }
+        : null;
+    },
+    async () => {
+      const { data } = await axios.get(
+        `https://api.siputzx.my.id/api/y/search?query=${encodeURIComponent(raw)}`,
+        { timeout: 15000 },
+      );
+      const item = data?.data?.[0] || data?.result?.[0];
+      return item && (item.url || item.link)
+        ? { videoUrl: item.url || item.link, title: item.title || raw }
+        : null;
+    },
+    async () => {
+      const result = await ytSearch(raw);
+      return result?.[0]?.url
+        ? { videoUrl: result[0].url, title: result[0].title || raw }
+        : null;
+    },
+  ];
+  for (const search of searchers) {
+    try {
+      const result = await search();
+      if (result?.videoUrl) return result;
+    } catch {}
+  }
+  return null;
+}
+
+async function __preciousVoiceBuffer(buffer, sourceExt = "mp3") {
+  const suffix = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const input = path.join(os.tmpdir(), `precious_voice_${suffix}.${sourceExt}`);
+  const output = path.join(os.tmpdir(), `precious_voice_${suffix}.ogg`);
+  try {
+    fs.writeFileSync(input, buffer);
+    const ffmpeg = (() => {
+      try { return require("ffmpeg-static"); } catch { return "ffmpeg"; }
+    })();
+    await new Promise((resolve, reject) => {
+      const child = require("child_process").spawn(ffmpeg, [
+        "-y", "-i", input, "-vn", "-c:a", "libopus", "-b:a", "64k", "-f", "ogg", output,
+      ], { stdio: "ignore" });
+      const timer = setTimeout(() => {
+        try { child.kill("SIGKILL"); } catch {}
+        reject(new Error("voice conversion timed out"));
+      }, 30000);
+      child.once("error", (error) => { clearTimeout(timer); reject(error); });
+      child.once("close", (code) => {
+        clearTimeout(timer);
+        code === 0 ? resolve() : reject(new Error(`voice conversion failed (${code})`));
+      });
+    });
+    const voice = fs.readFileSync(output);
+    if (voice.length < 1024) throw new Error("voice conversion returned an empty file");
+    return voice;
+  } finally {
+    try { fs.unlinkSync(input); } catch {}
+    try { fs.unlinkSync(output); } catch {}
+  }
+}
+
+async function __preciousPlayPicker(sock, msg, args) {
+  const query = (args || []).join(" ").trim();
+  if (!query) {
+    await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}play <song name or YouTube URL>`);
+    return;
+  }
+  const jid = msg.key.remoteJid;
+  const target = await __preciousResolvePlayTarget(query);
+  if (!target?.videoUrl) {
+    await sendReply(sock, msg, "❌ Song not found. Try a different title or YouTube URL.");
+    return;
+  }
+  _playPickStore.set(jid, {
+    videoUrl: target.videoUrl,
+    title: String(target.title || query).slice(0, 100),
+    ts: Date.now(),
+    picker: "output",
+  });
+  const body = [
+    `*${__preciousPlayBrand} SONG*`,
+    "",
+    `*${String(target.title || query).slice(0, 80)}*`,
+    "",
+    "Choose how to receive it:",
+  ].join("\n");
+  // Deliberately use the numbered text menu shown in the requested flow.
+  // The user can reply to/quote this menu with 1, 2, or 3; the pending
+  // selection is routed by __miasHandleBareNumberReply.
+  await _sendTextMenuPick(sock, jid, msg, body, [
+    { text: "Audio Type", id: `${CONFIG.PREFIX}playgetmode audio` },
+    { text: "Document Type", id: `${CONFIG.PREFIX}playgetmode document` },
+    { text: "Voice Type", id: `${CONFIG.PREFIX}playgetmode voice` },
+  ], `${__preciousPlayBrand} • Song`);
+}
+
+cmd("playgetmode", {
+  desc: "Internal play output picker",
+  category: "DOWNLOAD",
+}, async (sock, msg, args) => {
+  const jid = msg.key.remoteJid;
+  const choice = String(args?.[0] || "").toLowerCase();
+  const mode = choice === "document" || choice === "doc"
+    ? "document"
+    : choice === "voice" || choice === "vn"
+      ? "voice"
+      : "audio";
+  const stored = _playPickStore.get(jid);
+  if (!stored || stored.picker !== "output" || Date.now() - stored.ts > 10 * 60 * 1000) {
+    _playPickStore.delete(jid);
+    await sendReply(sock, msg, `⚠️ No pending song. Use ${CONFIG.PREFIX}play <song name> first.`);
+    return;
+  }
+  _playPickStore.delete(jid);
+  try {
+    const requestedFormat = mode === "voice" ? "ogg" : "mp3";
+    const result = await _fetchYtAudioBuf(stored.videoUrl, requestedFormat);
+    if (!result?.buf) throw new Error("audio provider returned no file");
+    let payloadBuffer = result.buf;
+    let mimetype = result.detectedMime || "audio/mpeg";
+    let extension = result.detectedExt || ".mp3";
+    if (mode === "voice") {
+      if (result.detectedFmt !== "ogg") {
+        payloadBuffer = await __preciousVoiceBuffer(result.buf, String(extension).replace(/^\./, "") || "mp3");
+      }
+      mimetype = "audio/ogg; codecs=opus";
+      extension = ".ogg";
+    }
+    const safeName = String(stored.title || "audio")
+      .replace(/[^\w\s.-]/g, "_")
+      .trim()
+      .slice(0, 60) || "audio";
+    const content = mode === "voice"
+      ? { audio: payloadBuffer, mimetype, ptt: true }
+      : mode === "document"
+        ? { document: payloadBuffer, mimetype, fileName: `${safeName}${extension}` }
+        : { audio: payloadBuffer, mimetype, ptt: false, fileName: `${safeName}${extension}` };
+    // Deliberately no quoted message, caption, status text, or success text.
+    await sock.sendMessage(jid, content);
+  } catch (error) {
+    await sendReply(sock, msg, `❌ Could not send the selected song: ${error?.message || "download failed"}`);
+  }
+});
+
+for (const name of ["play", "music", "song"]) {
+  const entry = commands.get(name) || { category: "DOWNLOAD" };
+  entry.handler = __preciousPlayPicker;
+  entry._origHandler = __preciousPlayPicker;
+  entry.__preciousPlayPicker = true;
+  commands.set(name, entry);
 }
