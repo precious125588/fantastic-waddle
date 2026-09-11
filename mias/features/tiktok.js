@@ -19,6 +19,8 @@ const MODES = {
   "2.1": { kind: "audio", document: false, voiceNote: false },
   "2.2": { kind: "audio", document: true, voiceNote: false },
   "2.3": { kind: "audio", document: false, voiceNote: true },
+  "3.1": { kind: "sticker", quality: "hd", document: false, watermark: false },
+  "3.2": { kind: "sticker", quality: "sd", document: false, watermark: false },
 };
 
 const pick = (...values) => values.find((value) => typeof value === "string" && value);
@@ -52,6 +54,7 @@ const MODE_ALIASES = {
   "2": "2.1", "audio": "2.1", "mp3": "2.1", "music": "2.1",
   "audiodoc": "2.2",
   "vn": "2.3", "voice": "2.3", "voicenote": "2.3", "ptt": "2.3",
+  "sticker": "3.1", "stickerize": "3.1", "stik": "3.1",
 };
 
 // Accepts "1.3", " 1.3 ", "*1.3*", "1 3", "1,3", "1-3", "hd", "audio", ...
@@ -92,6 +95,9 @@ export function formatTikTokMenu(info, prefix = ".") {
     "2.1 Audio",
     "2.2 Document Audio",
     "2.3 Voice Note",
+    "➜ [3] Stickers",
+    "3.1 Animated Sticker (HD)",
+    "3.2 Animated Sticker (SD)",
     "",
     "Reply with a choice such as *1.3* within 5 minutes.",
   ].filter(Boolean).join("\n");
@@ -120,6 +126,13 @@ export function buildTikTokPickerSections() {
         { title: "2.1 Audio", description: "MP3 audio", rowId: "2.1" },
         { title: "2.2 Document Audio", description: "Send audio as a file", rowId: "2.2" },
         { title: "2.3 Voice Note", description: "Send as a voice note", rowId: "2.3" },
+      ],
+    },
+    {
+      title: "Sticker",
+      rows: [
+        { title: "3.1 Animated Sticker", description: "HD video converted to WebP sticker", rowId: "3.1" },
+        { title: "3.2 Animated Sticker", description: "SD video converted to WebP sticker", rowId: "3.2" },
       ],
     },
   ];
