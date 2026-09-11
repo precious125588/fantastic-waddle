@@ -15,6 +15,8 @@ import https from "https";
 import fs from "fs";
 import os from "os";
 import path from "path";
+import { Transform } from "stream";
+import { pipeline } from "stream/promises";
 import { fileURLToPath } from "url";
 import pino from "pino";
 import { createRequire } from "module";
@@ -113,6 +115,17 @@ function __miasPickerKeys(jid) {
     keys.push(__miasPickerKey(resolved), resolved);
   } catch {}
   return [...new Set(keys.filter(Boolean))];
+}
+function __miasMapGet(map, jid) {
+  return __miasPickerKeys(jid).map((key) => map.get(key)).find(Boolean);
+}
+function __miasMapSet(map, jid, value) {
+  const key = __miasPickerKey(jid);
+  for (const candidate of __miasPickerKeys(jid)) map.delete(candidate);
+  map.set(key, value);
+}
+function __miasMapDelete(map, jid) {
+  for (const key of __miasPickerKeys(jid)) map.delete(key);
 }
 function __ttSaveSelections() {
   try {
@@ -9142,6 +9155,7 @@ cmd(["statusmention", "smention"], { desc: "Toggle status-author contact card re
 // ════════════════════════════════════════════════════════════════════════════
 // In-memory store: jid → { videoUrl, title, ts }  (expires in 10 min)
 const _playPickStore = new Map();
+const _saveTubePickStore = new Map();
 
 // Shared compact download chain used by playget / playgetdoc
 async function _fetchYtAudioBuf(videoUrl, preferFmt = "mp3") {
@@ -9215,7 +9229,7 @@ cmd(["play!", "musicpick", "songpick"], { desc: "Play song — pick audio format
       await editMessage(sock, jid, statusKey, `🎵 *MIAS MDX Player (Pick)*\n\n❌ No results found for: *"${query}"*`);
       return;
     }
-    _playPickStore.set(jid, { videoUrl, title, ts: Date.now(), picker: "audio" });
+    __miasMapSet(_playPickStore, jid, { videoUrl, title, ts: Date.now(), picker: "audio" });
     await sock.sendMessage(jid, { delete: statusKey }).catch(() => {});
     const shortTitle = title.slice(0, 55);
     const pickerText = `🎵 *${shortTitle}*\n\n🎧 Choose the audio format you want to receive:\n_Tip: if one format sounds corrupt, pick another_`;
@@ -9259,7 +9273,7 @@ cmd(["play2!", "playdocpick", "songdocpick"], { desc: "Play song as document —
       await editMessage(sock, jid, statusKey, `🎼 *MIAS MDX Player Doc (Pick)*\n\n❌ No results found for: *"${query}"*`);
       return;
     }
-    _playPickStore.set(jid, { videoUrl, title, ts: Date.now(), picker: "document" });
+    __miasMapSet(_playPickStore, jid, { videoUrl, title, ts: Date.now(), picker: "document" });
     await sock.sendMessage(jid, { delete: statusKey }).catch(() => {});
     const shortTitle = title.slice(0, 55);
     const pickerText = `🎼 *${shortTitle}*\n\n📁 Choose the document format to download:\n_All formats sent as a downloadable file_`;
@@ -9279,7 +9293,7 @@ cmd(["play2!", "playdocpick", "songdocpick"], { desc: "Play song as document —
 cmd(["playget"], { desc: "Internal: deliver audio after play! format pick", category: "DOWNLOAD" }, async (sock, msg, args) => {
   const jid = msg.key.remoteJid;
   const fmt = (args[0] || "mp3").toLowerCase(); // mp3 | m4a | ogg | doc
-  const stored = _playPickStore.get(jid);
+  const stored = __miasMapGet(_playPickStore, jid);
   if (!stored || (Date.now() - stored.ts) > 10 * 60 * 1000) {
     await sendReply(sock, msg, `⚠️ No pending song found.\nUse *${CONFIG.PREFIX}play! <song>* first, then pick a format.`); return;
   }
@@ -9324,7 +9338,7 @@ cmd(["playget"], { desc: "Internal: deliver audio after play! format pick", cate
         await sock.sendMessage(jid, { document: buf, mimetype: useMime, fileName: `${safeName}${useExt}` });
       }
     }
-    _playPickStore.delete(jid);
+    __miasMapDelete(_playPickStore, jid);
   } catch (e) {
     await sendReply(sock, msg, `❌ Download error: ${e.message}`).catch(() => {});
   }
@@ -9334,7 +9348,7 @@ cmd(["playget"], { desc: "Internal: deliver audio after play! format pick", cate
 cmd(["playgetdoc"], { desc: "Internal: deliver audio doc after play2! format pick", category: "DOWNLOAD" }, async (sock, msg, args) => {
   const jid = msg.key.remoteJid;
   const fmt = (args[0] || "mp3").toLowerCase(); // mp3 | m4a | ogg
-  const stored = _playPickStore.get(jid);
+  const stored = __miasMapGet(_playPickStore, jid);
   if (!stored || (Date.now() - stored.ts) > 10 * 60 * 1000) {
     await sendReply(sock, msg, `⚠️ No pending song found.\nUse *${CONFIG.PREFIX}play2! <song>* first, then pick a format.`); return;
   }
@@ -9359,7 +9373,7 @@ cmd(["playgetdoc"], { desc: "Internal: deliver audio doc after play2! format pic
     await sock.sendMessage(jid, {
       document: buf, mimetype: pgdMime, fileName: `${safeName}${pgdExt}`,
     });
-    _playPickStore.delete(jid);
+    __miasMapDelete(_playPickStore, jid);
   } catch (e) {
     await sendReply(sock, msg, `❌ Download error: ${e.message}`).catch(() => {});
   }
@@ -11145,6 +11159,77 @@ function _looksLikeMovieFile(buf, contentType = "") {
   return isMp4 || isMkv || /video\/|octet-stream|application\/x-matroska|binary/i.test(contentType);
 }
 
+async function _downloadMovieToTemp(fileUrl) {
+  const maxBytes = Math.floor((Number(process.env.MOVIE_MAX_MB) > 0
+    ? Number(process.env.MOVIE_MAX_MB)
+    : 2048) * 1024 * 1024);
+  const response = await axios.get(fileUrl, {
+    responseType: "stream",
+    timeout: 300000,
+    maxRedirects: 5,
+    maxContentLength: maxBytes,
+    maxBodyLength: maxBytes,
+    headers: { "User-Agent": "Mozilla/5.0", Accept: "*/*" },
+    validateStatus: (code) => code >= 200 && code < 400,
+  });
+  const contentType = String(response.headers?.["content-type"] || "").toLowerCase();
+  const advertisedSize = Number(response.headers?.["content-length"] || 0);
+  if (advertisedSize > maxBytes) {
+    response.data?.destroy?.();
+    throw new Error(`movie is larger than the ${Math.floor(maxBytes / 1024 / 1024)} MB limit`);
+  }
+
+  // Reserve space before writing. This keeps a large download from filling the
+  // container and taking the WhatsApp process down with it.
+  ensureDiskSpace(advertisedSize || Math.min(maxBytes, 768 * 1024 * 1024));
+  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "mias-movie-"));
+  const filePath = path.join(dir, "movie.bin");
+  let bytes = 0;
+  const limiter = new Transform({
+    transform(chunk, encoding, callback) {
+      bytes += chunk.length;
+      if (bytes > maxBytes) {
+        callback(new Error(`movie is larger than the ${Math.floor(maxBytes / 1024 / 1024)} MB limit`));
+        return;
+      }
+      callback(null, chunk);
+    },
+  });
+  try {
+    await pipeline(response.data, limiter, fs.createWriteStream(filePath));
+    const head = Buffer.alloc(4096);
+    const handle = await fs.promises.open(filePath, "r");
+    try { await handle.read(head, 0, head.length, 0); } finally { await handle.close(); }
+    if (!_looksLikeMovieFile(head, contentType)) {
+      throw new Error("the provider returned a web page instead of a movie file");
+    }
+    const isWebm = head[0] === 0x1a && head[1] === 0x45 && head[2] === 0xdf && head[3] === 0xa3;
+    return { dir, filePath, bytes, contentType, isWebm };
+  } catch (error) {
+    await fs.promises.rm(dir, { recursive: true, force: true }).catch(() => {});
+    throw error;
+  }
+}
+
+async function _sendMovieDocumentFromPath(sock, jid, filePath, {
+  fileName, mimetype, caption, quoted,
+} = {}) {
+  const content = { document: { url: filePath }, fileName, mimetype, caption };
+  try {
+    return await sock.sendMessage(jid, content, { quoted });
+  } catch (firstError) {
+    // Some Baileys forks do not accept the { url: localPath } source shape.
+    // A read stream still avoids loading the complete movie into the heap.
+    try {
+      return await sock.sendMessage(jid, {
+        document: fs.createReadStream(filePath), fileName, mimetype, caption,
+      }, { quoted });
+    } catch {
+      throw firstError;
+    }
+  }
+}
+
 cmd("movie", { desc: "Search & download movies", category: "SEARCH" }, async (sock, msg, args) => {
   if (!args.length) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}movie <name>`); return; }
   await react(sock, msg, "🎬");
@@ -11161,10 +11246,10 @@ cmd("movie", { desc: "Search & download movies", category: "SEARCH" }, async (so
     const results = _mynetMovieList(data).slice(0, 10);
     if (data?.success && results.length) {
       const jid = msg.key.remoteJid;
-      _mynetMoviePicks.set(jid, { ts: Date.now(), results });
+      __miasMapSet(_mynetMoviePicks, jid, { ts: Date.now(), results });
       setTimeout(() => {
-        const current = _mynetMoviePicks.get(jid);
-        if (current && Date.now() - current.ts >= 10 * 60 * 1000) _mynetMoviePicks.delete(jid);
+        const current = __miasMapGet(_mynetMoviePicks, jid);
+        if (current && Date.now() - current.ts >= 10 * 60 * 1000) __miasMapDelete(_mynetMoviePicks, jid);
       }, 10 * 60 * 1000 + 1000).unref?.();
 
       let text = `🎬 *MynetNaija Movie Search*\n🔎 *${q}*\n\n`;
@@ -11173,7 +11258,7 @@ cmd("movie", { desc: "Search & download movies", category: "SEARCH" }, async (so
         text += `*${index + 1}.* ${title}\n`;
         text += `   📥 ${CONFIG.PREFIX}moviedl ${index + 1}\n\n`;
       });
-      text += `_Reply with a number or use the download command shown above._\n\n> Powered by David Cyril`;
+      text += `_Reply with a number or use the download command shown above._`;
       await sendReply(sock, msg, text);
       await react(sock, msg, "✅");
       return;
@@ -11299,7 +11384,7 @@ cmd("moviedl", { desc: "Get movie download links — .moviedl <title or IMDB ID>
   // MynetNaija direct-file path.  This runs before the older link providers so
   // the command sends the actual movie bytes, not an HTML download page.
   try {
-    const cached = _mynetMoviePicks.get(jid);
+    const cached = __miasMapGet(_mynetMoviePicks, jid);
     const selected = /^\d+$/.test(query) && cached && Date.now() - cached.ts <= 10 * 60 * 1000
       ? cached.results[Number(query) - 1]
       : null;
@@ -11312,7 +11397,6 @@ cmd("moviedl", { desc: "Get movie download links — .moviedl <title or IMDB ID>
         info.genre ? `🏷️ ${Array.isArray(info.genre) ? info.genre.join(", ") : info.genre}` : "",
         info.fileSize ? `📦 ${info.fileSize}` : "",
         info.description ? `\n📝 ${String(info.description).slice(0, 500)}` : "",
-        "\n> Powered by David Cyril",
       ].filter(Boolean).join("\n");
 
       if (info.thumbnail && /^https?:\/\//i.test(info.thumbnail)) {
@@ -11332,28 +11416,24 @@ cmd("moviedl", { desc: "Get movie download links — .moviedl <title or IMDB ID>
       }
 
       const status = await sock.sendMessage(jid, { text: `⬇️ Downloading *${info.title}*...\nPlease wait while I fetch the real movie file.` }, { quoted: msg });
-      const response = await axios.get(info.fileUrl, {
-        responseType: "arraybuffer", timeout: 300000, maxRedirects: 5,
-        headers: { "User-Agent": "Mozilla/5.0", Accept: "*/*" },
-        validateStatus: (code) => code >= 200 && code < 400,
-      });
-      const movieBuf = Buffer.from(response.data || []);
-      if (!_looksLikeMovieFile(movieBuf, response.headers?.["content-type"])) {
-        throw new Error("the provider returned a web page instead of a movie file");
-      }
       const ext = String(info.fileExt || path.extname(info.fileName || "") || ".mp4").toLowerCase();
       const safeName = String(info.fileName || info.title || "movie")
         .replace(/\.[a-z0-9]{2,5}$/i, "")
         .replace(/[^\w\s.-]/g, "_")
         .trim().slice(0, 80) || "movie";
-      await sock.sendMessage(jid, {
-        document: movieBuf,
+      const movieFile = await _downloadMovieToTemp(info.fileUrl);
+      try {
+        await _sendMovieDocumentFromPath(sock, jid, movieFile.filePath, {
         fileName: `${safeName}${ext.startsWith(".") ? ext : `.${ext}`}`,
         mimetype: _movieMime(ext),
         caption,
-      }, { quoted: msg });
+          quoted: msg,
+        });
+      } finally {
+        await fs.promises.rm(movieFile.dir, { recursive: true, force: true }).catch(() => {});
+      }
       try { await sock.sendMessage(jid, { delete: status.key }); } catch {}
-      _mynetMoviePicks.delete(jid);
+      __miasMapDelete(_mynetMoviePicks, jid);
       await react(sock, msg, "✅");
       return;
     }
@@ -21191,8 +21271,10 @@ function __miasHasPendingPicker(jid) {
       .map((key) => __ttSelections.get(key))
       .find(Boolean);
     if (tt && now - tt.ts <= __TT_PICKER_TTL_MS) return true;
-    const pl = _playPickStore.get(__miasPickerKey(jid)) || _playPickStore.get(jid);
+    const pl = __miasMapGet(_playPickStore, jid);
+    const saveTube = __miasMapGet(_saveTubePickStore, jid);
     if (pl && now - pl.ts <= 10 * 60 * 1000) return true;
+    if (saveTube && now - saveTube.ts <= 10 * 60 * 1000) return true;
     if (_lastAdultResults.get(__miasPickerKey(jid)) || _lastAdultResults.get(jid)) return true;
     if (_menuPickStore.get(__miasPickerKey(jid)) || _menuPickStore.get(jid)) return true;
   } catch {}
@@ -21287,7 +21369,7 @@ async function __miasHandleBareNumberReply(sock, msg, body) {
     return true;
   }
 
-  const moviePick = _mynetMoviePicks.get(jid);
+  const moviePick = __miasMapGet(_mynetMoviePicks, jid);
   if (moviePick && now - moviePick.ts <= 10 * 60 * 1000) {
     const movieNumber = Number(value);
     if (Number.isInteger(movieNumber) && movieNumber >= 1 && movieNumber <= moviePick.results.length) {
@@ -21298,10 +21380,25 @@ async function __miasHandleBareNumberReply(sock, msg, body) {
       }
     }
   } else if (moviePick) {
-    _mynetMoviePicks.delete(jid);
+    __miasMapDelete(_mynetMoviePicks, jid);
   }
 
-  const playPick = _playPickStore.get(jid);
+  const saveTubePick = __miasMapGet(_saveTubePickStore, jid);
+  if (saveTubePick && now - saveTubePick.ts <= 10 * 60 * 1000) {
+    const saveTubeNumber = Number(value);
+    const saveTubeOptions = Array.isArray(saveTubePick.options) ? saveTubePick.options : [];
+    if (Number.isInteger(saveTubeNumber) && saveTubeNumber >= 1 && saveTubeNumber <= saveTubeOptions.length) {
+      const entry = commands.get("savetubemode");
+      if (entry?.handler) {
+        await entry.handler(sock, msg, [String(saveTubeNumber)]);
+        return true;
+      }
+    }
+  } else if (saveTubePick) {
+    __miasMapDelete(_saveTubePickStore, jid);
+  }
+
+  const playPick = __miasMapGet(_playPickStore, jid);
   if (playPick && now - playPick.ts <= 10 * 60 * 1000) {
     const n = Number(value);
     const outputPicker = playPick.picker === "output";
@@ -21321,7 +21418,7 @@ async function __miasHandleBareNumberReply(sock, msg, body) {
       }
     }
   } else if (playPick) {
-    _playPickStore.delete(jid);
+    __miasMapDelete(_playPickStore, jid);
   }
 
   // Adult/text menus already have a complete .pick implementation, so route
@@ -39347,7 +39444,7 @@ async function __preciousPlayPicker(sock, msg, args) {
     await sendReply(sock, msg, "❌ Song not found. Try a different title or YouTube URL.");
     return;
   }
-  _playPickStore.set(jid, {
+  __miasMapSet(_playPickStore, jid, {
     videoUrl: target.videoUrl,
     title: String(target.title || query).slice(0, 100),
     author: target.author || "",
@@ -39402,7 +39499,7 @@ function __saveTubeDecrypt(encoded) {
   return JSON.parse(Buffer.concat([decipher.update(raw.subarray(16)), decipher.final()]).toString("utf8"));
 }
 
-async function __saveTubeResolve(url, type, requestedQuality = "") {
+async function __saveTubeInspect(url) {
   let cdnResponse = null;
   let lastCdnError = null;
   for (const base of ["https://media.savetube.vip", "https://media.savetube.me"]) {
@@ -39427,23 +39524,86 @@ async function __saveTubeResolve(url, type, requestedQuality = "") {
   const infoResponse = await axios.post(`https://${cdn}/v2/info`, { url }, { headers, timeout: 40000 });
   if (!infoResponse.data?.status) throw new Error("SaveTube could not read that URL");
   const info = __saveTubeDecrypt(infoResponse.data.data);
+  return { info, cdn, headers };
+}
+
+function __saveTubeFormat(item) {
+  const values = [
+    item?.ext, item?.extension, item?.format, item?.container,
+    item?.mime, item?.mimetype, item?.type,
+  ].map((value) => String(value || "").toLowerCase().replace(/^\./, ""));
+  for (const raw of values) {
+    if (/audio\/mpeg|audio\/mp3|^mp3$/.test(raw)) return "mp3";
+    if (/audio\/mp4|audio\/m4a|^m4a$/.test(raw)) return "m4a";
+    if (/video\/mp4|^mp4$/.test(raw)) return "mp4";
+    if (/video\/webm|audio\/webm|^webm$/.test(raw)) return "webm";
+  }
+  return values.find(Boolean) || "";
+}
+
+function __saveTubeQuality(item) {
+  return String(item?.quality || item?.resolution || item?.height || "").replace(/[^\d]/g, "");
+}
+
+function __saveTubeFormatOptions(info) {
+  const audio = Array.isArray(info?.audio_formats) ? info.audio_formats : [];
+  const video = Array.isArray(info?.video_formats) ? info.video_formats : [];
+  const options = [];
+  const addFormat = (label, type, format, formats) => {
+    const matches = formats.filter((item) => {
+      const actual = __saveTubeFormat(item);
+      return actual === format || actual.includes(format);
+    });
+    if (matches.length) options.push({ label, type, format, quality: "", formats: matches });
+  };
+  addFormat("mp3", "audio", "mp3", audio);
+  addFormat("mp4", "video", "mp4", video);
+  addFormat("m4a", "audio", "m4a", audio);
+  addFormat("webm", "video", "webm", video);
+
+  const qualities = [...new Map(
+    video
+      .map((item) => [__saveTubeQuality(item), item])
+      .filter(([quality]) => ["144", "240", "360", "480", "720", "1080"].includes(quality)),
+  ).keys()].sort((a, b) => Number(a) - Number(b));
+  for (const quality of qualities) {
+    options.push({ label: quality, type: "video", format: "", quality, formats: video.filter((item) => __saveTubeQuality(item) === quality) });
+  }
+  return options.slice(0, 10);
+}
+
+async function __saveTubeResolve(url, type, requestedQuality = "", requestedFormat = "") {
+  const inspected = await __saveTubeInspect(url);
+  const { info, cdn, headers } = inspected;
   const formats = Array.isArray(info[`${type}_formats`]) ? info[`${type}_formats`] : [];
   if (!formats.length) throw new Error(`SaveTube has no ${type} format for this URL`);
   const wanted = String(requestedQuality || "").replace(/[^\d]/g, "");
+  const wantedFormat = String(requestedFormat || "").toLowerCase().replace(/^\./, "");
+  const formatMatches = wantedFormat
+    ? formats.filter((item) => {
+      const actual = __saveTubeFormat(item);
+      return actual === wantedFormat || actual.includes(wantedFormat);
+    })
+    : formats;
+  if (wantedFormat && !formatMatches.length) {
+    throw new Error(`SaveTube has no real ${wantedFormat} format for this URL`);
+  }
+  const selectedPool = formatMatches.length ? formatMatches : formats;
   const selected = wanted
-    ? (formats.find((item) => String(item.quality) === wanted) || formats[0])
+    ? (selectedPool.find((item) => __saveTubeQuality(item) === wanted) || selectedPool[0])
     : type === "audio"
-      ? [...formats].sort((a, b) => Number(b.quality || 0) - Number(a.quality || 0))[0]
-      : (formats.find((item) => Number(item.quality) === 720) || formats.find((item) => Number(item.quality) === 480) || formats[0]);
+      ? [...selectedPool].sort((a, b) => Number(b.quality || 0) - Number(a.quality || 0))[0]
+      : (selectedPool.find((item) => __saveTubeQuality(item) === "720") || selectedPool.find((item) => __saveTubeQuality(item) === "480") || selectedPool[0]);
+  const selectedQuality = selected?.quality || selected?.resolution || selected?.height || wanted || "";
   const downloadResponse = await axios.post(`https://${cdn}/download`, {
     id: info.id,
     key: info.key,
     downloadType: type,
-    quality: String(selected.quality),
+    quality: String(selectedQuality),
   }, { headers, timeout: 40000 });
   const downloadUrl = downloadResponse.data?.data?.downloadUrl || downloadResponse.data?.downloadUrl;
   if (!downloadUrl) throw new Error("SaveTube did not return a download URL");
-  return { info, selected, downloadUrl, type };
+  return { info, selected, downloadUrl, type, formats };
 }
 
 cmd("savetube", { desc: "Download YouTube media with SaveTube", category: "DOWNLOAD" }, async (sock, msg, args) => {
@@ -39454,31 +39614,103 @@ cmd("savetube", { desc: "Download YouTube media with SaveTube", category: "DOWNL
   }
   const url = args.find((item) => /^https?:\/\//i.test(item));
   if (!url) { await sendReply(sock, msg, `❌ Send a valid YouTube URL.\nExample: ${CONFIG.PREFIX}savetube https://youtu.be/... audio`); return; }
-  const mode = args.map((item) => item.toLowerCase()).includes("audio") || args.map((item) => item.toLowerCase()).includes("mp3")
-    ? "audio" : "video";
-  const asDocument = args.map((item) => item.toLowerCase()).includes("doc") || args.map((item) => item.toLowerCase()).includes("document");
-  const requestedQuality = args.find((item) => /^\d{2,4}p?$/i.test(item)) || "";
+  const tokens = args.map((item) => item.toLowerCase());
+  const hasAudioMode = tokens.includes("audio") || tokens.includes("mp3") || tokens.includes("m4a");
+  const hasDocumentMode = tokens.includes("doc") || tokens.includes("document");
+  const hasVideoMode = tokens.includes("video") || tokens.includes("mp4") || tokens.includes("webm")
+    || tokens.some((item) => /^\d{2,4}p?$/.test(item));
+  const hasExplicitMode = hasAudioMode || hasDocumentMode || hasVideoMode;
   const jid = msg.key.remoteJid;
+
+  // With only a URL, inspect the real formats first and show a WhatsApp
+  // single-select list. Nothing is invented: every row maps to a format or
+  // resolution returned by SaveTube for this exact URL.
+  if (!hasExplicitMode) {
+    await react(sock, msg, "📥");
+    const status = await sock.sendMessage(jid, { text: `📥 *SaveTube*\n\n🔎 Reading media information...` }, { quoted: msg });
+    try {
+      const inspected = await __saveTubeInspect(url);
+      const options = __saveTubeFormatOptions(inspected.info);
+      if (!options.length) throw new Error("SaveTube returned no usable audio or video formats");
+      const title = String(inspected.info.title || "SaveTube download").slice(0, 100);
+      const thumb = inspected.info.thumbnail
+        ? await fetchPlayThumb(inspected.info.thumbnail).catch(() => null)
+        : null;
+      const cardCaption = [
+        `📥 *${title}*`,
+        "",
+        `⏱️ *Duration:* ${inspected.info.duration || "Unknown"}`,
+        "📋 Choose a real format or quality from the list below.",
+      ].join("\n");
+      const rows = options.map((option, index) => ({
+        title: option.label,
+        description: option.type === "audio"
+          ? `Audio • ${option.format.toUpperCase()}`
+          : option.format
+            ? `Video • ${option.format.toUpperCase()}`
+            : `Video • ${option.quality}p`,
+        id: `${CONFIG.PREFIX}savetubemode ${option.label}`,
+        index,
+      }));
+      __miasMapSet(_saveTubePickStore, jid, {
+        url,
+        ts: Date.now(),
+        picker: "savetube",
+        options: options.map(({ label, type, format, quality }) => ({ label, type, format, quality })),
+      });
+      await sock.sendMessage(jid, { delete: status.key }).catch(() => {});
+      if (thumb) {
+        await sock.sendMessage(jid, { image: thumb, caption: cardCaption }, { quoted: msg });
+      }
+      try {
+        await sendNativeFlowListMenu(
+          sock,
+          jid,
+          msg,
+          "Select the format or quality to download:",
+          [{ title: "SaveTube formats", rows }],
+          [],
+          `${CONFIG.BOT_NAME} • SaveTube`,
+        );
+      } catch {
+        const fallback = options
+          .map((option, index) => `${index + 1}. ${option.label} — ${option.type === "audio" ? "audio" : "video"}`)
+          .join("\n");
+        await sendReply(sock, msg, `${cardCaption}\n\n${fallback}\n\nReply with the number you want.`);
+      }
+    } catch (error) {
+      await editMessage(sock, jid, status.key, `❌ *SaveTube failed:* ${error?.message || "could not read that URL"}`).catch(() => {});
+      await react(sock, msg, "❌");
+    }
+    return;
+  }
+
+  __miasMapDelete(_saveTubePickStore, jid);
+  const mode = hasAudioMode
+    ? "audio" : "video";
+  const asDocument = hasDocumentMode;
+  const requestedQuality = args.find((item) => /^\d{2,4}p?$/i.test(item)) || "";
+  const requestedFormat = tokens.find((item) => ["mp3", "mp4", "m4a", "webm"].includes(item)) || "";
   await react(sock, msg, "📥");
   const status = await sock.sendMessage(jid, { text: `📥 *SaveTube*\n\n🔎 Reading media information...` }, { quoted: msg });
   try {
-    const result = await __saveTubeResolve(url, mode, requestedQuality);
+    const result = await __saveTubeResolve(url, mode, requestedQuality, requestedFormat);
     const title = String(result.info.title || "SaveTube download").slice(0, 100);
     const thumb = result.info.thumbnail ? await fetchPlayThumb(result.info.thumbnail).catch(() => null) : null;
     const meta = `📥 *${title}*\n⏱️ Duration: ${result.info.duration || "Unknown"}\n🎞️ Format: ${result.selected.label || `${result.selected.quality} ${mode}`}`;
     if (thumb) await sock.sendMessage(jid, { image: thumb, caption: meta }, { quoted: msg });
     await editMessage(sock, jid, status.key, `${meta}\n\n⬇️ Fetching the real file...`);
-    const response = await axios.get(result.downloadUrl, {
-      responseType: "arraybuffer", timeout: 300000, maxRedirects: 5,
-      headers: { "User-Agent": "Mozilla/5.0", Accept: "*/*" },
-      validateStatus: (code) => code >= 200 && code < 400,
-    });
-    let media = Buffer.from(response.data || []);
-    const contentType = String(response.headers?.["content-type"] || "").toLowerCase();
-    if (media.length < 1024 || /^<!doctype|^<html|\s*[{[]/.test(media.subarray(0, 32).toString("utf8").toLowerCase())) {
-      throw new Error("SaveTube returned a web page instead of media");
-    }
     if (mode === "audio") {
+      const response = await axios.get(result.downloadUrl, {
+        responseType: "arraybuffer", timeout: 300000, maxRedirects: 5,
+        headers: { "User-Agent": "Mozilla/5.0", Accept: "*/*" },
+        validateStatus: (code) => code >= 200 && code < 400,
+      });
+      let media = Buffer.from(response.data || []);
+      const contentType = String(response.headers?.["content-type"] || "").toLowerCase();
+      if (media.length < 1024 || /^<!doctype|^<html|\s*[{[]/.test(media.subarray(0, 32).toString("utf8").toLowerCase())) {
+        throw new Error("SaveTube returned a web page instead of media");
+      }
       const isMp3 = media.subarray(0, 3).toString("ascii") === "ID3" || (media[0] === 0xff && (media[1] & 0xe0) === 0xe0);
       if (!isMp3) media = await __preciousTranscodeAudio(media, "bin");
       await sock.sendMessage(jid, {
@@ -39486,19 +39718,33 @@ cmd("savetube", { desc: "Download YouTube media with SaveTube", category: "DOWNL
         fileName: `${title.replace(/[^\w\s.-]/g, "_").slice(0, 70)}.mp3`,
       }, { quoted: msg });
     } else {
-      const isMp4 = media.length >= 12 && media.subarray(4, 8).toString("ascii") === "ftyp";
-      const isWebm = media.length >= 4 && media[0] === 0x1a && media[1] === 0x45 && media[2] === 0xdf && media[3] === 0xa3;
-      if (!isMp4 && !isWebm && !/video|octet-stream|binary/i.test(contentType)) throw new Error("SaveTube returned an invalid video file");
+      const movieFile = await _downloadMovieToTemp(result.downloadUrl);
+      const isWebm = Boolean(movieFile.isWebm);
       const ext = isWebm ? ".webm" : ".mp4";
       const fileName = `${title.replace(/[^\w\s.-]/g, "_").slice(0, 70)}${ext}`;
-      if (asDocument || media.length > 55 * 1024 * 1024) {
-        await sock.sendMessage(jid, { document: media, fileName, mimetype: isWebm ? "video/webm" : "video/mp4", caption: meta }, { quoted: msg });
-      } else {
-        try {
-          await sock.sendMessage(jid, { video: media, mimetype: isWebm ? "video/webm" : "video/mp4", caption: meta }, { quoted: msg });
-        } catch {
-          await sock.sendMessage(jid, { document: media, fileName, mimetype: isWebm ? "video/webm" : "video/mp4", caption: meta }, { quoted: msg });
+      try {
+        if (asDocument || movieFile.bytes > 55 * 1024 * 1024) {
+          await _sendMovieDocumentFromPath(sock, jid, movieFile.filePath, {
+            fileName,
+            mimetype: isWebm ? "video/webm" : "video/mp4",
+            caption: meta,
+            quoted: msg,
+          });
+        } else {
+          const media = await fs.promises.readFile(movieFile.filePath);
+          try {
+            await sock.sendMessage(jid, { video: media, mimetype: isWebm ? "video/webm" : "video/mp4", caption: meta }, { quoted: msg });
+          } catch {
+            await _sendMovieDocumentFromPath(sock, jid, movieFile.filePath, {
+              fileName,
+              mimetype: isWebm ? "video/webm" : "video/mp4",
+              caption: meta,
+              quoted: msg,
+            });
+          }
         }
+      } finally {
+        await fs.promises.rm(movieFile.dir, { recursive: true, force: true }).catch(() => {});
       }
     }
     await sock.sendMessage(jid, { delete: status.key }).catch(() => {});
@@ -39507,6 +39753,36 @@ cmd("savetube", { desc: "Download YouTube media with SaveTube", category: "DOWNL
     await editMessage(sock, jid, status.key, `❌ *SaveTube failed:* ${error?.message || "download failed"}\n\nCheck the URL and try again.`).catch(() => {});
     await react(sock, msg, "❌");
   }
+});
+
+cmd("savetubemode", {
+  desc: "Internal SaveTube output picker",
+  category: "DOWNLOAD",
+}, async (sock, msg, args) => {
+  const jid = msg.key.remoteJid;
+  const stored = __miasMapGet(_saveTubePickStore, jid);
+  const rawChoice = String(args?.[0] || "").trim().toLowerCase();
+  if (!stored || stored.picker !== "savetube" || Date.now() - stored.ts > 10 * 60 * 1000) {
+    __miasMapDelete(_saveTubePickStore, jid);
+    await sendReply(sock, msg, `⚠️ No pending SaveTube choice. Use ${CONFIG.PREFIX}savetube <YouTube URL> first.`);
+    return;
+  }
+  const options = Array.isArray(stored.options) ? stored.options : [];
+  const numericChoice = /^\d+$/.test(rawChoice) ? Number(rawChoice) : 0;
+  const selected = (numericChoice >= 1 && numericChoice <= options.length)
+    ? options[numericChoice - 1]
+    : options.find((option) => option.label === rawChoice);
+  if (!selected) {
+    await sendReply(sock, msg, `❌ Choose one of the listed formats: ${options.map((option) => option.label).join(", ")}`);
+    return;
+  }
+  const entry = commands.get("savetube");
+  if (!entry?.handler) {
+    await sendReply(sock, msg, "❌ SaveTube is temporarily unavailable.");
+    return;
+  }
+  __miasMapDelete(_saveTubePickStore, jid);
+  await entry.handler(sock, msg, [stored.url, selected.label]);
 });
 
 cmd("playgetmode", {
@@ -39520,13 +39796,13 @@ cmd("playgetmode", {
     : choice === "voice" || choice === "vn"
       ? "voice"
       : "audio";
-  const stored = _playPickStore.get(jid);
+  const stored = __miasMapGet(_playPickStore, jid);
   if (!stored || stored.picker !== "output" || Date.now() - stored.ts > 10 * 60 * 1000) {
-    _playPickStore.delete(jid);
+    __miasMapDelete(_playPickStore, jid);
     await sendReply(sock, msg, `⚠️ No pending song. Use ${CONFIG.PREFIX}play <song name> first.`);
     return;
   }
-  _playPickStore.delete(jid);
+  __miasMapDelete(_playPickStore, jid);
   try {
     const requestedFormat = mode === "voice" ? "ogg" : "mp3";
     const result = await _fetchYtAudioBuf(stored.videoUrl, requestedFormat);
