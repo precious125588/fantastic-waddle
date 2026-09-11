@@ -644,11 +644,40 @@ function forceCleanupSession(nexusDevNumber, opts = {}) {
 
 function cleanupExpiredSessions() {
     const sessionDir = PAIRING_ROOT;
+    
+    const oneHourAgo = Date.now() - (60 * 60 * 1000);
+    const sixHoursAgo = Date.now() - (6 * 60 * 60 * 1000);
+
+    // Pairing/report helpers create short-lived working directories outside
+    // the auth folders. If Railway restarts while one is active, its finally
+    // block never runs and the volume slowly fills forever.
+    const runtimeRoot = path.resolve(__dirname);
+    const transientRoots = [
+        path.join(runtimeRoot, 'nexstore', 'pair-requests'),
+        path.join(runtimeRoot, 'nexstore', 'pair-responses'),
+    ];
+    for (const root of transientRoots) {
+        try {
+            if (!fs.existsSync(root)) continue;
+            for (const item of fs.readdirSync(root)) {
+                const full = path.join(root, item);
+                const stat = fs.statSync(full);
+                if (stat.mtimeMs < oneHourAgo) deleteFolderRecursive(full);
+            }
+        } catch (error) {
+            console.log(chalk.gray(`♻️ Transient pairing cleanup skipped: ${error.message}`));
+        }
+    }
+    try {
+        for (const item of fs.readdirSync(runtimeRoot)) {
+            if (!/^\.?(?:rpv2_|banv2_|reportv2_)/i.test(item)) continue;
+            const full = path.join(runtimeRoot, item);
+            const stat = fs.statSync(full);
+            if (stat.mtimeMs < oneHourAgo) deleteFolderRecursive(full);
+        }
+    } catch {}
+    
     if (!fs.existsSync(sessionDir)) return;
-    
-    const now = Date.now();
-    const oneDayAgo = now - (24 * 60 * 60 * 1000);
-    
     fs.readdirSync(sessionDir).forEach(folder => {
         if (folder === 'pairing.json') return;
         
@@ -668,12 +697,20 @@ function cleanupExpiredSessions() {
             // Keep valid paired sessions permanently. Only clear stale/incomplete
             // pairing folders that never produced creds.json.
             if (fs.existsSync(credsPath)) {
+                for (const record of ['pairing-code.json', 'pairing-qr.json']) {
+                    try {
+                        const recordPath = path.join(folderPath, record);
+                        if (fs.existsSync(recordPath) && fs.statSync(recordPath).mtimeMs < oneHourAgo) {
+                            fs.unlinkSync(recordPath);
+                        }
+                    } catch {}
+                }
                 return;
             }
             
             try {
                 const stats = fs.statSync(folderPath);
-                if (stats.mtimeMs < oneDayAgo) {
+                if (stats.mtimeMs < sixHoursAgo) {
                     console.log(chalk.yellow(`🗑️ Cleaning up stale incomplete pairing: ${folder}`));
                     deleteFolderRecursive(folderPath);
                     rentbotTracker.delete(folder);
@@ -685,6 +722,9 @@ function cleanupExpiredSessions() {
     });
 }
 
+// Run once at boot as well as hourly. Waiting an hour allowed failed pairing
+// bursts to exhaust a small Railway volume before cleanup ever started.
+try { cleanupExpiredSessions(); } catch {}
 setInterval(cleanupExpiredSessions, 60 * 60 * 1000);
 
 function ensureDirectoryExists(dirPath) {
