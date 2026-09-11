@@ -15,8 +15,14 @@ const DEFAULT_MIN_FREE_MB = 128;
 const KNOWN_TEMP_PREFIXES = [
   "mias-video-",
   "mv23_",
+  "mias_",
+  "precious_voice_",
   "audio_",
   "audio_out_",
+  "conv_",
+  "ptt_",
+  "trim_",
+  "_wm_",
   "stk_",
   "stk2_",
 ];
