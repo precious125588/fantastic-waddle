@@ -11246,7 +11246,8 @@ cmd("movie", { desc: "Search & download movies", category: "SEARCH" }, async (so
     const results = _mynetMovieList(data).slice(0, 10);
     if (data?.success && results.length) {
       const jid = msg.key.remoteJid;
-      __miasMapSet(_mynetMoviePicks, jid, { ts: Date.now(), results });
+      const pickerState = { ts: Date.now(), results, promptKeys: [] };
+      __miasMapSet(_mynetMoviePicks, jid, pickerState);
       setTimeout(() => {
         const current = __miasMapGet(_mynetMoviePicks, jid);
         if (current && Date.now() - current.ts >= 10 * 60 * 1000) __miasMapDelete(_mynetMoviePicks, jid);
@@ -11259,7 +11260,8 @@ cmd("movie", { desc: "Search & download movies", category: "SEARCH" }, async (so
         text += `   📥 ${CONFIG.PREFIX}moviedl ${index + 1}\n\n`;
       });
       text += `_Reply with a number or use the download command shown above._`;
-      await sendReply(sock, msg, text);
+      const prompt = await sendReply(sock, msg, text);
+      if (prompt?.key) pickerState.promptKeys.push(prompt.key);
       await react(sock, msg, "✅");
       return;
     }
@@ -11390,6 +11392,7 @@ cmd("moviedl", { desc: "Get movie download links — .moviedl <title or IMDB ID>
       : null;
     const pageUrl = selected?.url || selected?.link || (/^https?:\/\/(?:www\.)?mynetnaija\.ng\//i.test(query) ? query : null);
     if (pageUrl) {
+      if (selected && cached) await __deletePickerMessages(sock, jid, cached);
       const info = await _fetchMynetMovieInfo(pageUrl);
       if (!info) throw new Error("movie details were not returned by the API");
       const caption = [
@@ -21273,8 +21276,10 @@ function __miasHasPendingPicker(jid) {
     if (tt && now - tt.ts <= __TT_PICKER_TTL_MS) return true;
     const pl = __miasMapGet(_playPickStore, jid);
     const saveTube = __miasMapGet(_saveTubePickStore, jid);
+    const movie = __miasMapGet(_mynetMoviePicks, jid);
     if (pl && now - pl.ts <= 10 * 60 * 1000) return true;
     if (saveTube && now - saveTube.ts <= 10 * 60 * 1000) return true;
+    if (movie && now - movie.ts <= 10 * 60 * 1000) return true;
     if (_lastAdultResults.get(__miasPickerKey(jid)) || _lastAdultResults.get(jid)) return true;
     if (_menuPickStore.get(__miasPickerKey(jid)) || _menuPickStore.get(jid)) return true;
   } catch {}
@@ -21400,6 +21405,19 @@ async function __miasHandleBareNumberReply(sock, msg, body) {
 
   const playPick = __miasMapGet(_playPickStore, jid);
   if (playPick && now - playPick.ts <= 10 * 60 * 1000) {
+    if (playPick.picker === "search") {
+      const playNumber = Number(value);
+      const playResults = Array.isArray(playPick.results) ? playPick.results : [];
+      if (Number.isInteger(playNumber) && playNumber >= 1 && playNumber <= playResults.length) {
+        const entry = commands.get("playsearchpick");
+        if (entry?.handler) {
+          await entry.handler(sock, msg, [String(playNumber)]);
+          return true;
+        }
+      }
+      await sendReply(sock, msg, `❌ Choose a number from 1 to ${playResults.length}.`);
+      return true;
+    }
     const n = Number(value);
     const outputPicker = playPick.picker === "output";
     const picker = outputPicker
@@ -39362,6 +39380,74 @@ async function __preciousResolvePlayTarget(query) {
   return null;
 }
 
+function __preciousPlayVideoId(url = "") {
+  return String(url).match(/(?:v=|youtu\.be\/|youtube\.com\/shorts\/)([a-zA-Z0-9_-]{11})/)?.[1] || "";
+}
+
+function __preciousNormalizePlayResult(item, fallback = "") {
+  const videoUrl = item?.url || item?.link || item?.video_url || item?.videoUrl
+    || item?.youtube_url || item?.youtubeUrl || "";
+  if (!/^https?:\/\/(?:www\.)?(?:youtube\.com|youtu\.be)\//i.test(String(videoUrl))) return null;
+  return {
+    videoUrl: String(videoUrl),
+    title: String(item?.title || item?.name || item?.videoTitle || fallback || "YouTube video").trim(),
+    author: item?.author || item?.channel || item?.uploader || item?.artist || "",
+    duration: item?.duration || item?.length || item?.timestamp || item?.lengthText || "",
+    views: item?.views || item?.viewCount || "",
+    thumbnail: item?.thumbnail || item?.thumbnailUrl || item?.thumb || item?.image
+      || (__preciousPlayVideoId(videoUrl) ? `https://img.youtube.com/vi/${__preciousPlayVideoId(videoUrl)}/mqdefault.jpg` : ""),
+  };
+}
+
+async function __preciousResolvePlayTargets(query) {
+  const raw = String(query || "").trim();
+  if (/^https?:\/\//i.test(raw)) {
+    const one = await __preciousResolvePlayTarget(raw);
+    return one?.videoUrl ? [one] : [{ videoUrl: raw, title: raw }];
+  }
+
+  const searchers = [
+    async () => {
+      const result = await ytSearch(raw);
+      return (Array.isArray(result) ? result : []).map((item) => __preciousNormalizePlayResult(item, raw)).filter(Boolean);
+    },
+    async () => {
+      const { data } = await axios.get(
+        `${CONFIG.GIFTED_API}/api/search/ytsearch?apikey=${CONFIG.GIFTED_KEY || ""}&q=${encodeURIComponent(raw)}`,
+        { timeout: 20000 },
+      );
+      const list = data?.result || data?.results || data?.data || [];
+      return (Array.isArray(list) ? list : []).map((item) => __preciousNormalizePlayResult(item, raw)).filter(Boolean);
+    },
+    async () => {
+      const { data } = await axios.get(
+        `https://api.siputzx.my.id/api/y/search?query=${encodeURIComponent(raw)}`,
+        { timeout: 20000 },
+      );
+      const list = data?.data || data?.result || data?.results || [];
+      return (Array.isArray(list) ? list : []).map((item) => __preciousNormalizePlayResult(item, raw)).filter(Boolean);
+    },
+  ];
+  const merged = [];
+  const seen = new Set();
+  for (const search of searchers) {
+    try {
+      const results = await search();
+      for (const result of results) {
+        const key = __preciousPlayVideoId(result.videoUrl) || result.videoUrl;
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        merged.push(result);
+        if (merged.length >= 6) return merged;
+      }
+    } catch {}
+    // The first working search provider normally has the best metadata. Do
+    // not wait on every fallback once it has produced a useful result set.
+    if (merged.length >= 3) break;
+  }
+  return merged.slice(0, 6);
+}
+
 async function __preciousTranscodeAudio(buffer, sourceExt = "bin") {
   if (!Buffer.isBuffer(buffer) || buffer.length < 1024) throw new Error("audio buffer is empty");
   const suffix = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -39439,53 +39525,40 @@ async function __preciousPlayPicker(sock, msg, args) {
     return;
   }
   const jid = msg.key.remoteJid;
-  const target = await __preciousResolvePlayTarget(query);
-  if (!target?.videoUrl) {
-    await sendReply(sock, msg, "❌ Song not found. Try a different title or YouTube URL.");
+  const targets = await __preciousResolvePlayTargets(query);
+  if (!targets.length) {
+    await sendReply(sock, msg, "❌ No YouTube results found. Try a different title.");
     return;
   }
   __miasMapSet(_playPickStore, jid, {
-    videoUrl: target.videoUrl,
-    title: String(target.title || query).slice(0, 100),
-    author: target.author || "",
-    duration: target.duration || "",
-    views: target.views || "",
-    published: target.published || "",
-    thumbnail: target.thumbnail || "",
+    results: targets,
     ts: Date.now(),
-    picker: "output",
+    picker: "search",
   });
   const body = [
-    `*${__preciousPlayBrand} SONG*`,
+    `🎵 *${String(query).slice(0, 70)}*`,
     "",
-    `*${String(target.title || query).slice(0, 90)}*`,
+    ...targets.map((target, index) => {
+      const detail = [target.author, target.duration].filter(Boolean).join(" • ");
+      return `${index + 1}. *${String(target.title || "YouTube video").slice(0, 90)}*${detail ? `\n   ${detail}` : ""}`;
+    }),
     "",
-    "╭────────────────────────╮",
-    `│ 🎵 *Title:* ${String(target.title || query).slice(0, 70)}`,
-    `│ ⏱️ *Duration:* ${target.duration || "Unknown"}`,
-    `│ 👁️ *Views:* ${target.views || "Unknown"}`,
-    `│ 📅 *Release Ago:* ${target.published || "Unknown"}`,
-    `│ 👤 *Author:* ${target.author || "Unknown"}`,
-    `│ 🔗 *Url:* ${target.videoUrl}`,
-    "╰────────────────────────╯",
-    "",
-    "🔢 *Please reply with the number you want to select:*",
+    "Reply with a number to download the audio.",
   ].join("\n");
-  // Deliberately use the numbered text menu shown in the requested flow.
-  // The user can reply to/quote this menu with 1, 2, or 3; the pending
-  // selection is routed by __miasHandleBareNumberReply.
-  const items = [
-    { text: "Audio Type", id: `${CONFIG.PREFIX}playgetmode audio` },
-    { text: "Document Type", id: `${CONFIG.PREFIX}playgetmode document` },
-    { text: "Voice Type", id: `${CONFIG.PREFIX}playgetmode voice` },
-  ];
-  const numberedBody = `${body}\n\n${items.map((item, index) => `${index + 1}. ${item.text}`).join("\n")}`;
-  const thumb = target.thumbnail ? await fetchPlayThumb(target.thumbnail).catch(() => null) : null;
-  if (thumb) {
-    await sock.sendMessage(jid, { image: thumb, caption: numberedBody }, { quoted: msg });
-  } else {
-    await _sendTextMenuPick(sock, jid, msg, body, items, `${__preciousPlayBrand} • Song`);
-  }
+  const firstThumb = targets.find((target) => target.thumbnail)?.thumbnail;
+  const thumb = firstThumb ? await fetchPlayThumb(firstThumb).catch(() => null) : null;
+  let prompt = null;
+  if (thumb) prompt = await sock.sendMessage(jid, { image: thumb, caption: body }, { quoted: msg });
+  else prompt = await _sendTextMenuPick(
+    sock,
+    jid,
+    msg,
+    body,
+    targets.map((target, index) => ({ text: `${index + 1}. ${target.title}`, id: `${CONFIG.PREFIX}playsearchpick ${index + 1}` })),
+    `${__preciousPlayBrand} • Search`,
+  );
+  const stored = __miasMapGet(_playPickStore, jid);
+  if (stored && prompt?.key) stored.promptKey = prompt.key;
 }
 
 // ── savetube — direct SaveTube CDN downloader ───────────────────────────────
@@ -39530,7 +39603,7 @@ async function __saveTubeInspect(url) {
 function __saveTubeFormat(item) {
   const values = [
     item?.ext, item?.extension, item?.format, item?.container,
-    item?.mime, item?.mimetype, item?.type,
+    item?.mime, item?.mimetype, item?.mimeType, item?.contentType, item?.type,
   ].map((value) => String(value || "").toLowerCase().replace(/^\./, ""));
   for (const raw of values) {
     if (/audio\/mpeg|audio\/mp3|^mp3$/.test(raw)) return "mp3";
@@ -39546,8 +39619,13 @@ function __saveTubeQuality(item) {
 }
 
 function __saveTubeFormatOptions(info) {
-  const audio = Array.isArray(info?.audio_formats) ? info.audio_formats : [];
-  const video = Array.isArray(info?.video_formats) ? info.video_formats : [];
+  const all = Array.isArray(info?.formats) ? info.formats : [];
+  const audio = Array.isArray(info?.audio_formats)
+    ? info.audio_formats
+    : (Array.isArray(info?.audioFormats) ? info.audioFormats : all.filter((item) => /audio|mp3|m4a|aac|opus/i.test(__saveTubeFormat(item))));
+  const video = Array.isArray(info?.video_formats)
+    ? info.video_formats
+    : (Array.isArray(info?.videoFormats) ? info.videoFormats : all.filter((item) => /video|mp4|webm/i.test(__saveTubeFormat(item))));
   const options = [];
   const addFormat = (label, type, format, formats) => {
     const matches = formats.filter((item) => {
@@ -39555,8 +39633,10 @@ function __saveTubeFormatOptions(info) {
       return actual === format || actual.includes(format);
     });
     if (matches.length) options.push({ label, type, format, quality: "", formats: matches });
+    return matches;
   };
-  addFormat("mp3", "audio", "mp3", audio);
+  const mp3Matches = addFormat("mp3", "audio", "mp3", audio);
+  if (mp3Matches.length) options.push({ label: "mp3 doc", type: "audio", format: "mp3", quality: "", document: true, formats: mp3Matches });
   addFormat("mp4", "video", "mp4", video);
   addFormat("m4a", "audio", "m4a", audio);
   addFormat("webm", "video", "webm", video);
@@ -39606,6 +39686,16 @@ async function __saveTubeResolve(url, type, requestedQuality = "", requestedForm
   return { info, selected, downloadUrl, type, formats };
 }
 
+async function __deletePickerMessages(sock, jid, stored) {
+  const keys = [
+    ...(Array.isArray(stored?.promptKeys) ? stored.promptKeys : []),
+    stored?.promptKey,
+  ].filter((key) => key?.id);
+  for (const key of keys) {
+    try { await sock.sendMessage(jid, { delete: key }); } catch {}
+  }
+}
+
 cmd("savetube", { desc: "Download YouTube media with SaveTube", category: "DOWNLOAD" }, async (sock, msg, args) => {
   if (!args.length) {
     await sendReply(sock, msg,
@@ -39615,6 +39705,7 @@ cmd("savetube", { desc: "Download YouTube media with SaveTube", category: "DOWNL
   const url = args.find((item) => /^https?:\/\//i.test(item));
   if (!url) { await sendReply(sock, msg, `❌ Send a valid YouTube URL.\nExample: ${CONFIG.PREFIX}savetube https://youtu.be/... audio`); return; }
   const tokens = args.map((item) => item.toLowerCase());
+  const fromPicker = tokens.includes("__from_picker");
   const hasAudioMode = tokens.includes("audio") || tokens.includes("mp3") || tokens.includes("m4a");
   const hasDocumentMode = tokens.includes("doc") || tokens.includes("document");
   const hasVideoMode = tokens.includes("video") || tokens.includes("mp4") || tokens.includes("webm")
@@ -39652,18 +39743,21 @@ cmd("savetube", { desc: "Download YouTube media with SaveTube", category: "DOWNL
         id: `${CONFIG.PREFIX}savetubemode ${option.label}`,
         index,
       }));
-      __miasMapSet(_saveTubePickStore, jid, {
+      const pickerState = {
         url,
         ts: Date.now(),
         picker: "savetube",
+        promptKeys: [],
         options: options.map(({ label, type, format, quality }) => ({ label, type, format, quality })),
-      });
+      };
+      __miasMapSet(_saveTubePickStore, jid, pickerState);
       await sock.sendMessage(jid, { delete: status.key }).catch(() => {});
       if (thumb) {
-        await sock.sendMessage(jid, { image: thumb, caption: cardCaption }, { quoted: msg });
+        const card = await sock.sendMessage(jid, { image: thumb, caption: cardCaption }, { quoted: msg });
+        if (card?.key) pickerState.promptKeys.push(card.key);
       }
       try {
-        await sendNativeFlowListMenu(
+        const flow = await sendNativeFlowListMenu(
           sock,
           jid,
           msg,
@@ -39672,11 +39766,13 @@ cmd("savetube", { desc: "Download YouTube media with SaveTube", category: "DOWNL
           [],
           `${CONFIG.BOT_NAME} • SaveTube`,
         );
+        if (flow?.key) pickerState.promptKeys.push(flow.key);
       } catch {
         const fallback = options
           .map((option, index) => `${index + 1}. ${option.label} — ${option.type === "audio" ? "audio" : "video"}`)
           .join("\n");
-        await sendReply(sock, msg, `${cardCaption}\n\n${fallback}\n\nReply with the number you want.`);
+        const fallbackMessage = await sendReply(sock, msg, `${cardCaption}\n\n${fallback}\n\nReply with the number you want.`);
+        if (fallbackMessage?.key) pickerState.promptKeys.push(fallbackMessage.key);
       }
     } catch (error) {
       await editMessage(sock, jid, status.key, `❌ *SaveTube failed:* ${error?.message || "could not read that URL"}`).catch(() => {});
@@ -39698,7 +39794,7 @@ cmd("savetube", { desc: "Download YouTube media with SaveTube", category: "DOWNL
     const title = String(result.info.title || "SaveTube download").slice(0, 100);
     const thumb = result.info.thumbnail ? await fetchPlayThumb(result.info.thumbnail).catch(() => null) : null;
     const meta = `📥 *${title}*\n⏱️ Duration: ${result.info.duration || "Unknown"}\n🎞️ Format: ${result.selected.label || `${result.selected.quality} ${mode}`}`;
-    if (thumb) await sock.sendMessage(jid, { image: thumb, caption: meta }, { quoted: msg });
+    if (thumb && !fromPicker) await sock.sendMessage(jid, { image: thumb, caption: meta }, { quoted: msg });
     await editMessage(sock, jid, status.key, `${meta}\n\n⬇️ Fetching the real file...`);
     if (mode === "audio") {
       const response = await axios.get(result.downloadUrl, {
@@ -39713,10 +39809,16 @@ cmd("savetube", { desc: "Download YouTube media with SaveTube", category: "DOWNL
       }
       const isMp3 = media.subarray(0, 3).toString("ascii") === "ID3" || (media[0] === 0xff && (media[1] & 0xe0) === 0xe0);
       if (!isMp3) media = await __preciousTranscodeAudio(media, "bin");
-      await sock.sendMessage(jid, {
-        audio: media, mimetype: "audio/mpeg", ptt: false,
-        fileName: `${title.replace(/[^\w\s.-]/g, "_").slice(0, 70)}.mp3`,
-      }, { quoted: msg });
+      const audioName = `${title.replace(/[^\w\s.-]/g, "_").slice(0, 70)}.mp3`;
+      if (asDocument) {
+        await sock.sendMessage(jid, {
+          document: media, mimetype: "audio/mpeg", fileName: audioName,
+        }, { quoted: msg });
+      } else {
+        await sock.sendMessage(jid, {
+          audio: media, mimetype: "audio/mpeg", ptt: false, fileName: audioName,
+        }, { quoted: msg });
+      }
     } else {
       const movieFile = await _downloadMovieToTemp(result.downloadUrl);
       const isWebm = Boolean(movieFile.isWebm);
@@ -39761,7 +39863,7 @@ cmd("savetubemode", {
 }, async (sock, msg, args) => {
   const jid = msg.key.remoteJid;
   const stored = __miasMapGet(_saveTubePickStore, jid);
-  const rawChoice = String(args?.[0] || "").trim().toLowerCase();
+  const rawChoice = String(args?.join(" ") || "").trim().toLowerCase();
   if (!stored || stored.picker !== "savetube" || Date.now() - stored.ts > 10 * 60 * 1000) {
     __miasMapDelete(_saveTubePickStore, jid);
     await sendReply(sock, msg, `⚠️ No pending SaveTube choice. Use ${CONFIG.PREFIX}savetube <YouTube URL> first.`);
@@ -39776,13 +39878,169 @@ cmd("savetubemode", {
     await sendReply(sock, msg, `❌ Choose one of the listed formats: ${options.map((option) => option.label).join(", ")}`);
     return;
   }
+  await __deletePickerMessages(sock, jid, stored);
   const entry = commands.get("savetube");
   if (!entry?.handler) {
     await sendReply(sock, msg, "❌ SaveTube is temporarily unavailable.");
     return;
   }
   __miasMapDelete(_saveTubePickStore, jid);
-  await entry.handler(sock, msg, [stored.url, selected.label]);
+  await entry.handler(sock, msg, [
+    stored.url,
+    ...String(selected.label || "").split(/\s+/).filter(Boolean),
+    "__from_picker",
+  ]);
+});
+
+cmd("playsearchpick", {
+  desc: "Internal YouTube search result picker",
+  category: "DOWNLOAD",
+}, async (sock, msg, args) => {
+  const jid = msg.key.remoteJid;
+  const stored = __miasMapGet(_playPickStore, jid);
+  const n = Number(args?.[0] || "");
+  if (!stored || stored.picker !== "search" || Date.now() - stored.ts > 10 * 60 * 1000) {
+    __miasMapDelete(_playPickStore, jid);
+    await sendReply(sock, msg, `⚠️ No pending YouTube search. Use ${CONFIG.PREFIX}play <song name> again.`);
+    return;
+  }
+  const target = Array.isArray(stored.results) ? stored.results[n - 1] : null;
+  if (!target?.videoUrl) {
+    await sendReply(sock, msg, "❌ That video choice is no longer available.");
+    return;
+  }
+  __miasMapDelete(_playPickStore, jid);
+  await __deletePickerMessages(sock, jid, stored);
+  await react(sock, msg, "⬇️");
+  try {
+    const result = await _fetchYtAudioBuf(target.videoUrl, "mp3");
+    if (!result?.buf) throw new Error("audio provider returned no file");
+    let audio = result.buf;
+    let mimetype = result.detectedMime || "audio/mpeg";
+    let extension = result.detectedExt || ".mp3";
+    if (result.detectedFmt !== "mp3") {
+      audio = await __preciousTranscodeAudio(result.buf, String(extension).replace(/^\./, "") || "bin");
+      mimetype = "audio/mpeg";
+      extension = ".mp3";
+    }
+    const safeName = String(target.title || "audio")
+      .replace(/[^\w\s.-]/g, "_")
+      .trim()
+      .slice(0, 70) || "audio";
+    try {
+      await sock.sendMessage(jid, {
+        audio,
+        mimetype,
+        ptt: false,
+        fileName: `${safeName}${extension}`,
+      });
+    } catch {
+      await sock.sendMessage(jid, {
+        document: audio,
+        mimetype,
+        fileName: `${safeName}${extension}`,
+      });
+    }
+    await react(sock, msg, "✅");
+  } catch (error) {
+    await react(sock, msg, "❌");
+    await sendReply(sock, msg, `❌ Could not download the selected video: ${error?.message || "download failed"}`);
+  }
+});
+
+const _leakTubeSeen = new Map();
+const _leakTubeSeenFile = path.join(process.cwd(), "database", "leaktube-seen.json");
+try {
+  const saved = JSON.parse(fs.readFileSync(_leakTubeSeenFile, "utf8"));
+  for (const [jid, urls] of Object.entries(saved || {})) {
+    if (Array.isArray(urls)) _leakTubeSeen.set(jid, new Set(urls.slice(-250)));
+  }
+} catch {}
+
+function __saveLeakTubeSeen() {
+  try {
+    fs.mkdirSync(path.dirname(_leakTubeSeenFile), { recursive: true });
+    const data = Object.fromEntries([..._leakTubeSeen.entries()].map(([jid, urls]) => [jid, [...urls].slice(-250)]));
+    fs.writeFileSync(_leakTubeSeenFile, JSON.stringify(data));
+  } catch {}
+}
+
+function __leakTubeItems(payload) {
+  const list = Array.isArray(payload)
+    ? payload
+    : (payload?.results || payload?.data?.results || payload?.data || payload?.posts
+      || payload?.items || payload?.result || [payload]);
+  return (Array.isArray(list) ? list : [list])
+    .map((item) => {
+      if (!item || typeof item !== "object") return null;
+      const videoUrl = item.video_url || item.videoUrl || item.download_url || item.downloadUrl
+        || item.media_url || item.mediaUrl || item.video || item.media || item.url || item.link || "";
+      if (!/^https?:\/\//i.test(String(videoUrl))) return null;
+      return {
+        videoUrl: String(videoUrl),
+        title: String(item.title || item.name || item.caption || item.description || "LeakTube video")
+          .replace(/\s+/g, " ").trim().slice(0, 160),
+      };
+    })
+    .filter(Boolean);
+}
+
+cmd("leaktube", {
+  desc: "Send a random non-repeating LeakTube video",
+  category: "DOWNLOAD",
+}, async (sock, msg) => {
+  const jid = msg.key.remoteJid;
+  const seen = _leakTubeSeen.get(jid) || new Set();
+  let selected = null;
+  for (let attempt = 0; attempt < 4 && !selected; attempt += 1) {
+    try {
+      const { data } = await axios.get("https://apis.davidcyril.name.ng/leaktube", {
+        timeout: 30000,
+        headers: { "User-Agent": "Mozilla/5.0", Accept: "application/json" },
+      });
+      const candidates = __leakTubeItems(data);
+      selected = candidates.find((item) => !seen.has(item.videoUrl));
+    } catch {}
+  }
+  if (!selected) {
+    await react(sock, msg, "❌");
+    await sendReply(sock, msg, "❌ LeakTube did not return a new video right now.");
+    return;
+  }
+  seen.add(selected.videoUrl);
+  _leakTubeSeen.set(jid, seen);
+  while (seen.size > 250) seen.delete(seen.values().next().value);
+  __saveLeakTubeSeen();
+  await react(sock, msg, "⬇️");
+  let movieFile = null;
+  try {
+    movieFile = await _downloadMovieToTemp(selected.videoUrl);
+    const safeName = selected.title.replace(/[^\w\s.-]/g, "_").trim().slice(0, 80) || "leaktube";
+    const caption = `🎬 *${selected.title}*`;
+    if (movieFile.bytes <= 55 * 1024 * 1024) {
+      const media = await fs.promises.readFile(movieFile.filePath);
+      await sock.sendMessage(jid, {
+        video: media,
+        mimetype: movieFile.isWebm ? "video/webm" : "video/mp4",
+        fileName: `${safeName}${movieFile.isWebm ? ".webm" : ".mp4"}`,
+        caption,
+      });
+    } else {
+      await _sendMovieDocumentFromPath(sock, jid, movieFile.filePath, {
+        fileName: `${safeName}${movieFile.isWebm ? ".webm" : ".mp4"}`,
+        mimetype: movieFile.isWebm ? "video/webm" : "video/mp4",
+        caption,
+      });
+    }
+    await react(sock, msg, "✅");
+  } catch (error) {
+    seen.delete(selected.videoUrl);
+    __saveLeakTubeSeen();
+    await react(sock, msg, "❌");
+    await sendReply(sock, msg, `❌ LeakTube video could not be delivered: ${error?.message || "download failed"}`);
+  } finally {
+    if (movieFile?.dir) await fs.promises.rm(movieFile.dir, { recursive: true, force: true }).catch(() => {});
+  }
 });
 
 cmd("playgetmode", {
