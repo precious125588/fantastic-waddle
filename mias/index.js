@@ -49,6 +49,7 @@ import {
   stickerCmdCount,
   getStickerHash,
 } from "./lib/kevdraPatches.js";
+import { createStickerFromBuffer } from "./lib/stickerMedia.js";
 // ── MIAS HANDLER SYSTEM — universal messaging abstraction ─────────────────────
 import { installHandlerGlobals, updateHandlerSock } from "./handlers/globals.js";
 import { isGktwAvailable } from "./handlers/gktwAdapter.js";
@@ -10250,6 +10251,40 @@ async function sendAnimeGif(sock, msg, type) {
   await sendReply(sock, msg, `🎌 *${type.toUpperCase()}*\n\n_(Could not load — all APIs failed, try again!)_`);
 }
 cmd("anime", { desc: "Random anime image", category: "ANIME" }, async (s, m) => sendAnimeGif(s, m, "neko"));
+cmd(["dms"], { desc: "Demon Slayer anime info and artwork", category: "ANIME" }, async (sock, msg) => {
+  await react(sock, msg, "⚔️");
+  try {
+    const { data } = await axios.get(
+      "https://api.jikan.moe/v4/anime?q=Demon%20Slayer&limit=5",
+      { timeout: 12000 },
+    );
+    const anime = (data?.data || []).find((item) =>
+      /kimetsu no yaiba|demon slayer/i.test(`${item?.title || ""} ${item?.title_english || ""}`),
+    ) || data?.data?.[0];
+    if (!anime) throw new Error("No Demon Slayer result");
+    const title = anime.title || anime.title_english || "Demon Slayer";
+    const imageUrl = anime.images?.jpg?.large_image_url || anime.images?.jpg?.image_url;
+    const caption =
+      `⚔️ *${title}*\n\n` +
+      `📺 Episodes: ${anime.episodes || "?"}\n` +
+      `⭐ Score: ${anime.score || "N/A"}\n` +
+      `📌 Status: ${anime.status || "Unknown"}\n\n` +
+      `${String(anime.synopsis || "Demon Slayer anime information.").slice(0, 700)}`;
+    if (imageUrl) {
+      const image = Buffer.from((await axios.get(imageUrl, {
+        responseType: "arraybuffer",
+        timeout: 12000,
+      })).data);
+      await sock.sendMessage(msg.key.remoteJid, { image, caption }, { quoted: msg });
+    } else {
+      await sendReply(sock, msg, caption);
+    }
+    await react(sock, msg, "✅");
+  } catch {
+    await sendReply(sock, msg, "⚔️ *Demon Slayer*\n\nCould not load the artwork right now. Try `.dms` again shortly.");
+    await react(sock, msg, "❌");
+  }
+});
 cmd(["animequote", "aniquote"], { desc: "Random anime quote", category: "ANIME" }, async (sock, msg) => {
   await react(sock, msg, "✨");
   try {
@@ -14437,9 +14472,20 @@ cmd("readmail", { desc: "Read temp mail", category: "TOOLS" }, async (sock, msg)
 //  MEDIA COMMANDS
 // ═══════════════════════════════════════════════════════════════════════════════
 cmd(["sticker", "s"], { desc: "Image/video → sticker", category: "MEDIA" }, async (sock, msg, args) => {
-  const q = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage;
-  const img = msg.message?.imageMessage || q?.imageMessage;
-  const vid = msg.message?.videoMessage || q?.videoMessage;
+  const unwrap = (node) => node?.ephemeralMessage?.message
+    || node?.viewOnceMessage?.message
+    || node?.viewOnceMessageV2?.message
+    || node?.documentWithCaptionMessage?.message
+    || node
+    || {};
+  const message = unwrap(msg.message);
+  const context = message?.extendedTextMessage?.contextInfo
+    || message?.imageMessage?.contextInfo
+    || message?.videoMessage?.contextInfo
+    || message?.documentMessage?.contextInfo;
+  const q = unwrap(context?.quotedMessage);
+  const img = message?.imageMessage || q?.imageMessage;
+  const vid = message?.videoMessage || q?.videoMessage;
   if (!img && !vid) { await sendReply(sock, msg, "❌ Reply to an image or short video!"); return; }
   const jid = msg.key.remoteJid;
   const packName = args.join(" ") || CONFIG.BOT_NAME;
@@ -14452,35 +14498,21 @@ cmd(["sticker", "s"], { desc: "Image/video → sticker", category: "MEDIA" }, as
     let buf = Buffer.from([]);
     for await (const c of stream) buf = Buffer.concat([buf, c]);
     await editMessage(sock, jid, stkKey, `✨ *MIAS MDX Sticker*\n\n⬢ Downloading media... ✅\n⬡ Converting to sticker...`);
-    // Convert to proper WebP using ffmpeg (most reliable) or sharp fallback
-    let _stkWebpBuf = buf;
-    const _stkId2 = Date.now();
-    const _stkIn2 = `/tmp/stk2_in_${_stkId2}.${img ? "jpg" : "mp4"}`;
-    const _stkOut2 = `/tmp/stk2_out_${_stkId2}.webp`;
-    try {
-      const { execSync: _stkEx } = await import("child_process");
-      fs.writeFileSync(_stkIn2, buf);
-      if (img) {
-        _stkEx(`ffmpeg -y -i "${_stkIn2}" -vf "scale=512:512:force_original_aspect_ratio=decrease,pad=512:512:(ow-iw)/2:(oh-ih)/2:color=white@0,format=rgba" "${_stkOut2}"`, { stdio: "pipe", timeout: 30000 });
-      } else {
-        _stkEx(`ffmpeg -y -i "${_stkIn2}" -vf "scale=512:512:force_original_aspect_ratio=decrease,pad=512:512:(ow-iw)/2:(oh-ih)/2:color=white@0,fps=15" -t 10 -loop 0 "${_stkOut2}"`, { stdio: "pipe", timeout: 30000 });
-      }
-      _stkWebpBuf = fs.readFileSync(_stkOut2);
-    } catch (_stkConvErr) {
-      // fallback: try sharp
-      try {
-        const _shp = (await import("sharp").catch(() => null))?.default;
-        if (_shp) _stkWebpBuf = await _shp(buf).resize(512, 512, { fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 } }).webp().toBuffer();
-      } catch {}
-    } finally {
-      try { fs.unlinkSync(_stkIn2); } catch {}
-      try { fs.unlinkSync(_stkOut2); } catch {}
-    }
+    const _stkWebpBuf = await createStickerFromBuffer(buf, {
+      mediaType: img?.mimetype || (vid ? "video/mp4" : "image/jpeg"),
+      pack: packName,
+      author: CONFIG.OWNER_NAME || "MIAS MDX",
+    });
     await editMessage(sock, jid, stkKey, `✨ *MIAS MDX Sticker*\n\n⬢ Downloading media... ✅\n⬢ Converting to WebP... ✅\n⬡ Sending...`);
-    await sock.sendMessage(jid, { sticker: _stkWebpBuf, stickerPackName: packName, stickerAuthor: CONFIG.OWNER_NAME || "MIAS MDX" }, { quoted: msg });
+    await sock.sendMessage(jid, {
+      sticker: _stkWebpBuf,
+      stickerPackName: packName,
+      stickerAuthor: CONFIG.OWNER_NAME || "MIAS MDX",
+      isAnimated: Boolean(vid),
+    }, { quoted: msg });
     await editMessage(sock, jid, stkKey, `✨ *MIAS MDX Sticker*\n\n⬢ Downloading image... ✅\n⬢ Converting to sticker... ✅\n\n✅ *Done!*`);
   } catch (e) {
-    await editMessage(sock, jid, stkKey, `✨ *MIAS MDX Sticker*\n\n❌ Sticker failed: ${e?.message || e}\n\n💡 Make sure ffmpeg is installed on your server.`);
+    await editMessage(sock, jid, stkKey, `✨ *MIAS MDX Sticker*\n\n❌ Sticker failed: ${(e?.message || e).toString().slice(0, 240)}\n\n💡 Reply to a supported image or short video and try again.`);
   }
 });
 cmd("toimg", { desc: "Sticker → Image", category: "MEDIA" }, async (sock, msg) => {
@@ -17474,7 +17506,13 @@ async function _addVideoWatermark(videoBuf, label) {
 
 cmd(["tiktok","tt","ttdl"], { desc: "Download TikTok video/audio — supports: .tiktok link1,link2,link3", category: "DOWNLOAD" }, async (sock, msg, args) => {
     args = __withQuotedUrl(msg, args, /tiktok\.com|vm\.tik/i);
-    if (!args[0]) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}tiktok <url> [audio]\nor reply to a message with the link and send ${CONFIG.PREFIX}tiktok\nor bulk: ${CONFIG.PREFIX}tiktok url1,url2,url3`); return; }
+    const _ttOptionIndex = args.findIndex((value) =>
+      /^(audio|sticker|stickerize|stik)$/i.test(String(value))
+      || parseTikTokMode(value)?.kind === "sticker"
+    );
+    const _ttMode = _ttOptionIndex >= 0 ? String(args[_ttOptionIndex]).toLowerCase() : "";
+    if (_ttOptionIndex >= 0) args.splice(_ttOptionIndex, 1);
+    if (!args[0]) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}tiktok <url> [audio|sticker]\nor reply to a message with the link and send ${CONFIG.PREFIX}tiktok\nor bulk: ${CONFIG.PREFIX}tiktok url1,url2,url3 sticker`); return; }
     await react(sock, msg, "🌀");
     const jid = msg.key.remoteJid;
     // ── Multi-URL batch download ─────────────────────────────────────────────
@@ -17485,7 +17523,9 @@ cmd(["tiktok","tt","ttdl"], { desc: "Download TikTok video/audio — supports: .
     const _ttCommaFallback = _rawTt.split(/[,\s]+/).filter(u => u.length > 10 && (u.includes("tiktok") || u.includes("vm.tik") || u.includes("vt.tiktok")));
     const _ttUrls = [...new Set([..._ttFoundUrls, ..._ttCommaFallback])];
     if (_ttUrls.length > 1) {
-      const _isAudioBatch = _rawTt.toLowerCase().endsWith(" audio");
+      const _isAudioBatch = _ttMode === "audio";
+      const _isStickerBatch = ["sticker", "stickerize", "stik", "3.1", "3.2"].includes(_ttMode)
+        || parseTikTokMode(_ttMode)?.kind === "sticker";
       // silent — no intermediate text
       let _ttDone = 0, _ttFail = 0;
       for (let _tti = 0; _tti < _ttUrls.length; _tti++) {
@@ -17498,7 +17538,14 @@ cmd(["tiktok","tt","ttdl"], { desc: "Download TikTok video/audio — supports: .
           const _ttBuf = Buffer.from((await axios.get(_ttDlUrl, { responseType: "arraybuffer", timeout: 90000, headers: { "User-Agent": "Mozilla/5.0", Referer: "https://www.tiktok.com/" }, maxRedirects: 10 })).data);
           if (_ttBuf.length < 4096) { _ttFail++; continue; }
           const _ttCap = `🎵 *TikTok* (${_tti+1}/${_ttUrls.length})`;
-          if (_isAudioBatch) {
+          if (_isStickerBatch) {
+            const _sticker = await createStickerFromBuffer(_ttBuf, {
+              mediaType: "video/mp4",
+              pack: CONFIG.BOT_NAME || "MIAS",
+              author: CONFIG.OWNER_NAME || "MIAS Bot",
+            });
+            await sock.sendMessage(jid, { sticker: _sticker, isAnimated: true }, { quoted: msg });
+          } else if (_isAudioBatch) {
             await sock.sendMessage(jid, { audio: _ttBuf, mimetype: "audio/mpeg", ptt: false, fileName: `tiktok_${Date.now()}.mp3` }, { quoted: msg });
           } else {
             const _ttWm = await _addVideoWatermark(_ttBuf, "TT");
@@ -17515,11 +17562,13 @@ cmd(["tiktok","tt","ttdl"], { desc: "Download TikTok video/audio — supports: .
     }
     // ── Single URL (original flow below) ────────────────────────────────────
   const url = args[0];
-  const isAudio = (args[1] || "").toLowerCase() === "audio";
+  const isAudio = _ttMode === "audio" || (args[1] || "").toLowerCase() === "audio";
+  const isSticker = ["sticker", "stickerize", "stik", "3.1", "3.2"].includes(_ttMode)
+    || parseTikTokMode(_ttMode)?.kind === "sticker";
     // New numbered picker for a single URL. The legacy direct download remains
     // available with `.tiktok URL audio`; picker state is bound to this chat
     // and expires so a number from another conversation cannot trigger media.
-    if (!isAudio && !args[1]) {
+    if (!isAudio && !isSticker && !args[1]) {
       try {
         const info = await fetchTikTokInfo(url);
         __ttRememberSelection(jid, { info, url, ts: Date.now(), sourceMessage: msg });
@@ -17636,7 +17685,14 @@ cmd(["tiktok","tt","ttdl"], { desc: "Download TikTok video/audio — supports: .
 
       const sz = ` (${buf.length>=1048576?(buf.length/1048576).toFixed(2)+' MB':(buf.length/1024).toFixed(1)+' KB'})`;
 
-      if (isAudio) {
+      if (isSticker) {
+        const _sticker = await createStickerFromBuffer(buf, {
+          mediaType: "video/mp4",
+          pack: CONFIG.BOT_NAME || "MIAS",
+          author: CONFIG.OWNER_NAME || "MIAS Bot",
+        });
+        await sock.sendMessage(jid, { sticker: _sticker, isAnimated: true }, { quoted: msg });
+      } else if (isAudio) {
         const _aMime = _isValidAudio(buf) && buf.slice(4, 8).toString("ascii") === "ftyp" ? "audio/mp4" : "audio/mpeg";
         await sock.sendMessage(jid, { audio: buf, mimetype: _aMime, ptt: false, fileName: "tiktok_audio.mp3" }, { quoted: msg });
       } else {
@@ -21152,7 +21208,9 @@ cmd(["pick", "p"], { desc: "Pick randomly from options (A|B|C) OR download adult
     }
     const ttChoiceLabel = ttMode.kind === "audio"
       ? (ttMode.voiceNote ? "voice note" : ttMode.document ? "audio document" : "audio")
-      : `${ttMode.quality === "hd" ? "HD" : "SD"} video${ttMode.document ? " document" : ""}${ttMode.watermark ? " with watermark" : ""}${ttMode.videoNote ? " note" : ""}`;
+      : ttMode.kind === "sticker"
+        ? `${ttMode.quality === "hd" ? "HD" : "SD"} animated sticker`
+        : `${ttMode.quality === "hd" ? "HD" : "SD"} video${ttMode.document ? " document" : ""}${ttMode.watermark ? " with watermark" : ""}${ttMode.videoNote ? " note" : ""}`;
     let ttStatusMessage = null;
     const updateTtStatus = async (text) => {
       if (ttStatusMessage?.key) {
@@ -21253,6 +21311,13 @@ cmd(["pick", "p"], { desc: "Pick randomly from options (A|B|C) OR download adult
           audio: media, mimetype: "audio/mpeg", ptt: !!ttMode.voiceNote,
           fileName: ttMode.voiceNote ? undefined : "tiktok_audio.mp3",
         }, { quoted: msg });
+      } else if (ttMode.kind === "sticker") {
+        const sticker = await createStickerFromBuffer(media, {
+          mediaType: "video/mp4",
+          pack: CONFIG.BOT_NAME || "MIAS",
+          author: CONFIG.OWNER_NAME || "MIAS Bot",
+        });
+        await sock.sendMessage(jid, { sticker, isAnimated: true }, { quoted: msg });
       } else if (ttMode.document) {
         await sock.sendMessage(jid, {
           document: media, mimetype: "video/mp4", fileName: "tiktok_video.mp4",
@@ -32417,9 +32482,9 @@ if (typeof __miasApplyDynamicOwnerName === "function") {
       await sendReply(sock, msg, `Usage: *${CONFIG.PREFIX}block @user*  OR  reply  OR  *${CONFIG.PREFIX}block <number>*`);
       return;
     }
-    const myNums = (typeof __miasMyNums === "function") ? null : null;
-    const myNum = String(sock.user?.id || "").split("@")[0].split(":")[0].replace(/[^0-9]/g, "");
-    if (targetNum === myNum) { await sendReply(sock, msg, "❌ Cannot block the bot itself!"); return; }
+    // The bot's own JID is a valid explicit target. Do not compare the
+    // resolved target with the sender here: in self-chat those identities are
+    // intentionally the same, and the command must not retarget the owner.
     await react(sock, msg, "🚫");
     const name = await getDisplayName(sock, targetJid, msg.key.remoteJid?.endsWith("@g.us") ? msg.key.remoteJid : null).catch(() => "+" + targetNum);
     const res = await __miasUpdateBlock(sock, targetNum, "block", targetJid);
