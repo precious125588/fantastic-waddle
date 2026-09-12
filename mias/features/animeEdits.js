@@ -28,7 +28,7 @@ const MAX_RESULTS = 3;
 const NARUTO_RESULTS = 2;
 const DEMON_SLAYER_RESULTS = 2;
 const MAX_INPUT_BYTES = 90 * 1024 * 1024;
-const NARUTO_SEARCH_ANCHORS = Object.freeze(["#narutoedit", "#narutoedits"]);
+const NARUTO_SEARCH_ANCHORS = Object.freeze(["#narutoedit", "#narutoedits ,"naruto" ,"narutoshippudenedits" ,"itachiedit" ,"narutoshippudenedit" ,"kakashiedit" ,"obitoedit" ,"]);
 const NARUTO_SEARCH_BATCH_SIZE = 1;
 const NARUTO_CANDIDATE_TARGET = 4;
 const DC_TIKTOK_ENDPOINTS = [
@@ -42,8 +42,7 @@ const MAX_PORTABLE_OUTPUT_BYTES = 16 * 1024 * 1024;
 // limit. The actual trim is performed by ffmpeg before anything is sent.
 const MAX_DURATION_SECONDS = 180;
 
-// Naruto is intentionally restricted to these TikTok hashtag searches. Do
-// not broaden this to a generic web/search-engine query: that was the source
+// Naruto is intentionally restricted to these TikTok hashtag roaden this to a generic web/search-engine query: that was the source
 // of unrelated clips and unreliable downloads.
 //
 // Keep the seed list readable and let uniqueHashtags() remove repeated tags
@@ -340,6 +339,7 @@ const DEMON_SLAYER_SEARCH_ANCHORS = Object.freeze([
   "#knyedits",
   "#demonslayer4kedit",
   "#demonslayeramvedit",
+  "zenitsuedit",
 ]);
 
 // TikWM treats `/api/feed/search` (without the trailing slash) as a protected
