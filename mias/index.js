@@ -14581,8 +14581,16 @@ cmd("save", { desc: "Save quoted message to owner DM", category: "TOOLS" }, asyn
         else if (mt.type === "sticker") sendObj.sticker = buf;
         else { sendObj.document = buf; sendObj.fileName = mediaMsg.fileName || "file"; sendObj.mimetype = mediaMsg.mimetype || mt.mime; }
         const saveFrom2 = ctx?.participant ? ("+"+_cleanNum(ctx.participant)) : (isGroup(msg) ? "Group" : "DM");
-        sendObj.caption = `📌 *Saved*\nFrom: ${saveFrom2}`;
-        await sock.sendMessage(dmJid, sendObj);
+        // A sticker payload with a caption is an invalid WhatsApp message and
+        // arrives as "this media file doesn't exist on your internal storage".
+        // Send the caption as a separate note instead.
+        if (mt.type === "sticker") {
+          await sock.sendMessage(dmJid, sendObj);
+          await sock.sendMessage(dmJid, { text: `📌 *Saved sticker*\nFrom: ${saveFrom2}` });
+        } else {
+          sendObj.caption = `📌 *Saved*\nFrom: ${saveFrom2}`;
+          await sock.sendMessage(dmJid, sendObj);
+        }
         saved = true;
         break;
       }
@@ -14813,11 +14821,18 @@ cmd(["sticker", "s"], { desc: "Image/video → sticker", category: "MEDIA" }, as
       author: CONFIG.OWNER_NAME || "MIAS MDX",
     });
     await editMessage(sock, jid, stkKey, `✨ *MIAS MDX Sticker*\n\n⬢ Downloading media... ✅\n⬢ Converting to WebP... ✅\n⬡ Sending...`);
+    // WhatsApp answers a sticker whose payload is not a real WebP with
+    // "Sorry, this media file doesn't exist on your internal storage".
+    // Verify the RIFF/WEBP magic bytes here instead of shipping a dead sticker.
+    if (!Buffer.isBuffer(_stkWebpBuf)
+        || _stkWebpBuf.length < 64
+        || _stkWebpBuf.subarray(0, 4).toString("ascii") !== "RIFF"
+        || _stkWebpBuf.subarray(8, 12).toString("ascii") !== "WEBP") {
+      throw new Error("sticker encoder returned an unreadable file");
+    }
     await sock.sendMessage(jid, {
       sticker: _stkWebpBuf,
-      stickerPackName: packName,
-      stickerAuthor: CONFIG.OWNER_NAME || "MIAS MDX",
-      isAnimated: Boolean(vid),
+      mimetype: "image/webp",
     }, { quoted: msg });
     await editMessage(sock, jid, stkKey, `✨ *MIAS MDX Sticker*\n\n⬢ Downloading image... ✅\n⬢ Converting to sticker... ✅\n\n✅ *Done!*`);
   } catch (e) {
@@ -38556,7 +38571,11 @@ try {
       const _resolveReact = async (emoji) => {
         if (_resolved) return;
         _resolved = true;
-        try { await react(sock, msg, emoji); } catch {}
+        // Two independent ways to clear the spinner: if the react() helper is
+        // unavailable or throws, fall back to a raw reaction send so the
+        // command can never be left stuck on 🌀.
+        try { await react(sock, msg, emoji); return; } catch {}
+        try { await sock.sendMessage(chat, { react: { text: emoji, key: msg.key } }); } catch {}
       };
       const _watchdog = setTimeout(() => _resolveReact("❌"), 60000);
 
@@ -38672,7 +38691,12 @@ try {
           await _resolveReact("✅");
           // Report the ACTUAL media type detected on the WhatsApp message plus
           // the resolved group name (falls back safely when metadata is absent).
-          if (groupName === "this group") groupName = await _gstGroupName(sock, chat);
+          // `groupName` used to be referenced here without ever being declared,
+          // which threw a ReferenceError right after the status went out — the
+          // command then died before printing anything and the reaction stayed
+          // on the spinner.
+          let groupName = "this group";
+          try { groupName = await _gstGroupName(sock, chat); } catch {}
           const _lbl = qInner ? (_GST_KIND_LABELS[qInner.kind] || { emoji: "📄", label: "File" }) : null;
           const _what = _lbl ? `${_lbl.emoji} *${_lbl.label} uploaded to ${groupName}*` : `📝 *Text uploaded to ${groupName}*`;
           await sendReply(sock, msg, `${_what}\n✅ Sent to *${memberJids.length}* group members.`);
