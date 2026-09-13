@@ -461,14 +461,13 @@ bot.on('polling_error', function (err) {
 // @itsreimau/gktw is not published on npm (404) and github.com/itsreimau/gktw
 // does not exist, so the old "try npm, then GitHub" install loop could only
 // ever fail — it just burned ~60s of boot time per deploy and spammed errors.
-// Both bots run every feature through a raw Baileys fallback, so this is now a
+// MIAS runs every feature through a raw Baileys fallback, so this is now a
 // pure status report. To plug in a real helper package later:
-//     GKTW_PACKAGE=<package-name>   (and npm install it inside mias/ new-page/)
+//     GKTW_PACKAGE=<package-name>   (and npm install it inside mias/)
 // ─────────────────────────────────────────────────────────────────────────────
 (function logGktwStatus() {
   const candidates = [process.env.GKTW_PACKAGE, '@itsreimau/gktw', '@mengkodingan/ckptw'].filter(Boolean);
   const roots = [path.join(__dirname, 'mias', 'node_modules'),
-                 path.join(__dirname, 'new-page', 'node_modules'),
                  path.join(__dirname, 'node_modules')];
   for (const name of candidates) {
     for (const root of roots) {

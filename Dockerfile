@@ -22,11 +22,11 @@ WORKDIR /app
 # ─────────────────────────────────────────────────────────────────────────────
 # WHY THIS FILE LOOKS THE WAY IT DOES
 #
-# 1. Every workspace (root, mias/, new-page/) ships its OWN .npmrc with
+# 1. Every workspace (root, mias/) ships its OWN .npmrc with
 #    legacy-peer-deps=true. npm only reads .npmrc from the CWD (and $HOME) —
 #    NOT from a parent folder. `cd mias && npm install` therefore ignored the
 #    root .npmrc, hit the jimp@1.6.1 peer conflict from @itsliaaa/baileys and
-#    died with ERESOLVE. The old `|| true` hid that, so mias/ and new-page/
+#    died with ERESOLVE. The old `|| true` hid that, so mias/
 #    shipped with NO node_modules at all — which is what "wa-sticker and gktw
 #    aren't installing" actually was.
 #
@@ -40,10 +40,9 @@ WORKDIR /app
 #    that has no Node 22 prebuild and must compile from source).
 #
 # 4. No gktw install steps. @itsreimau/gktw does not exist on npm and
-#    github.com/itsreimau/gktw is 404. new-page/package.json listing it as a
-#    hard dependency made the whole install fail with E404. Both bots already
-#    fall back to raw Baileys, and the adapters now auto-detect a real helper
-#    package if one is ever provided via GKTW_PACKAGE.
+#    github.com/itsreimau/gktw is 404. MIAS falls back to raw Baileys, and the
+#    adapter auto-detects a real helper package if one is ever provided via
+#    GKTW_PACKAGE.
 #
 # 5. No `|| true` on installs. A broken install must fail the build here
 #    instead of at runtime in front of your users.
@@ -72,11 +71,9 @@ RUN bash scripts/robust-install.sh .
 COPY mias/package.json mias/.npmrc* ./mias/
 RUN bash scripts/robust-install.sh mias
 
-# New Page bot deps — separate ESM package with its own node_modules.
-# Without this the "New Page" option in the deploy menu dies with
-# ERR_MODULE_NOT_FOUND on launch.
-COPY new-page/package.json new-page/.npmrc* ./new-page/
-RUN bash scripts/robust-install.sh new-page
+# NOTE: the old "new-page" bot workspace has been removed from this project.
+# Nothing below may reference it — a COPY of a deleted folder is a hard build
+# failure on Railway ("new-page/package.json not found").
 
 # Copy all source files last (node_modules are excluded via .dockerignore,
 # so the installs above survive this COPY).
@@ -86,7 +83,7 @@ COPY . .
 
 # Verify the sticker engine really works in every workspace. A build that
 # can't make a sticker should fail here, not silently disable the feature.
-RUN for d in . mias new-page; do \
+RUN for d in . mias; do \
       [ -d "/app/$d/node_modules/wa-sticker-formatter" ] || continue; \
       (cd "/app/$d" && node -e "\
         const {Sticker,StickerTypes}=require('wa-sticker-formatter');\

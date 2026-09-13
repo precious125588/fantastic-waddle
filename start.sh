@@ -17,14 +17,8 @@ if [ -d mias ] && [ ! -d mias/node_modules ]; then
   bash scripts/robust-install.sh mias
 fi
 
-# ── Install New Page dependencies ────────────────────────────────────────────
-if [ -d new-page ] && [ ! -d new-page/node_modules ]; then
-  echo "[MAIS] Installing New Page bot dependencies..."
-  bash scripts/robust-install.sh new-page
-fi
-
 # ── Sticker engine self-check (non-fatal, just tells you the truth) ──────────
-for d in mias new-page; do
+for d in mias; do
   [ -d "$d/node_modules/wa-sticker-formatter" ] || continue
   (cd "$d" && node -e "const s=require('sharp');require('wa-sticker-formatter');console.log('[MAIS] $d sticker engine OK (sharp '+s.versions.sharp+')')") \
     || echo "[MAIS] WARN: $d sticker engine unavailable"
@@ -32,11 +26,11 @@ done
 
 # ── GKTW helper ──────────────────────────────────────────────────────────────
 # @itsreimau/gktw does not exist on npm and its GitHub repo is 404, so there is
-# nothing to install. Both bots run on raw Baileys through their adapters.
-# If you ever get a real helper package, set GKTW_PACKAGE=<name> and install it
-# into mias/ and/or new-page/ — the adapters pick it up with zero code changes.
+# nothing to install. MIAS runs on raw Baileys through its adapter.
+# If you ever get a real helper package, set GKTW_PACKAGE=<name> and it will be
+# installed into mias/ with zero code changes.
 if [ -n "$GKTW_PACKAGE" ]; then
-  for d in mias new-page; do
+  for d in mias; do
     [ -d "$d" ] || continue
     echo "[MAIS] Installing helper $GKTW_PACKAGE into $d..."
     (cd "$d" && npm install "$GKTW_PACKAGE" --no-audit --no-fund --save-optional) \

@@ -11,8 +11,9 @@
 #  • installs run WITH scripts so sharp downloads its prebuilt linux-x64 binary.
 #  • package.json `overrides` pin wa-sticker-formatter -> sharp ^0.35.3, so
 #    there is a single sharp copy and no source build.
-#  • no gktw steps: @itsreimau/gktw does not exist on npm (404) and both bots
-#    fall back to raw Baileys.
+#  • no gktw steps: @itsreimau/gktw does not exist on npm (404); MIAS falls
+#    back to raw Baileys.
+#  • the removed "new-page" workspace must never be referenced here again.
 
 [phases.setup]
 nixPkgs = [
@@ -40,9 +41,7 @@ cmds = [
 dependsOn = ["install"]
 cmds = [
   "bash scripts/robust-install.sh mias",
-  "bash scripts/robust-install.sh new-page",
-  "cd mias && node -e \"const s=require('sharp');require('wa-sticker-formatter');console.log('[nixpacks] mias sticker engine OK, sharp '+s.versions.sharp)\"",
-  "cd new-page && node -e \"const s=require('sharp');require('wa-sticker-formatter');console.log('[nixpacks] new-page sticker engine OK, sharp '+s.versions.sharp)\""
+  "cd mias && node -e \"const s=require('sharp');require('wa-sticker-formatter');console.log('[nixpacks] mias sticker engine OK, sharp '+s.versions.sharp)\""
 ]
 
 [start]

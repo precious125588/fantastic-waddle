@@ -1,6 +1,5 @@
 node_modules
 mias/node_modules
-new-page/node_modules
 artifacts/*/node_modules
 **/package-lock.json
 nexstore
