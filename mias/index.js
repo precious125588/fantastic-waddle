@@ -4652,6 +4652,22 @@ async function sendNativeFlowButtons(sock, jid, quoted, bodyText, buttons, foote
 }
 async function sendNativeFlowListMenu(sock, jid, quoted, bodyText, sections, quickButtons = [], footer = `${CONFIG.BOT_NAME} • v${CONFIG.VERSION}`, opts = {}) {
   if (!generateWAMessageFromContent || !proto) throw new Error("native flow unavailable");
+  // FIX v18.2: "Open Categories" native button did nothing because the
+  // single_select row IDs were returned as raw paramsJSON, never as a
+  // typed reply. Normalize row IDs with a BTN: prefix so the click flows
+  // through _extractButtonCommand → __miasHandleBareNumberReply.
+  if (Array.isArray(sections)) {
+    sections = sections.map((sec) => {
+      const _rows = Array.isArray(sec.rows) ? sec.rows.map((r) => {
+        if (typeof r === "string") return r;
+        const _c = { ...r };
+        if (_c.id && !String(_c.id).startsWith("BTN:")) _c.id = `BTN:${_c.id}`;
+        if (_c.rowId && !String(_c.rowId).startsWith("BTN:")) _c.rowId = `BTN:${_c.rowId}`;
+        return _c;
+      }) : sec.rows;
+      return { ...sec, rows: _rows };
+    });
+  }
   const nativeButtons = [];
   if (Array.isArray(sections) && sections.length) {
     nativeButtons.push({
@@ -7929,6 +7945,19 @@ function normalizeSettingsChoice(value) {
 async function handleSettingsNumericReply(sock, msg, body) {
   const jid = msg?.key?.remoteJid;
   const session = jid ? settingsSession.get(jid) : null;
+  // FIX v18.2: when the user QUOTES the settings menu and replies with a
+  // number, getBody() may miss the digits. Scan extendedTextMessage and
+  // matchedText for a numeric choice and substitute it as the body.
+  try {
+    const _extSrc = String(msg?.message?.extendedTextMessage?.text || "")
+      + " " + String(msg?.message?.conversation || "")
+      + " " + String(msg?.message?.extendedTextMessage?.contextInfo?.matchedText || "");
+    const _m = _extSrc.match(/\b(\d{1,2})\s*[.\s]\s*(\d)\b|\b(\d{1,2}\.\d{1,2})\b|\b(0)\b/);
+    const _isPureChoice = !!(body && /^\d{1,2}(\.\d{1,2})?$|^0$/.test(String(body || "").trim()));
+    if (_m && !_isPureChoice) {
+      body = String(_m[0]).trim().replace(/^[`*_~]+|[`*_~]+$/g, "").replace(/^\.+/, "").trim();
+    }
+  } catch {}
   // FIX (settings panel goes silent when quoted):
   //   The previous body extractor only considered the clean conversation
   //   text. When the user QUOTED the settings menu reply and typed "6.1",
@@ -10335,50 +10364,6 @@ async function sendAnimeGif(sock, msg, type) {
   await sendReply(sock, msg, `🎌 *${type.toUpperCase()}*\n\n_(Could not load — all APIs failed, try again!)_`);
 }
 cmd("anime", { desc: "Random anime image", category: "ANIME" }, async (s, m) => sendAnimeGif(s, m, "neko"));
-cmd(["dms"], { desc: "Demon Slayer anime info and artwork", category: "ANIME" }, async (sock, msg) => {
-  await react(sock, msg, "⚔️");
-  try {
-    const { data } = await axios.get(
-      "https://api.jikan.moe/v4/anime?q=Demon%20Slayer&limit=5",
-      { timeout: 12000 },
-    );
-    const anime = (data?.data || []).find((item) =>
-      /kimetsu no yaiba|demon slayer/i.test(`${item?.title || ""} ${item?.title_english || ""}`),
-    ) || data?.data?.[0];
-    if (!anime) throw new Error("No Demon Slayer result");
-    const title = anime.title || anime.title_english || "Demon Slayer";
-    const imageUrl = anime.images?.jpg?.large_image_url || anime.images?.jpg?.image_url;
-    const caption =
-      `⚔️ *${title}*\n\n` +
-      `📺 Episodes: ${anime.episodes || "?"}\n` +
-      `⭐ Score: ${anime.score || "N/A"}\n` +
-      `📌 Status: ${anime.status || "Unknown"}\n\n` +
-      `${String(anime.synopsis || "Demon Slayer anime information.").slice(0, 700)}`;
-    if (imageUrl) {
-      const image = Buffer.from((await axios.get(imageUrl, {
-        responseType: "arraybuffer",
-        timeout: 12000,
-      })).data);
-      await sock.sendMessage(msg.key.remoteJid, { image, caption }, { quoted: msg });
-    } else {
-      await sendReply(sock, msg, caption);
-    }
-    await react(sock, msg, "✅");
-  } catch {
-    await sendReply(sock, msg, "⚔️ *Demon Slayer*\n\nCould not load the artwork right now. Try `.dms` again shortly.");
-    await react(sock, msg, "❌");
-  }
-});
-cmd(["animequote", "aniquote"], { desc: "Random anime quote", category: "ANIME" }, async (sock, msg) => {
-  await react(sock, msg, "✨");
-  try {
-    const { data } = await axios.get("https://animechan.io/api/v1/quotes/random", { timeout: 8000 });
-    const q = data?.data || data;
-    await sendReply(sock, msg, `📖 *Anime Quote*\n\n"${q.content || q.quote}"\n\n— *${q.character?.name || q.character}* from *${q.anime?.title || q.anime}*`);
-  } catch {
-    await sendReply(sock, msg, `✨ *Anime Quote*\n\n"Believe in yourself. Not in the you who believes in me. Not the me who believes in you. Believe in the you who believes in yourself."\n\n— *Kamina* from *Gurren Lagann*`);
-  }
-});
 cmd("waifu",    { desc: "Random waifu", category: "ANIME" }, async (s, m) => sendAnimeGif(s, m, "waifu"));
 cmd("neko",     { desc: "Random neko", category: "ANIME" }, async (s, m) => sendAnimeGif(s, m, "neko"));
 cmd("foxxgirl", { desc: "Random fox girl", category: "ANIME" }, async (s, m) => sendAnimeGif(s, m, "kitsune"));
@@ -17837,7 +17822,9 @@ cmd(["tiktok","tt","ttdl"], { desc: "Download TikTok video/audio — supports: .
     const _ttMode = _ttOptionIndex >= 0 ? String(args[_ttOptionIndex]).toLowerCase() : "";
     if (_ttOptionIndex >= 0) args.splice(_ttOptionIndex, 1);
     if (!args[0]) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}tiktok <url> [audio|sticker]\nor reply to a message with the link and send ${CONFIG.PREFIX}tiktok\nor bulk: ${CONFIG.PREFIX}tiktok url1,url2,url3 sticker`); return; }
-    await react(sock, msg, "🌀");
+    // FIX v18.2: react() honors owner.autoReact toggle and goes silent when
+    // OFF; forceReaction ignores the toggle so the user always sees 🌀.
+    await forceReaction(sock, msg, "🌀");
     const jid = msg.key.remoteJid;
     // ── Multi-URL batch download ─────────────────────────────────────────────
     const _rawTt = args.join(" ").trim();
@@ -21699,17 +21686,41 @@ cmd(["pick", "p"], { desc: "Pick randomly from options (A|B|C) OR download adult
           caption: ttCaption,
         }, { quoted: msg });
       } else {
-        // FIX (1.7 HD Video Note drops as plain video):
-        //   Baileys needs `ptv: true` to mark a video payload as a "video note"
-        //   (the round PIP bubble). The previous code set a nonexistent
-        //   `payload.videoNote = true`, so WhatsApp rendered it as a regular
-        //   video. Switch to `ptv: true` and remove the duplicate failed-videonote
-        //   rescue because it is no longer needed.
+        // FIX v18.2: 1.7 PTV send throws silently on older Baileys /
+        // oversized quoted payloads with NO catch in the previous version.
+        // Picker stays alive, no ✅ reaction, user thinks bot is hung until
+        // restart. Cascade: PTV → video → document and always free+react.
         if (ttMode.kind === "video" && ttMode.videoNote) {
-          await sock.sendMessage(jid, {
-            video: media, ptv: true, mimetype: "video/mp4", caption: ttCaption, gifPlayback: false,
-          }, { quoted: msg });
-        } else {
+          let _ptvOk = false;
+          try {
+            await sock.sendMessage(jid, {
+              video: media, ptv: true, mimetype: "video/mp4", caption: ttCaption, gifPlayback: false,
+            }, { quoted: msg });
+            _ptvOk = true;
+          } catch (_ptvErr) {
+            try {
+              await sock.sendMessage(jid, {
+                video: media, mimetype: "video/mp4",
+                caption: `${ttCaption}\n📎 (video-note failed — sent as video)`,
+              }, { quoted: msg });
+              _ptvOk = true;
+            } catch (_vidErr) {
+              await sock.sendMessage(jid, {
+                document: media, mimetype: "video/mp4",
+                fileName: "tiktok_video_note.mp4",
+                caption: `${ttCaption}\n📎 (client rejected round note — sent as file)`,
+              }, { quoted: msg });
+              _ptvOk = true;
+            }
+          }
+          __ttForgetSelection(jid);
+          await updateTtStatus(_ptvOk
+            ? `✅ *Here is your ${ttChoiceLabel}* (${ttMode.id}).`
+            : `❌ ${ttChoiceLabel} could not be uploaded (${ttMode.id}).`);
+          await forceReaction(sock, msg, _ptvOk ? "✅" : "❌");
+          return;
+        }
+        if (ttMode.kind === "video" && !ttMode.videoNote) {
           const payload = { video: media, mimetype: "video/mp4", caption: ttCaption };
           try {
             await sock.sendMessage(jid, payload, { quoted: msg });
@@ -23453,65 +23464,6 @@ cmd(["imggen","aigfx","stylegen"], { desc: "AI image generation — .imggen <sty
 });
 
 // .animesearch — search for anime
-cmd(["animesearch","animes","animefind"], { desc: "Search for anime — .animesearch <title>", category: "ANIME" }, async (sock, msg, args) => {
-  const query = args.join(" ");
-  if (!query) { await sendReply(sock, msg, `Usage: *${CONFIG.PREFIX}animesearch <anime title>*`); return; }
-  await react(sock, msg, "🎌");
-  // Try multiple sources with fallback
-  let list = null;
-  const _animeSearchProviders = [
-    async () => {
-      const r = await prexzyGet("/anime/animesearch", { query }, 20000);
-      if (!r.ok) return null;
-      const d = r.data;
-      return d?.data || d?.result || d?.results || d?.anime || (Array.isArray(d) ? d : null);
-    },
-    async () => {
-      const { data } = await axios.get(`https://api.jikan.moe/v4/anime?q=${encodeURIComponent(query)}&limit=5`, { timeout: 15000 });
-      return data?.data || null;
-    },
-    async () => {
-      const { data } = await axios.get(`https://api.siputzx.my.id/api/anime/search?q=${encodeURIComponent(query)}`, { timeout: 15000 });
-      return data?.data || data?.result || (Array.isArray(data) ? data : null);
-    },
-    async () => {
-      const { data } = await axios.get(`https://api.nexoracle.com/anime/search?apikey=free_key@maher_apis&query=${encodeURIComponent(query)}`, { timeout: 15000 });
-      return data?.data || data?.results || (Array.isArray(data) ? data : null);
-    },
-  ];
-  for (const fn of _animeSearchProviders) {
-    try { list = await fn(); if (Array.isArray(list) && list.length) break; } catch {}
-  }
-  if (!Array.isArray(list) || !list.length) { await sendReply(sock, msg, `❌ No anime found for "*${query}*".`); return; }
-  const top = list.slice(0, 5);
-  let out = `🎌 *Anime Search — "${query}"*\n\n`;
-  for (const [i, a] of top.entries()) {
-    const title = a.title || a.name || a.anime_title || a.title_english || a.title_romaji || "Unknown";
-    const ep = a.episodes || a.eps || a.episode_count || "";
-    const score = a.score || a.rating || a.mean || "";
-    const status = a.status || a.airing_status || "";
-    const type = a.type || a.media_type || "";
-    out += `*${i + 1}. ${title}*\n`;
-    if (type) out += `   🏷️ Type: ${type}\n`;
-    if (ep) out += `   📺 Episodes: ${ep}\n`;
-    if (score) out += `   ⭐ Score: ${score}\n`;
-    if (status) out += `   📌 ${status}\n`;
-    out += "\n";
-  }
-  out += ``;
-  await sendReply(sock, msg, out);
-  await react(sock, msg, "✅");
-  try {
-    await sendNativeFlowButtons(sock, msg.key.remoteJid, msg,
-      `🎌 *${top.length} anime result(s) for "${query}"*`,
-      [
-        { text: "🔄 Search Again",   id: `${CONFIG.PREFIX}animesearch ` },
-        { text: "📅 Anime Schedule", id: `${CONFIG.PREFIX}animeschedule` },
-      ],
-      `${CONFIG.BOT_NAME} • Anime`
-    );
-  } catch {}
-});
 
 // .manga — search manga
 cmd(["manga","mangasearch","mangafind"], { desc: "Search for manga — .manga <title>", category: "ANIME" }, async (sock, msg, args) => {
@@ -23736,103 +23688,10 @@ for (const [_pCmd, _pInfo] of Object.entries(PREXZY_NSFW_MAP)) {
 // ─────────────────────────────────────────────────────────────────────────────
 // XNXX SEARCH via prexzyvilla
 // ─────────────────────────────────────────────────────────────────────────────
-cmd(["xnxxsearch","xsearch2","xsrch"], { desc: "Search XNXX — .xnxxsearch <query>", category: "HENTAI", adult: true }, async (sock, msg, args) => {
-  const _xs = getSettings(msg.key.remoteJid);
-  if (!_xs.adultMode) { await sendReply(sock, msg, `🔞 Adult mode is OFF.\nEnable with: *${CONFIG.PREFIX}setting*`); return; }
-  if (!args.length) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}xnxxsearch <query>`); return; }
-  await react(sock, msg, "🔞");
-  // Primary: prexzyvilla XNXX search
-  let r = await prexzyGet("/nsfw/xnxx-search", { query: args.join(" ") }, 30000);
-  let d = r.data;
-  let list = d?.videos || d?.data || d?.result || d?.results || (Array.isArray(d) ? d : null);
-  // v-fix FALLBACK: if prexzyvilla fails, try DavidCyril XNXX API
-  if (!r.ok || !list?.length) {
-    try {
-      const _dcR = await dcGet("/xxx/xnxx", { query: args.join(" ") }, 30000);
-      if (_dcR?.ok && _dcR?.data) {
-        d = _dcR.data;
-        list = d?.videos || d?.data || d?.result || d?.results || (Array.isArray(d) ? d : null);
-        if (list?.length) r = { ok: true, data: d };
-      }
-    } catch (_dcErr) {}
-  }
-  // Second fallback: axios direct to xnxx-unofficial API
-  if (!r.ok || !list?.length) {
-    try {
-      const _xnR = await axios.get(`https://api.dicedeveloper.com.ng/xnxx?q=${encodeURIComponent(args.join(" "))}`, { timeout: 20000 });
-      const _xnD = _xnR?.data;
-      list = _xnD?.videos || _xnD?.results || _xnD?.data || (Array.isArray(_xnD) ? _xnD : null);
-      if (list?.length) r = { ok: true };
-    } catch (_xnErr) {}
-  }
-  if (!r.ok || !list?.length) { await sendReply(sock, msg, `🔞 No results found for: _${args.join(" ")}_`); return; }
-  let out = `🔞 *XNXX Search — "${args.join(" ")}"*\n\n`;
-  list.slice(0, 5).forEach((item, i) => {
-    out += `*${i + 1}.* ${item.title || item.name || "Unknown"}\n`;
-    if (item.link || item.url) out += `   🔗 ${item.link || item.url}\n`;
-    if (item.duration) out += `   ⏱ ${item.duration}\n`;
-    if (item.views) out += `   👁 ${item.views}\n`;
-    out += "\n";
-  });
-  // Store for .pick N
-  const _xnxxItems = list.slice(0, 5).map(item => ({
-    title: item.title || item.name || "Unknown",
-    url: item.link || item.url || "",
-    duration: item.duration || "",
-    views: item.views || "",
-    thumb: item.thumbnail || item.thumb || "",
-  }));
-  _lastAdultResults.set(msg.key.remoteJid, { site: "xnxx", label: "XNXX", items: _xnxxItems, ts: Date.now() });
-  // Show results as tap-to-pick buttons (up to 5 results)
-  const _xnxxBtns = _xnxxItems.map((item, i) => ({
-    text: `🔞 ${i + 1}. ${(item.title || "Unknown").slice(0, 48)}${item.duration ? `  ⏱${item.duration}` : ""}`,
-    id: `${CONFIG.PREFIX}pick ${i + 1}`,
-  }));
-  const _xnxxPreview = `🔞 *XNXX Search — "${args.join(" ")}"*\n\n` + _xnxxItems.map((item, i) => `*${i + 1}.* ${(item.title || "Unknown").slice(0, 55)}\n   ${item.duration ? `⏱ ${item.duration}` : ""}${item.views ? `  👁 ${item.views}` : ""}`).join("\n\n") + `\n\n_Tap a button to download that video_`;
-  try { await sendNativeFlowButtons(sock, msg.key.remoteJid, msg, _xnxxPreview, _xnxxBtns, `${CONFIG.BOT_NAME} • XNXX Results`); }
-  catch { await sendReply(sock, msg, out + `\n\n_Reply *${CONFIG.PREFIX}pick N* to download a result_`); }
-  await react(sock, msg, "✅");
-});
 
 // ─────────────────────────────────────────────────────────────────────────────
 // XVIDEOS SEARCH via prexzyvilla
 // ─────────────────────────────────────────────────────────────────────────────
-cmd(["xvideossearch","xvsearch","xvs"], { desc: "Search XVideos — .xvideossearch <query>", category: "HENTAI", adult: true }, async (sock, msg, args) => {
-  const _xvs = getSettings(msg.key.remoteJid);
-  if (!_xvs.adultMode) { await sendReply(sock, msg, `🔞 Adult mode is OFF.\nEnable with: *${CONFIG.PREFIX}setting*`); return; }
-  if (!args.length) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}xvideossearch <query>`); return; }
-  await react(sock, msg, "🔞");
-  const r = await prexzyGet("/nsfw/xvideos-search", { query: args.join(" ") }, 30000);
-  const d = r.data;
-  const list = d?.videos || d?.data || d?.result || d?.results || (Array.isArray(d) ? d : null);
-  if (!r.ok || !list?.length) { await sendReply(sock, msg, `🔞 No results found for: _${args.join(" ")}_`); return; }
-  let out = `🔞 *XVideos Search — "${args.join(" ")}"*\n\n`;
-  list.slice(0, 5).forEach((item, i) => {
-    out += `*${i + 1}.* ${item.title || item.name || "Unknown"}\n`;
-    if (item.link || item.url) out += `   🔗 ${item.link || item.url}\n`;
-    if (item.duration) out += `   ⏱ ${item.duration}\n`;
-    if (item.views) out += `   👁 ${item.views}\n`;
-    out += "\n";
-  });
-  // Store results so .pick N works
-  const _xvItems = list.slice(0, 5).map(item => ({
-    title: item.title || item.name || "Unknown",
-    url: item.link || item.url || "",
-    duration: item.duration || "",
-    views: item.views || "",
-    thumb: item.thumbnail || item.thumb || "",
-  }));
-  _lastAdultResults.set(msg.key.remoteJid, { site: "xvideos", label: "XVideos", items: _xvItems, ts: Date.now() });
-  // Show results as tap-to-pick buttons (up to 5 results)
-  const _xvBtns = _xvItems.map((item, i) => ({
-    text: `🔞 ${i + 1}. ${(item.title || "Unknown").slice(0, 48)}${item.duration ? `  ⏱${item.duration}` : ""}`,
-    id: `${CONFIG.PREFIX}pick ${i + 1}`,
-  }));
-  const _xvPreview = `🔞 *XVideos Search — "${args.join(" ")}"*\n\n` + _xvItems.map((item, i) => `*${i + 1}.* ${(item.title || "Unknown").slice(0, 55)}\n   ${item.duration ? `⏱ ${item.duration}` : ""}${item.views ? `  👁 ${item.views}` : ""}`).join("\n\n") + `\n\n_Tap a button to download that video_`;
-  try { await sendNativeFlowButtons(sock, msg.key.remoteJid, msg, _xvPreview, _xvBtns, `${CONFIG.BOT_NAME} • XVideos Results`); }
-  catch { await sendReply(sock, msg, out + `\n\n_Reply *${CONFIG.PREFIX}pick N* (e.g. ${CONFIG.PREFIX}pick 1) to download_`); }
-  await react(sock, msg, "✅");
-});
 
 // ═══════════════════════════════════════════════════════════════════════════
 // PREXZYVILLA — STALK COMMANDS
@@ -25331,106 +25190,14 @@ cmd(["rednote","xiaohongshu","xhs","rndl"], { desc: "Download RedNote/Xiaohongsh
 // ──────────────────────────────────────────────────────
 
 // ── AnimeKill Home ────────────────────────────────────────────────
-cmd(["animekill","akill","animehome"], { desc: "Browse latest anime (AnimKill) — .animekill", category: "ANIME" }, async (sock, msg, args) => {
-  await react(sock, msg, "🎌");
-  const page = parseInt(args[0]) || 1;
-  const r = await prexzyGet("/anime/animekill-home", { page }, 25000);
-  const d = r.data;
-  const list = d?.data || d?.results || d?.anime || [];
-  if (!r.ok || !Array.isArray(list) || !list.length) { await sendReply(sock, msg, `❌ Could not load anime list.`); return; }
-  let text = `🎌 *Latest Anime — Page ${page}*\n\n`;
-  list.slice(0, 15).forEach((a, i) => {
-    const t = a?.title || a?.name || a?.judul || "Unknown";
-    const ep = a?.episode || a?.eps || "";
-    const status = a?.status || a?.genre || "";
-    text += `${i+1}. *${t}*${ep ? ` — Ep ${ep}` : ""}${status ? ` [${status}]` : ""}\n`;
-  });
-  text += `\n📖 Use *.akdetail <title>* for details`;
-  await sendReply(sock, msg, text);
-  await react(sock, msg, "✅");
-});
 
 // ── AnimeKill Search ──────────────────────────────────────────────
-cmd(["aksearch","animekillsearch","anisearch2"], { desc: "Search anime (AnimKill) — .aksearch <title>", category: "ANIME" }, async (sock, msg, args) => {
-  const query = args.join(" ");
-  if (!query) { await sendReply(sock, msg, `Usage: *${CONFIG.PREFIX}aksearch <anime title>*`); return; }
-  await react(sock, msg, "🔍");
-  const r = await prexzyGet("/anime/animekill-search", { query }, 25000);
-  const d = r.data;
-  const list = d?.data || d?.results || d?.anime || [];
-  if (!r.ok || !Array.isArray(list) || !list.length) { await sendReply(sock, msg, `❌ No anime found for: *${query}*`); return; }
-  let text = `🔍 *Anime Search: ${query}*\n\n`;
-  list.slice(0, 10).forEach((a, i) => {
-    const t = a?.title || a?.name || a?.judul || "Unknown";
-    const ep = a?.episode || a?.eps || "";
-    const status = a?.status || "";
-    text += `${i+1}. *${t}*${ep ? ` — Ep ${ep}` : ""}${status ? ` (${status})` : ""}\n`;
-  });
-  text += ``;
-  await sendReply(sock, msg, text);
-  await react(sock, msg, "✅");
-});
 
 // ── AnimeKill Recent ──────────────────────────────────────────────
-cmd(["akrecent","animekillrecent","animerecent"], { desc: "Recent anime episodes (AnimKill) — .akrecent", category: "ANIME" }, async (sock, msg, args) => {
-  await react(sock, msg, "🎌");
-  const r = await prexzyGet("/anime/animekill-recent", {}, 25000);
-  const d = r.data;
-  const list = d?.data || d?.results || d?.episodes || d?.anime || [];
-  if (!r.ok || !Array.isArray(list) || !list.length) { await sendReply(sock, msg, `❌ Could not fetch recent episodes.`); return; }
-  let text = `🎌 *Recent Anime Episodes*\n\n`;
-  list.slice(0, 15).forEach((a, i) => {
-    const t = a?.title || a?.name || a?.judul || "Unknown";
-    const ep = a?.episode || a?.eps || "";
-    text += `${i+1}. *${t}*${ep ? ` — Ep ${ep}` : ""}\n`;
-  });
-  text += ``;
-  await sendReply(sock, msg, text);
-});
 
 // ── Hanime Search (NSFW) ─────────────────────────────────────────
-cmd(["hanime","hanimesearch","hsearch"], { desc: "Search Hanime (18+) — .hanime <query>", category: "HENTAI", adult: true }, async (sock, msg, args) => {
-  const query = args.join(" ");
-  if (!query) { await sendReply(sock, msg, `Usage: *${CONFIG.PREFIX}hanime <query>*`); return; }
-  await react(sock, msg, "🔞");
-  const r = await prexzyGet("/anime/hanime-search", { query }, 25000);
-  const d = r.data;
-  const list = d?.data || d?.results || d?.videos || [];
-  if (!r.ok || !Array.isArray(list) || !list.length) { await sendReply(sock, msg, `❌ No results found for: *${query}*`); return; }
-  let text = `🔞 *Hanime Search: ${query}*\n\n`;
-  list.slice(0, 8).forEach((v, i) => {
-    const t = v?.title || v?.name || "Unknown";
-    const views = v?.views || v?.view_count || "";
-    const likes = v?.likes || v?.like_count || "";
-    text += `${i+1}. *${t}*${views ? `\n   👁 ${views}` : ""}${likes ? ` ❤️ ${likes}` : ""}\n\n`;
-  });
-  text += ``;
-  await sendReply(sock, msg, text);
-  await react(sock, msg, "✅");
-});
 
 // ── Rule34 Search (NSFW) ──────────────────────────────────────────
-cmd(["rule34","r34","rule34search"], { desc: "Search Rule34 images (18+) — .rule34 <tags>", category: "HENTAI", adult: true }, async (sock, msg, args) => {
-  const tags = args.join(" ");
-  if (!tags) { await sendReply(sock, msg, `Usage: *${CONFIG.PREFIX}rule34 <tags>*\nExample: *.rule34 naruto*`); return; }
-  await react(sock, msg, "🔞");
-  const r = await prexzyGet("/anime/rule34", { tags }, 25000);
-  const d = r.data;
-  const results = d?.data || d?.posts || d?.results || [];
-  if (!r.ok || !Array.isArray(results) || !results.length) { await sendReply(sock, msg, `❌ No Rule34 results for: *${tags}*`); return; }
-  const item = results[Math.floor(Math.random() * Math.min(results.length, 5))];
-  const imgUrl = item?.file_url || item?.url || item?.image || item?.sample_url;
-  if (!imgUrl) { await sendReply(sock, msg, `❌ No image URL found.`); return; }
-  const buf = Buffer.from((await axios.get(imgUrl, { responseType: "arraybuffer", timeout: 30000 })).data);
-  await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: `🔞 *Rule34* — ${tags}` }, { quoted: msg });
-  await react(sock, msg, "✅");
-
-  // ── FALLBACK ENDPOINTS (merged from duplicate cmd registrations) ──
-  // fallback prexzy: prexzyGet('/anime/rule34-home', args)
-  // fallback prexzy: prexzyGet('/anime/rule34-detail', args)
-  // fallback prexzy: prexzyGet('/download/doods', args)
-  // fallback URL: https://pin.it/xxxxx`);
-});
 
 // ── Webnovel Search ───────────────────────────────────────────────
 cmd(["webnovel","wnsearch","novelonline"], { desc: "Search webnovel — .webnovel <title>", category: "ANIME" }, async (sock, msg, args) => {
@@ -26737,160 +26504,13 @@ cmd(["aiwritermodels","writermodels","aimodels"], { desc: "List AI Writer availa
 // ANIME EXTENDED — NEW ENDPOINTS
 // ═══════════════════════════════════════════════════════════════════════════
 
-cmd(["akdetail","animedetailak","akinfo"], { desc: "Anime detail by ID — .akdetail <anime_id>", category: "ANIME" }, async (sock, msg, args) => {
-  const anime_id = args.join(" ");
-  if (!anime_id) { await sendReply(sock, msg, `Usage: *${CONFIG.PREFIX}akdetail <anime_id>*\nGet anime_id from .aksearch`); return; }
-  await react(sock, msg, "📺");
-  const r = await prexzyGet("/anime/animekill-detail", { anime_id });
-  if (!r.ok) { await sendReply(sock, msg, `❌ Could not fetch anime details.`); return; }
-  const d = r.data?.data || r.data;
-  if (!d) { await sendReply(sock, msg, `❌ No data found.`); return; }
-  let out = `📺 *${d.title || d.name || anime_id}*\n\n`;
-  if (d.synopsis || d.description) out += `📝 ${(d.synopsis || d.description)?.slice(0, 300)}...\n\n`;
-  if (d.genre || d.genres) out += `🎭 Genre: ${Array.isArray(d.genres) ? d.genres.join(", ") : (d.genre || d.genres)}\n`;
-  if (d.status) out += `📊 Status: ${d.status}\n`;
-  if (d.rating) out += `⭐ Rating: ${d.rating}\n`;
-  if (d.episodes) out += `🎬 Episodes: ${d.episodes}\n`;
-  out += ``;
-  const thumbnail = d.image || d.poster || d.thumbnail;
-  if (thumbnail) {
-    try {
-      const buf = Buffer.from((await axios.get(thumbnail, { responseType: "arraybuffer", timeout: 15000 })).data);
-      await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: out }, { quoted: msg });
-    } catch { await sendReply(sock, msg, out); }
-  } else await sendReply(sock, msg, out);
-  await react(sock, msg, "✅");
-});
 
-cmd(["akepisodes","animeepisodes","animeeps"], { desc: "Get anime episodes — .akepisodes <anime_id>", category: "ANIME" }, async (sock, msg, args) => {
-  const anime_id = args[0]; const order = args[1];
-  if (!anime_id) { await sendReply(sock, msg, `Usage: *${CONFIG.PREFIX}akepisodes <anime_id> [asc|desc]*`); return; }
-  await react(sock, msg, "🎬");
-  const r = await prexzyGet("/anime/animekill-episodes", { anime_id, ...(order ? { order } : {}) });
-  if (!r.ok) { await sendReply(sock, msg, `❌ Could not fetch episodes.`); return; }
-  const list = r.data?.data || r.data?.episodes || r.data || [];
-  const eps = Array.isArray(list) ? list : [];
-  if (!eps.length) { await sendReply(sock, msg, `❌ No episodes found.`); return; }
-  let out = `🎬 *Episodes for ${anime_id}* (${eps.length} total)\n\n`;
-  eps.slice(0, 20).forEach((e, i) => {
-    const epNum = e.ep_num || e.episode || e.number || (i+1);
-    const title = e.title || e.name || `Episode ${epNum}`;
-    out += `${epNum}. ${title}\n`;
-  });
-  if (eps.length > 20) out += `\n...and ${eps.length - 20} more\n`;
-  out += `\n> Use *${CONFIG.PREFIX}akstream <anime_id> <ep_num>* to stream`;
-  await sendReply(sock, msg, out);
-  await react(sock, msg, "✅");
-});
 
-cmd(["akstream","animestream","streamanime"], { desc: "Anime stream URL — .akstream <anime_id> <ep_num>", category: "ANIME" }, async (sock, msg, args) => {
-  const anime_id = args[0], ep_num = args[1];
-  if (!anime_id || !ep_num) { await sendReply(sock, msg, `Usage: *${CONFIG.PREFIX}akstream <anime_id> <ep_num>*`); return; }
-  await react(sock, msg, "▶️");
-  const r = await prexzyGet("/anime/animekill-stream", { anime_id, ep_num });
-  if (!r.ok) { await sendReply(sock, msg, `❌ Could not get stream URL.`); return; }
-  const d = r.data?.data || r.data;
-  const streamUrl = d?.url || d?.stream_url || d?.link || (typeof d === "string" ? d : null);
-  if (!streamUrl) { await sendReply(sock, msg, `❌ No stream link found.`); return; }
-  let out = `▶️ *Anime Stream*\n\n🎬 Anime: ${anime_id}\n📺 Episode: ${ep_num}\n\n🔗 Stream URL:\n${streamUrl}`;
-  await sendReply(sock, msg, out);
-  await react(sock, msg, "✅");
-});
 
-cmd(["akcomments","animecomments"], { desc: "Anime comments — .akcomments <anime_id>", category: "ANIME" }, async (sock, msg, args) => {
-  const anime_id = args[0];
-  if (!anime_id) { await sendReply(sock, msg, `Usage: *${CONFIG.PREFIX}akcomments <anime_id>*`); return; }
-  await react(sock, msg, "💬");
-  const r = await prexzyGet("/anime/animekill-comments", { anime_id });
-  if (!r.ok) { await sendReply(sock, msg, `❌ Could not fetch comments.`); return; }
-  const list = r.data?.data || r.data?.comments || r.data || [];
-  const comments = Array.isArray(list) ? list.slice(0, 8) : [];
-  if (!comments.length) { await sendReply(sock, msg, `💬 No comments yet.`); return; }
-  let out = `💬 *Comments for ${anime_id}*\n\n`;
-  comments.forEach((c, i) => {
-    const user = c.user || c.username || c.name || "Anonymous";
-    const text = c.text || c.body || c.comment || "";
-    out += `${i+1}. *${user}*: ${text.slice(0, 100)}\n`;
-  });
-  out += ``;
-  await sendReply(sock, msg, out);
-  await react(sock, msg, "✅");
-});
 
-cmd(["animegenre","akgenre","bygenre"], { desc: "Anime by genre — .animegenre <genre>", category: "ANIME" }, async (sock, msg, args) => {
-  const genre = args.join(" ");
-  if (!genre) { await sendReply(sock, msg, `Usage: *${CONFIG.PREFIX}animegenre <genre>*\nExample: ${CONFIG.PREFIX}animegenre Action\nRun *${CONFIG.PREFIX}animegenres* to see all genres`); return; }
-  await react(sock, msg, "🎭");
-  const r = await prexzyGet("/anime/animekill-bygenre", { genre });
-  if (!r.ok) { await sendReply(sock, msg, `❌ Genre search failed.`); return; }
-  const list = r.data?.data || r.data?.anime || r.data || [];
-  const items = Array.isArray(list) ? list.slice(0, 10) : [];
-  if (!items.length) { await sendReply(sock, msg, `❌ No anime found for genre *${genre}*.`); return; }
-  let out = `🎭 *${genre} Anime*\n\n`;
-  items.forEach((a, i) => {
-    const title = a.title || a.name || `Anime ${i+1}`;
-    const id = a.anime_id || a.id || a.slug;
-    out += `${i+1}. *${title}*${id ? ` (ID: ${id})` : ""}\n`;
-  });
-  out += `\n> Use *${CONFIG.PREFIX}akdetail <id>* for details`;
-  await sendReply(sock, msg, out);
-  await react(sock, msg, "✅");
-});
 
-cmd(["animegenres","allgenres","akgenres"], { desc: "List all available anime genres", category: "ANIME" }, async (sock, msg) => {
-  await react(sock, msg, "📋");
-  const r = await prexzyGet("/anime/animekill-genres");
-  if (!r.ok) { await sendReply(sock, msg, `❌ Could not fetch genres.`); return; }
-  const list = r.data?.data || r.data?.genres || r.data || [];
-  const genres = Array.isArray(list) ? list : [];
-  let out = `📋 *Available Anime Genres*\n\n`;
-  genres.forEach((g, i) => { out += `${i+1}. ${typeof g === "object" ? (g.name || g.genre || g.label || JSON.stringify(g)) : g}\n`; });
-  out += `\n> Use *${CONFIG.PREFIX}animegenre <genre>* to browse`;
-  await sendReply(sock, msg, out);
-  await react(sock, msg, "✅");
-});
 
-cmd(["animeschedule","akschedule","weeklyanimeschedule"], { desc: "Weekly anime schedule", category: "ANIME" }, async (sock, msg) => {
-  await react(sock, msg, "📅");
-  const r = await prexzyGet("/anime/animekill-schedule");
-  if (!r.ok) { await sendReply(sock, msg, `❌ Could not fetch schedule.`); return; }
-  const d = r.data?.data || r.data?.schedule || r.data || {};
-  const days = Array.isArray(d) ? d : Object.entries(d);
-  let out = `📅 *Weekly Anime Schedule*\n\n`;
-  for (const entry of days.slice(0, 20)) {
-    if (Array.isArray(entry)) {
-      const [day, animes] = entry;
-      out += `*📆 ${day}*\n`;
-      if (Array.isArray(animes)) animes.slice(0, 5).forEach(a => { out += `  • ${a.title || a.name || a}\n`; });
-      out += "\n";
-    } else {
-      out += `• ${typeof entry === "object" ? (entry.title || entry.day || JSON.stringify(entry)) : entry}\n`;
-    }
-  }
-  out += ``;
-  await sendReply(sock, msg, out);
-  await react(sock, msg, "✅");
-});
 
-cmd(["hanimedetail","hanimeinfo"], { desc: "Hanime video detail — .hanimedetail <id>", category: "ANIME" }, async (sock, msg, args) => {
-  const id = args[0];
-  if (!id) { await sendReply(sock, msg, `Usage: *${CONFIG.PREFIX}hanimedetail <id>*\nGet id from .hanime search`); return; }
-  await react(sock, msg, "🔞");
-  const r = await prexzyGet("/anime/hanime-detail", { id });
-  if (!r.ok) { await sendReply(sock, msg, `❌ Could not fetch hanime detail.`); return; }
-  const d = r.data?.data || r.data;
-  let out = `🔞 *Hanime Detail*\n\n`;
-  out += `📛 *Title:* ${d?.title || d?.name || "N/A"}\n`;
-  if (d?.tags || d?.genres) out += `🏷️ *Tags:* ${Array.isArray(d.tags || d.genres) ? (d.tags || d.genres).join(", ") : (d.tags || d.genres)}\n`;
-  if (d?.views) out += `👁️ *Views:* ${d.views}\n`;
-  if (d?.duration) out += `⏱ *Duration:* ${d.duration}\n`;
-  if (d?.description) out += `\n📝 ${d.description.slice(0, 200)}...\n`;
-  const streams = d?.streams || d?.servers || d?.video_url;
-  if (streams) out += `\n🔗 Stream: ${typeof streams === "string" ? streams : JSON.stringify(streams).slice(0, 200)}\n`;
-  out += ``;
-  await sendReply(sock, msg, out);
-  await react(sock, msg, "✅");
-});
 
 cmd(["mangasuggestions","mangarec","mangasugg"], { desc: "Manga suggestions — .mangasuggestions [type]", category: "ANIME" }, async (sock, msg, args) => {
   const suggestion_type = args[0] || "";
@@ -27763,20 +27383,60 @@ Chat the seller directly for pricing, delivery, and setup help.`;
 // gstatus — Group Status (post inside a group as a status-style relay)
 // Adapted from owner-supplied case code into a registered cmd.
 // ─────────────────────────────────────────────────────────────────────────────
-cmd(["gst", "gstatus", "groupstatus"], { desc: "Post a group status (text/image/video/audio/sticker/doc) — reply to media or pass text", category: "GROUP" }, async (sock, msg, args) => {
+cmd(["gst", "gstatus", "groupstatus"], { desc: "Post to a group-status slot. .gst <jid|name> <text|media> targets a different group. Set GST_DEST_JID or CONFIG.GST_DEST_JID to default a target.", category: "GROUP" }, async (sock, msg, args) => {
   const m = msg;
   const devtrust = sock;
-  m.chat = m.key.remoteJid;
+  // FIX v18.2: m.chat was hard-pinned to m.key.remoteJid so the upload
+  // always went to the chat the user TYPED .gst in. Resolve in this order:
+  //   1) explicit ".gst <jid-or-name> <body>" first whitespace token,
+  //   2) CONFIG.GST_DEST_JID / process.env.GST_DEST_JID,
+  //   3) fall back to the chat the user typed in.
+  let m_chat = m.key.remoteJid;
   const reply = (t) => sendReply(sock, msg, t);
   const prefix = CONFIG.PREFIX;
-  const text = (args || []).join(" ").trim();
+  // FIX v18.2: parse first token as optional destination before text body.
+  const _gstRawArgs = (args || []).join(" ").trim();
+  let _textBody = _gstRawArgs;
+  const _gstResolveName = async (name) => {
+    try {
+      const _all = await sock.groupFetchAllParticipating().catch(() => ({}));
+      const _hit = Object.entries(_all).find(([, meta]) =>
+        String(meta && meta.subject || "").toLowerCase() === String(name || "").toLowerCase()
+      );
+      return _hit ? _hit[0] : null;
+    } catch { return null; }
+  };
+  if (_gstRawArgs) {
+    const _parts = _gstRawArgs.split(/\s+/);
+    if (_parts[0] && /^(send|post|put)$/i.test(_parts[0])) _parts.shift();
+    if (_parts[0]) {
+      const _cand = _parts[0];
+      const _isJid = _cand.includes("@g.us") || /vnd\.|lid:/i.test(_cand);
+      if (_isJid) { m_chat = _cand; _parts.shift(); }
+      else if (/^[\w .\-]{3,}$/.test(_cand)) {
+        const _res = await _gstResolveName(_cand);
+        if (_res) { m_chat = _res; _parts.shift(); }
+      }
+    }
+    _textBody = _parts.join(" ").trim() || _gstRawArgs;
+  }
+  if (m_chat === m.key.remoteJid && (CONFIG && CONFIG.GST_DEST_JID || process.env && process.env.GST_DEST_JID)) {
+    m_chat = (CONFIG && CONFIG.GST_DEST_JID) || process.env.GST_DEST_JID;
+  }
+  var text = _textBody;
+  m.chat = m_chat;
+  // FIX v18.2: react on the user's CURRENT chat so 🌀 always shows,
+  // regardless of the destination group.
+  try { await forceReaction(sock, msg, "🌀"); } catch {}
   const isGroup = String(m.key.remoteJid || "").endsWith("@g.us");
+  const isTargetGroup = String(m.chat || "").endsWith("@g.us");
 
   if (!isGroup) {
     return reply(`👥 *MIA'S MDX Group Status*\n\nThis command can only be used in groups.`);
   }
 
   try {
+    // (🌀 pre-reaction now sent above, before this try block.)
     await devtrust.sendMessage(m.key.remoteJid, { react: { text: '🌀', key: m.key } });
 
     // Helper: race a promise against a timeout to prevent infinite hangs
@@ -28865,20 +28525,6 @@ cmd(["dcpickupline","pickuplinedc"], { desc: "Random pickup line via DC — .dcp
   } catch(e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); }
 });
 
-cmd(["dcwaifu","waifudc"], { desc: "Random waifu image via DC — .dcwaifu", category: "FUN" }, async (sock, msg) => {
-  await react(sock, msg, "🌸");
-  const jid = msg.key.remoteJid;
-  try {
-    const r = await dcGet("/random/waifu", {}, 15000);
-    const d = r.data?.data || r.data?.result || r.data;
-    const imgUrl = d?.url || d?.image || d?.waifu || (typeof d === "string" && d.startsWith("http") ? d : null);
-    if (imgUrl) {
-      const buf = Buffer.from((await axios.get(imgUrl, { responseType: "arraybuffer", timeout: 20000 })).data);
-      await sock.sendMessage(jid, { image: buf, caption: `🌸 *Random Waifu (DC)*` }, { quoted: msg });
-      await react(sock, msg, "✅");
-    } else { await sendReply(sock, msg, `❌ No waifu image.`); }
-  } catch(e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); }
-});
 
 cmd(["dcbored","boreddc"], { desc: "Get a random boredom-buster activity via DC — .dcbored", category: "FUN" }, async (sock, msg) => {
   await react(sock, msg, "🎲");
@@ -28891,56 +28537,12 @@ cmd(["dcbored","boreddc"], { desc: "Get a random boredom-buster activity via DC 
   } catch(e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); }
 });
 
-cmd(["dcanquote","animequotedc"], { desc: "Random anime quote via DC — .dcanquote", category: "FUN" }, async (sock, msg) => {
-  await react(sock, msg, "⛩️");
-  try {
-    const r = await dcGet("/anime/quote", {}, 12000);
-    const d = r.data?.data || r.data?.result || r.data;
-    const q = d?.quote || d?.text || d?.content || (typeof d === "string" ? d : null);
-    const a = d?.character || d?.author || d?.anime || "";
-    if (q) await sendReply(sock, msg, `⛩️ *Anime Quote (DC)*\n\n_"${q}"_\n\n— ${a || "Unknown"}`);
-    else await sendReply(sock, msg, `❌ No anime quote.`);
-  } catch(e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); }
-});
 
 // ═══════════════════════════════════════════════════════════════════════════════
 //  BLOCK 7 — DAVIDCYRIL API — ANIME
 // ═══════════════════════════════════════════════════════════════════════════════
 
-cmd(["dcanisearch","animesearchdc"], { desc: "Search anime via DC — .dcanisearch <query>", category: "ANIME" }, async (sock, msg, args) => {
-  if (!args.length) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}dcanisearch <anime name>`); return; }
-  await react(sock, msg, "⛩️");
-  const q = args.join(" ");
-  const jid = msg.key.remoteJid;
-  try {
-    const r = await dcGet("/anime/search", { q, limit: 5 }, 18000);
-    const d = r.data?.data || r.data?.result || r.data;
-    const items = Array.isArray(d) ? d : (Array.isArray(d?.results) ? d.results : []);
-    if (!items.length) { await sendReply(sock, msg, `❌ No anime found for *${q}*.`); return; }
-    const lines = items.slice(0, 5).map((a, i) =>
-      `${i+1}. *${a.title || a.name || ""}* (${a.type || ""})\n   ⭐ ${a.score || a.rating || "N/A"} | 📅 ${a.year || a.aired || ""}`
-    ).join("\n\n");
-    await sendReply(sock, msg, `⛩️ *Anime Search (DC)*\n\n_${q}_\n\n${lines}`);
-    await react(sock, msg, "✅");
-  } catch(e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); }
-});
 
-cmd(["dcanitop","animetopdc"], { desc: "Top anime list via DC — .dcanitop [page]", category: "ANIME" }, async (sock, msg, args) => {
-  await react(sock, msg, "⭐");
-  const page = parseInt(args[0] || "1") || 1;
-  const jid = msg.key.remoteJid;
-  try {
-    const r = await dcGet("/anime/top", { page, limit: 10, filter: "bypopularity" }, 18000);
-    const d = r.data?.data || r.data?.result || r.data;
-    const items = Array.isArray(d) ? d : (Array.isArray(d?.results) ? d.results : []);
-    if (!items.length) { await sendReply(sock, msg, `❌ No results.`); return; }
-    const lines = items.slice(0, 10).map((a, i) =>
-      `${((page-1)*10)+i+1}. *${a.title || a.name || ""}* (${a.type || ""})\n   ⭐ ${a.score || a.rating || "N/A"}`
-    ).join("\n\n");
-    await sendReply(sock, msg, `⭐ *Top Anime (DC) — Page ${page}*\n\n${lines}`);
-    await react(sock, msg, "✅");
-  } catch(e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); }
-});
 
 // ═══════════════════════════════════════════════════════════════════════════════
 //  BLOCK 8 — DAVIDCYRIL API — IMAGE GENERATION / CANVAS
@@ -29646,127 +29248,18 @@ cmd(["dcgdrive","gdrivedc","dcdrivedownload"], { desc: "Download Google Drive fi
 });
 
 // ─── Anime: Info / Full Search ────────────────────────────────────────────────
-cmd(["dcaniinfo","aniidc","dcanifull"], { desc: "Get full anime info via DC — .dcaniinfo <title>", category: "ANIME" }, async (sock, msg, args) => {
-  if (!args.length) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}dcaniinfo <anime title>`); return; }
-  await react(sock, msg, "🎌");
-  const q = args.join(" ");
-  let data = null;
-  try { const r = await dcGet("/anime/otakudesu/search", { q }, 20000); if (r.ok) { const d = r.data?.data || r.data; data = Array.isArray(d) ? d[0] : (d?.results?.[0] || d); } } catch {}
-  if (!data) { try { const r = await dcGet("/anime/search", { q }, 20000); if (r.ok) { const d = r.data?.data || r.data; data = Array.isArray(d) ? d[0] : (d?.results?.[0] || d); } } catch {} }
-  if (!data) { try { const r = await prexzyGet("/anime/search", { q }, 20000); if (r.ok) { const d = r.data?.data || r.data; data = Array.isArray(d) ? d[0] : d; } } catch {} }
-  if (!data) { await sendReply(sock, msg, `❌ No anime found for: *${q}*`); return; }
-  const title = data?.title || data?.name || q;
-  const score = data?.score || data?.mal_score || "";
-  const episodes = data?.total_episodes || data?.episodes || "";
-  const status = data?.status || "";
-  const genres = Array.isArray(data?.genres) ? data.genres.map(g => g?.name || g).join(", ") : (data?.genres || "");
-  const synopsis = data?.synopsis || data?.description || data?.overview || "";
-  const thumb = data?.image_url || data?.thumbnail || data?.cover || data?.poster || null;
-  const text = `🎌 *${title}*\n${score ? `⭐ Score: ${score}\n` : ""}${episodes ? `📺 Episodes: ${episodes}\n` : ""}${status ? `📡 Status: ${status}\n` : ""}${genres ? `🎭 Genres: ${genres}\n` : ""}${synopsis ? `\n📝 ${synopsis.slice(0,400)}${synopsis.length > 400 ? "..." : ""}` : ""}`;
-  const jid = msg.key.remoteJid;
-  if (thumb) { try { const b = Buffer.from((await axios.get(thumb, { responseType: "arraybuffer", timeout: 15000 })).data); await sock.sendMessage(jid, { image: b, caption: text }, { quoted: msg }); } catch { await sendReply(sock, msg, text); } }
-  else { await sendReply(sock, msg, text); }
-  await react(sock, msg, "✅");
-});
 
 // ─── Anime: Characters ────────────────────────────────────────────────────────
-cmd(["dcanichar","anichardc","dcanicharacter"], { desc: "Get anime characters via DC — .dcanichar <MAL anime ID>", category: "ANIME" }, async (sock, msg, args) => {
-  if (!args[0]) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}dcanichar <MAL anime ID>\nExample: ${CONFIG.PREFIX}dcanichar 20`); return; }
-  await react(sock, msg, "👤");
-  const id = args[0];
-  let result = null;
-  try { const r = await dcGet("/anime/characters", { id }, 20000); if (r.ok) result = r.data?.data || r.data; } catch {}
-  if (!result || !Array.isArray(result) || !result.length) { await sendReply(sock, msg, `❌ No characters found for anime ID: *${id}*`); return; }
-  const chars = result.slice(0, 10);
-  const text = `👤 *Anime Characters (ID: ${id})*\n\n${chars.map((c, i) => `${i + 1}. ${c?.character?.name || c?.name || "Unknown"} — ${c?.role || ""}`).join("\n")}`;
-  await sendReply(sock, msg, text);
-  await react(sock, msg, "✅");
-});
 
 // ─── Anime: Episodes ─────────────────────────────────────────────────────────
-cmd(["dcaniepi","aniepidc","dcaniepisodes"], { desc: "Get anime episodes via DC — .dcaniepi <MAL anime ID>", category: "ANIME" }, async (sock, msg, args) => {
-  if (!args[0]) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}dcaniepi <MAL anime ID>\nExample: ${CONFIG.PREFIX}dcaniepi 20`); return; }
-  await react(sock, msg, "📺");
-  const id = args[0];
-  const page = args[1] || 1;
-  let result = null;
-  try { const r = await dcGet("/anime/episodes", { id, page }, 20000); if (r.ok) result = r.data?.data || r.data; } catch {}
-  if (!result || !Array.isArray(result) || !result.length) { await sendReply(sock, msg, `❌ No episodes found for anime ID: *${id}*`); return; }
-  const eps = result.slice(0, 15);
-  const text = `📺 *Episodes (ID: ${id}, page ${page})*\n\n${eps.map((e, i) => `${i + 1}. Ep ${e?.mal_id || e?.episode || i + 1}: ${e?.title || e?.name || "—"}`).join("\n")}`;
-  await sendReply(sock, msg, text);
-  await react(sock, msg, "✅");
-});
 
 // ─── Anime: Schedule ─────────────────────────────────────────────────────────
-cmd(["dcanischedule","anischeduledc","dcschedule"], { desc: "Get anime airing schedule via DC — .dcanischedule [day]", category: "ANIME" }, async (sock, msg, args) => {
-  await react(sock, msg, "📅");
-  const day = args[0] || "";
-  let result = null;
-  try { const r = await dcGet("/anime/schedule", day ? { day } : {}, 20000); if (r.ok) { const d = r.data?.data || r.data; result = Array.isArray(d) ? d : (d?.results || Object.values(d || {}).flat()); } } catch {}
-  if (!result) { try { const r = await prexzyGet("/anime/schedule", day ? { day } : {}, 20000); if (r.ok) { const d = r.data?.data || r.data; result = Array.isArray(d) ? d : []; } } catch {} }
-  if (!result || !result.length) { await sendReply(sock, msg, `❌ No schedule data found.`); return; }
-  const items = result.slice(0, 12);
-  const text = `📅 *Anime Schedule${day ? ` (${day})` : ""}*\n\n${items.map((a, i) => `${i + 1}. ${a?.title || a?.name || "Unknown"}${a?.time ? ` — ${a.time}` : ""}`).join("\n")}`;
-  await sendReply(sock, msg, text);
-  await react(sock, msg, "✅");
-});
 
 // ─── Anime: Trace Image ───────────────────────────────────────────────────────
-cmd(["dcanitrace","aniguesser","dctrace"], { desc: "Find anime scene from image via DC — reply/url", category: "ANIME" }, async (sock, msg, args) => {
-  await react(sock, msg, "🔍");
-  let imgUrl = args[0] && args[0].startsWith("http") ? args[0] : null;
-  if (!imgUrl) {
-    const q = msg.message?.imageMessage || msg.message?.extendedTextMessage?.contextInfo?.quotedMessage?.imageMessage;
-    if (q) {
-      try {
-        const m = await sock.downloadMediaMessage({ message: { imageMessage: q } });
-        const FormData = (await import("form-data")).default || require("form-data");
-        const fd = new FormData();
-        fd.append("file", m, { filename: "image.jpg", contentType: "image/jpeg" });
-         const upload = await dcRequest("/uploader/catbox", { method: "POST", body: fd, headers: fd.getHeaders(), timeout: 30000 });
-         imgUrl = upload.data?.url || upload.data?.data?.url;
-      } catch {}
-    }
-  }
-  if (!imgUrl) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}dcanitrace <image URL>\nOr reply to an anime screenshot`); return; }
-  let result = null;
-  try { const r = await dcGet("/anime/trace", { url: imgUrl }, 30000); if (r.ok) { const d = r.data?.result?.[0] || r.data?.data?.[0] || r.data?.[0]; if (d) result = d; } } catch {}
-  if (!result) { try { const { data } = await axios.get(`https://api.trace.moe/search?url=${encodeURIComponent(imgUrl)}`, { timeout: 25000 }); result = data?.result?.[0]; } catch {} }
-  if (!result) { await sendReply(sock, msg, `❌ Could not identify this anime scene.`); return; }
-  const title = result?.anilist?.title?.romaji || result?.title || result?.anime || "Unknown";
-  const ep = result?.episode || "";
-  const from = result?.from || "";
-  const similarity = result?.similarity ? `${(result.similarity * 100).toFixed(1)}%` : "";
-  await sendReply(sock, msg, `🔍 *Anime Trace Result*\n\n🎌 Anime: *${title}*\n${ep ? `📺 Episode: ${ep}\n` : ""}${from ? `⏱️ At: ${String(from).replace(/(\d+)\..*/, "$1s")}\n` : ""}${similarity ? `✅ Similarity: ${similarity}\n` : ""}`);
-  await react(sock, msg, "✅");
-});
 
 // ─── Anime: Currently Airing ──────────────────────────────────────────────────
-cmd(["dcaniairing","airingdc","dcairing"], { desc: "Currently airing anime via DC — .dcaniairing [limit]", category: "ANIME" }, async (sock, msg, args) => {
-  await react(sock, msg, "📡");
-  const limit = parseInt(args[0]) || 10;
-  let result = null;
-  try { const r = await dcGet("/anime/airing", { limit: Math.min(limit, 20) }, 20000); if (r.ok) { const d = r.data?.data || r.data; result = Array.isArray(d) ? d : d?.results || []; } } catch {}
-  if (!result || !result.length) { await sendReply(sock, msg, `❌ Could not fetch airing anime.`); return; }
-  const items = result.slice(0, Math.min(limit, 12));
-  const text = `📡 *Currently Airing Anime*\n\n${items.map((a, i) => `${i + 1}. ${a?.title?.romaji || a?.title || a?.name || "Unknown"}${a?.episodes ? ` (${a.episodes} eps)` : ""}`).join("\n")}`;
-  await sendReply(sock, msg, text);
-  await react(sock, msg, "✅");
-});
 
 // ─── Anime: Current Season ────────────────────────────────────────────────────
-cmd(["dcaniseason","aniseason","dcanicurrentseason"], { desc: "Current season anime via DC — .dcaniseason [limit]", category: "ANIME" }, async (sock, msg, args) => {
-  await react(sock, msg, "🌸");
-  const limit = parseInt(args[0]) || 10;
-  let result = null;
-  try { const r = await dcGet("/anime/season", { limit: Math.min(limit, 20) }, 20000); if (r.ok) { const d = r.data?.data || r.data; result = Array.isArray(d) ? d : d?.results || []; } } catch {}
-  if (!result || !result.length) { await sendReply(sock, msg, `❌ Could not fetch current season anime.`); return; }
-  const items = result.slice(0, Math.min(limit, 12));
-  const text = `🌸 *Current Season Anime*\n\n${items.map((a, i) => `${i + 1}. ${a?.title || a?.name || "Unknown"}${a?.score ? ` ⭐${a.score}` : ""}`).join("\n")}`;
-  await sendReply(sock, msg, text);
-  await react(sock, msg, "✅");
-});
 
 // ─── Anime: Manga Search ─────────────────────────────────────────────────────
 cmd(["dcmanga","mangadc","dcmangasearch"], { desc: "Search manga via DC — .dcmanga <title>", category: "ANIME" }, async (sock, msg, args) => {
@@ -30758,22 +30251,6 @@ cmd(["dcapplemusicsearch","applemusicsearchdc","dcaplsearch"], { desc: "Search A
 });
 
 // ─── Image Gen: Animagine ─────────────────────────────────────────────────────
-cmd(["dcanimagine","animaginedc","dcanimegen"], { desc: "Generate anime image via DC — .dcanimagine <prompt>", category: "AI" }, async (sock, msg, args) => {
-  if (!args.length) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}dcanimagine <anime image prompt>`); return; }
-  await react(sock, msg, "🖼️");
-  const prompt = args.join(" ");
-  const jid = msg.key.remoteJid;
-  const stMsg = await sock.sendMessage(jid, { text: `🖼️ *Generating anime image...*` }, { quoted: msg });
-  const stKey = stMsg.key;
-  let imgBuf = null;
-  try { const buf = await dcGetBinary("/animagine", { prompt }, 60000); if (buf && buf.length > 500) imgBuf = buf; } catch {}
-  if (!imgBuf) { try { const r = await dcGet("/animagine", { prompt }, 60000); if (r.ok) { const d = r.data?.url || r.data?.result || r.data; if (typeof d === "string" && d.startsWith("http")) imgBuf = Buffer.from((await axios.get(d, { responseType: "arraybuffer", timeout: 40000 })).data); } } catch {} }
-  if (!imgBuf) { try { const r = await prexzyGet("/ai/animagine", { prompt }, 50000); if (r.ok) { const u = r.data?.url || r.data?.result; if (u && u.startsWith("http")) imgBuf = Buffer.from((await axios.get(u, { responseType: "arraybuffer", timeout: 40000 })).data); } } catch {} }
-  if (!imgBuf) { await editMessage(sock, jid, stKey, `🖼️ *Animagine*\n\n❌ Generation failed. Try *${CONFIG.PREFIX}dcimagen ${prompt}*`); return; }
-  await sock.sendMessage(jid, { image: imgBuf, caption: `🖼️ *Animagine*\n_${prompt.slice(0, 80)}_` }, { quoted: msg });
-  await editMessage(sock, jid, stKey, `🖼️ *Animagine*\n\n✅ Done!`);
-  await react(sock, msg, "✅");
-});
 
 // ─── Image Gen: DALL·E ────────────────────────────────────────────────────────
 cmd(["dcdalle","dalledc","dcopenai2img"], { desc: "Generate image with DALL-E via DC — .dcdalle <prompt>", category: "AI" }, async (sock, msg, args) => {
@@ -31035,31 +30512,6 @@ const _ANIME_CHARS = ["naruto","itachi","nezuko","miku","asuna","erza","mikasa",
 const _ANIME_CHARS_BATCH = {};
 for (const ch of _ANIME_CHARS) _ANIME_CHARS_BATCH[ch] = ch;
 
-cmd(["animepic","animechar"], { desc: "Random anime character image — .animepic naruto | .animepic miku etc.", category: "RANDOM" }, async (sock, msg, args) => {
-  const char = (args[0] || "").toLowerCase().trim();
-  const valid = _ANIME_CHARS;
-  const jid = msg.key.remoteJid;
-  if (!char || !valid.includes(char)) {
-    await sendReply(sock, msg, `🎌 *Anime Pic* — Pick a character:\n\n${valid.join(" • ")}\n\nUsage: ${CONFIG.PREFIX}animepic naruto`);
-    return;
-  }
-  await react(sock, msg, "🎌");
-  let imgUrl = null;
-  try {
-    const r = await prexzyGet(`/random/anime/${char}`, {}, 20000);
-    const d = r.data?.data || r.data;
-    imgUrl = d?.url || d?.image || (typeof d === "string" ? d : null);
-  } catch {}
-  if (!imgUrl) {
-    try {
-      const { data } = await axios.get(`https://api.waifu.im/search?included_tags=${char}&is_nsfw=false`, { timeout: 15000 });
-      imgUrl = data?.images?.[0]?.url;
-    } catch {}
-  }
-  if (!imgUrl) { await sendReply(sock, msg, `❌ Could not fetch ${char} image.`); return; }
-  await sock.sendMessage(jid, { image: { url: imgUrl }, caption: `🎌 *${char.charAt(0).toUpperCase()+char.slice(1)}*` }, { quoted: msg });
-  await react(sock, msg, "✅");
-});
 
 // ─── ANIME WALLPAPERS ────────────────────────────────────────────────────────
 const _ANIME_WALLS = {
