@@ -838,10 +838,30 @@ async function startpairing(nexusDevNumber, options = {}) {
 
     // A second Telegram/web request must reuse the live handshake rather than
     // clearing its records and opening a competing Baileys socket.
+    //
+    // FIX (WhatsApp logs itself out, sometimes won't reply):
+    //   The guard used to hand back `rentbotTracker.get(...)?.connection`
+    //   verbatim — which could be a *dead* socket whose Baileys session
+    //   had already received a 401 close. The web UI then believed the
+    //   pairing was "still in progress" and skipped the reconnect path,
+    //   so the user saw silent failures and the WhatsApp device randomly
+    //   logged out itself when the dead socket tried to use an expired
+    //   session. Now we verify the socket is actually live (`?.ws?.readyState
+    //   === 1`) AND that creds are registered; otherwise we retire it and
+    //   open a fresh one so the wallet does not flap between states.
     if (isPairingActive(nexusDevNumber)) {
-        console.log(chalk.gray(`⏳ Pairing already active for ${nexusDevNumber} — keeping the existing socket.`));
-        pairingInFlight.delete(nexusDevNumber);
-        return rentbotTracker.get(nexusDevNumber)?.connection || null;
+        const _existing = rentbotTracker.get(nexusDevNumber)?.connection;
+        const _live = !!_existing
+          && typeof _existing.ws?.readyState === "number"
+          && _existing.ws.readyState === 1
+          && _existing.authState?.creds?.registered === true;
+        if (_live) {
+            console.log(chalk.gray(`⏳ Pairing already active for ${nexusDevNumber} — keeping the existing socket.`));
+            pairingInFlight.delete(nexusDevNumber);
+            return _existing;
+        }
+        console.log(chalk.yellow(`🔁 Pairing claimed but socket is dead for ${nexusDevNumber} — restarting handshake.`));
+        try { retireSocket(nexusDevNumber, "stale pairing socket detected"); } catch {}
     }
 
     // ── Clear any stale in-memory pairing code BEFORE the early-return guards ──
@@ -976,6 +996,17 @@ async function startpairing(nexusDevNumber, options = {}) {
     tracker.connection = nexus;
     nexus.__timers = [];
     pairingInFlight.delete(nexusDevNumber);
+    // FIX (WhatsApp 401 / log-out itself):
+    //   Mirror the deadline onto the live socket so the stale-connection
+    //   guard above (`isPairingActive`) can spot a dead socket quickly
+    //   even when no close event has been received yet.
+    try {
+        const _wsUrl = (typeof nexus.ws?.url === "string") ? nexus.ws.url : null;
+        if (_wsUrl) {
+            nexus.__startedAt      = Date.now();
+            nexus.__socketDeadline = Date.now() + (90 * 1000);
+        }
+    } catch {}
     ownership.claimForPairing(nexusDevNumber);
 
     if (store) store.bind(nexus.ev);

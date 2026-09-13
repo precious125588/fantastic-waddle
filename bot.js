@@ -13,12 +13,32 @@ const { autoLoadPairs } = require('./autoload');
 const BOT_TOKEN = getBotToken();
 
 // Initialize bot — guard against missing token to prevent EFATAL spam
+//
+// FIX (Telegram pairing stuck for minutes, then errors):
+//   The previous version called `process.exit(0)` whenever TELEGRAM_BOT_TOKEN
+//   was missing. Because bot.js is loaded as a sibling of the WhatsApp
+//   process (`server.js` `require()`s it during start), that exit took down
+//   the *entire* pairing server with it. The web UI then hung for the full
+//   OS socket timeout while waiting for `/api/pair/*` routes that no longer
+//   existed, finally surfacing a generic 504 / WebSocket error.
+//
+//   The fix is: stay alive when the token is missing. We only emit a
+//   warning, populate `global._telegramBotState` for the admin panel, and
+//   return without spawning a poller. The HTTP server (and WhatsApp
+//   pairing flow) keep running exactly as before.
 if (!BOT_TOKEN || BOT_TOKEN.trim() === '') {
   console.warn(chalk.yellow('⚠️  TELEGRAM_BOT_TOKEN not set — Telegram pair-bot is OFFLINE.'));
   console.warn(chalk.yellow('    Set TELEGRAM_BOT_TOKEN in .env to enable the Telegram pair-bot.'));
   console.warn(chalk.yellow('    WhatsApp bot continues normally.'));
-  // Exit gracefully so the WhatsApp bot (index.js) keeps running
-  process.exit(0);
+  global._telegramBotState = {
+    configured: false,
+    polling:    false,
+    lastError:  null,
+    startedAt:  Date.now(),
+  };
+  // Do NOT exit — exit would tear down the parent process and prevent the
+  // web pairing page from responding. Just stand down.
+  return;
 }
 
 global._telegramBotState = {
