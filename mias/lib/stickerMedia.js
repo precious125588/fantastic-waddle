@@ -97,22 +97,45 @@ async function runFfmpeg(input, output, { animated, fps = MAX_VIDEO_FPS, seconds
 }
 
 async function addMetadata(buffer, pack, author) {
+  // WhatsApp reads sticker pack info from the WebP EXIF chunk. The header MUST
+  // be the full 22-byte little-endian TIFF stub whose bytes 14..17 hold the
+  // JSON payload length — the old 12-byte stub produced a malformed chunk and
+  // WhatsApp answered every such sticker with
+  // "Sorry, this media file doesn't exist on your internal storage".
+  const animatedInput = isAnimatedWebp(buffer);
   try {
     const mod = await import("node-webpmux");
     const WebPMux = mod.default || mod;
-    const image = await WebPMux.Image.load(buffer);
+    if (typeof WebPMux.Image?.initLib === "function") {
+      try { await WebPMux.Image.initLib(); } catch {}
+    }
     const payload = Buffer.from(JSON.stringify({
+      "sticker-pack-id": "com.mias.stickers",
       "sticker-pack-name": String(pack || "MIAS").slice(0, 128),
       "sticker-pack-publisher": String(author || "MIAS Bot").slice(0, 128),
-      emojis: ["🎭"],
+      emojis: ["\u{1F3AD}"],
     }), "utf8");
-    // WhatsApp's sticker metadata is stored in the WebP EXIF chunk.
+
     const exifHeader = Buffer.from([
       0x49, 0x49, 0x2A, 0x00, 0x08, 0x00, 0x00, 0x00,
-      0x01, 0x00, 0x41, 0x57,
+      0x01, 0x00, 0x41, 0x57, 0x07, 0x00, 0x00, 0x00,
+      0x00, 0x00, 0x16, 0x00, 0x00, 0x00,
     ]);
+    exifHeader.writeUInt32LE(payload.length, 14);
+
+    // node-webpmux v3 exposes load/save on an INSTANCE. The previous code
+    // called the non-existent static WebPMux.Image.load(), so every sticker
+    // silently shipped without its pack metadata.
+    const image = new WebPMux.Image();
+    await image.load(buffer);
     image.exif = Buffer.concat([exifHeader, payload]);
-    return await image.getBuffer();
+    const tagged = await image.save(null, { exif: true });
+
+    // Never hand WhatsApp a file the tagger damaged: it must still be a WebP,
+    // and an animated sticker must still be animated.
+    if (!isWebp(tagged)) return buffer;
+    if (animatedInput && !isAnimatedWebp(tagged)) return buffer;
+    return tagged;
   } catch {
     return buffer;
   }
@@ -208,6 +231,7 @@ export async function createStickerFromBuffer(buffer, options = {}) {
   }
 
   if (!isWebp(sticker)) throw new Error("sticker encoder did not produce WebP");
+  if (animated && !isAnimatedWebp(sticker)) throw new Error("animated sticker encoding failed");
   const tagged = await addMetadata(sticker, pack, author);
   const maxBytes = animated ? MAX_ANIMATED_STICKER_BYTES : MAX_STATIC_STICKER_BYTES;
   // Metadata can tip a borderline file over the limit; the untagged file is
@@ -216,6 +240,8 @@ export async function createStickerFromBuffer(buffer, options = {}) {
     if (sticker.length <= maxBytes) return sticker;
     throw new Error(`sticker is larger than the ${Math.round(maxBytes / 1024)} KiB WhatsApp limit`);
   }
+  // Last gate before the buffer reaches WhatsApp.
+  if (!isWebp(tagged) || tagged.length < 64) return sticker;
   return tagged;
 }
 
