@@ -25,8 +25,11 @@ const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ANIME_ROOT = path.resolve(__dirname, "..", "..", "animes");
 const ANIME_SOURCE_CONFIG = readJson(
-  path.join(__dirname, "..", "config", "animeSources.json"),
-  {},
+  path.join(__dirname, "..", "Config", "animeSources.json"),
+  readJson(path.join(__dirname, "..", "config", "animeSources.json"), {}),
+);
+const ANIME_SOURCE_LIST = readSourceList(
+  path.join(__dirname, "..", "Config", "animeSources.txt"),
 );
 const MAX_RESULTS = 3;
 const NARUTO_RESULTS = 2;
@@ -45,6 +48,16 @@ const MAX_PORTABLE_OUTPUT_BYTES = 16 * 1024 * 1024;
 // Keep anime shortcuts aligned with the status wizard's hard three-minute
 // limit. The actual trim is performed by ffmpeg before anything is sent.
 const MAX_DURATION_SECONDS = 180;
+
+// These are deliberately generic enough for mixed anime source pages. They
+// are only used as outgoing captions; they never widen the configured source
+// allow-list or trigger a search outside it.
+const RANDOM_EDIT_HASHTAGS = Object.freeze([
+  "#animeedit", "#animeedits", "#amv", "#anime", "#edit", "#edits",
+  "#4kedit", "#auraedit", "#animeamv", "#otaku", "#weeb",
+  "#narutoedit", "#onepieceedit", "#bleachedit", "#jjkedit",
+  "#demonslayeredit", "#dragonballedit", "#bluelockedit",
+]);
 
 // Naruto is intentionally restricted to this TikTok hashtag pool. Do not
 // widen this to a generic web/search-engine query: that was the source of
@@ -451,13 +464,74 @@ function readJson(file, fallback) {
   }
 }
 
-function sourcePageHandles(slug) {
-  const configured = [
+function readSourceList(file) {
+  try {
+    return fs.readFileSync(file, "utf8")
+      .split(/\r?\n/)
+      .map((line) => line.replace(/#.*/, "").trim())
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function sourceConfigValues(slug) {
+  // The plain-text list is the easiest option for non-coders: paste one
+  // TikTok profile/share URL per line. If it exists, it intentionally
+  // replaces the JSON global list so deleting a line really removes it.
+  const globalSources = ANIME_SOURCE_LIST.length
+    ? ANIME_SOURCE_LIST
+    : [
+      ...(Array.isArray(ANIME_SOURCE_CONFIG.sources)
+        ? ANIME_SOURCE_CONFIG.sources : []),
+      ...(Array.isArray(ANIME_SOURCE_CONFIG.sourceLinks)
+        ? ANIME_SOURCE_CONFIG.sourceLinks : []),
+      ...(Array.isArray(ANIME_SOURCE_CONFIG.defaultSources)
+        ? ANIME_SOURCE_CONFIG.defaultSources : []),
+    ];
+  const values = [
+    ...globalSources,
     ...(Array.isArray(ANIME_SOURCE_CONFIG.defaultPages)
       ? ANIME_SOURCE_CONFIG.defaultPages : []),
+    ...(Array.isArray(ANIME_SOURCE_CONFIG[slug]?.sources)
+      ? ANIME_SOURCE_CONFIG[slug].sources : []),
+    ...(Array.isArray(ANIME_SOURCE_CONFIG[slug]?.sourceLinks)
+      ? ANIME_SOURCE_CONFIG[slug].sourceLinks : []),
     ...(Array.isArray(ANIME_SOURCE_CONFIG[slug]?.pages)
       ? ANIME_SOURCE_CONFIG[slug].pages : []),
   ];
+  return [...new Set(values.map((value) => String(value || "").trim()).filter(Boolean))];
+}
+
+function isTikTokUrl(value) {
+  try {
+    const url = new URL(String(value || "").trim());
+    return /(^|\.)tiktok\.com$/i.test(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
+function isConfiguredVideoUrl(value) {
+  if (!isTikTokUrl(value)) return false;
+  try {
+    const url = new URL(String(value).trim());
+    // vm.tiktok.com share URLs resolve to individual video pages. Full video
+    // URLs are accepted too. A bare /@creator URL remains a profile page.
+    return url.hostname.toLowerCase() === "vm.tiktok.com"
+      || /\/@[^/]+\/video(?:\/|$)/i.test(url.pathname)
+      || /\/video\/\d+/i.test(url.pathname);
+  } catch {
+    return false;
+  }
+}
+
+function configuredSourceVideoUrls(slug) {
+  return sourceConfigValues(slug).filter(isConfiguredVideoUrl);
+}
+
+function sourcePageHandles(slug) {
+  const configured = sourceConfigValues(slug);
   return new Set(configured.map((value) => {
     const raw = String(value || "").trim().toLowerCase();
     if (!raw) return "";
@@ -469,6 +543,26 @@ function sourcePageHandles(slug) {
       return raw.replace(/^@/, "").replace(/\/+$/, "");
     }
   }).filter(Boolean));
+}
+
+function randomHashtags(count = 3) {
+  const pool = [...RANDOM_EDIT_HASHTAGS];
+  for (let index = pool.length - 1; index > 0; index -= 1) {
+    const swap = Math.floor(Math.random() * (index + 1));
+    [pool[index], pool[swap]] = [pool[swap], pool[index]];
+  }
+  return pool.slice(0, Math.max(1, Math.min(Number(count) || 3, 5))).join(" ");
+}
+
+function configuredSourceCandidates(slug) {
+  return shuffle(configuredSourceVideoUrls(slug)).map((sourceUrl) => ({
+    sourceUrl,
+    videoId: "",
+    hashtag: randomHashtags(1),
+    title: "Configured TikTok anime edit",
+    author: "Configured TikTok source",
+    sourceType: "configured",
+  }));
 }
 
 function isAllowedSourcePage(row, slug) {
@@ -972,7 +1066,7 @@ async function downloadNarutoVideo(candidate) {
     || await downloadTikwmVideo(candidate);
 }
 
-async function resolveHashtagEdits(collectCandidates, resultCount) {
+async function resolveHashtagEdits(collectCandidates, resultCount, { trustedSources = false } = {}) {
   const candidates = await collectCandidates();
   const resolved = [];
   let cursor = 0;
@@ -982,7 +1076,7 @@ async function resolveHashtagEdits(collectCandidates, resultCount) {
       try {
         // Re-check immediately before download as a second gate. This keeps
         // a mutable/shared candidate object from bypassing the metadata rule.
-        if (!isAllowedAnimeCandidate(candidate)) continue;
+        if (!trustedSources && !isAllowedAnimeCandidate(candidate)) continue;
         const source = await withTimeout(
           (async () => await downloadDavidCyrilVideo(candidate)
             || await downloadTikwmVideo(candidate))(),
@@ -998,7 +1092,8 @@ async function resolveHashtagEdits(collectCandidates, resultCount) {
         const buffer = normalized && normalized.length <= MAX_PORTABLE_OUTPUT_BYTES
           ? normalized
           : (isMp4Buffer(source) && source.length <= MAX_PORTABLE_OUTPUT_BYTES ? source : null);
-        if (buffer && validVideoBuffer(buffer) && isAllowedAnimeCandidate(candidate)) {
+        if (buffer && validVideoBuffer(buffer)
+          && (trustedSources || isAllowedAnimeCandidate(candidate))) {
           resolved.push({ ...candidate, buffer });
         }
       } catch {}
@@ -1023,7 +1118,27 @@ async function jjkEdits() {
   return resolveHashtagEdits(collectJjkCandidates, JJK_RESULTS);
 }
 
+async function configuredSourceEdits(entry, resultCount) {
+  return resolveHashtagEdits(
+    () => configuredSourceCandidates(entry.slug),
+    resultCount,
+    { trustedSources: true },
+  );
+}
+
 async function remoteEdits(entry) {
+  // A configured source list is authoritative. This prevents the bot from
+  // silently searching newer or unrelated TikToks when the owner supplied a
+  // fixed collection of edit links.
+  const configuredUrls = configuredSourceVideoUrls(entry.slug);
+  if (configuredUrls.length) {
+    const resultLimit = entry.slug === "naruto"
+      ? NARUTO_RESULTS
+      : entry.slug === "jjk"
+        ? JJK_RESULTS
+        : entry.slug === "demon-slayer" ? DEMON_SLAYER_RESULTS : MAX_RESULTS;
+    return configuredSourceEdits(entry, resultLimit);
+  }
   if (entry.slug === "naruto") return narutoEdits();
   if (entry.slug === "jjk") return jjkEdits();
   if (entry.slug === "demon-slayer") return demonSlayerEdits();
@@ -1134,6 +1249,7 @@ export function createAnimeEditFlow({ prefix = "." } = {}) {
       await sock.sendMessage(jid, {
         video: result.buffer,
         mimetype: "video/mp4",
+        caption: `🎬 ${entry.title} edit\n${randomHashtags(3)}`,
       });
     }
     await react("");
@@ -1175,4 +1291,6 @@ export {
   displayName,
   loadCatalog,
   normalizeHdVideo,
+  configuredSourceVideoUrls,
+  randomHashtags,
 };
