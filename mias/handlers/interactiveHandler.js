@@ -211,20 +211,37 @@ export async function sendList(sock, jid, body, sections, opts = {}) {
     // client dropped support for legacy lists. interactiveMessage +
     // single_select is the only list that is still tappable, so it is tried
     // first and the legacy list is kept only as a last-resort renderer.
+    //
+    // FIX (open-categories dead button):
+    //   - Strip WhatsApp markdown from `title` and `description` (asterisks,
+    //     underscores, tildes, backticks, brackets, the › character, and the
+    //     cursor arrow break the proto when written into buttonParamsJson).
+    //   - Always attach a non-null `userJid` and full contextInfo so WhatsApp
+    //     treats the message as originating from the bot account.
+    //   - Use `relayMessage` with the wam.key.id — the previous generation
+    //     used the wrapped key, which could not be relayed cleanly.
     try {
       const B     = await getBaileys();
       const proto = B.proto;
       const gen   = B.generateWAMessageFromContent;
       if (!proto || typeof gen !== "function") throw new Error("proto unavailable");
 
+      const _clean = (s) => String(s || "")
+        .replace(/\*/g, "")
+        .replace(/_/g, "")
+        .replace(/~/g, "")
+        .replace(/`/g, "")
+        .replace(/[<>[\]›]/g, "")
+        .trim();
+
       const nfSections = (sections || []).map(sec => ({
-        title: String(sec.title || "Menu").slice(0, 24),
-        highlight_label: sec.highlight_label || "",
+        title: _clean(sec.title || "Menu").slice(0, 24) || "Menu",
+        highlight_label: _clean(sec.highlight_label || "❗").slice(0, 12),
         rows: (sec.rows || []).slice(0, 100).map(r => ({
           header: "",
-          title: String(r.title || "Option").slice(0, 60),
-          description: String(r.description || "").slice(0, 72),
-          id: String(r.id || r.rowId || r.title || "row"),
+          title: _clean(r.title || "Option").slice(0, 72) || "Option",
+          description: _clean(r.description || "").slice(0, 96),
+          id: _clean(r.id || r.rowId || r.title || "row").slice(0, 256),
         })),
       })).filter(sec => sec.rows.length);
       if (!nfSections.length) throw new Error("no rows");
@@ -232,28 +249,38 @@ export async function sendList(sock, jid, body, sections, opts = {}) {
       const nfButtons = [{
         name: "single_select",
         buttonParamsJson: JSON.stringify({
-          title:    String(opts.buttonText || "Open").slice(0, 24),
+          title:    _clean(opts.buttonText || "Open").slice(0, 24) || "Open",
           sections: nfSections,
         }),
       }];
 
+      const userJid = (sock?.user?.id || "").split(":")[0] + (sock?.user?.id ? "@s.whatsapp.net" : "");
+
       const content = {
-        messageContextInfo: { deviceListMetadata: {}, deviceListMetadataVersion: 2 },
+        messageContextInfo: {
+          deviceListMetadata: {},
+          deviceListMetadataVersion: 2,
+        },
         interactiveMessage: proto.Message.InteractiveMessage.create({
           body:   proto.Message.InteractiveMessage.Body.create({ text: body || " " }),
-          footer: proto.Message.InteractiveMessage.Footer.create({ text: opts.footer || "" }),
+          footer: proto.Message.InteractiveMessage.Footer.create({ text: _clean(opts.footer || "") }),
           header: proto.Message.InteractiveMessage.Header.create({
             hasMediaAttachment: false,
-            ...(opts.title ? { title: String(opts.title).slice(0, 60) } : {}),
+            ...(opts.title ? { title: _clean(opts.title).slice(0, 60) } : {}),
           }),
+          contextInfo: {
+            mentionedJid: userJid ? [userJid] : [],
+            ...(opts.contextInfo || {}),
+          },
           nativeFlowMessage: proto.Message.InteractiveMessage.NativeFlowMessage.create({
             buttons: nfButtons,
+            messageParamsJson: JSON.stringify({}),
           }),
         }),
       };
       const wam = await gen(jid, content, {
-        quoted: opts.quoted || undefined,
-        userJid: sock.user?.id,
+        quoted:    opts.quoted || undefined,
+        userJid:   userJid || undefined,
       });
       await sock.relayMessage(jid, wam.message, { messageId: wam.key.id });
       await emitHook("afterInteractive", { type: "list", jid, result: wam });
