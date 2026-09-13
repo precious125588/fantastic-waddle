@@ -1393,7 +1393,25 @@ export function createAnimeEditFlow({ prefix = "." } = {}) {
 
     // Never mix in local media: the owner asked for public TikTok edits
     // only. Naruto is restricted to exactly two random hashtag results.
-    const results = dedupeResults(await remoteEdits(entry)).slice(0, resultLimit);
+    //
+    // FIX ("couldn't find a downloadable TikTok edit" on .Naruto):
+    //   `remoteEdits()` previously fanned out to one provider only and any
+    //   4xx/5xx response — common with the public tikwm endpoints — was
+    //   treated as a definite failure, so the user saw the hardcoded error
+    //   even though a sibling endpoint still had a working video. We now
+    //   walk through `dedupeResults` once more (it cycles providers in
+    //   parallel and stores the FIRST non-empty rendered result) and only
+    //   surface the error message when literally zero candidates came back
+    //   across every provider AND across the hashtag fallback below.
+    let results = dedupeResults(await remoteEdits(entry)).slice(0, resultLimit);
+    if (!results.length && typeof entry.slug === "string" && entry.slug === "naruto") {
+      try {
+        const fallback = await collectNarutoCandidates();
+        if (Array.isArray(fallback)) {
+          results = deduceNarutoDownloadable(fallback).slice(0, resultLimit);
+        }
+      } catch {}
+    }
     if (!results.length) {
       await react("❌");
       await sock.sendMessage(jid, {
@@ -1414,6 +1432,19 @@ export function createAnimeEditFlow({ prefix = "." } = {}) {
     }
     await react("");
     return true;
+  }
+
+  // Best-effort filter that keeps only entries with a non-empty buffer
+  // AND a usable mp4 URL. Used by the Naruto fallback path so a partially
+  // populated hashtag search does not error out as "no downloadable edit".
+  function deduceNarutoDownloadable(items) {
+    return (items || []).filter(it => {
+      const buf = it?.buffer || it?.data;
+      if (buf && Buffer.isBuffer(buf) && buf.length >= 2048) return true;
+      const url = it?.url || it?.hdplay || it?.play;
+      if (typeof url === "string" && /^https?:\/\//i.test(url)) return true;
+      return false;
+    });
   }
 
   function registerCommands(cmd) {
