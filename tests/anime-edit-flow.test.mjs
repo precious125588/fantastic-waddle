@@ -5,12 +5,15 @@ import {
   buildNarutoSearchQueries,
   NARUTO_HASHTAGS,
   NARUTO_RESULTS,
+  JJK_RESULTS,
+  JJK_HASHTAGS,
   DEMON_SLAYER_HASHTAGS,
   DEMON_SLAYER_RESULTS,
   TIKWM_SEARCH_ENDPOINTS,
   buildDemonSlayerSearchQueries,
   canonicalUrl,
   configuredSourceVideoUrls,
+  configuredSourcePages,
   isDemonSlayerEditTitle,
   isNarutoEditTitle,
 } from "../mias/features/animeEdits.js";
@@ -123,10 +126,17 @@ test("canonical URL keys collapse duplicate TikTok links", () => {
 
 test("configured TikTok source pool contains the supplied shared URLs", () => {
   const sources = configuredSourceVideoUrls("naruto");
-  assert.equal(sources.length, 36);
-  assert.ok(sources.every((url) => /^https:\/\/(?:vm|www)\.tiktok\.com\//i.test(url)));
-  assert.ok(sources.includes("https://vm.tiktok.com/ZS9S4SvHhaF3W-Lgjvi/"));
-  assert.ok(sources.includes("https://vm.tiktok.com/ZS9S4K8sqBvwE-B7mO8/"));
+  assert.equal(sources.length, 0);
+  assert.equal(JJK_RESULTS, 2);
+  assert.ok(JJK_HASHTAGS.length >= 2);
+});
+
+test("the supplied vm links remain page-only sources", () => {
+  const pages = configuredSourcePages("naruto");
+  assert.equal(pages.length, 37);
+  assert.ok(pages.every((url) => /^https:\/\/(?:vm|www)\.tiktok\.com\//i.test(url)));
+  assert.ok(pages.includes("https://vm.tiktok.com/ZS9S4SvHhaF3W-Lgjvi/"));
+  assert.ok(pages.includes("https://vm.tiktok.com/ZS9S4K8sqBvwE-B7mO8/"));
 });
 
 test("Naruto rejects plain and AI-style clips without the edit hashtag", () => {

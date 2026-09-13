@@ -45,6 +45,9 @@ const DC_TIKTOK_ENDPOINTS = [
 ];
 const MAX_PORTABLE_MP4_BYTES = 12 * 1024 * 1024;
 const MAX_PORTABLE_OUTPUT_BYTES = 16 * 1024 * 1024;
+const SOURCE_PAGE_TIMEOUT_MS = 25000;
+const SOURCE_PAGE_CACHE_TTL_MS = 5 * 60 * 1000;
+const configuredPageCache = new Map();
 // Keep anime shortcuts aligned with the status wizard's hard three-minute
 // limit. The actual trim is performed by ffmpeg before anything is sent.
 const MAX_DURATION_SECONDS = 180;
@@ -516,10 +519,11 @@ function isConfiguredVideoUrl(value) {
   if (!isTikTokUrl(value)) return false;
   try {
     const url = new URL(String(value).trim());
-    // vm.tiktok.com share URLs resolve to individual video pages. Full video
-    // URLs are accepted too. A bare /@creator URL remains a profile page.
-    return url.hostname.toLowerCase() === "vm.tiktok.com"
-      || /\/@[^/]+\/video(?:\/|$)/i.test(url.pathname)
+    // A vm.tiktok.com link is a share/profile landing page in the supplied
+    // list, not a reliable downloadable video URL. Treat it as a page and
+    // inspect the page's own post metadata instead of sending the landing
+    // page to a downloader.
+    return /\/@[^/]+\/video(?:\/|$)/i.test(url.pathname)
       || /\/video\/\d+/i.test(url.pathname);
   } catch {
     return false;
@@ -528,6 +532,145 @@ function isConfiguredVideoUrl(value) {
 
 function configuredSourceVideoUrls(slug) {
   return sourceConfigValues(slug).filter(isConfiguredVideoUrl);
+}
+
+function configuredSourcePages(slug) {
+  return sourceConfigValues(slug).filter((value) => !isConfiguredVideoUrl(value));
+}
+
+function decodeHtml(value) {
+  return String(value || "")
+    .replace(/&quot;/g, '"')
+    .replace(/&#x27;|&#39;/g, "'")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">");
+}
+
+function videoMetadataFromObject(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const videoId = value.video_id || value.aweme_id || value.awemeId
+    || value.item_id || value.itemId || value.videoId;
+  const author = value.author?.unique_id
+    || value.author?.uniqueId
+    || value.author?.nickname
+    || value.authorInfo?.unique_id
+    || value.authorInfo?.uniqueId
+    || value.authorInfo?.nickname
+    || value.unique_id
+    || value.uniqueId;
+  const title = String(
+    value.title
+      || value.desc
+      || value.description
+      || value.text
+      || value.caption
+      || "",
+  ).trim();
+  if (!videoId || (!author && !value.share_url && !value.shareUrl) || !title) return null;
+  const sourceUrl = firstUrl(
+    value.share_url,
+    value.shareUrl,
+    value.url,
+    author && videoId ? `https://www.tiktok.com/@${author}/video/${videoId}` : "",
+  );
+  if (!sourceUrl || !isTikTokUrl(sourceUrl)) return null;
+  return {
+    sourceUrl,
+    videoId: String(videoId),
+    title: title.slice(0, 240),
+    author: String(author || "TikTok creator").trim(),
+    views: value.play_count || value.playCount || value.views || 0,
+    likes: value.digg_count || value.diggCount || value.likes || 0,
+    row: value,
+    sourceType: "configured-page",
+  };
+}
+
+function extractTikTokVideoMetadata(html) {
+  const found = [];
+  const seen = new Set();
+  const visit = (value) => {
+    if (!value || typeof value !== "object") return;
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item);
+      return;
+    }
+    const candidate = videoMetadataFromObject(value);
+    if (candidate) {
+      const key = candidate.videoId || canonicalUrl(candidate.sourceUrl);
+      if (!seen.has(key)) {
+        seen.add(key);
+        found.push(candidate);
+      }
+    }
+    for (const child of Object.values(value)) {
+      if (child && typeof child === "object") visit(child);
+    }
+  };
+
+  const scripts = String(html || "").match(/<script\b[^>]*>([\s\S]*?)<\/script>/gi) || [];
+  for (const script of scripts) {
+    const body = script.replace(/^<script\b[^>]*>/i, "").replace(/<\/script>$/i, "").trim();
+    if (!body || body.length > 2_000_000) continue;
+    try {
+      visit(JSON.parse(decodeHtml(body)));
+    } catch {}
+  }
+  return found;
+}
+
+function matchesAnimeEditCandidate(candidate, slug) {
+  if (slug === "naruto") return isNarutoEditTitle(candidate);
+  if (slug === "jjk") return isJjkEditTitle(candidate);
+  if (slug === "demon-slayer") return isDemonSlayerEditTitle(candidate);
+  return isAllowedAnimeCandidate(candidate);
+}
+
+async function configuredPageCandidates(slug) {
+  const pages = configuredSourcePages(slug);
+  const candidates = [];
+  const seen = new Set();
+  const readPage = async (pageUrl) => {
+    const cacheKey = canonicalUrl(pageUrl);
+    let rows = configuredPageCache.get(cacheKey);
+    if (rows && Date.now() - rows.cachedAt <= SOURCE_PAGE_CACHE_TTL_MS) return rows;
+    try {
+      const response = await axios.get(pageUrl, {
+        timeout: SOURCE_PAGE_TIMEOUT_MS,
+        maxRedirects: 5,
+        responseType: "text",
+        headers: {
+          "User-Agent": "Mozilla/5.0",
+          Accept: "text/html,application/xhtml+xml",
+        },
+      });
+      rows = {
+        cachedAt: Date.now(),
+        items: extractTikTokVideoMetadata(response.data),
+      };
+    } catch {
+      rows = { cachedAt: Date.now(), items: [] };
+    }
+    configuredPageCache.set(cacheKey, rows);
+    return rows;
+  };
+
+  // Read a few pages at once so one unavailable TikTok profile cannot make a
+  // command wait through the whole source list serially.
+  for (let offset = 0; offset < pages.length; offset += 6) {
+    const batch = await Promise.all(pages.slice(offset, offset + 6).map(readPage));
+    for (const rows of batch) {
+      for (const candidate of rows.items || []) {
+        if (!matchesAnimeEditCandidate(candidate, slug)) continue;
+        const key = candidate.videoId || canonicalUrl(candidate.sourceUrl);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        candidates.push(candidate);
+      }
+    }
+  }
+  return shuffle(candidates);
 }
 
 function sourcePageHandles(slug) {
@@ -563,6 +706,15 @@ function configuredSourceCandidates(slug) {
     author: "Configured TikTok source",
     sourceType: "configured",
   }));
+}
+
+async function collectConfiguredCandidates(slug) {
+  // Explicit video URLs are supported for future additions, while the
+  // supplied vm.tiktok.com links are treated as pages and expanded from the
+  // page metadata. Never turn a page into a generic TikTok search.
+  const direct = configuredSourceCandidates(slug);
+  const pageItems = await configuredPageCandidates(slug);
+  return shuffle([...direct, ...pageItems]);
 }
 
 function isAllowedSourcePage(row, slug) {
@@ -1066,7 +1218,11 @@ async function downloadNarutoVideo(candidate) {
     || await downloadTikwmVideo(candidate);
 }
 
-async function resolveHashtagEdits(collectCandidates, resultCount, { trustedSources = false } = {}) {
+async function resolveHashtagEdits(
+  collectCandidates,
+  resultCount,
+  { trustedSources = false, candidateFilter = null } = {},
+) {
   const candidates = await collectCandidates();
   const resolved = [];
   let cursor = 0;
@@ -1077,6 +1233,7 @@ async function resolveHashtagEdits(collectCandidates, resultCount, { trustedSour
         // Re-check immediately before download as a second gate. This keeps
         // a mutable/shared candidate object from bypassing the metadata rule.
         if (!trustedSources && !isAllowedAnimeCandidate(candidate)) continue;
+        if (candidateFilter && !candidateFilter(candidate)) continue;
         const source = await withTimeout(
           (async () => await downloadDavidCyrilVideo(candidate)
             || await downloadTikwmVideo(candidate))(),
@@ -1120,9 +1277,11 @@ async function jjkEdits() {
 
 async function configuredSourceEdits(entry, resultCount) {
   return resolveHashtagEdits(
-    () => configuredSourceCandidates(entry.slug),
+    () => collectConfiguredCandidates(entry.slug),
     resultCount,
-    { trustedSources: true },
+    {
+      candidateFilter: (candidate) => matchesAnimeEditCandidate(candidate, entry.slug),
+    },
   );
 }
 
@@ -1131,7 +1290,8 @@ async function remoteEdits(entry) {
   // silently searching newer or unrelated TikToks when the owner supplied a
   // fixed collection of edit links.
   const configuredUrls = configuredSourceVideoUrls(entry.slug);
-  if (configuredUrls.length) {
+  const configuredPages = configuredSourcePages(entry.slug);
+  if (configuredUrls.length || configuredPages.length) {
     const resultLimit = entry.slug === "naruto"
       ? NARUTO_RESULTS
       : entry.slug === "jjk"
@@ -1293,4 +1453,5 @@ export {
   normalizeHdVideo,
   configuredSourceVideoUrls,
   randomHashtags,
+  configuredSourcePages,
 };

@@ -54,11 +54,11 @@ async function ffmpegPath() {
   }
 }
 
-async function runFfmpeg(input, output, { animated }) {
+async function runFfmpeg(input, output, { animated, fps = MAX_VIDEO_FPS, seconds = MAX_VIDEO_SECONDS, quality }) {
   const binary = await ffmpegPath();
   const vf = animated
     ? [
-        `fps=${MAX_VIDEO_FPS}`,
+        `fps=${fps}`,
         `scale=${MAX_DIMENSION}:${MAX_DIMENSION}:force_original_aspect_ratio=decrease`,
         `pad=${MAX_DIMENSION}:${MAX_DIMENSION}:(ow-iw)/2:(oh-ih)/2:color=0x00000000`,
         "format=yuva420p",
@@ -76,11 +76,11 @@ async function runFfmpeg(input, output, { animated }) {
     "-c:v", "libwebp",
     "-lossless", "0",
     "-compression_level", "6",
-    "-q:v", animated ? "58" : "75",
+    "-q:v", String(quality != null ? quality : (animated ? 58 : 75)),
     "-an",
   ];
   if (animated) {
-    args.push("-t", String(MAX_VIDEO_SECONDS), "-loop", "0", "-vsync", "0");
+    args.push("-t", String(seconds), "-loop", "0", "-vsync", "0");
   }
   args.push("-f", "webp", output);
 
@@ -167,25 +167,53 @@ export async function createStickerFromBuffer(buffer, options = {}) {
   if (!animated) {
     sticker = await staticSticker(buffer, pack, author);
   } else {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mias-sticker-"));
-    try {
-      const input = path.join(dir, `input.${safeExt(mediaType)}`);
-      const output = path.join(dir, "output.webp");
-      fs.writeFileSync(input, buffer);
-      await runFfmpeg(input, output, { animated: true });
-      sticker = fs.readFileSync(output);
-    } finally {
-      cleanup(dir);
+    // A single fixed-quality pass very often lands above WhatsApp's 512 KiB
+    // animated-sticker limit, and the old code then THREW — which is why
+    // "video → sticker" silently never delivered. Encode progressively
+    // smaller versions until one fits, and keep the smallest attempt as a
+    // last resort instead of failing.
+    const attempts = [
+      { fps: MAX_VIDEO_FPS, seconds: MAX_VIDEO_SECONDS, quality: 58 },
+      { fps: 10, seconds: 5, quality: 45 },
+      { fps: 8,  seconds: 5, quality: 38 },
+      { fps: 8,  seconds: 4, quality: 30 },
+      { fps: 6,  seconds: 3, quality: 22 },
+      { fps: 5,  seconds: 3, quality: 15 },
+    ];
+    let smallest = null;
+    let lastError = null;
+    for (const attempt of attempts) {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mias-sticker-"));
+      try {
+        const input = path.join(dir, `input.${safeExt(mediaType)}`);
+        const output = path.join(dir, "output.webp");
+        fs.writeFileSync(input, buffer);
+        await runFfmpeg(input, output, { animated: true, ...attempt });
+        const encoded = fs.readFileSync(output);
+        if (!isWebp(encoded) || !isAnimatedWebp(encoded)) {
+          lastError = new Error("ffmpeg produced a non-animated WebP");
+          continue;
+        }
+        if (!smallest || encoded.length < smallest.length) smallest = encoded;
+        // Leave headroom for the EXIF metadata chunk added below.
+        if (encoded.length <= MAX_ANIMATED_STICKER_BYTES - 8192) break;
+      } catch (error) {
+        lastError = error;
+      } finally {
+        cleanup(dir);
+      }
     }
-    if (!isAnimatedWebp(sticker)) {
-      throw new Error("ffmpeg produced a non-animated WebP");
-    }
+    if (!smallest) throw lastError || new Error("could not encode an animated sticker");
+    sticker = smallest;
   }
 
   if (!isWebp(sticker)) throw new Error("sticker encoder did not produce WebP");
   const tagged = await addMetadata(sticker, pack, author);
   const maxBytes = animated ? MAX_ANIMATED_STICKER_BYTES : MAX_STATIC_STICKER_BYTES;
+  // Metadata can tip a borderline file over the limit; the untagged file is
+  // still a perfectly valid sticker, so prefer sending that over failing.
   if (tagged.length > maxBytes) {
+    if (sticker.length <= maxBytes) return sticker;
     throw new Error(`sticker is larger than the ${Math.round(maxBytes / 1024)} KiB WhatsApp limit`);
   }
   return tagged;

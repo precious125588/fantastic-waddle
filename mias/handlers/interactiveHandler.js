@@ -205,6 +205,63 @@ export async function sendList(sock, jid, body, sections, opts = {}) {
       }
     }
 
+    // ── Native-flow single_select (PRIMARY) ─────────────────────────────────
+    // The legacy `listMessage` below still *renders* on modern WhatsApp but
+    // its button is dead: tapping "Open Categories" does nothing because the
+    // client dropped support for legacy lists. interactiveMessage +
+    // single_select is the only list that is still tappable, so it is tried
+    // first and the legacy list is kept only as a last-resort renderer.
+    try {
+      const B     = await getBaileys();
+      const proto = B.proto;
+      const gen   = B.generateWAMessageFromContent;
+      if (!proto || typeof gen !== "function") throw new Error("proto unavailable");
+
+      const nfSections = (sections || []).map(sec => ({
+        title: String(sec.title || "Menu").slice(0, 24),
+        highlight_label: sec.highlight_label || "",
+        rows: (sec.rows || []).slice(0, 100).map(r => ({
+          header: "",
+          title: String(r.title || "Option").slice(0, 60),
+          description: String(r.description || "").slice(0, 72),
+          id: String(r.id || r.rowId || r.title || "row"),
+        })),
+      })).filter(sec => sec.rows.length);
+      if (!nfSections.length) throw new Error("no rows");
+
+      const nfButtons = [{
+        name: "single_select",
+        buttonParamsJson: JSON.stringify({
+          title:    String(opts.buttonText || "Open").slice(0, 24),
+          sections: nfSections,
+        }),
+      }];
+
+      const content = {
+        messageContextInfo: { deviceListMetadata: {}, deviceListMetadataVersion: 2 },
+        interactiveMessage: proto.Message.InteractiveMessage.create({
+          body:   proto.Message.InteractiveMessage.Body.create({ text: body || " " }),
+          footer: proto.Message.InteractiveMessage.Footer.create({ text: opts.footer || "" }),
+          header: proto.Message.InteractiveMessage.Header.create({
+            hasMediaAttachment: false,
+            ...(opts.title ? { title: String(opts.title).slice(0, 60) } : {}),
+          }),
+          nativeFlowMessage: proto.Message.InteractiveMessage.NativeFlowMessage.create({
+            buttons: nfButtons,
+          }),
+        }),
+      };
+      const wam = await gen(jid, content, {
+        quoted: opts.quoted || undefined,
+        userJid: sock.user?.id,
+      });
+      await sock.relayMessage(jid, wam.message, { messageId: wam.key.id });
+      await emitHook("afterInteractive", { type: "list", jid, result: wam });
+      return wam;
+    } catch (nfErr) {
+      console.log("[sendList] native single_select unavailable:", nfErr?.message || nfErr);
+    }
+
     // Baileys proto list fallback
     try {
       const B     = await getBaileys();

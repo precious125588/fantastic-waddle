@@ -6935,6 +6935,12 @@ const MENU_CATEGORIES = [
     "noveldetail","novelonline","webnovel","webnovelchapter","webnoveldetail","webnovelhot","webnovelrank",
     "wnhot","wnrank","wnchapter","wndetail","wnhotlist","wnranking","wnreadchap","wnsearch","rangtags","rankafilters",
     "weeklyanimeschedule","cry","bully","awoo","smug","happy2","cuddle","shinobu"] },
+  { name: "STATUS",    emoji: "🎬", cmds: [
+    "naruto", "jjk", "demonslayer",
+    "onepiece", "bleach", "dragonball", "attackontitan",
+    "sololeveling", "myheroacademia", "onepunchman",
+    "blackclover", "chainsawman", "tokyorevengers", "bluelock",
+  ] },
   { name: "AUDIO",     emoji: "🎵", cmds: [
     "deep","smooth","fat","tupai","blown","radio","robot","chipmunk","nightcore","earrape","bass","reverse","slow","fast","baby","deamon",
     "freesound","fsounddl","nonstick","freesounddl","fsearch","nonsticksound","sounddl","soundsearch"] },
@@ -39658,7 +39664,14 @@ function __saveTubeFormatOptions(info) {
     return matches;
   };
   const mp3Matches = addFormat("mp3", "audio", "mp3", audio);
-  if (mp3Matches.length) options.push({ label: "mp3 doc", type: "audio", format: "mp3", quality: "", document: true, formats: mp3Matches });
+  // SaveTube usually reports its audio streams as m4a/webm even though the
+  // /download endpoint hands back a real MP3 (and the sender transcodes if it
+  // does not). Without this the native list never had an MP3 row at all, so
+  // MP3 is always offered whenever ANY audio stream exists.
+  if (!mp3Matches.length && audio.length) {
+    options.push({ label: "mp3", type: "audio", format: "mp3", quality: "", formats: audio });
+  }
+  if (audio.length) options.push({ label: "mp3 doc", type: "audio", format: "mp3", quality: "", document: true, formats: mp3Matches.length ? mp3Matches : audio });
   addFormat("mp4", "video", "mp4", video);
   addFormat("m4a", "audio", "m4a", audio);
   addFormat("webm", "video", "webm", video);
@@ -39687,8 +39700,13 @@ async function __saveTubeResolve(url, type, requestedQuality = "", requestedForm
       return actual === wantedFormat || actual.includes(wantedFormat);
     })
     : formats;
-  if (wantedFormat && !formatMatches.length) {
+  if (wantedFormat && !formatMatches.length && wantedFormat !== "mp3") {
     throw new Error(`SaveTube has no real ${wantedFormat} format for this URL`);
+  }
+  // "mp3" is a delivery format, not a stream format: fall back to the best
+  // available audio stream and let the sender transcode it to MP3.
+  if (wantedFormat === "mp3" && !formatMatches.length && type === "audio") {
+    formatMatches.push(...formats);
   }
   const selectedPool = formatMatches.length ? formatMatches : formats;
   const selected = wanted

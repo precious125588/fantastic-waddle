@@ -1,5 +1,5 @@
 {
-  "sources": [
+  "defaultPages": [
     "https://vm.tiktok.com/ZS9S4SvHhaF3W-Lgjvi/",
     "https://vm.tiktok.com/ZS9S4ASwogm8P-1a8bQ/",
     "https://vm.tiktok.com/ZS9S4AgtNXTfD-0VEWQ/",
@@ -38,7 +38,6 @@
     "https://vm.tiktok.com/ZS9S4wQt8Lk7e-vSWn4/",
     "https://vm.tiktok.com/ZS9S4K8sqBvwE-B7mO8/"
   ],
-  "defaultPages": [],
   "naruto": {
     "pages": [],
     "sources": []

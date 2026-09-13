@@ -1403,6 +1403,16 @@ export async function handleAutoDownload(sock, msg, body, mode, isOwner) {
   const platform = detectPlatform(url);
   if (!platform) return false;
 
+  // TikTok is intentionally excluded from the auto-downloader. The `.tt` /
+  // `.tiktok` command owns TikTok links and answers with the video card +
+  // format options. Leaving TikTok here made every link produce TWO replies:
+  // an instant video from this path plus the option card from the command.
+  if (platform === "tiktok") return false;
+
+  // A message that already invokes a bot command must not be auto-downloaded
+  // as well — the command itself decides what to send.
+  if (/^[.!#\/$,+\-]\s*[a-z0-9]/i.test(String(body || "").trim())) return false;
+
   await reactDownload(sock, msg);
 
   const jid = msg.key.remoteJid;
