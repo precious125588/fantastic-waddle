@@ -5,13 +5,12 @@ import {
   buildNarutoSearchQueries,
   NARUTO_HASHTAGS,
   NARUTO_RESULTS,
-  NARUTO_SEARCH_ANCHORS,
   DEMON_SLAYER_HASHTAGS,
   DEMON_SLAYER_RESULTS,
-  DEMON_SLAYER_SEARCH_ANCHORS,
   TIKWM_SEARCH_ENDPOINTS,
   buildDemonSlayerSearchQueries,
   canonicalUrl,
+  configuredSourceVideoUrls,
   isDemonSlayerEditTitle,
   isNarutoEditTitle,
 } from "../mias/features/animeEdits.js";
@@ -98,25 +97,17 @@ test("Naruto uses exactly two hashtag results and the working TikWM search route
   assert.match(naruto.metadata.desc, /Send 2 random HD Naruto edits/);
 });
 
-test("Naruto search randomly uses one edit anchor and rotates every secondary hashtag", () => {
-  const seenAnchors = new Set();
+test("Naruto search shuffles its own hashtag pool", () => {
   const originalRandom = Math.random;
   try {
-    for (const randomValue of [0, 0.999]) {
-      Math.random = () => randomValue;
-      const queries = buildNarutoSearchQueries();
-      const anchors = new Set(queries.map((query) => query.split(" ")[0].toLowerCase()));
-      assert.equal(anchors.size, 1);
-      const anchor = [...anchors][0];
-      assert.ok(NARUTO_SEARCH_ANCHORS.includes(anchor));
-      seenAnchors.add(anchor);
-      assert.ok(queries.every((query) => query.split(" ").length === 2));
-      assert.ok(queries.every((query) => !NARUTO_SEARCH_ANCHORS.includes(query.split(" ")[1].toLowerCase())));
-    }
+    Math.random = () => 0;
+    const queries = buildNarutoSearchQueries();
+    assert.equal(queries.length, NARUTO_HASHTAGS.length);
+    assert.equal(new Set(queries).size, queries.length);
+    assert.ok(queries.every((query) => /^#[a-z0-9]+$/i.test(query)));
   } finally {
     Math.random = originalRandom;
   }
-  assert.deepEqual(seenAnchors, new Set(NARUTO_SEARCH_ANCHORS));
 });
 
 test("canonical URL keys collapse duplicate TikTok links", () => {
@@ -128,6 +119,14 @@ test("canonical URL keys collapse duplicate TikTok links", () => {
     canonicalUrl("https://www.tiktok.com/@creator/video/123#share"),
     "https://www.tiktok.com/@creator/video/123",
   );
+});
+
+test("configured TikTok source pool contains the supplied shared URLs", () => {
+  const sources = configuredSourceVideoUrls("naruto");
+  assert.equal(sources.length, 36);
+  assert.ok(sources.every((url) => /^https:\/\/(?:vm|www)\.tiktok\.com\//i.test(url)));
+  assert.ok(sources.includes("https://vm.tiktok.com/ZS9S4SvHhaF3W-Lgjvi/"));
+  assert.ok(sources.includes("https://vm.tiktok.com/ZS9S4K8sqBvwE-B7mO8/"));
 });
 
 test("Naruto rejects plain and AI-style clips without the edit hashtag", () => {
@@ -153,12 +152,10 @@ test("Demon Slayer uses the supplied hashtag pool and two-result limit", () => {
   ]) {
     assert.ok(normalized.includes(tag.slice(1)), `missing requested hashtag: ${tag}`);
   }
-  assert.equal(DEMON_SLAYER_SEARCH_ANCHORS.length, 6);
   const queries = buildDemonSlayerSearchQueries();
-  assert.ok(queries.length > DEMON_SLAYER_SEARCH_ANCHORS.length);
-  assert.ok(queries.every((query) =>
-    DEMON_SLAYER_SEARCH_ANCHORS.includes(query.split(" ")[0].toLowerCase()),
-  ));
+  assert.equal(queries.length, DEMON_SLAYER_HASHTAGS.length);
+  assert.equal(new Set(queries).size, queries.length);
+  assert.ok(queries.every((query) => DEMON_SLAYER_HASHTAGS.includes(query)));
 });
 
 test("both anime filters reject AI and animation markers", () => {
