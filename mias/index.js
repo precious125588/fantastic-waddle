@@ -10835,11 +10835,6 @@ cmd(["image", "img"], { desc: "Send up to five Pinterest images — .image <quer
   await react(sock, msg, "✅");
 });
 
-cmd("status", { desc: "Create short status edits with a guided picker", category: "MEDIA" }, async (sock, msg) => {
-  await react(sock, msg, "🎬");
-  await statusEditFlow.start(sock, msg);
-});
-
 cmd("lyrics", { desc: "Song lyrics", category: "SEARCH" }, async (sock, msg, args) => {
   if (!args.length) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}lyrics <song name>`); return; }
   await react(sock, msg, "🎶");
