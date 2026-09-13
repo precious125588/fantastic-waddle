@@ -2656,6 +2656,16 @@ Save my contact:` }).catch(() => {});
           let body = (typeof getBody === "function" ? getBody(msg) : "") || "";
           const _btnCmd = _extractButtonCommand(body);
           if (_btnCmd) body = _btnCmd;
+          // Settings replies are plain text, not commands. Handle them before
+          // link hooks, private-mode gates, and other consumers can swallow a
+          // reply such as "12.1". normalizeSettingsChoice also accepts the
+          // common WhatsApp formatting variants: ".12.1", "*12.1*", and
+          // backtick-wrapped choices.
+          try {
+            if (await handleSettingsNumericReply(sock, msg, body)) return;
+          } catch (_settingsReplyErr) {
+            console.error("[settings-reply]", _settingsReplyErr?.message || _settingsReplyErr);
+          }
           // ── KEVDRA PATCHES ──────────────────────────────────────────────────────────
           // 1) Sticker setcmd: if this sticker is bound to a cmd, override body so the
           //    main dispatch picks it up as if the user typed that command.
@@ -2828,39 +2838,6 @@ Save my contact:` }).catch(() => {});
             else if (_os?.typing) sock.sendPresenceUpdate("composing", msg.key.remoteJid).catch(() => {});
             else if (_os?.alwaysOnline) sock.sendPresenceUpdate("available", msg.key.remoteJid).catch(() => {});
           } catch {}
-
-          // ── Settings numeric reply handler (e.g. 1.1 / 7.2 / 0) ──
-          try {
-            const sess = settingsSession.get(msg.key.remoteJid);
-            const trimmed = (body || "").trim();
-            if (sess && /^(\d{1,2}\.\d{1,2}|0)$/.test(trimmed)) {
-              if (trimmed === "0") {
-                settingsSession.delete(msg.key.remoteJid);
-                await sendReply(sock, msg, "✅ Settings closed.");
-                return;
-              }
-              const fn = SETTINGS_MAP[trimmed];
-              if (fn) {
-                const ownerJ = (CONFIG.OWNER_NUMBER || "").replace(/[^0-9]/g, "") + "@s.whatsapp.net";
-                // 28.x (Force Private) and 30.x (Status Forwarder) are creator-only
-                const _creatorOnlyOpts = /^(28|30)\.\d+$/.test(trimmed);
-                if (_creatorOnlyOpts) {
-                  const _curSender = getSender(msg);
-                  const _canToggle = msg.key.fromMe || isOwner(_curSender) || isCreator(_curSender);
-                  if (!_canToggle) {
-                    await sendReply(sock, msg, "🚫 *Only the bot creator can change this setting.*");
-                    return;
-                  }
-                }
-                const sChat = getSettings(msg.key.remoteJid);
-                const sOwner = getSettings(ownerJ);
-                const result = fn(sChat); fn(sOwner);
-                try { saveNow && saveNow(); } catch {}
-                await sendReply(sock, msg, `${result}\n\n_Reply another option, or *0* to close._`);
-                return;
-              }
-            }
-          } catch (e) { console.error("settings reply error:", e?.message); }
 
           // ── Mute enforcement (v12) — auto-delete msgs from muted members in groups ──
           try {
@@ -7933,6 +7910,56 @@ const SETTINGS_MAP = {
   "33.1": s => { s.aiTag = true;  return "✅ AI ✦ Tag: ON — Bot replies will show the WhatsApp AI ✦ Edited badge."; },
   "33.2": s => { s.aiTag = false; return "❌ AI ✦ Tag: OFF"; },
 };
+
+function normalizeSettingsChoice(value) {
+  return String(value || "")
+    .trim()
+    .replace(/^[`*_~]+|[`*_~]+$/g, "")
+    .trim()
+    .replace(/^\.+/, "")
+    .trim();
+}
+
+async function handleSettingsNumericReply(sock, msg, body) {
+  const jid = msg?.key?.remoteJid;
+  const session = jid ? settingsSession.get(jid) : null;
+  const choice = normalizeSettingsChoice(body);
+  if (!session || !/^(\d{1,2}\.\d{1,2}|0)$/.test(choice)) return false;
+
+  if (choice === "0") {
+    settingsSession.delete(jid);
+    await sendReply(sock, msg, "✅ Settings closed.");
+    return true;
+  }
+
+  const fn = SETTINGS_MAP[choice];
+  if (!fn) {
+    await sendReply(sock, msg,
+      `❌ Unknown settings option *${choice}*.\n\nReply with an option shown in the menu, or *0* to close.`);
+    return true;
+  }
+
+  const ownerJ = (CONFIG.OWNER_NUMBER || "").replace(/[^0-9]/g, "") + "@s.whatsapp.net";
+  // 28.x (Force Private) and 30.x (Status Forwarder) are creator-only.
+  if (/^(28|30)\.\d+$/.test(choice)) {
+    const sender = getSender(msg);
+    const canToggle = msg.key.fromMe || isOwner(sender) || isCreator(sender);
+    if (!canToggle) {
+      await sendReply(sock, msg, "🚫 *Only the bot creator can change this setting.*");
+      return true;
+    }
+  }
+
+  const chatSettings = getSettings(jid);
+  const ownerSettings = getSettings(ownerJ);
+  const result = fn(chatSettings);
+  fn(ownerSettings);
+  try { saveNow && saveNow(); } catch {}
+  await sendReply(sock, msg,
+    `${result}\n\n_Reply another option, or *0* to close._`);
+  return true;
+}
+
 cmd(["sfwddest","setsfwddest","statusdest","sfwdset"], { desc: "Set status forwarder destination JID — .sfwddest <jid>", ownerOnly: true, category: "SETTINGS" }, async (sock, msg, args) => {
   const sender = getSender(msg);
   if (!isOwner(sender) && !isCreator(sender)) { await sendReply(sock, msg, "🚫 Owner only."); return; }
