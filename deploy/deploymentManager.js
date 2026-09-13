@@ -43,6 +43,8 @@ function _sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 // digitsOnlyKey -> { resolve, timer, reminder }
 const _pendingSelections = new Map();
 
+const REMOVED_BOT_IDS = new Set(['new-page']);
+
 let _botCache = null;
 
 // ── Bot discovery ────────────────────────────────────────────────────────────
@@ -57,10 +59,14 @@ function scanBots() {
     }
     for (const entry of fs.readdirSync(BOTS_DIR, { withFileTypes: true })) {
       if (!entry.isDirectory()) continue;
+      // The "new-page" bot was removed from this project. Ignore any stale
+      // folder so the deploy menu can never offer a bot that has no code.
+      if (REMOVED_BOT_IDS.has(entry.name.toLowerCase())) continue;
       const mf = path.join(BOTS_DIR, entry.name, 'manifest.json');
       if (!fs.existsSync(mf)) continue;
       try {
         const manifest = JSON.parse(fs.readFileSync(mf, 'utf8'));
+        if (REMOVED_BOT_IDS.has(String(manifest.id || '').toLowerCase())) continue;
         if (manifest.id && manifest.name) result.push(manifest);
       } catch (e) {
         console.warn(chalk.yellow(`[DeployMgr] Skipping ${entry.name}: ${e.message}`));
@@ -90,12 +96,6 @@ function _getDefaultBots() {
       version: '2.0.1', status: 'stable', entry: 'mias/index.js',
       env: { BOT_NAME: 'MIAS MDX' },
       deploySteps: ['Session created', 'Plugins loaded', 'Database initialized', 'Deployment complete'],
-    },
-    {
-      id: 'new-page', name: 'New Page', tagline: 'Next Generation • Fast',
-      version: '1.0.0', status: 'stable', entry: 'new-page/index.js', cwd: 'new-page',
-      env: { BOT_NAME: 'New Page' },
-      deploySteps: ['Framework initialized', 'Services loaded', 'Session created', 'Deployment complete'],
     },
   ];
 }
