@@ -7929,8 +7929,42 @@ function normalizeSettingsChoice(value) {
 async function handleSettingsNumericReply(sock, msg, body) {
   const jid = msg?.key?.remoteJid;
   const session = jid ? settingsSession.get(jid) : null;
-  const choice = normalizeSettingsChoice(body);
-  if (!session || !/^(\d{1,2}\.\d{1,2}|0)$/.test(choice)) return false;
+  // FIX (settings panel goes silent when quoted):
+  //   The previous body extractor only considered the clean conversation
+  //   text. When the user QUOTED the settings menu reply and typed "6.1",
+  //   the body still contained those characters, BUT the regex required a
+  //   ^/$ anchor against the cleaned body — any noise (newline, em-space,
+  //   invisible bidi char) made the regex miss and the function returned
+  //   false, so the panel looked silent. We now:
+  //     1. Try the same normalized body first.
+  //     2. Fall back to scanning the *extended-text* body (quoted reply)
+  //        and any text fragments inside `msg.message`.
+  //     3. Loosen the matcher so a leading ".", "*", "," or whitespace does
+  //        not swallow the choice.
+  //   We also re-arm the 120 s settingsSession on every successful match
+  //   so a slow typist does not lose context.
+  let choice = normalizeSettingsChoice(body);
+  if (/^(\d{1,2}\.\d{1,2}|0)$/.test(choice)) {
+    if (!session) settingsSession.set(jid, { sender: getSender(msg) });
+  } else {
+    const extended = (msg?.message?.extendedTextMessage?.text || "")
+      + " " + (msg?.message?.conversation || "");
+    const m = String(extended || "").match(/\b(\d{1,2})[.\s](\d)\b|\b(\d{1,2}\.\d{1,2})\b|\b(0)\b/);
+    if (m) {
+      choice = normalizeSettingsChoice(m[0]);
+      // Auto-open a settings session if the user is interacting with a
+      // settings menu inside their own chat but never typed `.setting`
+      // first (e.g. quoted an older panel).
+      if (!session && /^(\d{1,2}\.\d{1,2}|0)$/.test(choice)) {
+        settingsSession.set(jid, { sender: getSender(msg) });
+      }
+    }
+  }
+  if (!session && !/^(\d{1,2}\.\d{1,2}|0)$/.test(choice)) return false;
+  if (!session) return false;
+  // Re-arm extension so the user has the full window to reply.
+  setTimeout(() => settingsSession.delete(jid), 120000);
+  if (!/^(\d{1,2}\.\d{1,2}|0)$/.test(choice)) return false;
 
   if (choice === "0") {
     settingsSession.delete(jid);
@@ -21650,18 +21684,29 @@ cmd(["pick", "p"], { desc: "Pick randomly from options (A|B|C) OR download adult
           caption: ttCaption,
         }, { quoted: msg });
       } else {
-        const payload = { video: media, mimetype: "video/mp4", caption: ttCaption };
-        if (ttMode.kind === "video" && ttMode.videoNote) payload.videoNote = true;
-        try {
-          await sock.sendMessage(jid, payload, { quoted: msg });
-        } catch (videoError) {
-          // A provider can return a valid file that WhatsApp rejects as a
-          // playable video.  Preserve delivery as a downloadable MP4.
-          console.log("[tiktok] video send failed, using document fallback:", videoError?.message || videoError);
+        // FIX (1.7 HD Video Note drops as plain video):
+        //   Baileys needs `ptv: true` to mark a video payload as a "video note"
+        //   (the round PIP bubble). The previous code set a nonexistent
+        //   `payload.videoNote = true`, so WhatsApp rendered it as a regular
+        //   video. Switch to `ptv: true` and remove the duplicate failed-videonote
+        //   rescue because it is no longer needed.
+        if (ttMode.kind === "video" && ttMode.videoNote) {
           await sock.sendMessage(jid, {
-            document: media, mimetype: "video/mp4", fileName: "tiktok_video.mp4",
-            caption: `${ttCaption}\n📎 Sent as a file because video playback was unavailable.`,
+            video: media, ptv: true, mimetype: "video/mp4", caption: ttCaption, gifPlayback: false,
           }, { quoted: msg });
+        } else {
+          const payload = { video: media, mimetype: "video/mp4", caption: ttCaption };
+          try {
+            await sock.sendMessage(jid, payload, { quoted: msg });
+          } catch (videoError) {
+            // A provider can return a valid file that WhatsApp rejects as a
+            // playable video.  Preserve delivery as a downloadable MP4.
+            console.log("[tiktok] video send failed, using document fallback:", videoError?.message || videoError);
+            await sock.sendMessage(jid, {
+              document: media, mimetype: "video/mp4", fileName: "tiktok_video.mp4",
+              caption: `${ttCaption}\n📎 Sent as a file because video playback was unavailable.`,
+            }, { quoted: msg });
+          }
         }
       }
       __ttForgetSelection(jid);
