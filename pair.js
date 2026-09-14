@@ -47,7 +47,10 @@ const ownership = require('./sessionOwnership')
 
 // Define sleep function directly here to avoid import issues
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-const PAIRING_ROOT = path.join(__dirname, 'nexstore', 'pairing');
+// PRECIOUS: always the Railway volume (falls back to <repo>/nexstore/pairing).
+require('./precious-session-boot.cjs');
+const _sessionPaths = require('./sessionPaths');
+const PAIRING_ROOT = _sessionPaths.ensureSessionRoot();
 const LEGACY_PAIRING_FILE = path.join(PAIRING_ROOT, 'pairing.json');
 
 function getSessionPath(nexusDevNumber) {
@@ -561,13 +564,13 @@ async function validateSession(nexusDevNumber) {
         const creds = JSON.parse(fs.readFileSync(credsPath, 'utf8'));
         if (!creds.me || !creds.me.id) {
             console.log(chalk.yellow(`⚠️ Invalid session for ${nexusDevNumber}, cleaning up...`));
-            deleteFolderRecursive(sessionPath);
+            require('./sessionPaths').quarantineDir(sessionPath, 'pair flow requested removal');
             return false;
         }
         return true;
     } catch (e) {
         console.log(chalk.red(`❌ Corrupt session for ${nexusDevNumber}: ${e.message}`));
-        deleteFolderRecursive(sessionPath);
+        require('./sessionPaths').quarantineDir(sessionPath, 'pair flow requested removal');
         return false;
     }
 }
@@ -623,7 +626,7 @@ function forceCleanupSession(nexusDevNumber, opts = {}) {
     const wipe = (label) => {
         try {
             if (fs.existsSync(sessionPath)) {
-                deleteFolderRecursive(sessionPath);
+                require('./sessionPaths').quarantineDir(sessionPath, 'pair flow requested removal');
                 console.log(chalk.red(`🗑️ Force cleaned${label}: ${nexusDevNumber}`));
             }
         } catch (e) {

@@ -65,7 +65,6 @@ import {
   selectTikTokUrl,
 } from "./features/tiktok.js";
 import { createStatusEditFlow } from "./lib/statusEditFlow.js";
-import { createAnimeEditFlow } from "./features/animeEdits.js";
 import { normalizeInviteCode, approvalPrompt, adminNumberList, parseAdminChoice } from "./features/joinApproval.js";
 import { ensureDiskSpace, getMediaLimitBytes, isNoSpaceError } from "./lib/diskGuard.js";
 // ─────────────────────────────────────────────────────────────────────────────
@@ -681,10 +680,8 @@ const CONFIG = {
   BOT_URL:      process.env.BOT_URL      || "",
   BOT_PIC:      process.env.BOT_PIC      || "https://files.catbox.moe/05rqy6.png",
 };
-const animeEditFlow = createAnimeEditFlow({ prefix: () => CONFIG.PREFIX });
 const statusEditFlow = createStatusEditFlow({
   prefix: () => CONFIG.PREFIX,
-  animeFlow: animeEditFlow,
 });
 
 // ── DYNAMIC OWNER NAME ─────────────────────────────────────────────────────
@@ -2281,7 +2278,7 @@ async function connectToWA(force = false) {
           } catch {}
           cleanupLoggedOutRecords(sock?.user?.id || path.basename(AUTH_DIR));
           // __MAIS_TERMINAL_LOGOUT_WIPE__ — handoff was handled above.
-          try { fs.rmSync(AUTH_DIR, { recursive: true, force: true }); } catch {}
+          try { require('../sessionPaths').quarantineDir(AUTH_DIR, 'stale/logout session — quarantined, never deleted'); } catch {}
           console.log('🧹 Session credentials removed after a confirmed logout.');
           return;
         }
@@ -4629,7 +4626,6 @@ function _extractButtonCommand(raw) {
 function _menuButtonsPayload() {
   return [
     { buttonId: `BTN:${CONFIG.PREFIX}menu`, buttonText: { displayText: "🗂️ MENU" }, type: 1 },
-    { buttonId: `BTN:${CONFIG.PREFIX}ping`, buttonText: { displayText: "🏓 PING" }, type: 1 },
     { buttonId: `BTN:${CONFIG.PREFIX}runtime`, buttonText: { displayText: "⏱️ RUNTIME" }, type: 1 },
   ];
 }
@@ -4829,12 +4825,6 @@ async function sendInteractiveListMenu(sock, msg, menuText, coverBuf) {
       rowId: 'BTN:' + CONFIG.PREFIX + 'menu ' + cat.name.toLowerCase(),
     }));
 
-  catRows.unshift({
-    title: '🤖 ALL COMMANDS',
-    description: '📋 ' + CONFIG.PREFIX + 'allmenu — see every command',
-    rowId: 'BTN:' + CONFIG.PREFIX + 'allmenu',
-  });
-
   let sent = false;
 
   // ── 1) FIRST send the cover image as its OWN bubble (matches screenshot).
@@ -4862,10 +4852,8 @@ async function sendInteractiveListMenu(sock, msg, menuText, coverBuf) {
     const _menuFooter = `⚡ ${CONFIG.BOT_NAME} • buttons only menu`;
     const _menuQuoted  = imgSent ? undefined : msg;
     const _quickBtns   = [
-      { text: "📋 ALL CMDS",   id: `${CONFIG.PREFIX}allmenu`,       type: "quick_reply" },
       { text: "📥 DOWNLOAD",   id: `${CONFIG.PREFIX}menu download`, type: "quick_reply" },
       { text: "👥 GROUP",      id: `${CONFIG.PREFIX}menu group`,    type: "quick_reply" },
-      { text: "🏓 PING",       id: `${CONFIG.PREFIX}ping`,          type: "quick_reply" },
     ];
     try {
       // ── New handler path ────────────────────────────────────────────────
@@ -4887,10 +4875,8 @@ async function sendInteractiveListMenu(sock, msg, menuText, coverBuf) {
           highlight_label: 'Tap to open',
           rows: catRows.map(row => ({ title: row.title, description: row.description, id: row.rowId }))
         }], [
-          { id: `${CONFIG.PREFIX}allmenu`,       text: "📋 ALL CMDS" },
           { id: `${CONFIG.PREFIX}menu download`, text: "📥 DOWNLOAD" },
           { id: `${CONFIG.PREFIX}menu group`,    text: "👥 GROUP" },
-          { id: `${CONFIG.PREFIX}ping`,          text: "🏓 PING" },
         ], _menuFooter);
         sent = true;
       } catch (e1) {
@@ -5552,7 +5538,7 @@ function __miasInstallRichModeInterceptor(sock) {
         .text(isPlainText ? content.text : content.caption)
         .footer(`${CONFIG.BOT_NAME} • Rich Mode`)
         .addUrl("🗂️ Menu", "https://wa.me")
-        .addCopy("🏓 Ping", `${CONFIG.PREFIX}ping`, "rich_ping")
+        .addCopy("🗂️ Commands", `${CONFIG.PREFIX}menu`, "rich_menu")
         .addCopy("⚙️ Rich Mode Off", `${CONFIG.PREFIX}richmode off`, "rich_off");
 
       if (isImageCaption) {
@@ -6141,117 +6127,8 @@ const commands = new Map();
 function cmd(names, opts, handler) {
   for (const n of [].concat(names)) commands.set(n.toLowerCase(), { ...opts, handler });
 }
-animeEditFlow.registerCommands(cmd);
 
-  cmd(["animedl", "animedownload", "anime4k"], { desc: "Download anime episodes by name", category: "ANIME" }, async (sock, msg, args) => {
-    if (!args.length) {
-      await sendReply(sock, msg, `🎌 *Anime Download*\n\nUsage: ${CONFIG.PREFIX}animedl <anime name> [episode]\nExample: ${CONFIG.PREFIX}animedl Naruto 1`);
-      return;
-    }
-    await react(sock, msg, "🎌");
-    const query = args.slice(0, -1).join(" ") || args.join(" ");
-    const episode = parseInt(args[args.length-1]) || 1;
-    const actualQuery = isNaN(parseInt(args[args.length-1])) ? args.join(" ") : args.slice(0,-1).join(" ");
-    try {
-      // Search anime
-      const searchRes = await axios.get(`https://api.jikan.moe/v4/anime?q=${encodeURIComponent(actualQuery)}&limit=5`, { timeout: 10000 });
-      const animes = searchRes.data?.data || [];
-      if (!animes.length) {
-        await react(sock, msg, "❌");
-        await sendReply(sock, msg, `❌ No anime found for: *${actualQuery}*`);
-        return;
-      }
-      const anime = animes[0];
-      const title = anime.title;
-      const imgUrl = anime.images?.jpg?.image_url;
-      const synopsis = (anime.synopsis || "No synopsis available.").slice(0,300);
-      const episodes = anime.episodes || "?";
-      const score = anime.score || "N/A";
-      // Try download APIs
-      const dlApis = [
-        `https://api.jikan.moe/v4/anime?q=${encodeURIComponent(title)}&limit=1`,
-        `https://gogoanime.dk/search/${encodeURIComponent(title)}`,
-      ];
-      let dlLink = null;
-      for (const api of dlApis) {
-        try {
-          const r = await axios.get(api, { timeout: 8000 });
-          if (r.data?.link || r.data?.download || r.data?.url) {
-            dlLink = r.data.link || r.data.download || r.data.url;
-            break;
-          }
-        } catch {}
-      }
-      const caption = `🎌 *${title}*
-      
-  📺 Episodes: ${episodes}
-  ⭐ Score: ${score}
-
-  📖 Synopsis:
-  ${synopsis}...
-
-  ${dlLink ? `⬇️ Episode ${episode}: ${dlLink}` : `⚠️ Direct download not available.\nVisit: https://gogoanime.dk\nSearch: *${title}*`}
-
-  `;
-      if (imgUrl) {
-        try {
-          const imgBuf = Buffer.from((await axios.get(imgUrl, { responseType:"arraybuffer", timeout:8000 })).data);
-          await sock.sendMessage(msg.key.remoteJid, { image: imgBuf, caption }, { quoted: msg });
-        } catch { await sendReply(sock, msg, caption); }
-      } else { await sendReply(sock, msg, caption); }
-      await react(sock, msg, "✅");
-    } catch (e) {
-      await react(sock, msg, "❌");
-      await sendReply(sock, msg, `❌ Error: ${e.message}`);
-    }
-  
-  // ── FALLBACK ENDPOINTS (merged from duplicate cmd registrations) ──
-  // fallback prexzy: prexzyGet('/anime/animedetail', args)
-  // fallback prexzy: prexzyGet('/anime/animedownload', args)
-  // fallback prexzy: prexzyGet('/anime/hanime-detail', args)
-  // fallback prexzy: prexzyGet('/anime/manga-suggestions', args)
-});
-
-// ═══════════════════════════════════════════════════════════════════════════════
-//  PRINCE API — helpers & cmd() registrations
-//  All commands here work for PAIRED USERS (this is mias/index.js).
-//  Base: https://api.princetechn.com  Key: prince
-// ═══════════════════════════════════════════════════════════════════════════════
-const _PA_BASE = 'https://api.princetechn.com';
-const _PA_KEY  = 'prince';
-
-async function _paGet(endpoint, params = {}) {
-  try {
-    const res = await axios.get(`${_PA_BASE}${endpoint}`, {
-      params: { apikey: _PA_KEY, ...params },
-      timeout: 25000,
-    });
-    return { ok: true, data: res.data };
-  } catch (e) { return { ok: false, error: e.message, data: null }; }
-}
-async function _paFun(cat) {
-  const r = await _paGet(`/api/fun/${cat}`);
-  if (!r.ok || !r.data?.success) return null;
-  const res = r.data.result;
-  if (typeof res === 'string') return res;
-  if (res?.text)    return res.text;
-  if (res?.message) return res.message;
-  if (res?.quote)   return res.quote;
-  if (res?.advice)  return res.advice;
-  if (res?.setup)   return `${res.setup}\n\n_${res.punchline || ''}_`;
-  if (res?.joke)    return res.joke;
-  if (Array.isArray(res)) return res[0]?.text || JSON.stringify(res[0]);
-  return JSON.stringify(res).slice(0, 300);
-}
-async function _paBuf(url, timeout = 60000) {
-  const r = await axios.get(url, { responseType: 'arraybuffer', timeout });
-  return Buffer.from(r.data);
-}
-function _paIsUrl(s) { return typeof s === 'string' && /^https?:\/\//i.test(s); }
-
-// ─────────── AI COMMANDS ───────────────────────────────────────────────────
-
-cmd(["gpt4o","gpt-4o"], { desc: "Chat with GPT-4o", category: "AI" }, async (sock, msg, args) => {
+  cmd(["gpt4o","gpt-4o"], { desc: "Chat with GPT-4o", category: "AI" }, async (sock, msg, args) => {
   const q = args.join(" ");
   if (!q) return await sendReply(sock, msg, `🤖 *GPT-4o*\n\nUsage: ${CONFIG.PREFIX}gpt4o <question>`);
   await react(sock, msg, "✨");
@@ -6985,18 +6862,6 @@ const MENU_CATEGORIES = [
     "gpt4o","gpt-4o","mistral","mistralai","deepseek-r1","deepseekr1","blackbox","blackboxai",
     "gemini2","geminiv2","letmegpt","imagine","sd2","stablediffusion2",
     "tts2","texttospeech2","speak2","fluxai"] },
-  { name: "ANIME",     emoji: "🎌", cmds: [
-    "anime","animes","anisearch2","animesearch","animefind","animehome","animerecent","animeinfo2","anime4k",
-    "animequote","aniquote","waifu","neko","foxxgirl",
-    "animedl","animedl2","animedownload","animedllink","animedlv2","animestream","streamanime",
-    "akdetail","akepisodes","akstream","akcomments","animegenre","animegenres","animeschedule","animedetail",
-    "akinfo","aksearch","akrecent","akschedule","akgenre","akgenres","animedetailak","animeepisodes","animeeps","animecomments","allgenres","bygenre",
-    "animekill","animekill2","akill","animekillrecent","animekillsearch",
-    "hanimedetail","hanimeinfo",
-    "manga","mangasearch","mangafind","mangasuggestions","mangaepisodes","mangaeps","mangachaps","mangaseries","mangaseriesinfo","mangacomments","mangacomment","mangarankfilters","mangaranktags","mangafilters","mangaplanktags","mangarec","mangasugg",
-    "noveldetail","novelonline","webnovel","webnovelchapter","webnoveldetail","webnovelhot","webnovelrank",
-    "wnhot","wnrank","wnchapter","wndetail","wnhotlist","wnranking","wnreadchap","wnsearch","rangtags","rankafilters",
-    "weeklyanimeschedule","cry","bully","awoo","smug","happy2","cuddle","shinobu"] },
   { name: "STATUS",    emoji: "🎬", cmds: [
     "naruto", "jjk", "demonslayer",
     "onepiece", "bleach", "dragonball", "attackontitan",
@@ -7076,14 +6941,14 @@ const MENU_CATEGORIES = [
     "device","getdevice","checkdevice","botinfo","botcreator","creator","dev","developer",
     "groupinfo","ginfo","gcinfo","whois","admins","support",
     "getpp","getdp","dp","pfp2","vcf","cinfo","jid","cmds","listcmds","menu2","menu3",
-    "allmenu","allcmds","fullmenu","listall","aza","setaza","setazapic",
+    "aza","setaza","setazapic",
     "isonline","online","checkstatus","onlinecheck","activecheck","isactive","wacheck","checkactive","whatsappcheck"] },
   { name: "LOGO",      emoji: "🎨", cmds: ["alienglow","burning","chromeone","chrometwo","comic","fire","glowinghot","glowingsteel","gradientbevel","slab","neontext","simple","starburst","felt","outline","animatedglow","3dtextured","3dgradient","glossy","embossed","pixelbadge","chromium","iced","frosty","particle","moltencore","glitter","fantasy","logolist",
     "flagtext","flag3dtext","logomaker","blackpinklogo","sandsummer","galaxywallpaper"] },
   { name: "MEDIA",     emoji: "🖼️", cmds: ["toimg","tomp3","toaudio","toptt","tovideo","togif","tovv","viewonce","vv","s","trim","trimvid","videotrim"] },
   { name: "MISC",      emoji: "📁", cmds: [
     "antidelete","antidel","nodelete","antidstatus","antiedit","antied","noedit","antivonce","antiviewonce",
-    "ping","uptime","alive","runtime","owner","echo","report","feedback","request","repo"] },
+    "uptime","alive","runtime","owner","echo","report","feedback","request","repo"] },
   { name: "PANEL",     emoji: "🖥️", cmds: ["panel","panelinfo","buypanel","panelprice","panelfeatures","panelorder"] },
   { name: "NSFW",      emoji: "🔞", cmds: ["r34","r34info","rule34home","rule34detail"], adult: true },
   { name: "OWNER",     emoji: "🔐", cmds: [
@@ -7589,7 +7454,6 @@ function buildMenu(jid, senderName) {
   }
   t += `\n━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
   t += `  ╰➤ _${CONFIG.PREFIX}menu <category>_ — open a category\n`;
-  t += `  ╰➤ _${CONFIG.PREFIX}allmenu_ — all commands in one shot\n`;
   t += `  ╰➤ _${CONFIG.PREFIX}settings_ — configure the bot\n\n`;
   t += ``;
   return t;
@@ -7674,75 +7538,6 @@ cmd(["menu", "help", "commands", ".menu", "start"], { desc: "Show full menu", ca
   await sendMenuSong(sock, jid, msg);
 });
 
-cmd(["allmenu", "allcmds", "fullmenu", "listall"], { desc: "Show ALL commands at once", category: "INFO" }, async (sock, msg) => {
-  const jid = msg.key.remoteJid;
-  const s = getSettings(jid);
-  await react(sock, msg, "📋");
-  const totalCmds = commands.size;
-  const _date = new Date().toLocaleString("en-US", { weekday: "short", month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit" });
-  let text = "";
-  text += `> 💬 *_"${_randomHope()}"_*\n\n`;
-  text += `╔═══════════════════════╗\n`;
-  text += `║  ⚡ *𝑴𝑰𝑨𝑺 𝑴𝑫𝑿 v${CONFIG.VERSION || "4.9.5"}*  ⚡  ║\n`;
-  text += `╚═══════════════════════╝\n\n`;
-  text += `🔖 *Prefix:* \`${CONFIG.PREFIX}\`\n`;
-  text += `📦 *Commands:* ${totalCmds}+\n`;
-  text += `🕒 *Time:* ${_date}\n`;
-  text += `🌐 *Mode:* ${getSettings(getOwnerJid())?.workMode || "public"}\n\n`;
-  text += `▸ Use *${CONFIG.PREFIX}menu <category>* for full details\n`;
-  text += `▸ Tip: starred (✦) = most used\n\n`;
-  const STAR_CMDS = new Set(["play","ytmp3","ytmp4","sticker","tts","gpt","apk","aio","tiktok","ig","facebook","gemini","deepseek","meme","weather","wiki","lyrics","translate","removebg","upscale","kick","add","ban","unban"]);
-  for (const cat of MENU_CATEGORIES) {
-    if (cat.adult && (!s.adultMode || s.safeMode)) continue;
-    const uniq = [...new Set(cat.cmds)];
-    text += `\n━━ ${cat.emoji} *${cat.name}* (${uniq.length} cmds) ━━\n`;
-    for (const c of uniq) {
-      const star = STAR_CMDS.has(c) ? " ✦" : "  ";
-      const cmdDesc = commands.get(c)?.desc || "";
-      const descPart = cmdDesc ? ` — _${cmdDesc.replace(/^[^—–-]*[—–-]\s*/,"").slice(0,40)}_` : "";
-      text += `  ╰➤ *${CONFIG.PREFIX}${c}*${descPart}\n`;
-    }
-    text += `\n`;
-  }
-  text += `╔═══════════════════════╗\n`;
-  text += `║  _${CONFIG.PREFIX}help <cmd>_ for details  ║\n`;
-  text += `╚═══════════════════════╝\n`;
-  text += ``;
-
-  const coverPath = path.join(__dirname, "assets", "button-menu.jpg");
-  let coverBuf = null;
-  try { if (fs.existsSync(coverPath)) coverBuf = fs.readFileSync(coverPath); } catch {}
-  if (!coverBuf) coverBuf = await getBotPic();
-
-  const ownerS = getSettings(getOwnerJid());
-  if (!!ownerS?.buttonsMode && !jid.endsWith("@newsletter")) {
-    // Send image first, then extra action buttons
-    if (coverBuf) {
-      try { await sock.sendMessage(jid, { image: coverBuf, caption: text }, { quoted: msg }); }
-      catch {}
-    }
-    try {
-      await sock.sendMessage(jid, {
-        text: '━━━━━━━━━━━━━━━━\n🔁 *Quick Actions*',
-        footer: CONFIG.BOT_NAME + ' • v' + CONFIG.VERSION,
-        buttons: [
-          { buttonId: 'BTN:' + CONFIG.PREFIX + 'menu',    buttonText: { displayText: '🗂️ AVAILABLE MENUS' }, type: 1 },
-          { buttonId: 'BTN:' + CONFIG.PREFIX + 'ping',    buttonText: { displayText: '🏓 BOT sTATs' },       type: 1 },
-          { buttonId: 'BTN:' + CONFIG.PREFIX + 'botinfo', buttonText: { displayText: '✿ BOT INFO' },         type: 1 },
-        ],
-        headerType: 1,
-      }, { quoted: coverBuf ? undefined : msg });
-    } catch { }
-    return;
-  }
-  if (coverBuf) {
-    try {
-      await sock.sendMessage(jid, { image: coverBuf, caption: text }, { quoted: msg });
-      return;
-    } catch {}
-  }
-  await sendReply(sock, msg, text);
-});
 
 // ═══════════════════════════════════════════════════════════════════════════════
 //  ADVANCED SETTINGS MENU (26 sections)
@@ -8372,12 +8167,6 @@ _Tip: \`${CONFIG.PREFIX}debug 50\` shows the last 50 log lines._`;
 // ═══════════════════════════════════════════════════════════════════════════════
 //  MISC / ALIVE / PING / UPTIME
 // ═══════════════════════════════════════════════════════════════════════════════
-cmd("ping", { desc: "Bot ping / latency check", category: "MISC" }, async (sock, msg) => {
-  const t0 = Date.now();
-  await react(sock, msg, "🏓");
-  const ms = Date.now() - t0;
-  await sendReply(sock, msg, `ⓘ ${ms}ms`);
-});
 
 cmd(["alive", "runtime", "uptime"], { desc: "Bot alive status and uptime info", category: "MISC" }, async (sock, msg) => {
   await react(sock, msg, "🌿");
@@ -8741,345 +8530,487 @@ async function fetchPlayThumb(url, timeout = 12000) {
   } catch { return null; }
 }
 
-cmd(["play", "music", "song"], { desc: "Play/download song (audio)", category: "DOWNLOAD" }, async (sock, msg, args) => {
-  if (!args.length) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}play <song name or URL>`); return; }
-  await react(sock, msg, "🌀");
-  const query = args.join(" ");
-  const isUrl = /^https?:\/\//i.test(query);
-  const jid = msg.key.remoteJid;
+/* ══════════════════════════════════════════════════════════════════════════════
+   PRECIOUS PLAY v2 — inserted into mias/index.js by PATCH.cjs (do not delete)
+
+   .play <song name | link>
+        → sends a PLAYER IMAGE CARD (thumbnail + Title, Author, Duration, Views)
+        → the card lists the formats:
+
+             1 = Audio
+             2 = Document (.mp3)
+             3 = Voice note
+             4 = Video (mp4 with sound)
+
+        → the user QUOTES (replies to) the card with a number 1–4 and receives
+          exactly that format. The choice stays open for 20 minutes.
+
+   Every name below is prefixed (_P2_ / _p2) and every helper that could clash
+   with the host file is required locally inside the function body, so this
+   fragment is safe to inject into a 39k-line module.
+   ══════════════════════════════════════════════════════════════════════════════ */
+
+const _P2_TTL = 20 * 60 * 1000;
+const _P2_PENDING = new Map();
+const _P2_BOUND = new WeakSet();
+
+function _p2Views(v) {
+  if (v === undefined || v === null || v === '') return 'N/A';
+  const n = Number(String(v).replace(/[^0-9.]/g, ''));
+  if (!Number.isFinite(n) || n <= 0) return String(v).slice(0, 24);
+  if (n >= 1e9) return (n / 1e9).toFixed(1).replace(/\.0$/, '') + 'B';
+  if (n >= 1e6) return (n / 1e6).toFixed(1).replace(/\.0$/, '') + 'M';
+  if (n >= 1e3) return (n / 1e3).toFixed(1).replace(/\.0$/, '') + 'K';
+  return String(Math.round(n));
+}
+
+function _p2Dur(v) {
+  if (v === undefined || v === null || v === '') return 'N/A';
+  if (typeof v === 'string' && v.includes(':')) return v;
+  const n = Number(String(v).replace(/[^0-9.]/g, ''));
+  if (!Number.isFinite(n) || n <= 0) return String(v);
+  const total = Math.round(n);
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  if (h > 0) return h + ':' + String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+  return m + ':' + String(s).padStart(2, '0');
+}
+
+function _p2YtId(u) {
+  const m = String(u || '').match(/(?:v=|youtu\.be\/|shorts\/|embed\/)([A-Za-z0-9_-]{11})/);
+  return m ? m[1] : '';
+}
+
+function _p2ThumbOf(meta) {
+  meta = meta || {};
+  return meta.thumbUrl || meta.thumbnail || meta.cover || meta.image ||
+    (meta.videoId ? 'https://img.youtube.com/vi/' + meta.videoId + '/hqdefault.jpg' : null);
+}
+
+async function _p2ThumbBuf(meta) {
+  const u = _p2ThumbOf(meta);
+  if (!u) return null;
   try {
-    // Send initial status message that we'll keep editing
-    const statusMsg = await sock.sendMessage(jid, { text: `🌀 *MIAS MDX Player*\n\n🔍 Searching for *"${query}"*...` }, { quoted: msg });
-    const statusKey = statusMsg.key;
+    const r = await axios.get(u, {
+      responseType: 'arraybuffer', timeout: 20000, maxRedirects: 5,
+      validateStatus: function (s) { return s >= 200 && s < 400; },
+      headers: { 'User-Agent': 'Mozilla/5.0' },
+    });
+    const b = Buffer.from(r.data || []);
+    return b.length > 2000 ? b : null;
+  } catch (e) {
+    return null;
+  }
+}
 
-    // ── DAVID CYRIL API — PRIMARY SOURCE ──────────────────────────────────────
-    // Documented endpoints (https://apis.davidcyril.name.ng/docs/#):
-    //   GET /play?query=<search>       -> result{title,video_url,thumbnail,duration,views,download_url}
-    //   GET /download/ytmp3?url=<url>  -> result{title,thumbnail,format,download_url}
-    // Any failure here (network/timeout/bad response/missing or unusable media)
-    // simply falls through to the existing fallback providers below.
+async function _p2Get(url, timeout) {
+  const r = await axios.get(url, {
+    responseType: 'arraybuffer', timeout: timeout || 180000, maxRedirects: 5,
+    validateStatus: function (s) { return s >= 200 && s < 400; },
+    headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': '*/*' },
+  });
+  const b = Buffer.from(r.data || []);
+  if (b.length < 8000) throw new Error('file too small (' + b.length + ' bytes)');
+  const head = b.slice(0, 5).toString('utf8').toLowerCase();
+  if (head.startsWith('<!doc') || head.startsWith('<html')) throw new Error('got an HTML page, not media');
+  return b;
+}
+
+function _p2Sweep() {
+  const now = Date.now();
+  for (const kv of _P2_PENDING) {
+    if (!kv[1] || now - kv[1].ts > _P2_TTL) _P2_PENDING.delete(kv[0]);
+  }
+}
+
+/* ── media resolvers ───────────────────────────────────────────────────────── */
+
+async function _p2AudioBuf(meta) {
+  const raw = meta.videoUrl || meta.url || '';
+  const id = meta.videoId || _p2YtId(raw);
+  const ytUrl = raw && _p2YtId(raw) ? raw : (id ? 'https://www.youtube.com/watch?v=' + id : raw);
+  const tries = [];
+
+  if (ytUrl) tries.push(async () => {
+    const r = await dcGet('/download/ytmp3', { url: ytUrl }, 30000);
+    const d = r && r.ok ? extractDcPlay(r.data) : null;
+    return d ? (d.dlUrl || d.url || null) : null;
+  });
+  if (meta.title) tries.push(async () => {
+    const r = await dcGet('/play', { query: meta.title }, 30000);
+    const d = r && r.ok ? extractDcPlay(r.data) : null;
+    return d ? (d.dlUrl || d.url || null) : null;
+  });
+  if (ytUrl) tries.push(async () => {
+    const res = await axios.get(
+      CONFIG.GIFTED_API + '/api/download/ytmp3?apikey=' + CONFIG.GIFTED_KEY +
+      '&url=' + encodeURIComponent(ytUrl),
+      { timeout: 60000 }
+    );
+    const r = res.data && (res.data.result || res.data.data);
+    return r ? (r.download_url || r.url || r.audio || r.mp3 || null) : null;
+  });
+  if (ytUrl) tries.push(async () => {
+    const res = await axios.post('https://co.wuk.sh/api/json',
+      { url: ytUrl, downloadMode: 'audio', audioFormat: 'mp3' },
+      { headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' }, timeout: 30000 });
+    return res.data && (res.data.url || res.data.audio) ? (res.data.url || res.data.audio) : null;
+  });
+  if (ytUrl) tries.push(async () => {
+    const res = await axios.post('https://cobalt-api.kwiatekmiki.com/',
+      { url: ytUrl, downloadMode: 'audio', audioFormat: 'mp3' },
+      { headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' }, timeout: 30000 });
+    return res.data && res.data.url ? res.data.url : null;
+  });
+
+  for (const t of tries) {
     try {
-      const dcRes = isUrl
-        ? await dcGet("/download/ytmp3", { url: query }, 30000)
-        : await dcGet("/play", { query }, 30000);
-      const dc = dcRes?.ok ? extractDcPlay(dcRes.data) : null;
-      if (dc?.dlUrl) {
-        const dcAudio = await axios.get(dc.dlUrl, {
-          responseType: "arraybuffer", timeout: 120000, maxRedirects: 5,
-          headers: { "User-Agent": "Mozilla/5.0" },
-        }).catch(() => null);
-        const dcBuf = Buffer.from(dcAudio?.data || []);
-        const dcHead = dcBuf.slice(0, 5).toString("utf8").toLowerCase();
-        const dcLooksHtml = dcHead.startsWith("<!doc") || dcHead.startsWith("<html");
-        if (dcBuf.length > 8000 && !dcLooksHtml) {
-          const songTitle = (dc.title || query).slice(0, 80);
-          const safeName = songTitle.replace(/[^a-zA-Z0-9 ]/g, "").trim() || "audio";
-          // AUDIO payload — the media itself is always sent as audio.
-          const _audioPayload = {
-            audio: dcBuf,
-            mimetype: dc.mimetype || "audio/mpeg",
-            ptt: false,
-            fileName: `${safeName}${dc.ext || ".mp3"}`,
-          };
-          // THUMBNAIL/IMAGE — rendered as an artwork card on the SAME audio
-          // bubble (externalAdReply), so the audio stays playable. The image is
-          // downloaded and validated first; invalid/missing art is skipped.
-          const _dcThumbBuf = await fetchPlayThumb(dc.thumbUrl);
-          if (_dcThumbBuf || dc.thumbUrl) {
-            _audioPayload.contextInfo = {
-              externalAdReply: {
-                title: songTitle,
-                body: [dc.artists, dc.duration, `Powered by ${PLAY_BRAND}`].filter(Boolean).join(" • "),
-                ...(_dcThumbBuf ? { thumbnail: _dcThumbBuf } : { thumbnailUrl: dc.thumbUrl }),
-                mediaType: 1,
-                renderLargerThumbnail: true,
-                showAdAttribution: false,
-                ...(dc.videoUrl ? { sourceUrl: dc.videoUrl } : {}),
-              },
-            };
-          }
-          const _dcSentMsg = await sock.sendMessage(jid, _audioPayload, { quoted: msg });
-          // Keep the existing "reply v for video" behaviour keyed on the sent msg.
-          if (dc.videoUrl && _dcSentMsg?.key?.id) {
-            _playVideoMap.set(_dcSentMsg.key.id, { videoUrl: dc.videoUrl, title: songTitle, ts: Date.now() });
-            setTimeout(() => _playVideoMap.delete(_dcSentMsg.key.id), _PLAY_VIDEO_MAP_TTL);
-          }
-          try { await sock.sendMessage(jid, { delete: statusKey }); } catch { try { await editMessage(sock, jid, statusKey, ""); } catch {} }
-          await react(sock, msg, "✅");
-          return;
-        }
-      }
-      console.log("[play] DavidCyril primary returned no usable media — using fallback");
-    } catch (e) {
-      console.log("[play] DavidCyril primary failed:", e?.message || e);
-    }
+      const u = await t();
+      if (!u) continue;
+      return await _p2Get(u, 180000);
+    } catch (e) { /* next provider */ }
+  }
 
-    // FAST PATH — toxicapis ytmp3 (single round-trip, returns a working CDN URL)
+  // last resort — bundled ytdl-core
+  try {
+    const mod = await import('@distube/ytdl-core').catch(function () { return null; });
+    const ytdl = mod && (mod.default || mod);
+    if (ytdl && ytUrl) {
+      const info = await ytdl.getInfo(ytUrl, { requestOptions: { headers: { 'User-Agent': 'Mozilla/5.0' } } });
+      const fmt = ytdl.chooseFormat(info.formats, { quality: 'highestaudio', filter: 'audioonly' });
+      const chunks = [];
+      const stream = ytdl.downloadFromInfo(info, { format: fmt });
+      await new Promise(function (resolve, reject) {
+        stream.on('data', function (c) { chunks.push(c); });
+        stream.on('end', resolve);
+        stream.on('error', reject);
+        setTimeout(function () { reject(new Error('ytdl timeout')); }, 120000);
+      });
+      const b = Buffer.concat(chunks);
+      if (b.length > 8000) return b;
+    }
+  } catch (e) { /* give up */ }
+
+  throw new Error('every audio provider failed — try again in a moment');
+}
+
+async function _p2VideoBuf(meta) {
+  const raw = meta.videoUrl || meta.url || '';
+  const id = meta.videoId || _p2YtId(raw);
+  const ytUrl = raw && _p2YtId(raw) ? raw : (id ? 'https://www.youtube.com/watch?v=' + id : raw);
+  const tries = [];
+
+  if (ytUrl) tries.push(async () => {
+    const r = await dcGet('/download/ytmp4', { url: ytUrl }, 40000);
+    const d = r && r.ok ? extractDcPlay(r.data) : null;
+    return d ? (d.dlUrl || d.url || null) : null;
+  });
+  if (ytUrl) tries.push(async () => {
+    const res = await axios.get(
+      CONFIG.GIFTED_API + '/api/download/ytmp4?apikey=' + CONFIG.GIFTED_KEY +
+      '&url=' + encodeURIComponent(ytUrl),
+      { timeout: 60000 }
+    );
+    const r = res.data && (res.data.result || res.data.data);
+    return r ? (r.download_url || r.url || r.video || r.mp4 || null) : null;
+  });
+  if (ytUrl) tries.push(async () => {
+    const res = await axios.post('https://co.wuk.sh/api/json',
+      { url: ytUrl, downloadMode: 'video', videoQuality: '480' },
+      { headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' }, timeout: 30000 });
+    return res.data && res.data.url ? res.data.url : null;
+  });
+  if (ytUrl) tries.push(async () => {
+    const res = await axios.get('https://p.oceansaver.in/ajax/download.php?format=mp4&url=' + encodeURIComponent(ytUrl), { timeout: 30000 });
+    const d = res.data || {};
+    if (d.success && d.progress_url) {
+      for (let i = 0; i < 12; i++) {
+        await new Promise(function (r) { setTimeout(r, 3000); });
+        const p = await axios.get(d.progress_url, { timeout: 20000 });
+        const pd = p.data || {};
+        if (pd.success === 1 && pd.download_url) return pd.download_url;
+      }
+    }
+    return null;
+  });
+
+  for (const t of tries) {
     try {
-      const tox = (await toxicCall("/download/ytmp3", { url: isUrl ? query : "", q: isUrl ? "" : query }))
-                || (await toxicCall("/d/ytmp3",     { url: isUrl ? query : "", q: isUrl ? "" : query }));
-      if (tox?.url) {
-        const audioBuf = await axios.get(tox.url, { responseType: "arraybuffer", timeout: 90000, maxRedirects: 5, headers: { "User-Agent": "Mozilla/5.0" } });
-        if (audioBuf.data && audioBuf.data.length > 8000) {
-          const songTitle = (tox.title || query).slice(0, 80);
-          const _toxPayload = { audio: Buffer.from(audioBuf.data), mimetype: "audio/mpeg", ptt: false, fileName: `${songTitle.replace(/[^a-zA-Z0-9 ]/g, "")}.mp3` };
-          const _toxRawUrl = isUrl ? query : null;
-          const _toxYtId = (_toxRawUrl || "").match(/(?:v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/)?.[1];
-          const _toxThumb = tox.thumbnail || tox.thumb || tox.cover || tox.image || (_toxYtId ? `https://img.youtube.com/vi/${_toxYtId}/mqdefault.jpg` : null);
-          if (_toxThumb) {
-            _toxPayload.contextInfo = { externalAdReply: { title: songTitle, body: tox.artist || tox.duration || "", thumbnailUrl: _toxThumb || undefined, mediaType: 1, renderLargerThumbnail: true, showAdAttribution: false } };
-          }
-          await sock.sendMessage(jid, _toxPayload, { quoted: msg });
-          await react(sock, msg, "✅");
-          await editMessage(sock, jid, statusKey, `🎵 *${CONFIG.BOT_NAME} Player*\n\n✅ *${songTitle}* sent!`);
-          return;
-        }
+      const u = await t();
+      if (!u) continue;
+      return await _p2Get(u, 240000);
+    } catch (e) { /* next provider */ }
+  }
+  throw new Error('every video provider failed — try again in a moment');
+}
+
+/** ffmpeg → real voice note (ogg/opus). Returns null when unavailable. */
+async function _p2ToPtt(buf) {
+  try {
+    const fsx = require('fs');
+    const osx = require('os');
+    const pathx = require('path');
+    const cp = require('child_process');
+    const dir = fsx.mkdtempSync(pathx.join(osx.tmpdir(), 'p2ptt-'));
+    const inF = pathx.join(dir, 'in.bin');
+    const outF = pathx.join(dir, 'out.ogg');
+    fsx.writeFileSync(inF, buf);
+    const r = cp.spawnSync('ffmpeg', [
+      '-y', '-i', inF, '-vn', '-c:a', 'libopus',
+      '-b:a', '64k', '-ar', '48000', '-ac', '1', outF,
+    ], { timeout: 150000 });
+    let out = null;
+    try {
+      if (r.status === 0 && fsx.existsSync(outF)) {
+        const o = fsx.readFileSync(outF);
+        if (o.length > 2000) out = o;
       }
-    } catch {}
+    } catch (e) {}
+    try { fsx.rmSync(dir, { recursive: true, force: true }); } catch (e) {}
+    return out;
+  } catch (e) {
+    return null;
+  }
+}
 
-    // Step 1: Search for the song on YouTube
-    let videoUrl = isUrl ? query : null;
-    let title = query;
-    const searchApis = [
-      async () => {
-        const { data } = await axios.get(`${CONFIG.GIFTED_API}/api/search/ytsearch?apikey=${CONFIG.GIFTED_KEY}&q=${encodeURIComponent(query)}`, { timeout: 15000 });
-        const v = data?.result?.[0] || data?.results?.[0];
-        if (v?.url || v?.link) return { url: v.url || v.link, title: v.title || query };
-      },
-      async () => {
-        const { data } = await axios.get(`https://api.siputzx.my.id/api/y/search?query=${encodeURIComponent(query)}`, { timeout: 15000 });
-        const v = data?.data?.[0] || data?.result?.[0];
-        if (v?.url || v?.link) return { url: v.url || v.link, title: v.title || query };
-      },
-      async () => {
-        const results = await ytSearch(query);
-        if (results?.[0]?.url) return { url: results[0].url, title: results[0].title || query };
-      },
-      async () => {
-        const { data } = await axios.get(`https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`, {
-          headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" }, timeout: 15000
-        });
-        const match = data.match(/"videoId":"([a-zA-Z0-9_-]{11})"/);
-        if (match) return { url: `https://www.youtube.com/watch?v=${match[1]}`, title: query };
-      },
-    ];
-    if (!videoUrl) {
-      for (const searchFn of searchApis) {
-        try {
-          const result = await searchFn();
-          if (result?.url) { videoUrl = result.url; title = result.title || query; break; }
-        } catch { continue; }
-      }
-    }
-    if (!videoUrl) {
-      await editMessage(sock, jid, statusKey, `🎵 *MIAS MDX Player*\n\n🔍 Searching for *"${query}"*... ✅\n❌ No results found\n\n🔗 https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`);
-      return;
-    }
+/* ── delivery ──────────────────────────────────────────────────────────────── */
 
-    // Extract YouTube video ID → thumbnail cover art for all fallback providers
-    const _ytVidId = videoUrl?.match(/(?:v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/)?.[1];
-    const _ytThumb = _ytVidId ? `https://img.youtube.com/vi/${_ytVidId}/mqdefault.jpg` : null;
-    // Update: Found song, now downloading
-    await editMessage(sock, jid, statusKey, `🎵 *MIAS MDX Player*\n\n🔍 Searching for *"${query}"*... ✅\n📌 Found: *${title}*\n⏳ Downloading audio...`);
+async function _p2Deliver(sock, entry, n, quotedKey) {
+  const jid = entry.jid;
+  const meta = entry.meta || {};
+  const title = meta.title || 'audio';
+  const safe = String(title).replace(/[^a-zA-Z0-9 _-]/g, '').trim().slice(0, 60) || 'audio';
 
-    // Step 2: Download audio from multiple APIs
-    const dlApis = [
-      // ── v4.9.4 ── cobalt's public API now lives behind a JSON
-      // sub-path on community mirrors (the old `/` root was retired
-      // when the maintainers stopped offering a hosted instance).
-      // We try several known-good mirrors; each returns the same
-      // shape so the same response handling works for all of them.
-      async () => {
-        const { data } = await axios.post("https://co.wuk.sh/api/json", {
-          url: videoUrl, downloadMode: "audio", audioFormat: "mp3", filenameStyle: "basic"
-        }, { headers: { "Accept": "application/json", "Content-Type": "application/json", "User-Agent": "Mozilla/5.0" }, timeout: 30000 });
-        if (data?.url) return data.url;
-        if (data?.audio) return data.audio;
-      },
-      async () => {
-        const { data } = await axios.post("https://cobalt-api.kwiatekmiki.com/", {
-          url: videoUrl, downloadMode: "audio", audioFormat: "mp3"
-        }, { headers: { "Accept": "application/json", "Content-Type": "application/json" }, timeout: 30000 });
-        if (data?.url) return data.url;
-      },
-      async () => {
-        const { data } = await axios.post("https://api.cobalt.tools/api/json", {
-          url: videoUrl, downloadMode: "audio", audioFormat: "mp3"
-        }, { headers: { "Accept": "application/json", "Content-Type": "application/json", "User-Agent": "Mozilla/5.0" }, timeout: 30000 });
-        if (data?.url) return data.url;
-        if (data?.audio) return data.audio;
-      },
-      // ── v4.9.4 NEW ── axeel.my.id (modern, free, no key)
-      async () => {
-        const { data } = await axios.get(
-          `https://api.axeel.my.id/api/download/audio?url=${encodeURIComponent(videoUrl)}`,
-          { headers: { "User-Agent": "Mozilla/5.0" }, timeout: 30000 }
-        );
-        const u = data?.downloadUrl || data?.url || data?.result?.url || data?.data?.url;
-        if (u) return u;
-      },
-      // ── v4.9.4 NEW ── vevioz / api.vevioz.com (modern, free, no key)
-      async () => {
-        const videoId = videoUrl.match(/(?:v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/)?.[1];
-        if (!videoId) return;
-        const { data } = await axios.get(
-          `https://api.vevioz.com/api/button/mp3/${videoId}`,
-          { headers: { "User-Agent": "Mozilla/5.0", "Accept": "text/html,application/json" }, timeout: 25000 }
-        );
-        if (typeof data === "string") {
-          const m = data.match(/href="(https?:\/\/[^"]+\.mp3[^"]*)"/);
-          if (m) return m[1];
-        }
-        if (data?.url) return data.url;
-      },
-      async () => {
-        const videoId = videoUrl.match(/(?:v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/)?.[1];
-        if (!videoId) throw new Error("no id");
-        const { data } = await axios.get(`https://inv.nadeko.net/api/v1/videos/${videoId}`, { timeout: 20000 });
-        const audio = data?.adaptiveFormats?.find(f => f.type?.includes("audio") && f.url);
-        if (audio?.url) return audio.url;
-      },
-      async () => {
-        const { data } = await axios.get(`https://p.oceansaver.in/ajax/download.php?format=mp3&url=${encodeURIComponent(videoUrl)}`, { timeout: 30000 });
-        if (data?.success && data?.download) return data.download;
-      },
-      async () => {
-        const { data } = await axios.get(`${CONFIG.GIFTED_API}/api/download/ytmp3?apikey=${CONFIG.GIFTED_KEY}&url=${encodeURIComponent(videoUrl)}`, { timeout: 60000 });
-        if (data?.success && data?.result) return data.result.download_url || data.result.url || data.result.audio || data.result.mp3;
-      },
-      async () => { const r = await APIs.getEliteProTechDownloadByUrl(videoUrl); return r?.download; },
-      async () => { const r = await APIs.getYupraDownloadByUrl(videoUrl); return r?.download; },
-      async () => { const r = await APIs.getOkatsuDownloadByUrl(videoUrl); return r?.download; },
-      async () => { const r = await APIs.getIzumiDownloadByUrl(videoUrl); return r?.download; },
-      async () => {
-        const { data } = await axios.get(`https://api.ssyoutube.com/v2/?url=${encodeURIComponent(videoUrl)}`, {
-          headers: { "User-Agent": "Mozilla/5.0" }, timeout: 20000
-        });
-        const audio = data?.audio?.find(a => a.url) || data?.links?.find(l => l.url && l.type === "audio");
-        if (audio?.url) return audio.url;
-      },
-      async () => {
-        const { data } = await axios.post("https://tomp3.cc/api/ajax/search", `query=${encodeURIComponent(videoUrl)}&vt=mp3`, {
-          headers: { "Content-Type": "application/x-www-form-urlencoded", "User-Agent": "Mozilla/5.0" }, timeout: 20000
-        });
-        if (data?.links?.mp3?.mp3128?.k) {
-          const { data: dl } = await axios.post("https://tomp3.cc/api/ajax/convert", `vid=${data.vid}&k=${data.links.mp3.mp3128.k}`, {
-            headers: { "Content-Type": "application/x-www-form-urlencoded" }, timeout: 30000
-          });
-          if (dl?.dlink) return dl.dlink;
-        }
-      },
-    ];
-
-    // ── v4.9.4 LOCAL FALLBACK ──────────────────────────────────────
-    // If every external provider above fails, fall back to the
-    // bundled @distube/ytdl-core. We stream the raw audio into a
-    // Buffer ourselves and short-circuit the URL fetch path by
-    // sending the audio directly. This is slower (no CDN) but it
-    // works whenever YouTube itself is reachable, which is the
-    // single scenario nothing else in this list survives.
-    const tryYtdlLocal = async () => {
-      try {
-        const ytdlMod = await import("@distube/ytdl-core").catch(() => null);
-        const ytdl = ytdlMod?.default || ytdlMod;
-        if (!ytdl) return null;
-        const info = await ytdl.getInfo(videoUrl, { requestOptions: { headers: { "User-Agent": "Mozilla/5.0" } } });
-        const fmt = ytdl.chooseFormat(info.formats, { quality: "highestaudio", filter: "audioonly" });
-        if (!fmt?.url) return null;
-        const stream = ytdl.downloadFromInfo(info, { format: fmt });
-        const chunks = [];
-        await new Promise((resolve, reject) => {
-          stream.on("data", c => chunks.push(c));
-          stream.on("end", resolve);
-          stream.on("error", reject);
-          setTimeout(() => reject(new Error("ytdl timeout")), 120000);
-        });
-        const buf = Buffer.concat(chunks);
-        if (buf.length < 8000) return null;
-        return { _localBuf: buf, _localTitle: info.videoDetails?.title || title };
-      } catch (e) {
-        console.error("[play] ytdl-local fallback failed:", e.message);
-        return null;
-      }
+  if (n === 4) {
+    const vbuf = await _p2VideoBuf(meta);
+    const thumb = await _p2ThumbBuf(meta).catch(function () { return null; });
+    const payload = {
+      video: vbuf,
+      mimetype: 'video/mp4',
+      fileName: safe + '.mp4',
+      caption: '🎬 *' + title + '*\n👤 ' + (meta.artists || meta.author || 'Unknown') + '  ⏱️ ' + _p2Dur(meta.duration),
     };
+    if (thumb) payload.jpegThumbnail = thumb;
+    await sock.sendMessage(jid, payload, { quoted: quotedKey });
+    return;
+  }
 
-    // Update: trying download providers
-    await editMessage(sock, jid, statusKey, `🎵 *${CONFIG.BOT_NAME} Player*\n\n🔍 Searching for *"${query}"*... ✅\n📌 Found: *${title}*\n⏳ Downloading audio...`);
+  const abuf = await _p2AudioBuf(meta);
 
-    // Try each provider's URL, fetch, validate the buffer is real audio, send.
-    // If any provider returns HTML/JSON/tiny garbage (= corrupt mp3), skip it.
-    let sent = false;
-    for (const tryDl of dlApis) {
-      let dlUrl = null;
-      try { dlUrl = await tryDl(); } catch {}
-      if (!dlUrl) continue;
-      try {
-        const audioRes = await axios.get(dlUrl, {
-          responseType: "arraybuffer", timeout: 120000,
-          headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36", "Accept": "*/*" },
-          maxRedirects: 5,
-          validateStatus: s => s >= 200 && s < 400,
-        });
-        const buf = Buffer.from(audioRes.data || []);
-        const ct = String(audioRes.headers?.["content-type"] || "").toLowerCase();
-        const looksHtml = buf.length >= 5 && (buf.slice(0, 5).toString("utf8").toLowerCase() === "<!doc" || buf.slice(0, 5).toString("utf8").toLowerCase() === "<html");
-        const looksJson = buf.length >= 1 && (buf[0] === 0x7B || buf[0] === 0x5B);
-        const hasId3      = buf.length >= 3 && buf.slice(0, 3).toString("utf8") === "ID3";
-        const hasMpegSync = buf.length >= 2 && buf[0] === 0xFF && (buf[1] & 0xE0) === 0xE0;
-        const hasOggS     = buf.length >= 4 && buf.slice(0, 4).toString("utf8") === "OggS";
-        const hasRiff     = buf.length >= 4 && buf.slice(0, 4).toString("utf8") === "RIFF";
-        const hasM4A      = buf.length >= 12 && buf.slice(4, 8).toString("ascii") === "ftyp";
-        const ctOk        = /audio|mpeg|mp3|ogg|m4a|aac|wav|octet-stream|binary/i.test(ct);
-        const looksAudio  = hasId3 || hasMpegSync || hasOggS || hasRiff || hasM4A || (ctOk && !looksHtml && !looksJson);
-        if (buf.length < 5000 || !looksAudio) {
-          console.log(`[PLAY] skipped corrupt/garbage buffer (len=${buf.length}, ct=${ct})`);
-          continue;
-        }
-        await editMessage(sock, jid, statusKey, `🎵 *${CONFIG.BOT_NAME} Player*\n\n🔍 Searching for *"${query}"*... ✅\n📌 Found: *${title}*\n⏳ Downloading audio... ✅\n📥 Fetching file... ✅\n📤 Sending audio...`);
-        const _safeName = title.replace(/[^a-zA-Z0-9 ]/g, "").slice(0, 60);
-        // Detect actual format and use correct MIME to prevent WhatsApp corruption
-        const _playMime = hasOggS ? "audio/ogg; codecs=opus" : hasM4A ? "audio/mp4" : "audio/mpeg";
-        const _playExt  = hasOggS ? "ogg" : hasM4A ? "m4a" : "mp3";
-        const _playPayload = { audio: buf, mimetype: _playMime, ptt: false, fileName: `${_safeName}.${_playExt}` };
-        if (_ytThumb) {
-          _playPayload.contextInfo = { externalAdReply: { title, body: "", thumbnailUrl: _ytThumb || undefined, mediaType: 1, renderLargerThumbnail: true, showAdAttribution: false } };
-        }
+  if (n === 2) {
+    await sock.sendMessage(jid, {
+      document: abuf,
+      mimetype: 'audio/mpeg',
+      fileName: safe + '.mp3',
+      caption: '📄 *' + title + '*\n👤 ' + (meta.artists || meta.author || 'Unknown') + '  ⏱️ ' + _p2Dur(meta.duration) + '  👁️ ' + _p2Views(meta.views),
+    }, { quoted: quotedKey });
+    return;
+  }
+
+  if (n === 3) {
+    const ogg = await _p2ToPtt(abuf);
+    if (ogg) {
+      await sock.sendMessage(jid, { audio: ogg, mimetype: 'audio/ogg; codecs=opus', ptt: true }, { quoted: quotedKey });
+    } else {
+      await sock.sendMessage(jid, { audio: abuf, mimetype: 'audio/mpeg', ptt: true }, { quoted: quotedKey });
+    }
+    return;
+  }
+
+  const thumb = await _p2ThumbBuf(meta).catch(function () { return null; });
+  const payload = { audio: abuf, mimetype: 'audio/mpeg', ptt: false, fileName: safe + '.mp3' };
+  const thumbUrl = _p2ThumbOf(meta);
+  if (thumb || thumbUrl) {
+    payload.contextInfo = {
+      externalAdReply: {
+        title: title,
+        body: [meta.artists || meta.author, _p2Dur(meta.duration), _p2Views(meta.views) + ' views']
+          .filter(Boolean).join(' • '),
+        ...(thumb ? { thumbnail: thumb } : { thumbnailUrl: thumbUrl }),
+        mediaType: 1,
+        renderLargerThumbnail: true,
+        showAdAttribution: false,
+        ...(meta.videoUrl ? { sourceUrl: meta.videoUrl } : {}),
+      },
+    };
+  }
+  await sock.sendMessage(jid, payload, { quoted: quotedKey });
+}
+
+/* ── reply-to-card picker ──────────────────────────────────────────────────── */
+
+function _p2Body(m) {
+  const msg = (m && m.message) || {};
+  const c =
+    msg.conversation ||
+    (msg.extendedTextMessage && msg.extendedTextMessage.text) ||
+    (msg.imageMessage && msg.imageMessage.caption) ||
+    (msg.videoMessage && msg.videoMessage.caption) ||
+    (msg.buttonsResponseMessage && msg.buttonsResponseMessage.selectedButtonId) ||
+    (msg.listResponseMessage && msg.listResponseMessage.singleSelectReply && msg.listResponseMessage.singleSelectReply.selectedRowId) ||
+    (msg.templateButtonReplyMessage && msg.templateButtonReplyMessage.selectedId) ||
+    '';
+  return String(c || '').trim();
+}
+
+function _p2QuotedId(m) {
+  const msg = (m && m.message) || {};
+  const keys = ['extendedTextMessage', 'imageMessage', 'videoMessage', 'audioMessage', 'documentMessage',
+    'buttonsResponseMessage', 'listResponseMessage', 'templateButtonReplyMessage', 'conversation'];
+  for (const k of keys) {
+    const ctx = msg[k] && msg[k].contextInfo;
+    if (ctx && ctx.stanzaId) return ctx.stanzaId;
+  }
+  return null;
+}
+
+async function _p2OnMsg(sock, m) {
+  const jid = (m && m.key && m.key.remoteJid) || '';
+  if (!jid) return;
+  const body = _p2Body(m);
+  if (!body) return;
+  const digits = body.replace(/[^0-9]/g, '');
+  if (digits.length !== 1) return;
+  const n = Number(digits);
+  if (n < 1 || n > 4) return;
+  const qid = _p2QuotedId(m);
+  if (!qid) return;
+  const entry = _P2_PENDING.get(qid);
+  if (!entry || entry.jid !== jid) return;
+  _P2_PENDING.delete(qid);
+  if (typeof react === 'function') await react(sock, m, '⏳').catch(function () {});
+  try {
+    await _p2Deliver(sock, entry, n, m);
+    if (typeof react === 'function') await react(sock, m, '✅').catch(function () {});
+  } catch (e) {
+    const labels = { 1: 'audio', 2: 'document', 3: 'voice note', 4: 'video' };
+    await sock.sendMessage(jid, {
+      text: '❌ Could not send the ' + labels[n] + ' for *' + (entry.meta && entry.meta.title ? entry.meta.title : 'that song') + '*.\n_' + (e && e.message ? e.message : e) + '_',
+    }, { quoted: m }).catch(function () {});
+  }
+}
+
+function _p2Bind(sock) {
+  try {
+    if (!sock || !sock.ev || typeof sock.ev.on !== 'function') return;
+    if (_P2_BOUND.has(sock)) return;
+    _P2_BOUND.add(sock);
+    sock.ev.on('messages.upsert', async function (evt) {
+      if (!evt || evt.type !== 'notify') return;
+      for (const m of (evt.messages || [])) {
+        try { await _p2OnMsg(sock, m); } catch (e) { console.log('[play2] picker error:', e && e.message); }
+      }
+    });
+    console.log('[play2] format-picker listener attached');
+  } catch (e) {
+    console.log('[play2] bind failed:', e && e.message);
+  }
+}
+
+/* ── .play ─────────────────────────────────────────────────────────────────── */
+
+cmd(["play", "music", "song"], { desc: "Play a song — card + pick 1 audio / 2 document / 3 voice / 4 video", category: "DOWNLOAD" }, async (sock, msg, args) => {
+  const jid = msg.key.remoteJid;
+  if (!args || !args.length) {
+    await sendReply(sock, msg,
+      '🎧 *' + CONFIG.BOT_NAME + ' PLAYER*\n\n' +
+      'Usage: ' + CONFIG.PREFIX + 'play <song name or link>\n' +
+      'Then quote the card with 1, 2, 3 or 4:\n' +
+      '  1 = Audio   2 = Document   3 = Voice   4 = Video');
+    return;
+  }
+  const query = args.join(' ').trim();
+  const isUrl = /^https?:\/\//i.test(query);
+  await react(sock, msg, '🎧').catch(function () {});
+
+  const status = await sock.sendMessage(jid, {
+    text: '🎧 *' + CONFIG.BOT_NAME + ' Player*\n\n🔍 Searching *' + query + '* …',
+  }, { quoted: msg }).catch(function () { return null; });
+
+  let meta = null;
+  try {
+    if (isUrl) {
+      const vid = _p2YtId(query);
+      const attempts = [
+        function () { return dcGet('/download/ytmp3', { url: query }, 30000); },
+        function () { return dcGet('/play', { query: query }, 30000); },
+      ];
+      if (vid) attempts.push(function () { return dcGet('/play', { query: 'https://www.youtube.com/watch?v=' + vid }, 30000); });
+      for (const a of attempts) {
         try {
-          await sock.sendMessage(jid, _playPayload, { quoted: msg });
-        } catch (_audioErr) {
-          await sock.sendMessage(jid, { document: buf, mimetype: _playMime, fileName: `${_safeName}.${_playExt}`, caption: `🎵 *${title}*\n\n_Audio sent as document (tap to play/download)_` }, { quoted: msg });
-        }
-        await react(sock, msg, "✅");
-        await editMessage(sock, jid, statusKey, `🎵 *${CONFIG.BOT_NAME} Player*\n\n🔍 Searching for *"${query}"*... ✅\n📌 Found: *${title}*\n⏳ Downloading audio... ✅\n📥 Fetching file... ✅\n📤 Sending audio... ✅\n\n✅ *Done!* Enjoy your music 🎶`);
-        sent = true;
-        break;
-      } catch (e) {
-        console.log("[PLAY] provider failed:", e?.message || e);
-        continue;
+          const r = await a();
+          const d = r && r.ok ? extractDcPlay(r.data) : null;
+          if (d && (d.title || d.dlUrl)) {
+            meta = { ...d, videoUrl: d.videoUrl || query, videoId: _p2YtId(d.videoUrl || query) };
+            break;
+          }
+        } catch (e) {}
+      }
+    } else {
+      try {
+        const r = await dcGet('/play', { query: query }, 30000);
+        const d = r && r.ok ? extractDcPlay(r.data) : null;
+        if (d && (d.title || d.dlUrl)) meta = { ...d, videoId: _p2YtId(d.videoUrl) };
+      } catch (e) {}
+      if (!meta) {
+        try {
+          const res = await ytSearch(query);
+          const v = res && res[0];
+          if (v && v.url) meta = { title: v.title || query, videoUrl: v.url, videoId: _p2YtId(v.url) };
+        } catch (e) {}
       }
     }
-    if (sent) return;
+  } catch (e) {
+    console.log('[play2] metadata error:', e && e.message);
+  }
 
-    // ── v4.9.4 LOCAL FALLBACK ──
-    // Every external provider failed. Try the bundled ytdl-core
-    // streamer before giving up. (Slower, may be IP-blocked.)
-    try {
-      await editMessage(sock, jid, statusKey, `🎵 *${CONFIG.BOT_NAME} Player*\n\n🔍 Searching for *"${query}"*... ✅\n📌 Found: *${title}*\n🔁 External providers failed — trying local fallback...`);
-      const local = await tryYtdlLocal();
-      if (local?._localBuf) {
-        const lt = (local._localTitle || title).slice(0, 80);
-        await sock.sendMessage(jid, {
-          audio: local._localBuf, mimetype: "audio/mpeg", ptt: false,
-          fileName: `${lt.replace(/[^a-zA-Z0-9 ]/g, "").slice(0, 60)}.mp3`
-        }, { quoted: msg });
-        await react(sock, msg, "✅");
-        await editMessage(sock, jid, statusKey, `🎵 *${CONFIG.BOT_NAME} Player*\n\n✅ *${lt}* sent (local fallback)!`);
-        return;
-      }
-    } catch (e) { console.error("[PLAY] local fallback raised:", e.message); }
+  if (!meta) meta = { title: query, videoUrl: isUrl ? query : '', videoId: _p2YtId(query) };
+  if (!meta.videoUrl && meta.videoId) meta.videoUrl = 'https://www.youtube.com/watch?v=' + meta.videoId;
 
-    await editMessage(sock, jid, statusKey, `🎵 *${CONFIG.BOT_NAME} Player*\n\n🔍 Searching for *"${query}"*... ✅\n📌 Found: *${title}*\n⏳ Downloading audio... ❌\n\n⚠️ All audio providers failed or returned a corrupt file. Try again in a bit.\n🔗 ${videoUrl}`);
-  } catch (e) { console.error("[play] error:", e.message); }
+  const title = meta.title || query;
+  const author = meta.artists || meta.author || meta.channel || 'Unknown';
+  const card = [
+    '🎧 *' + CONFIG.BOT_NAME + ' — PLAYER*',
+    '',
+    '🎵 *Title:*     ' + title,
+    '👤 *Author:*    ' + author,
+    '⏱️ *Duration:*  ' + _p2Dur(meta.duration),
+    '👁️ *Views:*     ' + _p2Views(meta.views),
+    '',
+    '━━━━━━━━━━━━━━━━━━━━',
+    '📥 *Choose a format — quote THIS message with the number:*',
+    '',
+    '  1️⃣  *Audio* — playable audio',
+    '  2️⃣  *Document* — .mp3 file to download',
+    '  3️⃣  *Voice* — voice note',
+    '  4️⃣  *Video* — mp4 with sound',
+    '',
+    '_Example: reply to this card with_ `1` _for audio, `4` _for video._',
+  ].join('\n');
+
+  const thumb = await _p2ThumbBuf(meta).catch(function () { return null; });
+  const sent = thumb
+    ? await sock.sendMessage(jid, { image: thumb, caption: card }, { quoted: msg }).catch(function () { return null; })
+    : await sock.sendMessage(jid, { text: card }, { quoted: msg }).catch(function () { return null; });
+
+  if (status && status.key) { try { await sock.sendMessage(jid, { delete: status.key }); } catch (e) {} }
+
+  if (!sent || !sent.key || !sent.key.id) {
+    await sendReply(sock, msg, '❌ Could not send the player card for *' + title + '*.');
+    return;
+  }
+
+  _p2Sweep();
+  _P2_PENDING.set(sent.key.id, {
+    jid: jid,
+    meta: meta,
+    user: (typeof getSender === 'function' ? String(getSender(msg) || '') : ''),
+    ts: Date.now(),
+  });
+  setTimeout(function () { _P2_PENDING.delete(sent.key.id); }, _P2_TTL).unref && setTimeout(function () { _P2_PENDING.delete(sent.key.id); }, _P2_TTL);
+  _p2Bind(sock);
+  await react(sock, msg, '✅').catch(function () {});
 });
 
 cmd(["playvid","playvideo","vidplay"], { desc: "Download song as video (mp4)", category: "DOWNLOAD" }, async (sock, msg, args) => {
@@ -10426,181 +10357,6 @@ async function sendAnimeGif(sock, msg, type) {
   await sendReply(sock, msg, `🎌 *${type.toUpperCase()}*\n\n_(Could not load — all APIs failed, try again!)_`);
 }
 cmd("anime", { desc: "Random anime image", category: "ANIME" }, async (s, m) => sendAnimeGif(s, m, "neko"));
-cmd("waifu",    { desc: "Random waifu", category: "ANIME" }, async (s, m) => sendAnimeGif(s, m, "waifu"));
-cmd("neko",     { desc: "Random neko", category: "ANIME" }, async (s, m) => sendAnimeGif(s, m, "neko"));
-cmd("foxxgirl", { desc: "Random fox girl", category: "ANIME" }, async (s, m) => sendAnimeGif(s, m, "kitsune"));
-
-// ═══════════════════════════════════════════════════════════════════════════════
-//  REACTIONS
-// ═══════════════════════════════════════════════════════════════════════════════
-const REACTION_CMDS = {
-  hug: "hug", kiss: "kiss", pat: "pat", slap: "slap", wink: "wink",
-  bonk: "bonk", poke: "poke", yeet: "throw", blush: "blush",
-  wave: "wave", smile: "smile", highfive: "highfive", handhold: "handhold",
-  nom: "feed", bite: "bite", glomp: "glomp", cringe: "cringe", dance: "dance",
-};
-const REACT_EMOJIS = { hug: "🤗", kiss: "💋", pat: "🥺", slap: "👋", wink: "😉", bonk: "🔨", poke: "👉", yeet: "🚀", blush: "😊", wave: "👋", smile: "😊", highfive: "🙌", handhold: "🤝", nom: "😋", bite: "😬", glomp: "🤗", cringe: "😬", dance: "💃" };
-// Waifu.pics has these SFW gif types
-const REACTION_ACTIONS = { hug: "hugs", kiss: "kisses", pat: "pats", slap: "slaps", wink: "winks", bonk: "bonks", poke: "pokes", yeet: "yeets", blush: "blushes at", wave: "waves at", smile: "smiles at", highfive: "high-fives", handhold: "holds hands with", nom: "feeds", bite: "bites", glomp: "glomps", cringe: "cringes at", dance: "dances with" };
-const WAIFU_PICS_MAP = { hug: "hug", kiss: "kiss", pat: "pat", slap: "slap", wink: "wink", dance: "dance", wave: "wave", highfive: "highfive", poke: "poke", nom: "nom", blush: "blush", smile: "smile", bonk: "bonk", bite: "bite", glomp: "glomp", cringe: "cringe", handhold: "handhold", yeet: "yeet" };
-// some-random-api types
-const SRA_MAP = { hug: "hug", pat: "pat", kiss: "kiss", slap: "slap", wink: "wink", dance: "dance", wave: "wave", blush: "blush", smile: "smile", bonk: "bonk", bite: "bite" };
-
-async function fetchReactionGif(ntype, rcmd) {
-  // Try 1: nekos.best
-  try {
-    const { data } = await axios.get(`https://nekos.best/api/v2/${ntype}`, { timeout: 10000 });
-    const url = data?.results?.[0]?.url;
-    if (url) {
-      const buf = await axios.get(url, { responseType: "arraybuffer", timeout: 15000, headers: { "User-Agent": "Mozilla/5.0" } });
-      if (buf.data && buf.data.byteLength > 10000) return Buffer.from(buf.data);
-    }
-  } catch {}
-  // Try 2: waifu.pics
-  try {
-    const wpType = WAIFU_PICS_MAP[rcmd] || ntype;
-    const { data } = await axios.post("https://api.waifu.pics/sfw/" + wpType, {}, { timeout: 10000 });
-    if (data?.url) {
-      const buf = await axios.get(data.url, { responseType: "arraybuffer", timeout: 15000, headers: { "User-Agent": "Mozilla/5.0" } });
-      if (buf.data && buf.data.byteLength > 10000) return Buffer.from(buf.data);
-    }
-  } catch {}
-  // Try 3: some-random-api
-  try {
-    const sraType = SRA_MAP[rcmd];
-    if (sraType) {
-      const { data } = await axios.get(`https://some-random-api.com/animu/${sraType}`, { timeout: 10000 });
-      if (data?.link) {
-        const buf = await axios.get(data.link, { responseType: "arraybuffer", timeout: 15000, headers: { "User-Agent": "Mozilla/5.0" } });
-        if (buf.data && buf.data.byteLength > 10000) return Buffer.from(buf.data);
-      }
-    }
-  } catch {}
-  // Try 4: otakugifs.xyz
-  try {
-    const { data } = await axios.get(`https://api.otakugifs.xyz/gif?reaction=${ntype}`, { timeout: 10000 });
-    if (data?.url) {
-      const buf = await axios.get(data.url, { responseType: "arraybuffer", timeout: 15000, headers: { "User-Agent": "Mozilla/5.0" } });
-      if (buf.data && buf.data.byteLength > 10000) return Buffer.from(buf.data);
-    }
-  } catch {}
-  return null;
-}
-
-for (const [rcmd, ntype] of Object.entries(REACTION_CMDS)) {
-  cmd(rcmd, { desc: `${rcmd} someone (tag or reply)`, category: "REACTIONS" }, async (sock, msg, args) => {
-    await react(sock, msg, REACT_EMOJIS[rcmd] || "💫");
-    // Determine target: @mentioned, replied-to, or from args
-    const ctx = msg.message?.extendedTextMessage?.contextInfo
-      || msg.message?.imageMessage?.contextInfo
-      || msg.message?.videoMessage?.contextInfo
-      || msg.message?.audioMessage?.contextInfo
-      || msg.message?.documentMessage?.contextInfo
-      || msg.message?.stickerMessage?.contextInfo
-      || msg.message?.buttonsResponseMessage?.contextInfo
-      || msg.message?.listResponseMessage?.contextInfo;
-    const mentionedJids = ctx?.mentionedJid || [];
-    let targetJid = mentionedJids[0] || null;
-    if (!targetJid && ctx?.participant) targetJid = ctx.participant;
-    if (!targetJid && args[0]) {
-      const num = args[0].replace(/[^0-9]/g, "");
-      if (num.length >= 7) targetJid = num + "@s.whatsapp.net";
-    }
-    const senderName = await getDisplayName(sock, getSender(msg), msg.key.remoteJid);
-    let targetName = targetJid ? await getDisplayName(sock, targetJid, msg.key.remoteJid) : null;
-    let caption, mentions = [];
-    const actionWord = REACTION_ACTIONS[rcmd] || `${rcmd}s`;
-    if (targetJid) {
-      caption = `${REACT_EMOJIS[rcmd]} *${senderName}* ${actionWord} *${targetName || "@" + _cleanNum(targetJid)}*!`;
-      mentions = [getSender(msg), targetJid].filter(Boolean);
-    } else {
-      caption = `${REACT_EMOJIS[rcmd]} *${senderName}* ${actionWord}!`;
-    }
-    caption += ``;
-    const gifBuf = await fetchReactionGif(ntype, rcmd);
-    if (gifBuf) {
-      let sent = false;
-      // Method 1: animated sticker (WebP format) — best appearance in WA
-      const _isWebP = gifBuf.length >= 12 && gifBuf.slice(0, 4).toString("ascii") === "RIFF" && gifBuf.slice(8, 12).toString("ascii") === "WEBP";
-      if (!sent && _isWebP) try {
-        await sock.sendMessage(msg.key.remoteJid, { sticker: gifBuf }, { quoted: msg });
-        await sock.sendMessage(msg.key.remoteJid, { text: caption, mentions }, { quoted: msg });
-        sent = true;
-      } catch {}
-      // Method 2: video with gifPlayback (MP4 from nekos.best — animated inline)
-      if (!sent) try {
-        await sock.sendMessage(msg.key.remoteJid, { video: gifBuf, gifPlayback: true, caption, mentions }, { quoted: msg });
-        sent = true;
-      } catch {}
-      // Method 3: video without gifPlayback
-      if (!sent) try {
-        await sock.sendMessage(msg.key.remoteJid, { video: gifBuf, caption, mentions }, { quoted: msg });
-        sent = true;
-      } catch {}
-      // Method 4: plain image (guaranteed to work)
-      if (!sent) try {
-        await sock.sendMessage(msg.key.remoteJid, { image: gifBuf, caption, mentions }, { quoted: msg });
-        sent = true;
-      } catch {}
-      if (sent) return;
-    }
-    // No image found — send text only
-    await sendReply(sock, msg, caption);
-  });
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-//  AUDIO COMMANDS
-// ═══════════════════════════════════════════════════════════════════════════════
-const AUDIO_CMDS = ["deep","smooth","fat","tupai","blown","robot","chipmunk","nightcore","earrape","bass","reverse","slow","fast","baby","deamon"];
-for (const ac of AUDIO_CMDS) {
-  cmd(ac, { desc: `Audio effect: ${ac}`, category: "AUDIO" }, async (sock, msg) => {
-    const q = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage;
-    const aud = q?.audioMessage || msg.message?.audioMessage;
-    if (!aud) { await sendReply(sock, msg, `🎵 *${ac.toUpperCase()}*\n\nReply to an audio message to apply this effect.`); return; }
-    await react(sock, msg, "🎵");
-    try {
-      const stream = await downloadContentFromMessage(aud, "audio");
-      let buf = Buffer.from([]);
-      for await (const c of stream) buf = Buffer.concat([buf, c]);
-      const inPath = `/tmp/audio_${Date.now()}.ogg`;
-      const outPath = `/tmp/audio_out_${Date.now()}.ogg`;
-      fs.writeFileSync(inPath, buf);
-      const { execSync } = await import("child_process");
-      const filters = {
-        deep: "asetrate=44100*0.75,atempo=1.333", smooth: "atempo=0.9,treble=g=-5",
-        fat: "asetrate=44100*0.7,atempo=1.428", tupai: "asetrate=44100*1.6,atempo=0.625",
-        blown: "volume=10,acrusher=.1:1:64:0:log", robot: "asetrate=44100*0.9,atempo=1.1,afftfilt=real='hypot(re\,im)*cos(0)':imag='hypot(re\,im)*sin(0)'",
-        chipmunk: "asetrate=44100*1.5,atempo=0.67", nightcore: "asetrate=44100*1.25,atempo=0.8",
-        earrape: "volume=15,acrusher=.1:1:64:0:log", bass: "equalizer=f=80:width_type=h:width=50:g=20",
-        reverse: "areverse", slow: "atempo=0.7", fast: "atempo=1.5",
-        baby: "asetrate=44100*1.4", deamon: "asetrate=44100*0.6",
-      };
-      const filter = filters[ac] || "anull";
-      try {
-        // Use proper opus encoding for WhatsApp compatibility
-        execSync(`ffmpeg -i ${inPath} -af "${filter}" -c:a libopus -b:a 128k -ar 48000 -ac 1 -y ${outPath}`, { timeout: 30000, stdio: "pipe" });
-        const outBuf = fs.readFileSync(outPath);
-        await sock.sendMessage(msg.key.remoteJid, { audio: outBuf, mimetype: "audio/ogg; codecs=opus", ptt: true }, { quoted: msg });
-      } catch (ffErr) {
-        // Fallback: try without codec specification
-        try {
-          execSync(`ffmpeg -i ${inPath} -af "${filter}" -y ${outPath}`, { timeout: 30000, stdio: "pipe" });
-          const outBuf = fs.readFileSync(outPath);
-          await sock.sendMessage(msg.key.remoteJid, { audio: outBuf, mimetype: "audio/ogg; codecs=opus", ptt: true }, { quoted: msg });
-        } catch {
-          await sock.sendMessage(msg.key.remoteJid, { audio: buf, mimetype: "audio/ogg; codecs=opus", ptt: true }, { quoted: msg });
-          await sendReply(sock, msg, `🎵 *${ac.toUpperCase()}*\n\n⚠️ Audio processing unavailable — sent original audio.`);
-        }
-      }
-      try { fs.unlinkSync(inPath); fs.unlinkSync(outPath); } catch {}
-    } catch (e) { await sendReply(sock, msg, "❌ Audio processing failed: " + e.message); }
-  });
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-//  SEARCH COMMANDS
-// ═══════════════════════════════════════════════════════════════════════════════
 cmd("define", { desc: "Define a word", category: "SEARCH" }, async (sock, msg, args) => {
   if (!args.length) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}define <word>`); return; }
   await react(sock, msg, "📖");
@@ -16937,7 +16693,7 @@ globalThis._handleLogoutReply = async (sock, msg) => {
         : "🗑️ Logging out... All session files will be *DELETED*.");
     await new Promise(r => setTimeout(r, 1200));
     if (!keepFiles) {
-      try { fs.rmSync(AUTH_DIR, { recursive: true, force: true }); } catch {}
+      try { require('../sessionPaths').quarantineDir(AUTH_DIR, 'stale/logout session — quarantined, never deleted'); } catch {}
     }
     try { await sock.logout(); } catch {}
     return true;

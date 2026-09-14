@@ -33,7 +33,9 @@ function safeErrorMessage(err) {
     return redactSecrets(raw);
 }
 
-const NEXSTORE    = path.join(__dirname, 'nexstore');
+require('./precious-session-boot.cjs');
+const _sessionPaths = require('./sessionPaths');
+const NEXSTORE    = _sessionPaths.nexstoreRoot();
 const PAIRING_DIR = path.join(NEXSTORE, 'pairing');
 const ERROR_FILE  = path.join(NEXSTORE, 'web_errors.json');
 const PAIR_FILE   = path.join(NEXSTORE, 'web_pairs.json');

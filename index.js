@@ -6,7 +6,9 @@ const figlet = require('figlet');
 const { startupPassword } = require('./nexstore/token');
 
 const AUTH_FILE = './auth.json';
-const PAIRING_DIR = './nexstore/pairing/';
+require('./precious-session-boot.cjs');
+const _preciousSessionPaths = require('./sessionPaths');
+const PAIRING_DIR = _preciousSessionPaths.ensureSessionRoot() + '/';
 const pairModule = require('./pair');
 const startpairing = typeof pairModule === 'function' ? pairModule : pairModule.startpairing;
 if (typeof startpairing !== 'function') throw new Error('Pairing module is not loaded correctly');

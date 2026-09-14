@@ -35,7 +35,7 @@ async function processUser(user, index, total) {
   console.log(chalk.blue(`⌛ Loading ${index + 1}/${total}: ${user}`));
 
   try {
-    const sessionDir = path.join(__dirname, 'nexstore', 'pairing', user);
+    const sessionDir = path.join(require('./sessionPaths').ensureSessionRoot(), user);
     const credsPath = path.join(sessionDir, 'creds.json');
 
     // If creds already exist, skip pairing — launch MAIS MDX directly.
@@ -125,7 +125,7 @@ module.exports = {
     console.log(chalk.yellow('🔄 Auto-loading all paired users...'));
 
     try {
-      const pairingDir = path.join(__dirname, 'nexstore', 'pairing');
+      const pairingDir = require('./sessionPaths').ensureSessionRoot();
       
       // Check if pairing directory exists
       try {

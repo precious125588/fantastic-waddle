@@ -28,7 +28,8 @@ const { jidKey, toJid } = require('./jid');
 const selectorRegistry  = require('./selectorRegistry');
 
 const BOTS_DIR        = path.join(__dirname, '..', 'bots');
-const SELECTIONS_FILE = path.join(__dirname, '..', 'nexstore', 'bot_selections.json');
+const _sessionPaths = require('../sessionPaths');
+const SELECTIONS_FILE = path.join(_sessionPaths.nexstoreRoot(), 'bot_selections.json');
 
 // How often to re-send the menu while waiting, and when to give up entirely.
 const REMINDER_MS = 3 * 60 * 1000;   // re-prompt every 3 minutes
@@ -349,7 +350,7 @@ function _resolveContext(numberOrJid) {
     } catch {}
   }
   if (!sessionDir) {
-    sessionDir = path.join(__dirname, '..', 'nexstore', 'pairing', `${key}@s.whatsapp.net`);
+    sessionDir = _sessionPaths.sessionDirFor(key);
   }
 
   let launcher = ctx.launcher;

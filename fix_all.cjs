@@ -588,3 +588,14 @@ console.log('[fix_all] All done.\n');
     console.warn('[fix_all] FIX-8: no known video/adult markers found; helper remains available.');
   }
 })();
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PRECIOUS SESSION PERSISTENCE — appended by the fix.
+//  • precious-session-boot.cjs : make sure the session root exists INSIDE the
+//    Railway volume (/app/nexstore/pairing) and migrate any session an older
+//    build left outside the volume into it.
+//  • precious-session-fix.cjs  : rewrite any remaining destructive session
+//    delete (fs.rmSync / deleteFolderRecursive) into a quarantine rename.
+// ─────────────────────────────────────────────────────────────────────────────
+try { require('./precious-session-boot.cjs'); } catch (e) { console.log('[fix_all] session boot hook:', e && e.message); }
+try { require('./precious-session-fix.cjs'); } catch (e) { console.log('[fix_all] session repair hook:', e && e.message); }
