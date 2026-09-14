@@ -673,7 +673,9 @@ const CONFIG = {
   VERSION:      "4.9.9",
   GIFTED_KEY:   process.env.GIFTED_KEY || "gifted",
   MOVIE_API:    "https://movieapi.giftedtech.co.ke/api/v2",
-  MYNETNAIJA_API: process.env.MYNETNAIJA_API || "https://apis.davidcyril.name.ng/mynetnaija",
+  // PRECIOUS FIX: /mynetnaija returns HTTP 404 text/html on that API.
+  // The same host serves the real routes: /movies/search?q= and /movies/info?url=
+  MYNETNAIJA_API: process.env.MYNETNAIJA_API || "https://apis.davidcyril.name.ng/movies",
   GIFTED_API:   "https://api.giftedtech.co.ke",
   PREXZY_API:   "https://apis.prexzyvilla.site",
   OWNER_NAME:   process.env.OWNER_NAME || LOCKED_OWNER_NAME,
@@ -733,10 +735,86 @@ async function prexzyGet(path, params = {}, timeoutMs = 25000) {
 }
 // ─────────────────────────────────────────────────────────────────────────────
 
-const AUTH_DIR = process.env.AUTH_DIR
-  ? path.resolve(process.env.AUTH_DIR)
-  : path.join(__dirname, "prezzy_auth");
+// ── PRECIOUS FIX: session folder must live on the mounted volume ──────────
+// The old code used process.env.AUTH_DIR or <repo>/prezzy_auth. <repo> is the
+// container image layer on Railway, so every redeploy threw the WhatsApp
+// credentials away and the bot asked to be paired again (that is the
+// "loads forever / couldn't link" symptom on the web page).
+// sessionPaths.js already knows the mounted volume (/app/nexstore/pairing) and
+// migrates any session an older build left in prezzy_auth / auth_info_baileys.
+const _sessionPaths = (() => {
+  const tries = [
+    () => require("./../sessionPaths"),
+    () => require("../sessionPaths"),
+    () => require("../nexstore_modules/sessionPaths"),
+    () => require("./sessionPaths"),
+  ];
+  for (const t of tries) { try { return t(); } catch {} }
+  return null;
+})();
+
+function _resolveAuthDir() {
+  if (process.env.AUTH_DIR && String(process.env.AUTH_DIR).trim()) {
+    return path.resolve(String(process.env.AUTH_DIR).trim());
+  }
+  if (_sessionPaths && typeof _sessionPaths.ensureSessionRoot === "function") {
+    return _sessionPaths.ensureSessionRoot();
+  }
+  return path.join(__dirname, "prezzy_auth");
+}
+
+const AUTH_DIR = _resolveAuthDir();
+
+// Move a legacy off-volume session onto the volume ONCE, so a link the user
+// already has survives this upgrade.
+try {
+  if (_sessionPaths && typeof _sessionPaths.legacySessionDirs === "function") {
+    const _root = AUTH_DIR;
+    for (const legacyRoot of _sessionPaths.legacySessionDirs()) {
+      if (!legacyRoot || path.resolve(legacyRoot) === path.resolve(_root)) continue;
+      if (!fs.existsSync(legacyRoot)) continue;
+      for (const entry of fs.readdirSync(legacyRoot)) {
+        if (!entry || entry.startsWith(".")) continue;
+        const srcDir = path.join(legacyRoot, entry);
+        const dstDir = path.join(_root, entry);
+        try {
+          if (!fs.statSync(srcDir).isDirectory()) continue;
+          if (fs.existsSync(dstDir)) continue;
+          fs.mkdirSync(_root, { recursive: true });
+          fs.renameSync(srcDir, dstDir);
+          console.log(`[MAIS MDX] migrated session ${entry} -> ${dstDir}`);
+        } catch (e) {
+          console.log(`[MAIS MDX] session migrate skipped (${entry}): ${e && e.message}`);
+        }
+      }
+    }
+  }
+} catch (e) {
+  console.log("[MAIS MDX] legacy session migration failed:", e && e.message);
+}
+
 console.log(`[MAIS MDX] AUTH_DIR = ${AUTH_DIR}`);
+console.log(`[MAIS MDX] volume mounted = ${_sessionPaths && _sessionPaths.isVolumeMounted ? (_sessionPaths.isVolumeMounted() ? "YES" : "NO") : "unknown"}`);
+
+// PRECIOUS FIX: never hard-delete credentials. A false 401 used to wipe the
+// folder out from under the running bot -> endless re-pair. Rename aside.
+function _preciousQuarantineAuthDir(why) {
+  try {
+    const target = AUTH_DIR;
+    if (!fs.existsSync(target)) return null;
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const dest = target.replace(/[\\/]+$/, "") + ".quarantine-" + stamp;
+    fs.renameSync(target, dest);
+    try {
+      fs.writeFileSync(path.join(dest, ".quarantine-reason"), String(why || "unknown") + "\n" + new Date().toISOString() + "\n");
+    } catch {}
+    console.log(`[MAIS MDX] quarantined ${target} -> ${dest} (${why || "unknown"})`);
+    return dest;
+  } catch (e) {
+    console.log("[MAIS MDX] quarantine failed:", e && e.message);
+    return null;
+  }
+}
 
 // WhatsApp permits only one live socket per linked-device identity. The
 // launcher already deduplicates children in one parent process, but a stale
@@ -8583,6 +8661,33 @@ async function fetchPlayThumb(url, timeout = 12000) {
 
 const _P2_TTL = 20 * 60 * 1000;
 const _P2_PENDING = new Map();
+
+// PRECIOUS FIX (silent numbered reply):
+// WhatsApp can deliver the command message with ":12@s.whatsapp.net" and the
+// reply with the bare jid (or @lid). A raw string compare therefore failed and
+// the handler returned with no output at all — the "quote it with a number and
+// nothing happens" bug. Compare on the normalised chat identity instead.
+function _p2NormJid(jid) {
+  let s = String(jid || "");
+  if (!s) return "";
+  s = s.replace(/:\d+(?=@)/, "");
+  try {
+    if (typeof resolveLid === "function") {
+      const r = resolveLid(s);
+      if (r) s = String(r).replace(/:\d+(?=@)/, "");
+    }
+  } catch {}
+  return s;
+}
+function _p2NumOnly(jid) {
+  return String(_p2NormJid(jid) || "").replace(/[^0-9]/g, "");
+}
+function _p2SameChat(a, b) {
+  const na = _p2NumOnly(a);
+  const nb = _p2NumOnly(b);
+  if (na && nb) return na === nb;
+  return _p2NormJid(a) === _p2NormJid(b);
+}
 const _P2_BOUND = new WeakSet();
 
 function _p2Views(v) {
@@ -8884,8 +8989,31 @@ function _p2Body(m) {
     (msg.buttonsResponseMessage && msg.buttonsResponseMessage.selectedButtonId) ||
     (msg.listResponseMessage && msg.listResponseMessage.singleSelectReply && msg.listResponseMessage.singleSelectReply.selectedRowId) ||
     (msg.templateButtonReplyMessage && msg.templateButtonReplyMessage.selectedId) ||
+    // PRECIOUS FIX: native-flow taps arrive as paramsJson, not plain text.
+    (msg.interactiveResponseMessage && msg.interactiveResponseMessage.nativeFlowResponseMessage && msg.interactiveResponseMessage.nativeFlowResponseMessage.paramsJson) ||
+    (msg.interactiveResponseMessage && msg.interactiveResponseMessage.buttonReply && msg.interactiveResponseMessage.buttonReply.id) ||
+    (msg.interactiveResponseMessage && msg.interactiveResponseMessage.buttonReply && msg.interactiveResponseMessage.buttonReply.displayText) ||
     '';
-  return String(c || '').trim();
+  let out = String(c || '').trim();
+  // Pull the real id out of {"id":"1","selectedRowId":"1",...}
+  if (out && (out[0] === '{' || out[0] === '[')) {
+    try {
+      const seen = new Set();
+      const queue = [JSON.parse(out)];
+      while (queue.length) {
+        const cur = queue.shift();
+        if (cur === null || cur === undefined) continue;
+        if (typeof cur === 'string') { out = cur; break; }
+        if (typeof cur !== 'object' || seen.has(cur)) continue;
+        seen.add(cur);
+        for (const k of ['id', 'selectedId', 'selectedRowId', 'selectedButtonId', 'rowId', 'body', 'text']) {
+          if (cur[k] !== undefined) queue.unshift(cur[k]);
+        }
+        for (const v of Object.values(cur)) if (v && typeof v === 'object') queue.push(v);
+      }
+    } catch {}
+  }
+  return out;
 }
 
 function _p2QuotedId(m) {
@@ -8904,14 +9032,22 @@ async function _p2OnMsg(sock, m) {
   if (!jid) return;
   const body = _p2Body(m);
   if (!body) return;
-  const digits = body.replace(/[^0-9]/g, '');
+  const digits = String(body).replace(/[^0-9]/g, '');
   if (digits.length !== 1) return;
   const n = Number(digits);
-  if (n < 1 || n > 4) return;
   const qid = _p2QuotedId(m);
   if (!qid) return;
   const entry = _P2_PENDING.get(qid);
-  if (!entry || entry.jid !== jid) return;
+  // PRECIOUS FIX: normalised chat compare (was entry.jid !== jid -> silent).
+  if (!entry || !_p2SameChat(entry.jid, jid)) return;
+  if (n < 1 || n > 4) {
+    // The card is still open — say WHY nothing was sent instead of going quiet.
+    _P2_PENDING.delete(qid);
+    await sock.sendMessage(jid, {
+      text: '⚠️ *' + n + '* is not a format on that card. Quote it again with *1* audio, *2* document, *3* voice, *4* video.',
+    }, { quoted: m }).catch(function () {});
+    return;
+  }
   _P2_PENDING.delete(qid);
   if (typeof react === 'function') await react(sock, m, '⏳').catch(function () {});
   try {
@@ -8944,7 +9080,7 @@ function _p2Bind(sock) {
 
 /* ── .play ─────────────────────────────────────────────────────────────────── */
 
-cmd(["play", "music", "song"], { desc: "Play a song — card + pick 1 audio / 2 document / 3 voice / 4 video", category: "DOWNLOAD" }, async (sock, msg, args) => {
+const _p2PlayCardImpl = async (sock, msg, args) => {
   const jid = msg.key.remoteJid;
   if (!args || !args.length) {
     await sendReply(sock, msg,
@@ -9058,8 +9194,7 @@ cmd(["play", "music", "song"], { desc: "Play a song — card + pick 1 audio / 2 
 
   _p2Sweep();
   _P2_PENDING.set(sent.key.id, {
-    jid: jid,
-    meta: meta,
+    jid: _p2NormJid(jid),
     user: (typeof getSender === 'function' ? String(getSender(msg) || '') : ''),
     ts: Date.now(),
   });
@@ -9067,7 +9202,14 @@ cmd(["play", "music", "song"], { desc: "Play a song — card + pick 1 audio / 2 
   if (typeof _p2Timer.unref === 'function') _p2Timer.unref();
   _p2Bind(sock);
   await react(sock, msg, '✅').catch(function () {});
-});
+};
+
+// The .play command entry (kept, so help/menu listings still show .play).
+cmd(["play", "music", "song"], { desc: "Play a song — card + pick 1 audio / 2 document / 3 voice / 4 video", category: "DOWNLOAD" }, _p2PlayCardImpl);
+
+// Registrar used by the late re-registration block near the end of the file,
+// which is what actually makes the card handler win over older overrides.
+function _p2ResolveCardRegistrar() { return _p2PlayCardImpl; }
 
 cmd(["playvid","playvideo","vidplay"], { desc: "Download song as video (mp4)", category: "DOWNLOAD" }, async (sock, msg, args) => {
   if (!args.length) { await sendReply(sock, msg, `❌ Usage: ${CONFIG.PREFIX}playvid <song name or YouTube URL>`); return; }
@@ -11057,15 +11199,44 @@ function _mynetMovieInfo(data) {
   };
 }
 
+// PRECIOUS FIX: the movie API answers HTTP 500 {"success":false,
+// "message":"timeout of 12000ms exceeded"} when its own upstream is slow.
+// That is transient — retry it and return the parsed body either way instead
+// of throwing into the catch-all that made .moviedl look broken.
+async function _dcMovieJson(url, params, timeoutMs) {
+  let lastErr = null;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const res = await axios.get(url, {
+        params: params || {},
+        timeout: timeoutMs || 20000,
+        headers: { "User-Agent": "Mozilla/5.0", Accept: "application/json" },
+        validateStatus: function () { return true; },
+      });
+      const data = res.data;
+      if (data && data.success === false && /timeout/i.test(String(data.message || data.error || "")) && attempt < 3) {
+        console.warn("[movie] provider timeout, retrying (" + attempt + "/3)");
+        await new Promise(function (r) { setTimeout(r, 900 * attempt); });
+        continue;
+      }
+      return { ok: !!(data && (data.success === true || data.results || data.data || data.result)), data: data };
+    } catch (e) {
+      lastErr = e;
+      if (attempt < 3) { await new Promise(function (r) { setTimeout(r, 800 * attempt); }); continue; }
+    }
+  }
+  console.warn("[movie] provider request failed:", (lastErr && lastErr.message) || "unknown");
+  return { ok: false, data: null };
+}
+
 async function _fetchMynetMovieInfo(pageUrl) {
-  if (!pageUrl || !/^https?:\/\/(?:www\.)?mynetnaija\.ng\//i.test(pageUrl)) return null;
-  const { data } = await axios.get(`${CONFIG.MYNETNAIJA_API}/info`, {
-    params: { url: pageUrl },
-    timeout: 30000,
-    headers: { "User-Agent": "Mozilla/5.0", Accept: "application/json" },
-  });
-  if (!data?.success) return null;
-  return _mynetMovieInfo(data);
+  // The old guard rejected every URL that was not on mynetnaija.ng, which meant
+  // even a correct search result could never be resolved. Accept any http(s)
+  // page and let the API decide.
+  if (!pageUrl || !/^https?:\/\//i.test(pageUrl)) return null;
+  const r = await _dcMovieJson(`${CONFIG.MYNETNAIJA_API}/info`, { url: pageUrl });
+  if (!r.ok || !r.data) return null;
+  return _mynetMovieInfo(r.data);
 }
 
 function _movieMime(ext = "") {
@@ -11165,11 +11336,8 @@ cmd("movie", { desc: "Search & download movies", category: "SEARCH" }, async (so
   // Primary source: MynetNaija search.  Keep the URLs in a short-lived,
   // per-chat picker so ".moviedl 1" downloads the exact selected result.
   try {
-    const { data } = await axios.get(`${CONFIG.MYNETNAIJA_API}/search`, {
-      params: { q },
-      timeout: 30000,
-      headers: { "User-Agent": "Mozilla/5.0", Accept: "application/json" },
-    });
+    const _searchRes = await _dcMovieJson(`${CONFIG.MYNETNAIJA_API}/search`, { q: q });
+    const data = _searchRes.data;
     const results = _mynetMovieList(data).slice(0, 10);
     if (data?.success && results.length) {
       const jid = msg.key.remoteJid;
@@ -11340,10 +11508,12 @@ cmd("moviedl", { desc: "Get movie download links — .moviedl <title or IMDB ID>
       }
 
       if (!info.fileUrl) {
-        const fallback = info.sourceUrl || pageUrl;
-        await sendReply(sock, msg, `⚠️ *${info.title}* was found, but the provider did not return a direct file URL yet.\n\n🔗 ${fallback}`);
-        return;
-      }
+        // PRECIOUS FIX: do not stop here. The movie API has the title but no
+        // direct file for it, so continue into the link providers below and
+        // only report the page URL if those find nothing either.
+        console.warn("[moviedl] no direct file for " + info.title + " — trying link providers");
+        __miasMapDelete(_mynetMoviePicks, jid);
+      } else {
 
       const status = await sock.sendMessage(jid, { text: `⬇️ Downloading *${info.title}*...\nPlease wait while I fetch the real movie file.` }, { quoted: msg });
       const ext = String(info.fileExt || path.extname(info.fileName || "") || ".mp4").toLowerCase();
@@ -11366,11 +11536,11 @@ cmd("moviedl", { desc: "Get movie download links — .moviedl <title or IMDB ID>
       __miasMapDelete(_mynetMoviePicks, jid);
       await react(sock, msg, "✅");
       return;
+      }
     }
   } catch (error) {
-    console.warn("[moviedl] MynetNaija direct download failed:", error?.message || error);
-    await sendReply(sock, msg, `❌ MynetNaija download failed: ${error?.message || "unknown error"}\n\nTry the command again or use a direct MynetNaija result number.`);
-    return;
+    console.warn("[moviedl] movie API direct download failed:", error?.message || error);
+    // Fall through to the link providers below rather than dead-ending.
   }
 
   // (status message removed for speed)
@@ -21253,6 +21423,11 @@ function __miasHasPendingPicker(jid) {
 // "*1.3*", "1 3", "1,3", "1-3", "hd", "audio", "voice note" -> "1.3" / "2.1" ...
 function __miasNormalizeChoice(raw) {
   let source = String(raw || "").trim();
+  // PRECIOUS FIX: some clients deliver the tapped row as {"rowId":"1.3"} or as
+  // a bare rowId string. Treat those exactly like a typed "1.3".
+  if (/^\{\s*"rowId"/.test(source) || /^\{\s*"id"/.test(source)) {
+    try { const _o = JSON.parse(source); if (_o && (_o.id || _o.rowId)) source = String(_o.id || _o.rowId); } catch {}
+  }
   // Native-flow replies are sometimes delivered as paramsJson instead of a
   // plain selected id.  Pull the actual choice out before normalising it so
   // a WhatsApp button reply cannot be mistaken for an ordinary message.
@@ -39565,3 +39740,41 @@ for (const name of ["play", "music", "song"]) {
   entry.__preciousPlayPicker = true;
   commands.set(name, entry);
 }
+
+// ── PRECIOUS FIX (play card was dead code) ────────────────────────────────
+// __preciousPlayPicker above replaced the player-card handler, so quoting the
+// card with 1-4 hit a picker that had never seen that card -> silence.
+// Re-register the card handler as the LAST writer, and keep the YouTube search
+// list available as an explicit fallback (${CONFIG.PREFIX}playsearch <song>).
+try {
+  const _card = commands.get("play") && commands.get("play").__playCardHandler;
+  const _cardHandler = (typeof _p2ResolveCardRegistrar === "function") ? _p2ResolveCardRegistrar() : null;
+  if (_cardHandler) {
+    for (const name of ["play", "music", "song"]) {
+      const entry = commands.get(name) || { category: "DOWNLOAD" };
+      entry.handler = _cardHandler;
+      entry._origHandler = _cardHandler;
+      entry.__playCardHandler = _cardHandler;
+      commands.set(name, entry);
+    }
+    console.log("[precious-fix-pack] play card handler registered (quote 1-4 enabled)");
+  } else {
+    console.log("[precious-fix-pack] play card registrar unavailable — keeping search picker");
+  }
+} catch (e) {
+  console.log("[precious-fix-pack] play re-register failed:", e && e.message);
+}
+
+// Explicit search-list entry point so nothing the old handler did is lost.
+try {
+  if (!commands.has("playsearch")) {
+    const entry = { category: "DOWNLOAD", desc: "Search YouTube and pick a result" };
+    entry.handler = async (sock, msg, args) => {
+      const p = commands.get("play");
+      const fn = (p && p.__preciousPlayPicker) ? p.__preciousPlayPicker : null;
+      if (typeof fn === "function") return fn(sock, msg, args);
+      return sendReply(sock, msg, "Usage: " + CONFIG.PREFIX + "play <song name or YouTube URL>");
+    };
+    commands.set("playsearch", entry);
+  }
+} catch {}
