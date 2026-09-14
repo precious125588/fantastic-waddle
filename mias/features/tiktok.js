@@ -111,28 +111,28 @@ export function buildTikTokPickerSections() {
     {
       title: "Video",
       rows: [
-        { title: "1.1 SD Video", description: "MP4 video", rowId: "1.1" },
-        { title: "1.2 SD Document", description: "Send as MP4 document", rowId: "1.2" },
-        { title: "1.3 HD Video", description: "Best quality MP4", rowId: "1.3" },
-        { title: "1.4 HD Document", description: "Send HD MP4 as document", rowId: "1.4" },
-        { title: "1.5 SD Watermark", description: "SD video with watermark", rowId: "1.5" },
-        { title: "1.6 HD Watermark", description: "HD video with watermark", rowId: "1.6" },
-        { title: "1.7 HD Video Note", description: "Send as a video note", rowId: "1.7" },
+        { title: "1.1 SD Video", description: "MP4 video", id: "1.1", rowId: "1.1" },
+        { title: "1.2 SD Document", description: "Send as MP4 document", id: "1.2", rowId: "1.2" },
+        { title: "1.3 HD Video", description: "Best quality MP4", id: "1.3", rowId: "1.3" },
+        { title: "1.4 HD Document", description: "Send HD MP4 as document", id: "1.4", rowId: "1.4" },
+        { title: "1.5 SD Watermark", description: "SD video with watermark", id: "1.5", rowId: "1.5" },
+        { title: "1.6 HD Watermark", description: "HD video with watermark", id: "1.6", rowId: "1.6" },
+        { title: "1.7 HD Video Note", description: "Send as a video note", id: "1.7", rowId: "1.7" },
       ],
     },
     {
       title: "Music",
       rows: [
-        { title: "2.1 Audio", description: "MP3 audio", rowId: "2.1" },
-        { title: "2.2 Document Audio", description: "Send audio as a file", rowId: "2.2" },
-        { title: "2.3 Voice Note", description: "Send as a voice note", rowId: "2.3" },
+        { title: "2.1 Audio", description: "MP3 audio", id: "2.1", rowId: "2.1" },
+        { title: "2.2 Document Audio", description: "Send audio as a file", id: "2.2", rowId: "2.2" },
+        { title: "2.3 Voice Note", description: "Send as a voice note", id: "2.3", rowId: "2.3" },
       ],
     },
     {
       title: "Sticker",
       rows: [
-        { title: "3.1 Animated Sticker", description: "HD video converted to WebP sticker", rowId: "3.1" },
-        { title: "3.2 Animated Sticker", description: "SD video converted to WebP sticker", rowId: "3.2" },
+        { title: "3.1 Animated Sticker", description: "HD video converted to WebP sticker", id: "3.1", rowId: "3.1" },
+        { title: "3.2 Animated Sticker", description: "SD video converted to WebP sticker", id: "3.2", rowId: "3.2" },
       ],
     },
   ];
