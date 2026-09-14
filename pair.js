@@ -1767,7 +1767,18 @@ async function startpairing(nexusDevNumber, options = {}) {
                 // a local 515 and a later 401; both are expected while the
                 // child takes ownership and must not start another pair socket.
                 tracker.handoffToMais = true;
+                tracker.handedOffAt = Date.now();
                 ownership.handOffToBot(nexusDevNumber, 'mias-mdx');
+                // FULL retire, not just end(): the pairing socket keeps a
+                // creds.update listener and two intervals bound to the SAME
+                // auth folder the child is about to use. Leaving them alive
+                // let a late creds.update from the dying pairing socket
+                // overwrite the keys the child had already rotated, and
+                // WhatsApp then rejected the child with
+                // <failure reason="401"> ("Connection Failure") minutes later
+                // — which looked exactly like a logout and wiped the session.
+                retireSocket(nexusDevNumber, 'handoff to MIAS MDX');
+                try { nexus.ev?.removeAllListeners?.(); } catch {}
                 try { nexus.end(); } catch {}
                 try { nexus.ws?.close(); } catch {}
                 await sleep(6000);

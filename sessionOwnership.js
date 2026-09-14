@@ -35,7 +35,17 @@
 const fs   = require('fs');
 const path = require('path');
 
-const PAIRING_ROOT = path.join(__dirname, 'nexstore', 'pairing');
+// The session root MUST be resolved exactly like pair.js and the bot child do
+// (SESSION_DIR env / Railway volume / repo fallback). Hard-coding
+// <repo>/nexstore/pairing meant .owner.json was written to a different folder
+// than the one the bot reads as AUTH_DIR, so the bot never saw the "handoff in
+// progress" marker and treated the first 401 as a real logout.
+let _sessionPaths = null;
+try { _sessionPaths = require('./sessionPaths'); } catch { _sessionPaths = null; }
+
+const PAIRING_ROOT = _sessionPaths
+  ? _sessionPaths.resolveSessionRoot()
+  : path.join(__dirname, 'nexstore', 'pairing');
 
 const OWNER_PAIRING = 'pairing';
 const OWNER_BOT     = 'bot';
@@ -45,9 +55,35 @@ const OWNER_BOT     = 'bot';
 // and nothing is allowed to treat that as a logout.
 const HANDOFF_SETTLE_MS = 90 * 1000;
 
+// pair.js stores a session under <root>/<whatever it was called with>, and that
+// value is sometimes the bare number and sometimes the full JID (Telegram /pair
+// passes a JID, the web panel passes digits). The bot child then reads
+// AUTH_DIR/.owner.json. If ownership guessed the other spelling, the marker
+// landed in a folder nobody reads and the very first 401 after pairing looked
+// like a logout. So: consider BOTH spellings, read the freshest marker, and
+// write the marker into every folder that exists.
+function candidateDirs(numberOrJid) {
+  const raw = String(numberOrJid || '').trim();
+  if (!raw) return [];
+  if (path.isAbsolute(raw)) return [raw];
+  const digits = raw.split('@')[0].replace(/[^0-9]/g, '');
+  if (!digits) return [];
+  const names = [`${digits}@s.whatsapp.net`, digits];
+  if (raw.includes('@') && !names.includes(raw)) names.unshift(raw);
+  return names.map((n) => path.join(PAIRING_ROOT, n));
+}
+
+/** The folder we should use when nothing exists yet: prefer an existing one. */
 function sessionDirFor(numberOrJid) {
-  const key = String(numberOrJid || '').split('@')[0].replace(/[^0-9]/g, '');
-  return path.join(PAIRING_ROOT, key);
+  const dirs = candidateDirs(numberOrJid);
+  if (!dirs.length) return PAIRING_ROOT;
+  for (const d of dirs) {
+    try { if (fs.existsSync(path.join(d, 'creds.json'))) return d; } catch {}
+  }
+  for (const d of dirs) {
+    try { if (fs.existsSync(d)) return d; } catch {}
+  }
+  return dirs[dirs.length - 1];
 }
 
 function ownerFile(sessionDir) {
@@ -55,32 +91,36 @@ function ownerFile(sessionDir) {
 }
 
 function readOwner(sessionDirOrNumber) {
-  const dir = path.isAbsolute(String(sessionDirOrNumber))
-    ? String(sessionDirOrNumber)
-    : sessionDirFor(sessionDirOrNumber);
-  try {
-    const raw = fs.readFileSync(ownerFile(dir), 'utf8');
-    const payload = JSON.parse(raw);
-    if (!payload || !payload.owner) return null;
-    return payload;
-  } catch {
-    return null;
+  const dirs = candidateDirs(sessionDirOrNumber);
+  let best = null;
+  for (const dir of dirs) {
+    try {
+      const payload = JSON.parse(fs.readFileSync(ownerFile(dir), 'utf8'));
+      if (!payload || !payload.owner) continue;
+      const stamp = payload.handedOffAt || payload.at || 0;
+      if (!best || stamp > (best.handedOffAt || best.at || 0)) best = payload;
+    } catch {}
   }
+  return best;
 }
 
 function writeOwner(sessionDirOrNumber, owner, extra = {}) {
-  const dir = path.isAbsolute(String(sessionDirOrNumber))
-    ? String(sessionDirOrNumber)
-    : sessionDirFor(sessionDirOrNumber);
-  try {
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(
-      ownerFile(dir),
-      JSON.stringify({ owner, pid: process.pid, at: Date.now(), ...extra }, null, 2),
-      'utf8'
-    );
-  } catch {
-    /* ownership is advisory — never crash the caller over it */
+  const dirs = candidateDirs(sessionDirOrNumber);
+  const body = JSON.stringify({ owner, pid: process.pid, at: Date.now(), ...extra }, null, 2);
+  let wrote = false;
+  for (const dir of dirs) {
+    try {
+      if (!fs.existsSync(dir)) continue; // never create a phantom session folder
+      fs.writeFileSync(ownerFile(dir), body, 'utf8');
+      wrote = true;
+    } catch { /* ownership is advisory — never crash the caller over it */ }
+  }
+  if (!wrote) {
+    try {
+      const dir = sessionDirFor(sessionDirOrNumber);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(ownerFile(dir), body, 'utf8');
+    } catch {}
   }
   return owner;
 }
@@ -130,10 +170,9 @@ function mayWipe(numberOrJid, who) {
 
 /** Called on an explicit user unlink / admin delete, which overrides ownership. */
 function release(numberOrJid) {
-  const dir = path.isAbsolute(String(numberOrJid))
-    ? String(numberOrJid)
-    : sessionDirFor(numberOrJid);
-  try { fs.unlinkSync(ownerFile(dir)); } catch {}
+  for (const dir of candidateDirs(numberOrJid)) {
+    try { fs.unlinkSync(ownerFile(dir)); } catch {}
+  }
 }
 
 module.exports = {
@@ -142,6 +181,7 @@ module.exports = {
   HANDOFF_SETTLE_MS,
   PAIRING_ROOT,
   sessionDirFor,
+  candidateDirs,
   readOwner,
   claimForPairing,
   handOffToBot,

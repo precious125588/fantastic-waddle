@@ -1591,6 +1591,11 @@ process.on("SIGTERM", () => { _shutdownStatusServer(); process.exit(0); });
 // ═══════════════════════════════════════════════════════════════════════════════
 let sockGlobal = null;
 let reconnectAttempts = 0;
+// v18: how many consecutive 401 closes we have seen. A single 401 is NOT
+// proof the owner unlinked the device — WhatsApp also sends <failure reason="401">
+// while a freshly paired session is still settling. Only a repeated 401 that
+// survives several clean reconnects is treated as a real logout.
+let unauthorizedStreak = 0;
 let reconnectTimer = null;
 let connectInFlight = false;
 let activeSocketGeneration = 0;
@@ -2097,6 +2102,7 @@ async function connectToWA(force = false) {
         connectInFlight = false;
         botConnected = true;
         reconnectAttempts = 0;
+        unauthorizedStreak = 0;
         const me = sock.user?.id || "unknown";
           console.log(`✅ ${CONFIG.BOT_NAME} Connected → ${me}`);
           console.log(`🤖 ${CONFIG.BOT_NAME} v${CONFIG.VERSION} ready — ${commands.size}+ commands loaded via ${BAILEYS_PACKAGE}.`);
@@ -2236,55 +2242,80 @@ async function connectToWA(force = false) {
         console.log(`❌ Connection closed (code=${code}, msg=${errMsg || "n/a"}).`);
         cleanupSocket(sock);
 
-        // ─── CONFIRMED LOGOUT POLICY ────────────────────────────────────
-        // A real loggedOut/401 event is terminal: keep no dead credentials
-        // around and never let the launcher revive the same invalid session.
-        // The only exception is the short pairing handoff window, where the
-        // first 401 can be the old pairing socket being replaced.
-        // Baileys often reports a duplicate-device socket as HTTP 401 with
-        // "Stream Errored (conflict)". That is not the same as the owner
-        // unlinking the device. The old broad 401 check wiped valid creds and
-        // permanently turned a recoverable socket fight into a forced re-pair.
+        // ─── CONFIRMED LOGOUT POLICY (v18) ──────────────────────────────
+        // A 401 alone is NOT proof that the owner unlinked the device.
+        // WhatsApp answers with <failure reason="401"> -> Boom("Connection
+        // Failure", 401) in several perfectly recoverable situations:
+        //   * a freshly paired session whose keys are still settling
+        //   * the pairing socket being replaced during the MIAS handoff
+        //   * a duplicate/stale socket on the same identity being kicked
+        // The old code wiped the session on the very first 401, so a user who
+        // had just paired saw "Bot Logged Out / session wiped" and the bot
+        // never answered on WhatsApp. Now only an EXPLICIT unlink, or a 401
+        // that survives several clean reconnects, is terminal.
         const isSocketConflict = code === 409 || /stream\s+errored\s*\(\s*conflict\s*\)|\bconflict\b/i.test(errMsg);
-        const isLoggedOut = !isSocketConflict && (code === DisconnectReason.loggedOut || code === 401);
+        const isUnauthorized = !isSocketConflict && (code === DisconnectReason.loggedOut || code === 401);
+        // Baileys reports a genuine unlink from the phone as
+        // "Stream Errored (device_removed)" / "Stream Errored (logged out)".
+        const isExplicitUnlink = /device_removed|logged.?out|multidevice_mismatch|account.?removed/i.test(errMsg);
+
+        // Grace window right after pairing/handoff: the .owner.json marker is
+        // written by pair.js, and creds.json's mtime tells us how young the
+        // session is even when that marker is missing (different SESSION_DIR).
         let handoffSettling = false;
         try {
           const ownerPath = path.join(AUTH_DIR, ".owner.json");
-          if (code === 401 && fs.existsSync(ownerPath)) {
+          if (fs.existsSync(ownerPath)) {
             const owner = JSON.parse(fs.readFileSync(ownerPath, "utf8")) || {};
             const handedOffAt = owner.handedOffAt || owner.at || 0;
-            handoffSettling = owner.owner === "bot" &&
-              Date.now() - handedOffAt < 90 * 1000;
+            handoffSettling = owner.owner === "bot" && Date.now() - handedOffAt < 5 * 60 * 1000;
+          }
+        } catch {}
+        let sessionIsYoung = false;
+        try {
+          const credsPath = path.join(AUTH_DIR, "creds.json");
+          if (fs.existsSync(credsPath)) {
+            sessionIsYoung = Date.now() - fs.statSync(credsPath).mtimeMs < 10 * 60 * 1000;
           }
         } catch {}
 
-        if (isLoggedOut && !handoffSettling) {
+        if (isUnauthorized) {
+          unauthorizedStreak++;
+          const MAX_401_RETRIES = Math.max(2, parseInt(process.env.MAX_401_RETRIES || "4", 10));
+          const stillRecoverable =
+            !isExplicitUnlink &&
+            (handoffSettling || sessionIsYoung || unauthorizedStreak < MAX_401_RETRIES);
+
+          if (stillRecoverable) {
+            const delay = Math.min(60000, 8000 * unauthorizedStreak);
+            console.log(`🛡️ 401 (${errMsg || "no message"}) #${unauthorizedStreak} — NOT wiping the session; retrying in ${Math.round(delay / 1000)}s.`);
+            scheduleReconnect(`recoverable-401-${unauthorizedStreak}`, delay);
+            return;
+          }
+
           clearReconnectTimer();
-          console.log("🚪 Logged out — clearing session. Set a new SESSION_ID and restart.");
+          console.log("🚪 Confirmed logout — the linked device was removed. Quarantining session.");
           // ── Notify via Telegram logout request file ─────────────────────
           try {
             const _logoutNotiDir = path.join(__dirname, "..", "nexstore", "logout_notifications");
             if (!fs.existsSync(_logoutNotiDir)) fs.mkdirSync(_logoutNotiDir, { recursive: true });
-            const _myNum = String(sock?.user?.id || "").split(":")[0].split("@")[0].replace(/[^0-9]/g,"") || "unknown";
+            const _myNum = String(sock?.user?.id || "").split(":")[0].split("@")[0].replace(/[^0-9]/g, "") ||
+              String(path.basename(AUTH_DIR) || "").split("@")[0].replace(/[^0-9]/g, "") || "unknown";
             const _notiFile = path.join(_logoutNotiDir, `${_myNum}_${Date.now()}.json`);
             fs.writeFileSync(_notiFile, JSON.stringify({
               number: _myNum,
               jid: sock?.user?.id || "",
               name: sock?.user?.name || "",
               ts: Date.now(),
-              reason: errMsg || `code=${code}`,
+              reason: isExplicitUnlink
+                ? (errMsg || "device removed from WhatsApp")
+                : `${errMsg || `code=${code}`} (after ${unauthorizedStreak} reconnect attempts)`,
               authDir: AUTH_DIR,
             }));
           } catch {}
           cleanupLoggedOutRecords(sock?.user?.id || path.basename(AUTH_DIR));
-          // __MAIS_TERMINAL_LOGOUT_WIPE__ — handoff was handled above.
-          try { require('../sessionPaths').quarantineDir(AUTH_DIR, 'stale/logout session — quarantined, never deleted'); } catch {}
-          console.log('🧹 Session credentials removed after a confirmed logout.');
-          return;
-        }
-        if (isLoggedOut && handoffSettling) {
-          console.log('🛡️ Ignoring expected handoff 401; reconnecting without wiping the new session.');
-          scheduleReconnect('post-handoff-401', 8000);
+          try { require('../sessionPaths').quarantineDir(AUTH_DIR, 'confirmed logout — quarantined, never deleted'); } catch {}
+          console.log('🧹 Session quarantined after a confirmed logout.');
           return;
         }
 
