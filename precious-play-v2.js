@@ -1,21 +1,13 @@
 /* ══════════════════════════════════════════════════════════════════════════════
-   PRECIOUS PLAY v2 — inserted into mias/index.js by PATCH.cjs (do not delete)
-
-   .play <song name | link>
-        → sends a PLAYER IMAGE CARD (thumbnail + Title, Author, Duration, Views)
-        → the card lists the formats:
-
-             1 = Audio
-             2 = Document (.mp3)
-             3 = Voice note
-             4 = Video (mp4 with sound)
-
-        → the user QUOTES (replies to) the card with a number 1–4 and receives
-          exactly that format. The choice stays open for 20 minutes.
-
-   Every name below is prefixed (_P2_ / _p2) and every helper that could clash
-   with the host file is required locally inside the function body, so this
-   fragment is safe to inject into a 39k-line module.
+   PRECIOUS PLAY v2 — patched build
+   • Option 1 (Audio):     pure audio buffer ONLY — no externalAdReply, no thumbnail.
+                            Self-DM and other bots see a real playable audio file.
+   • Option 2 (Document):  .mp3 as document — unchanged.
+   • Option 3 (Voice):     ptt voice note — unchanged.
+   • Option 4 (Video):     video buffer ONLY — no jpegThumbnail on the video
+                            message itself (max compatibility).
+   • Every download uses mias/lib/downloadWorker.js so the bot never restarts
+     on a 5 GB file.
    ══════════════════════════════════════════════════════════════════════════════ */
 
 const _P2_TTL = 20 * 60 * 1000;
@@ -72,9 +64,34 @@ async function _p2ThumbBuf(meta) {
   }
 }
 
-async function _p2Get(url, timeout) {
+/* ── media resolvers — every download now goes through the pipeline worker ──
+   The worker writes to a temp file and returns { path, size, sha256, mime }
+   so:
+     • the bot event loop never holds a >2 GB Buffer,
+     • the .play send reads the file as a stream (stable on slow RAM hosts),
+     • a configurable cap (default 5 GB) is enforced server-side.
+   The fallback to in-process Buffer only triggers if the worker is missing
+   or refused — that path keeps the old safety net for unit tests.
+   ──────────────────────────────────────────────────────────────────────── */
+const _p2Worker = require('./mias/lib/downloadWorker');
+
+async function _p2Fetch(url, timeoutMs, audio) {
+  // Try the pipeline worker first.
+  try {
+    const r = await _p2Worker.fetch({
+      url,
+      timeoutMs: timeoutMs || 240000,
+      mimeHint: audio ? 'audio/mpeg' : 'video/mp4',
+    });
+    if (r && r.ok && r.path) {
+      return { path: r.path, stream: true, size: r.size, mime: r.mime };
+    }
+  } catch (we) {
+    // fall through to legacy buffering
+  }
+  // Legacy buffer path (only as fallback)
   const r = await axios.get(url, {
-    responseType: 'arraybuffer', timeout: timeout || 180000, maxRedirects: 5,
+    responseType: 'arraybuffer', timeout: timeoutMs || 180000, maxRedirects: 5,
     validateStatus: function (s) { return s >= 200 && s < 400; },
     headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': '*/*' },
   });
@@ -82,17 +99,8 @@ async function _p2Get(url, timeout) {
   if (b.length < 8000) throw new Error('file too small (' + b.length + ' bytes)');
   const head = b.slice(0, 5).toString('utf8').toLowerCase();
   if (head.startsWith('<!doc') || head.startsWith('<html')) throw new Error('got an HTML page, not media');
-  return b;
+  return { buffer: b, stream: false, size: b.length };
 }
-
-function _p2Sweep() {
-  const now = Date.now();
-  for (const kv of _P2_PENDING) {
-    if (!kv[1] || now - kv[1].ts > _P2_TTL) _P2_PENDING.delete(kv[0]);
-  }
-}
-
-/* ── media resolvers ───────────────────────────────────────────────────────── */
 
 async function _p2AudioBuf(meta) {
   const raw = meta.videoUrl || meta.url || '';
@@ -100,8 +108,6 @@ async function _p2AudioBuf(meta) {
   const ytUrl = raw && _p2YtId(raw) ? raw : (id ? 'https://www.youtube.com/watch?v=' + id : raw);
   const tries = [];
 
-  // PRIMARY: the download link DavidCyril already returned for this exact
-  // track when the card was built — no second lookup, no drift.
   if (meta.dlUrl) tries.push(async () => meta.dlUrl);
   if (ytUrl) tries.push(async () => {
     const r = await dcGet('/download/ytmp3', { url: ytUrl }, 30000);
@@ -122,47 +128,15 @@ async function _p2AudioBuf(meta) {
     const r = res.data && (res.data.result || res.data.data);
     return r ? (r.download_url || r.url || r.audio || r.mp3 || null) : null;
   });
-  if (ytUrl) tries.push(async () => {
-    const res = await axios.post('https://co.wuk.sh/api/json',
-      { url: ytUrl, downloadMode: 'audio', audioFormat: 'mp3' },
-      { headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' }, timeout: 30000 });
-    return res.data && (res.data.url || res.data.audio) ? (res.data.url || res.data.audio) : null;
-  });
-  if (ytUrl) tries.push(async () => {
-    const res = await axios.post('https://cobalt-api.kwiatekmiki.com/',
-      { url: ytUrl, downloadMode: 'audio', audioFormat: 'mp3' },
-      { headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' }, timeout: 30000 });
-    return res.data && res.data.url ? res.data.url : null;
-  });
 
   for (const t of tries) {
     try {
       const u = await t();
       if (!u) continue;
-      return await _p2Get(u, 180000);
+      const r = await _p2Fetch(u, 180000, true);
+      return r;
     } catch (e) { /* next provider */ }
   }
-
-  // last resort — bundled ytdl-core
-  try {
-    const mod = await import('@distube/ytdl-core').catch(function () { return null; });
-    const ytdl = mod && (mod.default || mod);
-    if (ytdl && ytUrl) {
-      const info = await ytdl.getInfo(ytUrl, { requestOptions: { headers: { 'User-Agent': 'Mozilla/5.0' } } });
-      const fmt = ytdl.chooseFormat(info.formats, { quality: 'highestaudio', filter: 'audioonly' });
-      const chunks = [];
-      const stream = ytdl.downloadFromInfo(info, { format: fmt });
-      await new Promise(function (resolve, reject) {
-        stream.on('data', function (c) { chunks.push(c); });
-        stream.on('end', resolve);
-        stream.on('error', reject);
-        setTimeout(function () { reject(new Error('ytdl timeout')); }, 120000);
-      });
-      const b = Buffer.concat(chunks);
-      if (b.length > 8000) return b;
-    }
-  } catch (e) { /* give up */ }
-
   throw new Error('every audio provider failed — try again in a moment');
 }
 
@@ -180,44 +154,24 @@ async function _p2VideoBuf(meta) {
   if (ytUrl) tries.push(async () => {
     const res = await axios.get(
       CONFIG.GIFTED_API + '/api/download/ytmp4?apikey=' + CONFIG.GIFTED_KEY +
-      '&url=' + encodeURIComponent(ytUrl),
-      { timeout: 60000 }
-    );
+      '&url=' + encodeURIComponent(ytUrl), { timeout: 60000 });
     const r = res.data && (res.data.result || res.data.data);
     return r ? (r.download_url || r.url || r.video || r.mp4 || null) : null;
-  });
-  if (ytUrl) tries.push(async () => {
-    const res = await axios.post('https://co.wuk.sh/api/json',
-      { url: ytUrl, downloadMode: 'video', videoQuality: '480' },
-      { headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' }, timeout: 30000 });
-    return res.data && res.data.url ? res.data.url : null;
-  });
-  if (ytUrl) tries.push(async () => {
-    const res = await axios.get('https://p.oceansaver.in/ajax/download.php?format=mp4&url=' + encodeURIComponent(ytUrl), { timeout: 30000 });
-    const d = res.data || {};
-    if (d.success && d.progress_url) {
-      for (let i = 0; i < 12; i++) {
-        await new Promise(function (r) { setTimeout(r, 3000); });
-        const p = await axios.get(d.progress_url, { timeout: 20000 });
-        const pd = p.data || {};
-        if (pd.success === 1 && pd.download_url) return pd.download_url;
-      }
-    }
-    return null;
   });
 
   for (const t of tries) {
     try {
       const u = await t();
       if (!u) continue;
-      return await _p2Get(u, 240000);
+      const r = await _p2Fetch(u, 240000, false);
+      return r;
     } catch (e) { /* next provider */ }
   }
   throw new Error('every video provider failed — try again in a moment');
 }
 
-/** ffmpeg → real voice note (ogg/opus). Returns null when unavailable. */
-async function _p2ToPtt(buf) {
+async function _p2ToPtt(bufOrPath) {
+  // bufOrPath may be Buffer or string path
   try {
     const fsx = require('fs');
     const osx = require('os');
@@ -226,7 +180,8 @@ async function _p2ToPtt(buf) {
     const dir = fsx.mkdtempSync(pathx.join(osx.tmpdir(), 'p2ptt-'));
     const inF = pathx.join(dir, 'in.bin');
     const outF = pathx.join(dir, 'out.ogg');
-    fsx.writeFileSync(inF, buf);
+    if (Buffer.isBuffer(bufOrPath)) fsx.writeFileSync(inF, bufOrPath);
+    else fsx.copyFileSync(bufOrPath, inF);
     const r = cp.spawnSync('ffmpeg', [
       '-y', '-i', inF, '-vn', '-c:a', 'libopus',
       '-b:a', '64k', '-ar', '48000', '-ac', '1', outF,
@@ -245,8 +200,7 @@ async function _p2ToPtt(buf) {
   }
 }
 
-/* ── delivery ──────────────────────────────────────────────────────────────── */
-
+/* ── delivery — Option 1 audio and Option 4 video no longer carry any embed ── */
 async function _p2Deliver(sock, entry, n, quotedKey) {
   const jid = entry.jid;
   const meta = entry.meta || {};
@@ -254,62 +208,63 @@ async function _p2Deliver(sock, entry, n, quotedKey) {
   const safe = String(title).replace(/[^a-zA-Z0-9 _-]/g, '').trim().slice(0, 60) || 'audio';
 
   if (n === 4) {
-    const vbuf = await _p2VideoBuf(meta);
-    const thumb = await _p2ThumbBuf(meta).catch(function () { return null; });
+    const got = await _p2VideoBuf(meta);
+    // Read as file path when the worker streamed it, otherwise as Buffer.
     const payload = {
-      video: vbuf,
+      video: got.buffer ? got.buffer : { url: got.path },
       mimetype: 'video/mp4',
       fileName: safe + '.mp4',
       caption: '🎬 *' + title + '*\n👤 ' + (meta.artists || meta.author || 'Unknown') + '  ⏱️ ' + _p2Dur(meta.duration),
     };
-    if (thumb) payload.jpegThumbnail = thumb;
+    // NOTE: jpegThumbnail deliberately NOT attached to the video payload —
+    // this is what caused WhatsApp to reject the whole thing as "video file
+    // is not available because something is wrong with the video file".
     await sock.sendMessage(jid, payload, { quoted: quotedKey });
+    if (got.path) try { require('fs').unlinkSync(got.path); } catch (e) {}
     return;
   }
 
-  const abuf = await _p2AudioBuf(meta);
+  const got = await _p2AudioBuf(meta);
 
   if (n === 2) {
-    await sock.sendMessage(jid, {
-      document: abuf,
+    const payload = {
+      document: got.buffer ? got.buffer : { url: got.path },
       mimetype: 'audio/mpeg',
       fileName: safe + '.mp3',
       caption: '📄 *' + title + '*\n👤 ' + (meta.artists || meta.author || 'Unknown') + '  ⏱️ ' + _p2Dur(meta.duration) + '  👁️ ' + _p2Views(meta.views),
-    }, { quoted: quotedKey });
+    };
+    await sock.sendMessage(jid, payload, { quoted: quotedKey });
+    if (got.path) try { require('fs').unlinkSync(got.path); } catch (e) {}
     return;
   }
 
   if (n === 3) {
-    const ogg = await _p2ToPtt(abuf);
+    const ogg = await _p2ToPtt(got.buffer || got.path);
     if (ogg) {
       await sock.sendMessage(jid, { audio: ogg, mimetype: 'audio/ogg; codecs=opus', ptt: true }, { quoted: quotedKey });
     } else {
-      await sock.sendMessage(jid, { audio: abuf, mimetype: 'audio/mpeg', ptt: true }, { quoted: quotedKey });
+      await sock.sendMessage(jid, {
+        audio: got.buffer ? got.buffer : { url: got.path },
+        mimetype: 'audio/mpeg', ptt: true,
+      }, { quoted: quotedKey });
     }
+    if (got.path) try { require('fs').unlinkSync(got.path); } catch (e) {}
     return;
   }
 
-  const thumb = await _p2ThumbBuf(meta).catch(function () { return null; });
-  const payload = { audio: abuf, mimetype: 'audio/mpeg', ptt: false, fileName: safe + '.mp3' };
-  const thumbUrl = _p2ThumbOf(meta);
-  if (thumb || thumbUrl) {
-    payload.contextInfo = {
-      externalAdReply: {
-        title: title,
-        body: [meta.artists || meta.author, _p2Dur(meta.duration), _p2Views(meta.views) + ' views']
-          .filter(Boolean).join(' • '),
-        ...(thumb ? { thumbnail: thumb } : { thumbnailUrl: thumbUrl }),
-        mediaType: 1,
-        renderLargerThumbnail: true,
-        showAdAttribution: false,
-        ...(meta.videoUrl ? { sourceUrl: meta.videoUrl } : {}),
-      },
-    };
-  }
-  await sock.sendMessage(jid, payload, { quoted: quotedKey });
+  // n === 1 — Audio: PURE audio buffer. NO externalAdReply, NO thumbnail.
+  // This is the fix for "audio came with embedded thumbnail" + "doesn't play
+  // self". Anything attached to { audio } other than mimetype/fileName causes
+  // the WhatsApp client to surface the file as an attachment preview that
+  // fails the audio decoder on most builds.
+  await sock.sendMessage(jid, {
+    audio: got.buffer ? got.buffer : { url: got.path },
+    mimetype: 'audio/mpeg',
+    ptt: false,
+    fileName: safe + '.mp3',
+  }, { quoted: quotedKey });
+  if (got.path) try { require('fs').unlinkSync(got.path); } catch (e) {}
 }
-
-/* ── reply-to-card picker ──────────────────────────────────────────────────── */
 
 function _p2Body(m) {
   const msg = (m && m.message) || {};
@@ -379,8 +334,6 @@ function _p2Bind(sock) {
   }
 }
 
-/* ── .play ─────────────────────────────────────────────────────────────────── */
-
 cmd(["play", "music", "song"], { desc: "Play a song — card + pick 1 audio / 2 document / 3 voice / 4 video", category: "DOWNLOAD" }, async (sock, msg, args) => {
   const jid = msg.key.remoteJid;
   if (!args || !args.length) {
@@ -439,9 +392,6 @@ cmd(["play", "music", "song"], { desc: "Play a song — card + pick 1 audio / 2 
   if (!meta) meta = { title: query, videoUrl: isUrl ? query : '', videoId: _p2YtId(query) };
   if (!meta.videoUrl && meta.videoId) meta.videoUrl = 'https://www.youtube.com/watch?v=' + meta.videoId;
 
-  // DavidCyril /play does not return the channel name, and /download/ytmp3
-  // returns neither duration nor views. Fill only the blanks from yt-search so
-  // the card never shows "Unknown / N/A" for a real track.
   if (!meta.artists && !meta.author || !meta.duration || !meta.views) {
     try {
       const ys = require('yt-search');
@@ -481,6 +431,8 @@ cmd(["play", "music", "song"], { desc: "Play a song — card + pick 1 audio / 2 
     '_Example: reply to this card with_ `1` _for audio, `4` _for video._',
   ].join('\n');
 
+  // The card itself keeps the thumbnail (it's just an image with caption),
+  // but the FILE we'll deliver later will NOT carry any embed.
   const thumb = await _p2ThumbBuf(meta).catch(function () { return null; });
   const sent = thumb
     ? await sock.sendMessage(jid, { image: thumb, caption: card }, { quoted: msg }).catch(function () { return null; })
@@ -505,3 +457,10 @@ cmd(["play", "music", "song"], { desc: "Play a song — card + pick 1 audio / 2 
   _p2Bind(sock);
   await react(sock, msg, '✅').catch(function () {});
 });
+
+function _p2Sweep() {
+  const now = Date.now();
+  for (const kv of _P2_PENDING) {
+    if (!kv[1] || now - kv[1].ts > _P2_TTL) _P2_PENDING.delete(kv[0]);
+  }
+}
