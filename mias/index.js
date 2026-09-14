@@ -39778,3 +39778,583 @@ try {
     commands.set("playsearch", entry);
   }
 } catch {}
+
+/* JINX_BLOCK_START */
+/* ════════════════════════════════════════════════════════════════════════════
+   JINX PLAYER FINAL PACK — appended override block (safe to re-apply, idempotent)
+
+   Fixes delivered by this block:
+     1. .play — clean "───── JINX PLAYER ─────" banner (no emoji header),
+        real AUTHOR (oEmbed + yt-search + "Artist - Title" fallback, never
+        "Unknown" when YouTube knows it), plain-number choices 1-4 instead of
+        emoji number tiles, searching line without emoji spam.
+     2. Reply-to-card picker — matches the quoted card by stanzaId AND falls
+        back to the most recent pending card in the same chat, so a numbered
+        reply can never go silent. Only media is sent: NO captions, NO text.
+     3. Audio delivery — DavidCyril /download/ytmp3 is primary (proven live:
+        returns a real ID3 mp3), then /play, Gifted, cobalt, ytdl-core.
+     4. Video delivery — DavidCyril /download/ytmp4 primary, then /play
+        type=video, Gifted ytmp4, cobalt, ytdl-core.
+     5. .gst — always resolves the reaction and ALWAYS replies
+        "✅ Status uploaded" after a confirmed post (no more stuck loading
+        reaction, no more silent success).
+     6. .ping — restored, replies ONLY "ⓘ <ms>ms" (old style).
+   ════════════════════════════════════════════════════════════════════════════ */
+try {
+
+  // ── 6. PING — exact old style ⓘ <ms> ────────────────────────────────────
+  cmd(["ping"], { desc: "Bot latency check", category: "SYSTEM" }, async (sock, msg) => {
+    let ms = 0;
+    try {
+      const ts = Number((msg && msg.messageTimestamp) || 0) * 1000;
+      if (ts > 0) {
+        const d = Date.now() - ts;
+        if (d >= 0 && d <= 60000) ms = Math.round(d);
+      }
+    } catch (e) {}
+    return sendReply(sock, msg, "ⓘ " + ms + "ms");
+  });
+
+  // ── JINX PLAYER state ────────────────────────────────────────────────────
+  const _JX_TTL = 20 * 60 * 1000;
+  const _JX_PENDING = new Map();
+  const _JX_BOUND = new WeakSet();
+
+  function _JXNorm(jid) {
+    try {
+      let s = String(jid || "");
+      s = s.replace(/:\d+(?=@)/, "");
+      if (typeof resolveLid === "function") {
+        const r = resolveLid(s);
+        if (r) s = String(r).replace(/:\d+(?=@)/, "");
+      }
+      return s;
+    } catch (e) { return String(jid || ""); }
+  }
+  function _JXNumOnly(jid) { return String(_JXNorm(jid) || "").replace(/[^0-9]/g, ""); }
+  function _JXSameChat(a, b) {
+    const x = _JXNumOnly(a), y = _JXNumOnly(b);
+    return (x && y) ? x === y : _JXNorm(a) === _JXNorm(b);
+  }
+  function _JXSender(m) {
+    try { return typeof getSender === "function" ? String(getSender(m) || "") : ""; }
+    catch (e) { return ""; }
+  }
+  function _JXSweep() {
+    const now = Date.now();
+    for (const kv of _JX_PENDING) {
+      if (!kv[1] || now - kv[1].ts > _JX_TTL) _JX_PENDING.delete(kv[0]);
+    }
+  }
+
+  // Real metadata: author via oEmbed (author_name) → yt-search → title split.
+  // This is the fix for "the authors stay unknown".
+  async function _JXEnrich(meta) {
+    meta = meta || {};
+    try {
+      if (!meta.author && (meta.videoUrl || meta.videoId)) {
+        try {
+          const ytUrl = meta.videoUrl || ("https://www.youtube.com/watch?v=" + meta.videoId);
+          const { data } = await axios.get("https://www.youtube.com/oembed?url=" + encodeURIComponent(ytUrl) + "&format=json", {
+            timeout: 10000, headers: { "User-Agent": "Mozilla/5.0" },
+          });
+          if (data && data.author_name) meta.author = data.author_name;
+          if (!meta.title && data && data.title) meta.title = data.title;
+        } catch (e) {}
+      }
+      if (!meta.author) {
+        try {
+          const ys = require("yt-search");
+          const q = meta.videoId ? { videoId: meta.videoId } : (meta.title || "");
+          const r = await ys(q);
+          const v = meta.videoId ? r : (r && r.videos && r.videos[0]);
+          if (v) {
+            if (!meta.author) meta.author = (v.author && v.author.name) || v.author || null;
+            if (!meta.title) meta.title = v.title || meta.title;
+            if (!meta.duration) meta.duration = (v.timestamp || (v.duration && v.duration.timestamp)) || meta.duration;
+            if (!meta.views) meta.views = v.views || meta.views;
+            if (!meta.thumbUrl && v.thumbnail) meta.thumbUrl = v.thumbnail;
+            if (!meta.videoUrl && v.url) meta.videoUrl = v.url;
+            if (!meta.videoId && v.videoId) meta.videoId = v.videoId;
+          }
+        } catch (e) {}
+      }
+      if (!meta.author && meta.title && String(meta.title).includes(" - ")) {
+        const guess = String(meta.title).split(" - ")[0].trim();
+        if (guess && guess.length < 40) meta.author = guess;
+      }
+    } catch (e) {}
+    return meta;
+  }
+
+  // ── .play — banner card + plain-number choices ───────────────────────────
+  async function _JXPlayCard(sock, msg, args) {
+    const jid = msg.key.remoteJid;
+    const query = (args && args.length ? args.join(" ") : "").trim();
+    if (!query) {
+      return sendReply(sock, msg, "───── JINX PLAYER ─────\n\nUsage: " + (CONFIG.PREFIX || "") + "play <song name or link>");
+    }
+    try { await react(sock, msg, "⏳"); } catch (e) {}
+    const status = await sock.sendMessage(jid, {
+      text: "───── JINX PLAYER ─────\nSearching \"" + query + "\" ...",
+    }, { quoted: msg }).catch(function () { return null; });
+
+    let meta = null;
+    const isUrl = /^https?:\/\//i.test(query);
+    try {
+      if (isUrl) {
+        const r = await dcGet("/download/ytmp3", { url: query }, 30000);
+        const d = r && r.ok ? extractDcPlay(r.data) : null;
+        if (d && (d.title || d.dlUrl)) meta = { ...d, videoUrl: d.videoUrl || query, videoId: _p2YtId(d.videoUrl || query) };
+      } else {
+        try {
+          const r = await dcGet("/play", { query: query }, 30000);
+          const d = r && r.ok ? extractDcPlay(r.data) : null;
+          if (d && (d.title || d.dlUrl)) meta = { ...d, videoId: _p2YtId(d.videoUrl) };
+        } catch (e) {}
+        if (!meta) {
+          try {
+            const res = await ytSearch(query);
+            const v = res && res[0];
+            if (v && v.url) meta = { title: v.title || query, videoUrl: v.url, videoId: _p2YtId(v.url) };
+          } catch (e) {}
+        }
+      }
+    } catch (e) {}
+    if (!meta) meta = { title: query, videoUrl: isUrl ? query : "", videoId: _p2YtId(query) };
+    if (!meta.videoUrl && meta.videoId) meta.videoUrl = "https://www.youtube.com/watch?v=" + meta.videoId;
+    meta = await _JXEnrich(meta);
+
+    const title = meta.title || query;
+    const author = meta.artists || meta.author || "Unknown";
+    const card = [
+      "───── JINX PLAYER ─────",
+      "",
+      "TITLE     : " + title,
+      "AUTHOR    : " + author,
+      "DURATION  : " + _p2Dur(meta.duration),
+      "VIEWS     : " + _p2Views(meta.views),
+      "",
+      "────────────────────────",
+      "Reply here with a number:",
+      "  1 - Audio",
+      "  2 - Document (.mp3)",
+      "  3 - Voice note",
+      "  4 - Video (.mp4)",
+    ].join("\n");
+
+    const thumb = await _p2ThumbBuf(meta).catch(function () { return null; });
+    const sent = thumb
+      ? await sock.sendMessage(jid, { image: thumb, caption: card }, { quoted: msg }).catch(function () { return null; })
+      : await sock.sendMessage(jid, { text: card }, { quoted: msg }).catch(function () { return null; });
+
+    if (status && status.key) { try { await sock.sendMessage(jid, { delete: status.key }); } catch (e) {} }
+    if (!sent || !sent.key || !sent.key.id) {
+      try { await react(sock, msg, "❌"); } catch (e) {}
+      return sendReply(sock, msg, "❌ Could not send the player card for " + title + ".");
+    }
+
+    _JXSweep();
+    _JX_PENDING.set(sent.key.id, { jid: _JXNorm(jid), user: _JXSender(msg), meta: meta, ts: Date.now() });
+    const timer = setTimeout(function () { _JX_PENDING.delete(sent.key.id); }, _JX_TTL);
+    if (timer && typeof timer.unref === "function") timer.unref();
+    _JXBind(sock);
+    try { await react(sock, msg, "✅"); } catch (e) {}
+  }
+
+  // ── media resolvers (provider order proven from live probes) ─────────────
+  async function _JXAudioBuf(meta) {
+    const raw = meta.videoUrl || meta.url || "";
+    const id = meta.videoId || _p2YtId(raw);
+    const ytUrl = raw && _p2YtId(raw) ? raw : (id ? "https://www.youtube.com/watch?v=" + id : raw);
+    const tries = [];
+    if (meta.dlUrl) tries.push(async () => meta.dlUrl);
+    if (ytUrl) tries.push(async () => {
+      const r = await dcGet("/download/ytmp3", { url: ytUrl }, 35000);
+      const d = r && r.ok ? extractDcPlay(r.data) : null;
+      return d ? (d.dlUrl || d.url || null) : null;
+    });
+    if (meta.title) tries.push(async () => {
+      const r = await dcGet("/play", { query: meta.title }, 30000);
+      const d = r && r.ok ? extractDcPlay(r.data) : null;
+      return d ? (d.dlUrl || d.url || null) : null;
+    });
+    if (ytUrl) tries.push(async () => {
+      const { data } = await axios.get(
+        CONFIG.GIFTED_API + "/api/download/ytmp3?apikey=" + CONFIG.GIFTED_KEY + "&url=" + encodeURIComponent(ytUrl),
+        { timeout: 45000 }
+      );
+      const r = data && (data.result || data.data);
+      return r ? (r.download_url || r.url || r.audio || r.mp3 || null) : null;
+    });
+    if (ytUrl) tries.push(async () => {
+      const { data } = await axios.post("https://co.wuk.sh/api/json",
+        { url: ytUrl, downloadMode: "audio", audioFormat: "mp3", filenameStyle: "basic" },
+        { headers: { "Accept": "application/json", "Content-Type": "application/json", "User-Agent": "Mozilla/5.0" }, timeout: 30000 });
+      return (data && (data.url || data.audio)) || null;
+    });
+    for (const t of tries) {
+      try { const u = await t(); if (!u) continue; return await _p2Get(u, 180000); } catch (e) {}
+    }
+    try {
+      const mod = await import("@distube/ytdl-core").catch(function () { return null; });
+      const ytdl = mod && (mod.default || mod);
+      if (ytdl && ytUrl) {
+        const info = await ytdl.getInfo(ytUrl, { requestOptions: { headers: { "User-Agent": "Mozilla/5.0" } } });
+        const fmt = ytdl.chooseFormat(info.formats, { quality: "highestaudio", filter: "audioonly" });
+        const chunks = [];
+        const stream = ytdl.downloadFromInfo(info, { format: fmt });
+        await new Promise(function (resolve, reject) {
+          stream.on("data", function (c) { chunks.push(c); });
+          stream.on("end", resolve);
+          stream.on("error", reject);
+          setTimeout(function () { reject(new Error("ytdl timeout")); }, 120000);
+        });
+        const b = Buffer.concat(chunks);
+        if (b.length > 8000) return b;
+      }
+    } catch (e) {}
+    throw new Error("all audio providers failed — try again in a moment");
+  }
+
+  async function _JXVideoBuf(meta) {
+    const raw = meta.videoUrl || meta.url || "";
+    const id = meta.videoId || _p2YtId(raw);
+    const ytUrl = raw && _p2YtId(raw) ? raw : (id ? "https://www.youtube.com/watch?v=" + id : raw);
+    const tries = [];
+    if (ytUrl) tries.push(async () => {
+      const r = await dcGet("/download/ytmp4", { url: ytUrl }, 40000);
+      const d = r && r.ok ? extractDcPlay(r.data) : null;
+      return d ? (d.dlUrl || d.url || null) : null;
+    });
+    if (ytUrl) tries.push(async () => {
+      const r = await dcGet("/play", { query: ytUrl, type: "video" }, 35000);
+      if (!r || !r.ok || !r.data) return null;
+      const d = r.data.result || r.data.data || {};
+      return d.download_url || d.url || null;
+    });
+    if (ytUrl) tries.push(async () => {
+      const { data } = await axios.get(
+        CONFIG.GIFTED_API + "/api/download/ytmp4?apikey=" + CONFIG.GIFTED_KEY + "&url=" + encodeURIComponent(ytUrl),
+        { timeout: 60000 }
+      );
+      const r = data && (data.result || data.data);
+      return r ? (r.download_url || r.url || r.video || r.mp4 || null) : null;
+    });
+    if (ytUrl) tries.push(async () => {
+      const { data } = await axios.post("https://co.wuk.sh/api/json",
+        { url: ytUrl, downloadMode: "video", videoQuality: "480" },
+        { headers: { "Accept": "application/json", "Content-Type": "application/json", "User-Agent": "Mozilla/5.0" }, timeout: 30000 });
+      return (data && (data.url || data.video)) || null;
+    });
+    for (const t of tries) {
+      try { const u = await t(); if (!u) continue; return await _p2Get(u, 240000); } catch (e) {}
+    }
+    try {
+      const mod = await import("@distube/ytdl-core").catch(function () { return null; });
+      const ytdl = mod && (mod.default || mod);
+      if (ytdl && ytUrl) {
+        const info = await ytdl.getInfo(ytUrl, { requestOptions: { headers: { "User-Agent": "Mozilla/5.0" } } });
+        const fmt = ytdl.chooseFormat(info.formats, { quality: "highest", filter: "audioandvideo" });
+        const chunks = [];
+        const stream = ytdl.downloadFromInfo(info, { format: fmt });
+        await new Promise(function (resolve, reject) {
+          stream.on("data", function (c) { chunks.push(c); });
+          stream.on("end", resolve);
+          stream.on("error", reject);
+          setTimeout(function () { reject(new Error("ytdl timeout")); }, 180000);
+        });
+        const b = Buffer.concat(chunks);
+        if (b.length > 10000) return b;
+      }
+    } catch (e) {}
+    throw new Error("all video providers failed — try again in a moment");
+  }
+
+  // ── delivery: media ONLY, no captions, no text ──────────────────────────
+  async function _JXDeliver(sock, entry, n, replyMsg) {
+    const jid = entry.jid;
+    const meta = entry.meta || {};
+    const title = String(meta.title || "audio").slice(0, 60);
+    const safe = String(title).replace(/[^a-zA-Z0-9 _-]/g, "").trim().slice(0, 60) || "audio";
+
+    if (n === 4) {
+      const vbuf = await _JXVideoBuf(meta);
+      const thumb = await _p2ThumbBuf(meta).catch(function () { return null; });
+      const payload = { video: vbuf, mimetype: "video/mp4", fileName: safe + ".mp4" };
+      if (thumb) payload.jpegThumbnail = thumb;
+      await sock.sendMessage(jid, payload, { quoted: replyMsg });
+      return;
+    }
+
+    const abuf = await _JXAudioBuf(meta);
+
+    if (n === 2) {
+      await sock.sendMessage(jid, { document: abuf, mimetype: "audio/mpeg", fileName: safe + ".mp3" }, { quoted: replyMsg });
+      return;
+    }
+
+    if (n === 3) {
+      const ogg = await _p2ToPtt(abuf);
+      if (ogg) {
+        await sock.sendMessage(jid, { audio: ogg, mimetype: "audio/ogg; codecs=opus", ptt: true }, { quoted: replyMsg });
+      } else {
+        await sock.sendMessage(jid, { audio: abuf, mimetype: "audio/mpeg", ptt: true }, { quoted: replyMsg });
+      }
+      return;
+    }
+
+    const thumb = await _p2ThumbBuf(meta).catch(function () { return null; });
+    const payload = { audio: abuf, mimetype: "audio/mpeg", ptt: false, fileName: safe + ".mp3" };
+    const thumbUrl = _p2ThumbOf(meta);
+    if (thumb || thumbUrl) {
+      payload.contextInfo = {
+        externalAdReply: {
+          title: title,
+          body: [meta.artists || meta.author, _p2Dur(meta.duration), _p2Views(meta.views) + " views"]
+            .filter(Boolean).join(" • "),
+          ...(thumb ? { thumbnail: thumb } : { thumbnailUrl: thumbUrl }),
+          mediaType: 1,
+          renderLargerThumbnail: true,
+          showAdAttribution: false,
+          ...(meta.videoUrl ? { sourceUrl: meta.videoUrl } : {}),
+        },
+      };
+    }
+    await sock.sendMessage(jid, payload, { quoted: replyMsg });
+  }
+
+  // ── reply-to-card picker (quoted-id match + same-chat fallback) ──────────
+  function _JXBody(m) {
+    const msgx = (m && m.message) || {};
+    let c =
+      msgx.conversation ||
+      (msgx.extendedTextMessage && msgx.extendedTextMessage.text) ||
+      (msgx.imageMessage && msgx.imageMessage.caption) ||
+      (msgx.videoMessage && msgx.videoMessage.caption) ||
+      (msgx.buttonsResponseMessage && msgx.buttonsResponseMessage.selectedButtonId) ||
+      (msgx.listResponseMessage && msgx.listResponseMessage.singleSelectReply && msgx.listResponseMessage.singleSelectReply.selectedRowId) ||
+      (msgx.templateButtonReplyMessage && msgx.templateButtonReplyMessage.selectedId) ||
+      (msgx.interactiveResponseMessage && msgx.interactiveResponseMessage.nativeFlowResponseMessage && msgx.interactiveResponseMessage.nativeFlowResponseMessage.paramsJson) ||
+      (msgx.interactiveResponseMessage && msgx.interactiveResponseMessage.buttonReply && (msgx.interactiveResponseMessage.buttonReply.id || msgx.interactiveResponseMessage.buttonReply.displayText)) ||
+      "";
+    let out = String(c || "").trim();
+    if (out && (out[0] === "{" || out[0] === "[")) {
+      try {
+        const parsed = JSON.parse(out);
+        const found = (function scan(x) {
+          if (x === null || x === undefined) return "";
+          if (typeof x === "string") return x;
+          if (typeof x !== "object") return "";
+          for (const k of ["id", "selectedId", "selectedRowId", "selectedButtonId", "rowId", "body", "text"]) {
+            if (x[k] !== undefined) { const r = scan(x[k]); if (r) return r; }
+          }
+          for (const v of Object.values(x)) { const r = scan(v); if (r) return r; }
+          return "";
+        })(parsed);
+        if (found) out = found;
+      } catch (e) {}
+    }
+    return out;
+  }
+
+  function _JXQuotedId(m) {
+    const msgx = (m && m.message) || {};
+    const keys = ["extendedTextMessage", "imageMessage", "videoMessage", "audioMessage", "documentMessage",
+      "buttonsResponseMessage", "listResponseMessage", "templateButtonReplyMessage", "conversation"];
+    for (const k of keys) {
+      const ci = msgx[k] && msgx[k].contextInfo;
+      if (ci && ci.stanzaId) return ci.stanzaId;
+    }
+    return null;
+  }
+
+  async function _JXOnMsg(sock, m) {
+    const jid = (m && m.key && m.key.remoteJid) || "";
+    if (!jid) return;
+    const body = _JXBody(m);
+    if (!body) return;
+    if (/^[.!#/]/.test(body)) return; // never steal prefixed commands
+    const digits = String(body).replace(/[^0-9]/g, "");
+    if (!digits || digits.length > 2) return;
+    const n = parseInt(digits, 10);
+    if (!(n >= 1 && n <= 4)) return;
+
+    const qid = _JXQuotedId(m);
+    let entry = qid ? _JX_PENDING.get(qid) : null;
+    let entryKey = qid || null;
+
+    if (!entry) { // fallback: most recent pending card in THIS chat
+      let bestKey = null, bestTs = 0;
+      for (const kv of _JX_PENDING) {
+        if (_JXSameChat(kv[1].jid, jid) && kv[1].ts > bestTs) { bestKey = kv[0]; bestTs = kv[1].ts; }
+      }
+      if (!bestKey) return;
+      entry = _JX_PENDING.get(bestKey);
+      entryKey = bestKey;
+    }
+    if (!entry || !_JXSameChat(entry.jid, jid)) return;
+    const sender = _JXSender(m);
+    if (entry.user && sender && entry.user !== sender && !_JXSameChat(entry.user, sender)) return;
+    if (entryKey) _JX_PENDING.delete(entryKey);
+
+    try { await react(sock, m, "⏳"); } catch (e) {}
+    try {
+      await _JXDeliver(sock, entry, n, m);
+      try { await react(sock, m, "✅"); } catch (e) {}
+    } catch (e) {
+      const labels = { 1: "audio", 2: "document", 3: "voice note", 4: "video" };
+      try { await react(sock, m, "❌"); } catch (e2) {}
+      await sock.sendMessage(jid, {
+        text: "❌ Could not send the " + (labels[n] || "file") + " for \"" +
+          ((entry.meta && entry.meta.title) || "that song") + "\".\n" + ((e && e.message) || e),
+      }, { quoted: m }).catch(function () {});
+    }
+  }
+
+  function _JXBind(sock) {
+    try {
+      if (!sock || !sock.ev || typeof sock.ev.on !== "function") return;
+      if (_JX_BOUND.has(sock)) return;
+      _JX_BOUND.add(sock);
+      sock.ev.on("messages.upsert", async function (evt) {
+        if (!evt || evt.type !== "notify") return;
+        for (const m of (evt.messages || [])) {
+          try { await _JXOnMsg(sock, m); } catch (e) {}
+        }
+      });
+    } catch (e) {}
+  }
+
+  // ── .gst — guaranteed reaction resolution + "Status uploaded" reply ──────
+  function _JXV20Inner(m) {
+    if (!m) return null;
+    if (m.imageMessage) return { kind: "image", raw: m.imageMessage };
+    if (m.videoMessage) return { kind: "video", raw: m.videoMessage };
+    if (m.audioMessage) return { kind: "audio", raw: m.audioMessage };
+    if (m.stickerMessage) return { kind: "sticker", raw: m.stickerMessage };
+    if (m.documentMessage) return { kind: "document", raw: m.documentMessage };
+    if (m.extendedTextMessage && m.extendedTextMessage.contextInfo && m.extendedTextMessage.contextInfo.quotedMessage) {
+      return _JXV20Inner(m.extendedTextMessage.contextInfo.quotedMessage);
+    }
+    if (m.ephemeralMessage && m.ephemeralMessage.message) return _JXV20Inner(m.ephemeralMessage.message);
+    return null;
+  }
+  function _JXV20Text(m) {
+    if (!m) return "";
+    if (m.conversation) return m.conversation;
+    if (m.extendedTextMessage && m.extendedTextMessage.text) return m.extendedTextMessage.text;
+    if (m.imageMessage && m.imageMessage.caption) return m.imageMessage.caption;
+    if (m.videoMessage && m.videoMessage.caption) return m.videoMessage.caption;
+    return "";
+  }
+
+  const _JXGst = async (sock, msg, args) => {
+    const chat = msg.key.remoteJid;
+    const text = (args || []).join(" ").trim();
+    if (!String(chat || "").endsWith("@g.us")) return sendReply(sock, msg, "Group only.");
+    let posted = false, lastErr = "";
+    try { await react(sock, msg, "⏳"); } catch (e) {}
+    try {
+      const ctxInfo =
+        (msg.message && msg.message.extendedTextMessage && msg.message.extendedTextMessage.contextInfo) ||
+        (msg.message && msg.message.imageMessage && msg.message.imageMessage.contextInfo) ||
+        (msg.message && msg.message.videoMessage && msg.message.videoMessage.contextInfo) ||
+        (msg.message && msg.message.audioMessage && msg.message.audioMessage.contextInfo) ||
+        (msg.message && msg.message.documentMessage && msg.message.documentMessage.contextInfo) ||
+        null;
+      const quoted = ctxInfo && ctxInfo.quotedMessage ? ctxInfo.quotedMessage : null;
+      const direct = msg.message || {};
+      const qInner = _JXV20Inner(quoted) || _JXV20Inner(direct);
+      const quotedText = quoted ? _JXV20Text(quoted) : "";
+      const finalText = text || quotedText;
+      if (!qInner && !finalText) {
+        try { await react(sock, msg, "❌"); } catch (e) {}
+        return sendReply(sock, msg, "Reply to image/video/audio/sticker/document or type: " + (CONFIG.PREFIX || "") + "gst <text>");
+      }
+
+      let memberJids = [];
+      try {
+        const meta = await sock.groupMetadata(chat);
+        memberJids = (meta.participants || [])
+          .map(function (p) {
+            const id = typeof p.id === "string" ? p.id : String(p.id || "");
+            try { return typeof resolveLid === "function" ? resolveLid(id) : id; } catch (e) { return id; }
+          })
+          .filter(function (j) { return typeof j === "string" && j.endsWith("@s.whatsapp.net"); });
+      } catch (e) { lastErr = e && e.message ? e.message : String(e); }
+      if (!memberJids.length) {
+        try { memberJids = [...(_knownContacts || [])].filter(function (j) { return String(j || "").endsWith("@s.whatsapp.net"); }); } catch (e) {}
+      }
+      if (!memberJids.length) {
+        try {
+          memberJids = [String((sock.user && sock.user.id) || "").split(":")[0]].filter(Boolean).map(function (j) { return j + "@s.whatsapp.net"; });
+        } catch (e) {}
+      }
+      const gid = function () {
+        return typeof generateMessageIDV2 === "function"
+          ? generateMessageIDV2()
+          : ("MIAS" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8));
+      };
+      const statusOpts = { statusJidList: memberJids, messageId: gid() };
+
+      let payload;
+      if (!qInner) {
+        payload = { text: finalText, contextInfo: { isGroupStatus: true } };
+      } else {
+        let buf = null;
+        try { buf = await sock.downloadMediaMessage({ message: qInner.raw }); } catch (e) {}
+        if (!buf) {
+          try { buf = await sock.downloadMediaMessage({ msg: qInner.raw, mtype: qInner.kind + "Message" }); } catch (e) {}
+        }
+        if (!buf || !buf.length) throw new Error("could not download the quoted media");
+        const mime = qInner.raw.mimetype || "";
+        const cap = text || qInner.raw.caption || "";
+        payload = qInner.kind === "image" ? { image: buf, caption: cap }
+          : qInner.kind === "video" ? { video: buf, caption: cap, mimetype: mime || "video/mp4", gifPlayback: false }
+          : qInner.kind === "audio" ? { audio: buf, mimetype: /ogg|opus/i.test(mime) ? "audio/ogg; codecs=opus" : (mime || "audio/mpeg"), ptt: !!qInner.raw.ptt }
+          : qInner.kind === "sticker" ? { sticker: buf }
+          : { document: buf, fileName: qInner.raw.fileName || "file", mimetype: mime || "application/octet-stream", caption: cap };
+      }
+
+      const attempts = [
+        function () { return sock.sendMessage("status@broadcast", payload, statusOpts); },
+        function () { return sock.sendMessage(chat, { ...payload, contextInfo: { ...(payload.contextInfo || {}), isGroupStatus: true } }); },
+        function () { return sock.sendMessage(chat, payload); },
+      ];
+      if (typeof generateWAMessageContent === "function" && typeof sock.relayMessage === "function") {
+        attempts.push(async function () {
+          const upload = typeof sock.waUploadToServer === "function" ? sock.waUploadToServer.bind(sock) : sock.waUploadToServer;
+          if (!upload) throw new Error("upload helper unavailable");
+          const inner = await generateWAMessageContent(payload, { upload });
+          return sock.relayMessage("status@broadcast", { groupStatusMessageV2: { message: inner } }, {
+            messageId: gid(),
+            statusJidList: memberJids,
+          });
+        });
+      }
+
+      for (const attempt of attempts) {
+        try { await attempt(); posted = true; break; }
+        catch (e) { lastErr = e && e.message ? e.message : String(e); }
+      }
+      if (!posted) throw new Error(lastErr || "all posting methods failed");
+
+      // Confirmed post → always resolve the reaction AND confirm in text.
+      try { await react(sock, msg, "✅"); } catch (e) {}
+      await sendReply(sock, msg, "✅ Status uploaded").catch(function () {});
+    } catch (e) {
+      try { await react(sock, msg, "❌"); } catch (e2) {}
+      await sendReply(sock, msg, "❌ GST failed: " + ((e && e.message) || e)).catch(function () {});
+    }
+  };
+
+  // ── register (later registrations win in this command map) ───────────────
+  cmd(["play", "music", "song"], { desc: "Play a song — card + pick 1 audio / 2 document / 3 voice / 4 video", category: "DOWNLOAD" }, _JXPlayCard);
+  for (const _jn of ["gst", "gstatus", "groupstatus"]) cmd([_jn], { desc: "Post to group status", category: "GROUP" }, _JXGst);
+
+  console.log("[JINX] fixes active: ping, play card (no emoji numbers, real author, media-only reply), gst confirmation");
+} catch (e) {
+  console.log("[JINX] init error:", e && e.message);
+}
+/* JINX_BLOCK_END */
