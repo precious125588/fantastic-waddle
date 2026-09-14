@@ -8663,6 +8663,9 @@ async function _p2AudioBuf(meta) {
   const ytUrl = raw && _p2YtId(raw) ? raw : (id ? 'https://www.youtube.com/watch?v=' + id : raw);
   const tries = [];
 
+  // PRIMARY: the download link DavidCyril already returned for this exact
+  // track when the card was built — no second lookup, no drift.
+  if (meta.dlUrl) tries.push(async () => meta.dlUrl);
   if (ytUrl) tries.push(async () => {
     const r = await dcGet('/download/ytmp3', { url: ytUrl }, 30000);
     const d = r && r.ok ? extractDcPlay(r.data) : null;
@@ -8999,6 +9002,27 @@ cmd(["play", "music", "song"], { desc: "Play a song — card + pick 1 audio / 2 
   if (!meta) meta = { title: query, videoUrl: isUrl ? query : '', videoId: _p2YtId(query) };
   if (!meta.videoUrl && meta.videoId) meta.videoUrl = 'https://www.youtube.com/watch?v=' + meta.videoId;
 
+  // DavidCyril /play does not return the channel name, and /download/ytmp3
+  // returns neither duration nor views. Fill only the blanks from yt-search so
+  // the card never shows "Unknown / N/A" for a real track.
+  if (!meta.artists && !meta.author || !meta.duration || !meta.views) {
+    try {
+      const ys = require('yt-search');
+      const q = meta.videoId ? { videoId: meta.videoId } : (meta.title || query);
+      const r = await ys(q);
+      const v = meta.videoId ? r : (r && r.videos && r.videos[0]);
+      if (v) {
+        if (!meta.title) meta.title = v.title || meta.title;
+        if (!meta.artists && !meta.author) meta.author = (v.author && v.author.name) || v.author || null;
+        if (!meta.duration) meta.duration = (v.timestamp || (v.duration && v.duration.timestamp)) || meta.duration;
+        if (!meta.views) meta.views = v.views || meta.views;
+        if (!meta.thumbUrl && v.thumbnail) meta.thumbUrl = v.thumbnail;
+        if (!meta.videoUrl && v.url) meta.videoUrl = v.url;
+        if (!meta.videoId && v.videoId) meta.videoId = v.videoId;
+      }
+    } catch (e) { /* card still renders with what DavidCyril gave us */ }
+  }
+
   const title = meta.title || query;
   const author = meta.artists || meta.author || meta.channel || 'Unknown';
   const card = [
@@ -9039,7 +9063,8 @@ cmd(["play", "music", "song"], { desc: "Play a song — card + pick 1 audio / 2 
     user: (typeof getSender === 'function' ? String(getSender(msg) || '') : ''),
     ts: Date.now(),
   });
-  setTimeout(function () { _P2_PENDING.delete(sent.key.id); }, _P2_TTL).unref && setTimeout(function () { _P2_PENDING.delete(sent.key.id); }, _P2_TTL);
+  const _p2Timer = setTimeout(function () { _P2_PENDING.delete(sent.key.id); }, _P2_TTL);
+  if (typeof _p2Timer.unref === 'function') _p2Timer.unref();
   _p2Bind(sock);
   await react(sock, msg, '✅').catch(function () {});
 });
@@ -9169,6 +9194,9 @@ cmd(["play2", "playdoc", "songdoc"], { desc: "Play song delivered as a downloada
     //   co.wuk.sh/api/json is the community mirror (old root / was retired),
     //   api.cobalt.tools/api/json has the correct sub-path.
     const dlApis = [
+      // PRIMARY: DavidCyril
+      async () => { const r = await dcGet("/download/ytmp3", { url: videoUrl }, 30000); const d = r?.ok ? extractDcPlay(r.data) : null; return d?.dlUrl || null; },
+      async () => { const r = await dcGet("/play", { query: videoUrl }, 30000); const d = r?.ok ? extractDcPlay(r.data) : null; return d?.dlUrl || null; },
       async () => {
         const { data } = await axios.post("https://co.wuk.sh/api/json",
           { url: videoUrl, downloadMode: "audio", audioFormat: "mp3", filenameStyle: "basic" },
@@ -9281,6 +9309,9 @@ const _saveTubePickStore = new Map();
 async function _fetchYtAudioBuf(videoUrl, preferFmt = "mp3") {
   const cobaltFmt = preferFmt === "m4a" ? "best" : (preferFmt === "ogg" ? "ogg" : "mp3");
   const dlApis = [
+    // PRIMARY: DavidCyril
+    async () => { const r = await dcGet("/download/ytmp3", { url: videoUrl }, 30000); const d = r?.ok ? extractDcPlay(r.data) : null; return d?.dlUrl || null; },
+    async () => { const r = await dcGet("/play", { query: videoUrl }, 30000); const d = r?.ok ? extractDcPlay(r.data) : null; return d?.dlUrl || null; },
     async () => { const { data } = await axios.post("https://co.wuk.sh/api/json", { url: videoUrl, downloadMode: "audio", audioFormat: cobaltFmt, filenameStyle: "basic" }, { headers: { Accept: "application/json", "Content-Type": "application/json", "User-Agent": "Mozilla/5.0" }, timeout: 30000 }); return data?.url || data?.audio; },
     async () => { const { data } = await axios.post("https://cobalt-api.kwiatekmiki.com/", { url: videoUrl, downloadMode: "audio", audioFormat: cobaltFmt }, { headers: { Accept: "application/json", "Content-Type": "application/json" }, timeout: 30000 }); return data?.url; },
     async () => { const { data } = await axios.post("https://api.cobalt.tools/api/json", { url: videoUrl, downloadMode: "audio", audioFormat: cobaltFmt }, { headers: { Accept: "application/json", "Content-Type": "application/json", "User-Agent": "Mozilla/5.0" }, timeout: 30000 }); return data?.url || data?.audio; },
@@ -17208,6 +17239,13 @@ cmd(["ytmp4","ytvideo","yt4","ytv"], { desc: "Download YouTube video as mp4", ca
   // ── Quality-aware API chain — each one truly passes the requested quality ──
   const dlApis = [
 
+    // 0. PRIMARY: DavidCyril
+    async () => {
+      const r = await dcGet("/download/ytmp4", { url }, 40000);
+      const d = r?.ok ? extractDcPlay(r.data) : null;
+      if (d?.dlUrl) return { dl: d.dlUrl, title: d.title || "YouTube Video", src: "davidcyril" };
+    },
+
     // 1. Cobalt (best quality support — passes exact quality number)
     async () => {
       const _cobaltEps = ["https://api.cobalt.tools/", "https://cobalt-api.kwiatekmiki.com/", "https://co.wuk.sh/"];
@@ -17804,7 +17842,13 @@ cmd(["tiktok","tt","ttdl"], { desc: "Download TikTok video/audio — supports: .
     try {
       let dlUrl = null;
 
-      // 1) Prexzyvilla primary
+      // 0) PRIMARY: DavidCyril
+      for (const _dcEp of ["/download/tiktok", "/download/tiktokv2", "/download/tiktokv3", "/download/tiktokv4"]) {
+        if (dlUrl) break;
+        try { const r = await dcGet(_dcEp, { url }, 20000); if (r.ok) dlUrl = extractDcTiktok(r.data, isAudio); } catch {}
+      }
+
+      // 1) Prexzyvilla fallback
       if (!dlUrl) {
         const r = await prexzyGet("/download/tiktok", { url });
         const d = r.data;
@@ -17886,8 +17930,14 @@ cmd(["spotify","spot","spotdl"], { desc: "Download Spotify track as MP3 with cov
     if (!duration) duration = _d?.duration || _d?.duration_ms ? `${Math.floor((_d.duration || _d.duration_ms / 1000) / 60)}:${String(Math.floor((_d.duration || _d.duration_ms / 1000) % 60)).padStart(2,"0")}` : "";
   };
 
-  // 1) Prexzyvilla primary /download/spotify
+  // 0) PRIMARY: DavidCyril
   try {
+    const r = await dcGet("/download/spotify", { url }, 30000);
+    if (r.ok && r.data) _extractSpotify(r.data);
+  } catch {}
+
+  // 1) Prexzyvilla fallback /download/spotify
+  if (!dlUrl) try {
     const r = await prexzyGet("/download/spotify", { url }, 30000);
     if (r.ok && r.data) _extractSpotify(r.data);
   } catch {}
