@@ -955,6 +955,31 @@ async function startpairing(nexusDevNumber, options = {}) {
     
     const sessionPath = ensureSessionPath(nexusDevNumber);
 
+    // ── FIX ("couldn't link device" after the code is typed) ────────────────
+    // A pairing code is bound to the identity keys generated for it. Left-over
+    // half-written key files from an abandoned attempt make WhatsApp reject the
+    // link. Start every fresh code pairing from a clean key store.
+    if (pairingMode === 'code') {
+        try {
+            const credsFile = path.join(sessionPath, 'creds.json');
+            let registered = false;
+            if (fs.existsSync(credsFile)) {
+                try { registered = JSON.parse(fs.readFileSync(credsFile, 'utf8'))?.registered === true; } catch {}
+            }
+            if (!registered) {
+                let wiped = 0;
+                for (const f of fs.readdirSync(sessionPath)) {
+                    if (!f.endsWith('.json')) continue;
+                    if (f === 'pairing.json' || f === 'pairing-qr.json' || f === '.owner.json' || f === 'owner.json') continue;
+                    try { fs.unlinkSync(path.join(sessionPath, f)); wiped++; } catch {}
+                }
+                if (wiped) console.log(chalk.gray(`🧽 Cleared ${wiped} unfinished session file(s) for ${nexusDevNumber} before requesting a new code`));
+            }
+        } catch (e) {
+            console.log(chalk.yellow(`⚠️ Could not clean session dir for ${nexusDevNumber}: ${e.message}`));
+        }
+    }
+
     let state, saveCreds;
     try {
         const authResult = await useMultiFileAuthState(sessionPath);
@@ -972,7 +997,12 @@ async function startpairing(nexusDevNumber, options = {}) {
         printQRInTerminal: false,
         auth: state,
         version,
-        browser: Browsers.macOS(pairingMode === 'qr' ? "Chrome" : "Safari"),
+        // FIX ("couldn't link device"): WhatsApp only accepts an 8-character
+        // pairing code from a desktop-Chrome style client. Safari/macOS
+        // fingerprints are accepted for QR but routinely rejected right after
+        // the user types the code. QR keeps macOS/Chrome, code uses
+        // Ubuntu/Chrome — the combination WhatsApp links reliably.
+        browser: pairingMode === 'qr' ? Browsers.macOS('Chrome') : Browsers.ubuntu('Chrome'),
         getMessage: async key => {
             if (!store) return { conversation: '' };
             const jid = key.remoteJid;
@@ -989,7 +1019,7 @@ async function startpairing(nexusDevNumber, options = {}) {
         fireInitQueries: true,
         generateHighQualityLinkPreview: false,
         syncFullHistory: false,
-        markOnlineOnConnect: true,
+        markOnlineOnConnect: false,
     });
     } catch (err) {
         tracker.pairingError = 'Failed to create WhatsApp connection: ' + err.message;
@@ -1044,8 +1074,13 @@ async function startpairing(nexusDevNumber, options = {}) {
             // can fail before WhatsApp ever receives it. A code is returned
             // immediately, so a successful code is never replaced by a second
             // request on the same socket.
+            // FIX ("loads forever"): the old loop retried without a cap and
+            // cleared tracker.pairingError on every failure, so the browser
+            // spun for the full 120s and then showed a generic timeout. Cap
+            // the attempts and surface the real reason immediately.
+            const MAX_CODE_ATTEMPTS = 4;
             let attempt = 0;
-            while (!tracker.disconnected && nexus.ws?.readyState !== 3) {
+            while (!tracker.disconnected && nexus.ws?.readyState !== 3 && attempt < MAX_CODE_ATTEMPTS) {
                 attempt += 1;
                 try {
                     let code = await nexus.requestPairingCode(phoneNumber);
@@ -1067,13 +1102,15 @@ async function startpairing(nexusDevNumber, options = {}) {
                 } catch (err) {
                     lastError = err;
                     tracker.pairingError = null;
-                    const retryDelay = Math.min(1500 * (2 ** Math.min(attempt - 1, 4)), 15000);
+                    const retryDelay = Math.min(1500 * (2 ** Math.min(attempt - 1, 3)), 6000);
                     console.log(chalk.yellow(`⚠️ Pair request attempt ${attempt} for ${nexusDevNumber}: ${err.message}`));
                     await sleep(retryDelay);
                 }
             }
 
-            tracker.pairingError = lastError?.message || 'Pairing connection closed before a code was generated.';
+            tracker.pairingError = lastError?.message
+                ? `WhatsApp did not issue a pairing code (${lastError.message}). Please try again.`
+                : 'Pairing connection closed before a code was generated.';
             throw new Error(tracker.pairingError);
         })();
 
