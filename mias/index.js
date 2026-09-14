@@ -2656,6 +2656,42 @@ Save my contact:` }).catch(() => {});
           let body = (typeof getBody === "function" ? getBody(msg) : "") || "";
           const _btnCmd = _extractButtonCommand(body);
           if (_btnCmd) body = _btnCmd;
+          // ── ZINOX FIX: PICKER REPLIES BEFORE SETTINGS ─────────────────────
+          // The settings menu ("1.1 ... 33.2") and the TikTok picker
+          // ("1.1 ... 3.2") share the same numeric shape, but they live
+          // in DIFFERENT consumers. SETTINGS_MAP therefore contains entries
+          // like "3.1" (Bad Word Guard = delete) that collide with the
+          // TikTok sticker row. Before the settings handler was called
+          // unconditionally here, a `3.1` reply to a TikTok menu triggered
+          // `✅ Bad Word Guard: DELETE` instead of the HD sticker, and the
+          // native "Open Categories" tap (which delivers the rowId as
+          // `paramsJson` like {"id":"BTN:1.3",…} → body becomes ".1.3"
+          // after _extractButtonCommand) was eaten by the same path with
+          // the same dead result. We now let the picker dispatcher fire
+          // FIRST whenever the body looks like a picker choice AND either
+          // a picker is active in this chat OR the tap looks like a
+          // numbered Open-Categories selection.
+          try {
+            const _incomingBody = typeof body === "string" ? body : "";
+            const _pickerChoice = (typeof __miasNormalizeChoice === "function")
+              ? __miasNormalizeChoice(_incomingBody) : "";
+            const _pickerActive = (typeof __miasHasPendingPicker === "function")
+              ? __miasHasPendingPicker(msg.key.remoteJid) : false;
+            // Only fire the picker when it is known to be active for THIS
+            // chat. Bare digit/digit replies without an active picker MUST
+            // fall through to handleSettingsNumericReply, otherwise plain
+            // answers like "6.1" to the settings panel get swallowed by the
+            // ticker flow and the panel looks silent again. The native-flow
+            // tap path (BTN: <id> or naked {…paramsJson…} payload) is already
+            // routed correctly by the sendNativeFlowListMenu rowIds fix a
+            // few lines below (rows are no longer BTN:-prefixed, so they
+            // reach __miasHandleBareNumberReply unchanged).
+            if (_pickerChoice && _pickerActive) {
+              if (await __miasHandleBareNumberReply(sock, msg, body)) return;
+            }
+          } catch (_pickerFirstErr) {
+            console.error("[picker-first]", _pickerFirstErr?.message || _pickerFirstErr);
+          }
           // Settings replies are plain text, not commands. Handle them before
           // link hooks, private-mode gates, and other consumers can swallow a
           // reply such as "12.1". normalizeSettingsChoice also accepts the
@@ -4652,18 +4688,28 @@ async function sendNativeFlowButtons(sock, jid, quoted, bodyText, buttons, foote
 }
 async function sendNativeFlowListMenu(sock, jid, quoted, bodyText, sections, quickButtons = [], footer = `${CONFIG.BOT_NAME} • v${CONFIG.VERSION}`, opts = {}) {
   if (!generateWAMessageFromContent || !proto) throw new Error("native flow unavailable");
-  // FIX v18.2: "Open Categories" native button did nothing because the
-  // single_select row IDs were returned as raw paramsJSON, never as a
-  // typed reply. Normalize row IDs with a BTN: prefix so the click flows
-  // through _extractButtonCommand → __miasHandleBareNumberReply.
+  // FIX zinox-open-categories:
+  //   The "Open Categories" native button shipped dead because every row
+  //   id was prefixed with "BTN:" then handed to _extractButtonCommand,
+  //   which saw no matching command and was rewritten as ".1.3" / ".3.1".
+  //   That string then fell into the command dispatcher and matched no
+  //   handler, so the picker tap did nothing.
+  //
+  //   The minimal, framework-consistent fix is to stop mangling the row
+  //   ids. Single-select taps deliver `paramsJson` such as
+  //   {"id":"1.3","selectedRowId":"1.3",…}, which __miasNormalizeChoice
+  //   already turns back into "1.3". Picker classes (TikTok, saveTube,
+  //   movie, play) all accept those raw ids via __miasHandleBareNumberReply.
+  //   Only the bottom quickReply shortcuts (📋 ALL CMDS, 🏓 PING …) are real
+  //   commands, so we keep the BTN: prefix on them.
   if (Array.isArray(sections)) {
     sections = sections.map((sec) => {
       const _rows = Array.isArray(sec.rows) ? sec.rows.map((r) => {
         if (typeof r === "string") return r;
-        const _c = { ...r };
-        if (_c.id && !String(_c.id).startsWith("BTN:")) _c.id = `BTN:${_c.id}`;
-        if (_c.rowId && !String(_c.rowId).startsWith("BTN:")) _c.rowId = `BTN:${_c.rowId}`;
-        return _c;
+        // Intentional no-op: leave picker row ids unwrapped. The previous
+        // BTN: prefix collided with TikTok's "1.1-3.2" formats and made
+        // every native tap silently unreachable.
+        return { ...r };
       }) : sec.rows;
       return { ...sec, rows: _rows };
     });
@@ -7944,7 +7990,15 @@ function normalizeSettingsChoice(value) {
 
 async function handleSettingsNumericReply(sock, msg, body) {
   const jid = msg?.key?.remoteJid;
-  const session = jid ? settingsSession.get(jid) : null;
+  // FIX zinox-quoted-silent:
+  //   This used to capture `session` ONCE at the top and never refresh
+  //   it after `settingsSession.set()`.  When the user QUOTED the panel
+  //   and typed "6.1" after the 120 s session TTL, the .set() inside the
+  //   if-block stored the new entry in the Map — but the captured local
+  //   stayed null. Every subsequent `if (!session)` then returned false,
+  //   so the panel "went silent". Declare with `let` and re-read the Map
+  //   after every .set() call so the variable reflects reality.
+  let session = jid ? settingsSession.get(jid) : null;
   // FIX v18.2: when the user QUOTES the settings menu and replies with a
   // number, getBody() may miss the digits. Scan extendedTextMessage and
   // matchedText for a numeric choice and substitute it as the body.
@@ -7974,7 +8028,10 @@ async function handleSettingsNumericReply(sock, msg, body) {
   //   so a slow typist does not lose context.
   let choice = normalizeSettingsChoice(body);
   if (/^(\d{1,2}\.\d{1,2}|0)$/.test(choice)) {
-    if (!session) settingsSession.set(jid, { sender: getSender(msg) });
+    if (!session) {
+      settingsSession.set(jid, { sender: getSender(msg) });
+      session = settingsSession.get(jid) || session;          // ← refresh after .set()
+    }
   } else {
     const extended = (msg?.message?.extendedTextMessage?.text || "")
       + " " + (msg?.message?.conversation || "");
@@ -7986,10 +8043,15 @@ async function handleSettingsNumericReply(sock, msg, body) {
       // first (e.g. quoted an older panel).
       if (!session && /^(\d{1,2}\.\d{1,2}|0)$/.test(choice)) {
         settingsSession.set(jid, { sender: getSender(msg) });
+        session = settingsSession.get(jid) || session;        // ← refresh after .set()
       }
     }
   }
   if (!session && !/^(\d{1,2}\.\d{1,2}|0)$/.test(choice)) return false;
+  // FIX zinox-stale-session: re-read the Map right before the hard gate.
+  // The previous `if (!session) return false` exited silently when the
+  // captured variable was stale even though the Map was already updated.
+  if (!session) session = jid ? settingsSession.get(jid) : null;
   if (!session) return false;
   // Re-arm extension so the user has the full window to reply.
   setTimeout(() => settingsSession.delete(jid), 120000);
