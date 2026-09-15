@@ -40762,6 +40762,7 @@ try {
     Baileys: _safe(function () { return typeof Baileys !== 'undefined' ? Baileys : null; }),
 
     // install hooks read by the patched call sites
+    editMessage: (typeof editMessage === 'function') ? editMessage : null,
     setDeliver: function (fn) { globalThis.__PRECIOUS_PLAY_DELIVER__ = fn; },
     setSettingsReply: function (fn) { globalThis.__PRECIOUS_SETTINGS_REPLY__ = fn; },
   };
@@ -40770,4 +40771,17 @@ try {
   console.log('[precious-v20] ✅ installed —', JSON.stringify(_rep20));
 } catch (_e20) {
   console.log('[precious-v20] ❌ install error:', (_e20 && _e20.message) || _e20);
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   PRECIOUS v21 — installs LAST so old play/gst/tgsticker/shazam handlers can
+   never "come back". Adds .nkiri (native-flow movie/series downloader) and
+   re-pins .tgsticker / .shazam / .gst on the David Cyril APIs.
+   ══════════════════════════════════════════════════════════════════════════ */
+try {
+  const _p21 = require('./precious-fixes-v21.cjs');
+  const _rep21 = _p21.install(globalThis.__PRECIOUS__);
+  console.log('[precious-v21] ✅ installed —', JSON.stringify(_rep21));
+} catch (_e21) {
+  console.log('[precious-v21] ❌ install error:', (_e21 && _e21.message) || _e21);
 }
