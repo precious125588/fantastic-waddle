@@ -6841,8 +6841,36 @@ cmd(["apkdl2","apkdownload2"], { desc: "APK Downloader", category: "DOWNLOAD" },
     if (r.ok && r.data?.success && r.data.result) {
       const res = r.data.result;
       const dlUrl = res?.url || res?.download || res?.apkUrl;
-      if (dlUrl) {
-        return await sendReply(sock, msg, `📦 *APK Found*\n\n🏷️ *Name:* ${res?.name || q}\n📱 *Version:* ${res?.version || 'N/A'}\n📦 *Size:* ${res?.size || 'N/A'}\n\n🔗 ${dlUrl}`);
+      if (dlUrl && /^https?:\/\//i.test(String(dlUrl))) {
+        // Stream to disk with a hard 5GB cap, then deliver as a document.
+        // Buffer-free download = no RAM spike, no OOM, no bot restart.
+        const ax = require("axios");
+        const os2 = require("os"), path2 = require("path"), fs2 = require("fs");
+        const MAX = 5 * 1024 * 1024 * 1024;
+        const tmpFile = path2.join(os2.tmpdir(), "apk2_" + Date.now() + ".apk");
+        let received = 0;
+        try {
+          const { data: stream } = await ax.get(dlUrl, { responseType: "stream", timeout: 15 * 60 * 1000, maxRedirects: 5, headers: { "User-Agent": "Mozilla/5.0" }, validateStatus: (c) => c >= 200 && c < 400 });
+          await new Promise((resolve, reject) => {
+            const writer = fs2.createWriteStream(tmpFile);
+            stream.on("data", (chunk) => { received += chunk.length; if (received > MAX) { writer.destroy(); reject(new Error("APK is larger than the 5GB safety cap.")); } });
+            stream.on("error", (e) => { writer.destroy(); reject(e); });
+            stream.pipe(writer);
+            writer.on("finish", () => resolve());
+            writer.on("error", (e) => reject(e));
+          });
+          if (received === 0) throw new Error("Empty APK stream.");
+          const buf = fs2.readFileSync(tmpFile);
+          await sock.sendMessage(msg.key.remoteJid, {
+            document: buf,
+            fileName: (String(res?.name || q).replace(/[\\/:*?"<>|\n\r\t]/g, "_").trim() || q) + ".apk",
+            mimetype: "application/vnd.android.package-archive",
+            caption: `📦 *${res?.name || q}*\n💾 Size: ${(received / 1048576).toFixed(1)} MB`
+          }, { quoted: msg });
+          await react(sock, msg, "✅");
+        } catch (e2) { await sendReply(sock, msg, `❌ APK download failed: ${e2.message}`); }
+        finally { try { fs2.unlinkSync(tmpFile); } catch {} }
+        return;
       }
     }
     await sendReply(sock, msg, '❌ APK not found.');
@@ -40811,3 +40839,9 @@ try {
 } catch (_e21) {
   console.log('[precious-v21] ❌ install error:', (_e21 && _e21.message) || _e21);
 }
+
+try {
+  const _gstP = require('./precious-gst-picker.cjs');
+  const _repGst = _gstP.install(globalThis.__PRECIOUS__);
+  console.log('[precious-gst-picker] ✅ installed —', JSON.stringify(_repGst));
+} catch (_eg) { console.log('[precious-gst-picker] ❌ install error:', (_eg && _eg.message) || _eg); }

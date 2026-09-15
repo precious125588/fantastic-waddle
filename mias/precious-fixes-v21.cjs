@@ -339,6 +339,54 @@ async function _transcodeVideoToMp4(inputPath) {
   return { dir, filePath: outPath, ext: '.mp4', mimetype: 'video/mp4' };
 }
 
+function _probeVideoCodecs(filePath) {
+  return new Promise((resolve) => {
+    let bin = 'ffprobe';
+    try { const fp = require('ffprobe-static'); if (fp && fp.path) bin = fp.path; } catch {}
+    const pr = spawn(bin, ['-v', 'error', '-print_format', 'json', '-show_streams', filePath], { stdio: ['ignore', 'pipe', 'ignore'] });
+    let out = '';
+    let err = '';
+    pr.stdout.on('data', (d) => { out += d.toString(); });
+    pr.stderr.on('data', (d) => { err += d.toString(); });
+    const to = setTimeout(() => { try { pr.kill('SIGKILL'); } catch {} resolve(null); }, 20000);
+    pr.on('error', () => { clearTimeout(to); resolve(null); });
+    pr.on('close', (c) => {
+      clearTimeout(to);
+      if (c !== 0) return resolve(null);
+      try {
+        const j = JSON.parse(out);
+        const streams = (j && j.streams) || [];
+        const v = streams.find((s) => s && s.codec_type === 'video');
+        const a = streams.find((s) => s && s.codec_type === 'audio');
+        if (!v) return resolve(null);
+        resolve({
+          hasVideo: true,
+          vcodec: String(v.codec_name || '').toLowerCase(),
+          acodec: String((a && a.codec_name) || '').toLowerCase(),
+          hasAudio: !!a,
+        });
+      } catch { resolve(null); }
+    });
+  });
+}
+
+// Guarantee a WhatsApp-playable MP4: H.264 video + AAC audio + faststart moov.
+// If the source already is H.264/AAC we only re-mux (fast copy) — no quality loss.
+async function _ensureWaVideo(inputPath, { timeoutMs = 300000 } = {}) {
+  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'wavid-'));
+  const outPath = path.join(dir, 'wa.mp4');
+  const probe = await _probeVideoCodecs(inputPath);
+  const good = probe && probe.hasVideo && (probe.vcodec === 'h264' || probe.vcodec === 'avc1') && (probe.acodec === 'aac' || probe.acodec === 'mp4a');
+  if (good) {
+    try {
+      await runFfmpeg(['-y', '-i', inputPath, '-c', 'copy', '-movflags', '+faststart', outPath], 120000);
+      return { dir, filePath: outPath };
+    } catch {}
+  }
+  await runFfmpeg(['-y', '-i', inputPath, '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart', outPath], timeoutMs);
+  return { dir, filePath: outPath };
+}
+
 function _messageContextInfo(msg) {
   return msg?.message?.extendedTextMessage?.contextInfo
     || msg?.message?.imageMessage?.contextInfo
@@ -1209,22 +1257,13 @@ function install(ctx) {
             fetched = { ...fetched, filePath: converted.filePath };
             info = converted;
           }
-          // Faststart: re-write the mp4 so the moov atom is at the front.
-          // DASH-style YouTube videos return mp4 containers whose moov
-          // sits at the tail; WhatsApp rejects those as
-          // "This file isn't available".
-          try {
-            const fs2 = fs;
-            const faststarted = await (async () => {
-              const dir = await fs2.promises.mkdtemp(path.join(os.tmpdir(), 'jxfast-'));
-              const outPath = path.join(dir, 'faststart.mp4');
-              await runFfmpeg(['-y', '-i', fetched.filePath, '-c', 'copy', '-movflags', '+faststart', outPath], 120000);
-              return { dir, filePath: outPath };
-            })();
-            cleanup.add(faststarted.dir);
-            fetched = { ...fetched, filePath: faststarted.filePath };
-          } catch (_e2) { /* keep existing file if faststart fails */ }
-          await _sendFilePath(sock, jid, 'video', fetched.filePath, { mimetype: 'video/mp4', fileName: `${title}.mp4` }, msg);
+          // WhatsApp-compatible video pass — guarantees H.264 + AAC audio and a
+          // faststart moov atom. DASH-style YouTube MP4s fail WhatsApp's codec
+          // rules: audio plays, video stays BLACK, or WhatsApp says
+          // "This video file isn't available". Never send the raw stream.
+          const ready = await _ensureWaVideo(fetched.filePath, { timeoutMs: 420000 });
+          cleanup.add(ready.dir);
+          await _sendFilePath(sock, jid, 'video', ready.filePath, { mimetype: 'video/mp4', fileName: `${title}.mp4` }, msg);
         } else {
           const audioUrl = await playResolveAudioUrl(meta);
           if (!audioUrl) throw new Error('no valid audio file url');
@@ -1414,8 +1453,15 @@ function install(ctx) {
             cleanup.add(converted.dir);
             fetched = { ...fetched, filePath: converted.filePath };
           }
-          if (mode === 'mp4doc') await _sendFilePath(sock, chat, 'document', fetched.filePath, { mimetype: 'video/mp4', fileName: `${title}.mp4` }, msg);
-          else await _sendFilePath(sock, chat, 'video', fetched.filePath, { mimetype: 'video/mp4', fileName: `${title}.mp4`, caption: `🎬 *${state.title}*` }, msg);
+          if (mode === 'mp4doc') {
+            await _sendFilePath(sock, chat, 'document', fetched.filePath, { mimetype: 'video/mp4', fileName: `${title}.mp4` }, msg);
+          } else {
+            // Same WhatsApp-playable pass as .play — fixes black video and
+            // "this video file isn't available" on YTMate MP4s.
+            const ready = await _ensureWaVideo(fetched.filePath, { timeoutMs: 420000 });
+            cleanup.add(ready.dir);
+            await _sendFilePath(sock, chat, 'video', ready.filePath, { mimetype: 'video/mp4', fileName: `${title}.mp4`, caption: `🎬 *${state.title}*` }, msg);
+          }
         } else {
           let fetched = await _fetchBinaryToTemp(finalUrl, { maxBytes: 80 * 1024 * 1024, timeout: 240000, prefix: 'ytmatea-' });
           cleanup.add(fetched.dir);
