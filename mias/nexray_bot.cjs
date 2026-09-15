@@ -1665,7 +1665,8 @@ module.exports = function registerNexrayCmds(cmd, CONFIG, sendReply, react, down
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  cmd(['tt-dl', 'ttdl', 'tiktok-dl'], { desc: 'Download TikTok video (no watermark)', category: 'Nexray-Downloader' }, async (sock, msg, args) => {
+  // v19: the 'ttdl' alias was removed — it shadowed the image-card .tt/.tiktok handler
+  cmd(['tt-dl', 'tiktok-dl'], { desc: 'Download TikTok video (no watermark)', category: 'Nexray-Downloader' }, async (sock, msg, args) => {
     if (!args.length) return _noArgs(sock, msg, 'tt-dl <url>');
     await react(sock, msg, '🎵');
     try {
@@ -2673,7 +2674,7 @@ ${ffSig !== 'N/A' ? '💬 *Bio:* ' + ffSig : ''}`.trim();
     } catch (e) { await sendReply(sock, msg, `❌ Error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
-  cmd(['stalk-tiktok', 'ttstalk', 'tiktokstalk'], { desc: 'Stalk TikTok user profile', category: 'Nexray-Stalker' }, async (sock, msg, args) => {
+  cmd(['stalk-tiktok', 'tiktokstalk'], { desc: 'Stalk TikTok user profile', category: 'Nexray-Stalker' }, async (sock, msg, args) => {
     if (!args.length) return _noArgs(sock, msg, 'stalk-tiktok <username>');
     await react(sock, msg, '🎵');
     try {

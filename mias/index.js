@@ -8884,6 +8884,112 @@ async function _p2VideoBuf(meta) {
   throw new Error('every video provider failed — try again in a moment');
 }
 
+/* ══════════════════════════════════════════════════════════════════════════
+   MIAS MEDIA FORMAT FIX v19
+   Sniff the real bytes and transcode to the canonical container BEFORE every
+   send. This is what fixes:
+     • "this video isn't available"            -> webm/mislabeled video re-muxed
+     • "wrong format / may be dangerous"       -> audio/video bytes now match the
+                                                  file extension and MIME type
+     • "something is wrong with this file"     -> voice notes are real OGG/Opus
+     • "documents that arrive as media"        -> document branch now honoured
+   Self-contained: no imports at module load, ffmpeg resolved lazily.
+   ══════════════════════════════════════════════════════════════════════════ */
+function _mfFfmpegPath() {
+  try { const p = require("ffmpeg-static"); if (p && typeof p === "string") return p; } catch (e) {}
+  return "ffmpeg";
+}
+function _mfBinaryOk() {
+  try {
+    const cp = require("child_process");
+    const r = cp.spawnSync(_mfFfmpegPath(), ["-version"], { timeout: 15000 });
+    return !!(r && r.status === 0);
+  } catch (e) { return false; }
+}
+function _mfTmp() {
+  const fs = require("fs"), os = require("os"), path = require("path");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "miasfmt-"));
+  return { dir: dir, file: path.join(dir, "in.bin") };
+}
+function _mfSniff(buf) {
+  const UNK = { kind: "unknown", ext: ".bin", mime: "application/octet-stream" };
+  try {
+    if (!buf || buf.length < 16) return UNK;
+    const at = (i, s) => buf.slice(i, i + s.length).toString("latin1") === s;
+    const hex = (i, s) => buf.slice(i, i + s.length).toString("hex") === s;
+    const head = buf.slice(0, 256).toString("utf8").trim().toLowerCase();
+    if (head.startsWith("<!doctype") || head.startsWith("<html") || head.startsWith("<?xml")) return { kind: "html", ext: ".html", mime: "text/html" };
+    if (head.startsWith("{") || head.startsWith("[")) return { kind: "json", ext: ".json", mime: "application/json" };
+    if (at(0, "ID3")) return { kind: "mp3", ext: ".mp3", mime: "audio/mpeg" };
+    if (buf[0] === 0xff && (buf[1] & 0xe0) === 0xe0) return { kind: "mp3", ext: ".mp3", mime: "audio/mpeg" };
+    if (at(0, "OggS")) return { kind: "ogg", ext: ".ogg", mime: "audio/ogg; codecs=opus" };
+    if (at(0, "RIFF") && at(8, "WAVE")) return { kind: "wav", ext: ".wav", mime: "audio/wav" };
+    if (at(0, "fLaC")) return { kind: "flac", ext: ".flac", mime: "audio/flac" };
+    if (hex(0, "1a45dfa3")) return { kind: "webm", ext: ".webm", mime: "video/webm" };
+    if (at(0, "%PDF")) return { kind: "pdf", ext: ".pdf", mime: "application/pdf" };
+    if (buf.slice(0, 64).toString("latin1").includes("ftyp")) {
+      const brand = buf.slice(8, 12).toString("latin1");
+      if (/^M4A|^M4B/i.test(brand)) return { kind: "m4a", ext: ".m4a", mime: "audio/mp4" };
+      return { kind: "mp4", ext: ".mp4", mime: "video/mp4" };
+    }
+    if (at(0, "moov") || at(0, "mdat") || at(0, "wide") || at(0, "free")) return { kind: "mp4", ext: ".mp4", mime: "video/mp4" };
+    if (at(0, "PK")) return { kind: "zip", ext: ".zip", mime: "application/zip" };
+    return UNK;
+  } catch (e) { return UNK; }
+}
+function _mfTranscode(buf, args, outName, timeoutMs) {
+  try {
+    if (!buf || buf.length < 512) return null;
+    if (buf.length > 120 * 1024 * 1024) return null;
+    const fs = require("fs"), cp = require("child_process"), path = require("path");
+    const t = _mfTmp();
+    const out = path.join(t.dir, outName);
+    fs.writeFileSync(t.file, buf);
+    const r = cp.spawnSync(_mfFfmpegPath(), ["-y", "-hide_banner", "-loglevel", "error", "-i", t.file].concat(args).concat([out]), { timeout: timeoutMs || 180000, maxBuffer: 1 << 28 });
+    let res = null;
+    try { if (r && r.status === 0 && fs.existsSync(out)) { const o = fs.readFileSync(out); if (o.length > 1024) res = o; } } catch (e) {}
+    try { fs.rmSync(t.dir, { recursive: true, force: true }); } catch (e) {}
+    return res;
+  } catch (e) { return null; }
+}
+async function _mfToMp3(buf) { return _mfTranscode(buf, ["-vn", "-c:a", "libmp3lame", "-b:a", "128k", "-ar", "44100"], "out.mp3", 180000); }
+async function _mfToOggOpus(buf) { return _mfTranscode(buf, ["-vn", "-c:a", "libopus", "-b:a", "64k", "-ar", "48000", "-ac", "1"], "out.ogg", 180000); }
+async function _mfToMp4(buf) { return _mfTranscode(buf, ["-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart"], "out.mp4", 300000); }
+/* Audio that WhatsApp will actually play as an inline audio bubble. */
+async function _mfPrepareAudio(buf) {
+  const s = _mfSniff(buf);
+  if (s.kind === "mp3") return { buf: buf, ext: ".mp3", mime: "audio/mpeg", kind: "mp3" };
+  const o = await _mfToMp3(buf);
+  if (o) return { buf: o, ext: ".mp3", mime: "audio/mpeg", kind: "mp3", converted: true };
+  return { buf: buf, ext: (s.ext === ".bin" ? ".mp3" : s.ext), mime: (s.kind === "unknown" ? "audio/mpeg" : s.mime), kind: s.kind };
+}
+/* Same bytes, but named/mimed so it opens as a real file. */
+async function _mfPrepareAudioDoc(buf) {
+  const a = await _mfPrepareAudio(buf);
+  return { buf: a.buf, ext: a.ext, mime: a.mime };
+}
+/* Returns ok:true only when the bytes are a real MP4 WhatsApp can play. */
+async function _mfPrepareVideo(buf) {
+  const s = _mfSniff(buf);
+  if (s.kind === "mp4") return { ok: true, buf: buf, ext: ".mp4", mime: "video/mp4", note: "" };
+  const o = await _mfToMp4(buf);
+  if (o) return { ok: true, buf: o, ext: ".mp4", mime: "video/mp4", converted: true, note: "" };
+  return {
+    ok: false, buf: buf,
+    ext: (s.ext === ".bin" ? ".mp4" : s.ext),
+    mime: (s.mime === "application/octet-stream" ? "video/mp4" : s.mime),
+    note: "sent as a file — this clip could not be re-encoded into a playable video.",
+  };
+}
+async function _mfPrepareVideoDoc(buf) {
+  const s = _mfSniff(buf);
+  if (s.kind === "mp4") return { buf: buf, ext: ".mp4", mime: "video/mp4" };
+  const o = await _mfToMp4(buf);
+  if (o) return { buf: o, ext: ".mp4", mime: "video/mp4" };
+  return { buf: buf, ext: (s.ext === ".bin" ? ".mp4" : s.ext), mime: (s.mime === "application/octet-stream" ? "video/mp4" : s.mime) };
+}
+/* ══════════════════════════════════════════ end MIAS MEDIA FORMAT FIX v19 */
+
 /** ffmpeg → real voice note (ogg/opus). Returns null when unavailable. */
 async function _p2ToPtt(buf) {
   try {
@@ -8895,7 +9001,7 @@ async function _p2ToPtt(buf) {
     const inF = pathx.join(dir, 'in.bin');
     const outF = pathx.join(dir, 'out.ogg');
     fsx.writeFileSync(inF, buf);
-    const r = cp.spawnSync('ffmpeg', [
+    const r = cp.spawnSync(_mfFfmpegPath(), [
       '-y', '-i', inF, '-vn', '-c:a', 'libopus',
       '-b:a', '64k', '-ar', '48000', '-ac', '1', outF,
     ], { timeout: 150000 });
@@ -8923,58 +9029,52 @@ async function _p2Deliver(sock, entry, n, quotedKey) {
 
   if (n === 4) {
     const vbuf = await _p2VideoBuf(meta);
-    const thumb = await _p2ThumbBuf(meta).catch(function () { return null; });
-    const payload = {
-      video: vbuf,
-      mimetype: 'video/mp4',
-      fileName: safe + '.mp4',
-      caption: '🎬 *' + title + '*\n👤 ' + (meta.artists || meta.author || 'Unknown') + '  ⏱️ ' + _p2Dur(meta.duration),
-    };
-    if (thumb) payload.jpegThumbnail = thumb;
-    await sock.sendMessage(jid, payload, { quoted: quotedKey });
+    const _v = await _mfPrepareVideo(vbuf);
+    if (_v.ok) {
+      const thumb = await _p2ThumbBuf(meta).catch(function () { return null; });
+      const payload = {
+        video: _v.buf,
+        mimetype: 'video/mp4',
+        fileName: safe + '.mp4',
+        caption: '🎬 *' + title + '*\n👤 ' + (meta.artists || meta.author || 'Unknown') + '  ⏱️ ' + _p2Dur(meta.duration),
+      };
+      if (thumb) payload.jpegThumbnail = thumb;
+      await sock.sendMessage(jid, payload, { quoted: quotedKey });
+    } else {
+      await sock.sendMessage(jid, {
+        document: _v.buf, mimetype: _v.mime, fileName: safe + _v.ext,
+        caption: '🎬 *' + title + '*\n📎 ' + _v.note,
+      }, { quoted: quotedKey });
+    }
     return;
   }
 
   const abuf = await _p2AudioBuf(meta);
 
   if (n === 2) {
+    const _docA = await _mfPrepareAudioDoc(abuf);
     await sock.sendMessage(jid, {
-      document: abuf,
-      mimetype: 'audio/mpeg',
-      fileName: safe + '.mp3',
+      document: _docA.buf,
+      mimetype: _docA.mime,
+      fileName: safe + _docA.ext,
       caption: '📄 *' + title + '*\n👤 ' + (meta.artists || meta.author || 'Unknown') + '  ⏱️ ' + _p2Dur(meta.duration) + '  👁️ ' + _p2Views(meta.views),
     }, { quoted: quotedKey });
     return;
   }
 
   if (n === 3) {
-    const ogg = await _p2ToPtt(abuf);
-    if (ogg) {
+    const ogg = (await _p2ToPtt(abuf)) || (await _mfToOggOpus(abuf));
+    if (ogg && _mfSniff(ogg).kind === "ogg") {
       await sock.sendMessage(jid, { audio: ogg, mimetype: 'audio/ogg; codecs=opus', ptt: true }, { quoted: quotedKey });
     } else {
-      await sock.sendMessage(jid, { audio: abuf, mimetype: 'audio/mpeg', ptt: true }, { quoted: quotedKey });
+      const _av = await _mfPrepareAudio(abuf);
+      await sock.sendMessage(jid, { audio: _av.buf, mimetype: _av.mime, ptt: false, fileName: safe + _av.ext }, { quoted: quotedKey });
     }
     return;
   }
 
-  const thumb = await _p2ThumbBuf(meta).catch(function () { return null; });
-  const payload = { audio: abuf, mimetype: 'audio/mpeg', ptt: false, fileName: safe + '.mp3' };
-  const thumbUrl = _p2ThumbOf(meta);
-  if (thumb || thumbUrl) {
-    payload.contextInfo = {
-      externalAdReply: {
-        title: title,
-        body: [meta.artists || meta.author, _p2Dur(meta.duration), _p2Views(meta.views) + ' views']
-          .filter(Boolean).join(' • '),
-        ...(thumb ? { thumbnail: thumb } : { thumbnailUrl: thumbUrl }),
-        mediaType: 1,
-        renderLargerThumbnail: true,
-        showAdAttribution: false,
-        ...(meta.videoUrl ? { sourceUrl: meta.videoUrl } : {}),
-      },
-    };
-  }
-  await sock.sendMessage(jid, payload, { quoted: quotedKey });
+  const _out = await _mfPrepareAudio(abuf);
+  await sock.sendMessage(jid, { audio: _out.buf, mimetype: _out.mime, ptt: false, fileName: safe + _out.ext }, { quoted: quotedKey });
 }
 
 /* ── reply-to-card picker ──────────────────────────────────────────────────── */
@@ -18080,6 +18180,8 @@ cmd(["tiktok","tt","ttdl"], { desc: "Download TikTok video/audio — supports: .
     } catch(e) { await sendReply(sock, msg, `❌ TikTok error: ${e.message}`); await react(sock, msg, '❌'); }
   });
 
+for (const _ttn of ["tiktok", "tt", "ttdl"]) { const _te = commands.get(_ttn); if (_te) { _te.__ttCard = true; _te.__ttCardHandler = _te.handler; } }
+
 cmd(["spotify","spot","spotdl"], { desc: "Download Spotify track as MP3 with cover art", category: "DOWNLOAD" }, async (sock, msg, args) => {
   if (!args[0]) { await sendReply(sock, msg, `Usage: ${CONFIG.PREFIX}spotify <spotify_track_url>\n\nExample:\n${CONFIG.PREFIX}spotify https://open.spotify.com/track/...`); return; }
   await react(sock, msg, "⏳");
@@ -21743,10 +21845,21 @@ cmd(["pick", "p"], { desc: "Pick randomly from options (A|B|C) OR download adult
       await updateTtStatus(`📤 *Uploading ${ttChoiceLabel}* (${ttMode.id})...\nAlmost done.`);
       const ttCaption = `🎵 *${ttPick.info.title}*\n👤 ${ttPick.info.author}`;
       if (ttMode.kind === "audio") {
-        await sock.sendMessage(jid, {
-          audio: media, mimetype: "audio/mpeg", ptt: !!ttMode.voiceNote,
-          fileName: ttMode.voiceNote ? undefined : "tiktok_audio.mp3",
-        }, { quoted: msg });
+        if (ttMode.voiceNote) {
+          const _vno = await _mfToOggOpus(media);
+          if (_vno) {
+            await sock.sendMessage(jid, { audio: _vno, mimetype: "audio/ogg; codecs=opus", ptt: true }, { quoted: msg });
+          } else {
+            const _tva = await _mfPrepareAudio(media);
+            await sock.sendMessage(jid, { audio: _tva.buf, mimetype: _tva.mime, ptt: false, fileName: "tiktok_audio" + _tva.ext }, { quoted: msg });
+          }
+        } else if (ttMode.document) {
+          const _tad = await _mfPrepareAudioDoc(media);
+          await sock.sendMessage(jid, { document: _tad.buf, mimetype: _tad.mime, fileName: "tiktok_audio" + _tad.ext, caption: ttCaption }, { quoted: msg });
+        } else {
+          const _tva = await _mfPrepareAudio(media);
+          await sock.sendMessage(jid, { audio: _tva.buf, mimetype: _tva.mime, ptt: false, fileName: "tiktok_audio" + _tva.ext }, { quoted: msg });
+        }
       } else if (ttMode.kind === "sticker") {
         const sticker = await createStickerFromBuffer(media, {
           mediaType: "video/mp4",
@@ -21755,8 +21868,9 @@ cmd(["pick", "p"], { desc: "Pick randomly from options (A|B|C) OR download adult
         });
         await sock.sendMessage(jid, { sticker, isAnimated: true }, { quoted: msg });
       } else if (ttMode.document) {
+        const _tvd = await _mfPrepareVideoDoc(media);
         await sock.sendMessage(jid, {
-          document: media, mimetype: "video/mp4", fileName: "tiktok_video.mp4",
+          document: _tvd.buf, mimetype: _tvd.mime, fileName: "tiktok_video" + _tvd.ext,
           caption: ttCaption,
         }, { quoted: msg });
       } else {
@@ -21768,21 +21882,23 @@ cmd(["pick", "p"], { desc: "Pick randomly from options (A|B|C) OR download adult
           let _ptvOk = false;
           try {
             await sock.sendMessage(jid, {
-              video: media, ptv: true, mimetype: "video/mp4", caption: ttCaption, gifPlayback: false,
+              video: (await _mfPrepareVideo(media)).buf, ptv: true, mimetype: "video/mp4", caption: ttCaption, gifPlayback: false,
             }, { quoted: msg });
             _ptvOk = true;
           } catch (_ptvErr) {
             try {
               await sock.sendMessage(jid, {
-                video: media, mimetype: "video/mp4",
-                caption: `${ttCaption}\n📎 (video-note failed — sent as video)`,
+                video: (await _mfPrepareVideo(media)).buf, mimetype: "video/mp4",
+                caption: `${ttCaption}
+📎 (video-note failed — sent as video)`,
               }, { quoted: msg });
               _ptvOk = true;
             } catch (_vidErr) {
               await sock.sendMessage(jid, {
-                document: media, mimetype: "video/mp4",
+                document: (await _mfPrepareVideo(media)).buf, mimetype: "video/mp4",
                 fileName: "tiktok_video_note.mp4",
-                caption: `${ttCaption}\n📎 (client rejected round note — sent as file)`,
+                caption: `${ttCaption}
+📎 (client rejected round note — sent as file)`,
               }, { quoted: msg });
               _ptvOk = true;
             }
@@ -21795,16 +21911,23 @@ cmd(["pick", "p"], { desc: "Pick randomly from options (A|B|C) OR download adult
           return;
         }
         if (ttMode.kind === "video" && !ttMode.videoNote) {
-          const payload = { video: media, mimetype: "video/mp4", caption: ttCaption };
-          try {
-            await sock.sendMessage(jid, payload, { quoted: msg });
-          } catch (videoError) {
-            // A provider can return a valid file that WhatsApp rejects as a
-            // playable video.  Preserve delivery as a downloadable MP4.
-            console.log("[tiktok] video send failed, using document fallback:", videoError?.message || videoError);
+          const _tvv = await _mfPrepareVideo(media);
+          if (_tvv.ok) {
+            try {
+              await sock.sendMessage(jid, { video: _tvv.buf, mimetype: "video/mp4", caption: ttCaption }, { quoted: msg });
+            } catch (videoError) {
+              console.log("[tiktok] video send failed, using document fallback:", videoError?.message || videoError);
+              await sock.sendMessage(jid, {
+                document: _tvv.buf, mimetype: "video/mp4", fileName: "tiktok_video.mp4",
+                caption: `${ttCaption}
+📎 Sent as a file because video playback was unavailable.`,
+              }, { quoted: msg });
+            }
+          } else {
             await sock.sendMessage(jid, {
-              document: media, mimetype: "video/mp4", fileName: "tiktok_video.mp4",
-              caption: `${ttCaption}\n📎 Sent as a file because video playback was unavailable.`,
+              document: _tvv.buf, mimetype: _tvv.mime, fileName: "tiktok_video" + _tvv.ext,
+              caption: `${ttCaption}
+📎 ${_tvv.note}`,
             }, { quoted: msg });
           }
         }
@@ -40080,48 +40203,40 @@ try {
 
     if (n === 4) {
       const vbuf = await _JXVideoBuf(meta);
-      const thumb = await _p2ThumbBuf(meta).catch(function () { return null; });
-      const payload = { video: vbuf, mimetype: "video/mp4", fileName: safe + ".mp4" };
-      if (thumb) payload.jpegThumbnail = thumb;
-      await sock.sendMessage(jid, payload, { quoted: replyMsg });
+      const _vj = await _mfPrepareVideo(vbuf);
+      if (_vj.ok) {
+        const thumb = await _p2ThumbBuf(meta).catch(function () { return null; });
+        const payload = { video: _vj.buf, mimetype: "video/mp4", fileName: safe + ".mp4" };
+        if (thumb) payload.jpegThumbnail = thumb;
+        await sock.sendMessage(jid, payload, { quoted: replyMsg });
+      } else {
+        await sock.sendMessage(jid, { document: _vj.buf, mimetype: _vj.mime, fileName: safe + _vj.ext }, { quoted: replyMsg });
+      }
       return;
     }
 
     const abuf = await _JXAudioBuf(meta);
 
     if (n === 2) {
-      await sock.sendMessage(jid, { document: abuf, mimetype: "audio/mpeg", fileName: safe + ".mp3" }, { quoted: replyMsg });
+      const _docb = await _mfPrepareAudioDoc(abuf);
+      await sock.sendMessage(jid, { document: _docb.buf, mimetype: _docb.mime, fileName: safe + _docb.ext }, { quoted: replyMsg });
       return;
     }
 
     if (n === 3) {
-      const ogg = await _p2ToPtt(abuf);
-      if (ogg) {
+      const ogg = (await _p2ToPtt(abuf)) || (await _mfToOggOpus(abuf));
+      if (ogg && _mfSniff(ogg).kind === "ogg") {
         await sock.sendMessage(jid, { audio: ogg, mimetype: "audio/ogg; codecs=opus", ptt: true }, { quoted: replyMsg });
       } else {
-        await sock.sendMessage(jid, { audio: abuf, mimetype: "audio/mpeg", ptt: true }, { quoted: replyMsg });
+        const _avj = await _mfPrepareAudio(abuf);
+        await sock.sendMessage(jid, { audio: _avj.buf, mimetype: _avj.mime, ptt: false, fileName: safe + _avj.ext }, { quoted: replyMsg });
       }
       return;
     }
 
-    const thumb = await _p2ThumbBuf(meta).catch(function () { return null; });
-    const payload = { audio: abuf, mimetype: "audio/mpeg", ptt: false, fileName: safe + ".mp3" };
-    const thumbUrl = _p2ThumbOf(meta);
-    if (thumb || thumbUrl) {
-      payload.contextInfo = {
-        externalAdReply: {
-          title: title,
-          body: [meta.artists || meta.author, _p2Dur(meta.duration), _p2Views(meta.views) + " views"]
-            .filter(Boolean).join(" • "),
-          ...(thumb ? { thumbnail: thumb } : { thumbnailUrl: thumbUrl }),
-          mediaType: 1,
-          renderLargerThumbnail: true,
-          showAdAttribution: false,
-          ...(meta.videoUrl ? { sourceUrl: meta.videoUrl } : {}),
-        },
-      };
-    }
-    await sock.sendMessage(jid, payload, { quoted: replyMsg });
+    // 1 — plain audio: real MP3, no thumbnail card, no caption
+    const _outj = await _mfPrepareAudio(abuf);
+    await sock.sendMessage(jid, { audio: _outj.buf, mimetype: _outj.mime, ptt: false, fileName: safe + _outj.ext }, { quoted: replyMsg });
   }
 
   // ── reply-to-card picker (quoted-id match + same-chat fallback) ──────────
@@ -40358,3 +40473,78 @@ try {
   console.log("[JINX] init error:", e && e.message);
 }
 /* JINX_BLOCK_END */
+
+/* ══════════════════════════════════════════════════════════════════════════
+   v19 GUARDS — appended last, so they always win no matter which patch pack
+   registered a handler before them.
+
+   1) .tt / .tiktok / .ttdl  -> EXACTLY ONE handler: the image-card one.
+      The duplicate "instantly deliver the media" registration used to grab
+      the .ttdl alias from the NexRay module, so one command produced two
+      different behaviours. It is now forced back to the card handler.
+   2) .gst / .gstatus / .groupstatus -> wrapped in a watchdog, so the loading
+      reaction is guaranteed to resolve to ✅ or ❌ even when the upload hangs.
+   ══════════════════════════════════════════════════════════════════════════ */
+try {
+  const _ttCardRef = (commands.get("tt") && commands.get("tt").__ttCardHandler)
+    || (commands.get("tiktok") && commands.get("tiktok").__ttCardHandler);
+  if (typeof _ttCardRef === "function") {
+    for (const _n of ["tiktok", "tt", "ttdl"]) {
+      const _e = commands.get(_n) || { category: "DOWNLOAD" };
+      if (_e.handler !== _ttCardRef) {
+        _e.handler = _ttCardRef;
+        _e._origHandler = _ttCardRef;
+        _e.__ttCard = true;
+        _e.__ttCardHandler = _ttCardRef;
+        commands.set(_n, _e);
+        console.log("[v19] duplicate removed — ." + _n + " restored to the image-card handler");
+      }
+    }
+    console.log("[v19] tt commands: exactly one handler (image card kept untouched)");
+  } else {
+    console.log("[v19] tt card handler not found — duplicate guard inactive");
+  }
+} catch (_e19a) { console.log("[v19] tt guard error:", _e19a && _e19a.message); }
+
+try {
+  const _ge = commands.get("gst");
+  const _gh = _ge && _ge.handler;
+  if (typeof _gh === "function" && !_gh.__gstWatchdog) {
+    const _gstReact = async (sock, msg, emoji) => {
+      try { await forceReaction(sock, msg, emoji); return; } catch (e) {}
+      try { await sock.sendMessage(msg.key.remoteJid, { react: { text: emoji, key: msg.key } }); } catch (e2) {}
+    };
+    const _wrapped = async (sock, msg, args) => {
+      let done = false;
+      const settle = (ok, note) => {
+        if (done) return;
+        done = true;
+        try { clearTimeout(timer); } catch (e) {}
+        _gstReact(sock, msg, ok ? "✅" : "❌");
+        if (note) { try { sendReply(sock, msg, note); } catch (e) {} }
+      };
+      const timer = setTimeout(function () {
+        settle(false, "❌ GST timed out — the upload never finished. Try again, or post a smaller file.");
+      }, 75000);
+      try {
+        const r = await _gh(sock, msg, args);
+        done = true;
+        try { clearTimeout(timer); } catch (e) {}
+        return r;
+      } catch (e) {
+        settle(false, "❌ GST failed: " + ((e && e.message) || e));
+      }
+    };
+    _wrapped.__gstWatchdog = true;
+    for (const _n of ["gst", "gstatus", "groupstatus"]) {
+      const _e = commands.get(_n) || { category: "GROUP" };
+      _e.handler = _wrapped;
+      commands.set(_n, _e);
+    }
+    console.log("[v19] gst watchdog armed — the loading reaction can no longer get stuck");
+  }
+} catch (_e19b) { console.log("[v19] gst guard error:", _e19b && _e19b.message); }
+
+try {
+  console.log("[v19] media format fix active — ffmpeg:", _mfBinaryOk() ? "ok" : "MISSING (run: npm i ffmpeg-static)");
+} catch (_e19c) {}
