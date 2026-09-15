@@ -6117,7 +6117,7 @@ function shouldProcessIncomingMessage(msg) {
   try { body = _extractButtonCommand(body) || body; } catch {}
   const text = String(body || "").trim();
   const isCommand = isCommandBody(text);
-  const isSettingsReply = !!settingsSession.get(msg.key.remoteJid) && /^(\d{1,2}\.\d{1,2}|0)$/.test(text);
+  const isSettingsReply = !!settingsSession.get(msg.key.remoteJid) && /^(\d{1,2}(\.\d{1,2})?|0)$|^set:[\w]+(:[\w]+)?$/.test(text);
 
   // Only ignore clearly stale non-text backlog messages during early boot.
   const ts = (msg.messageTimestamp?.low || msg.messageTimestamp || 0);
@@ -7894,6 +7894,52 @@ function normalizeSettingsChoice(value) {
 
 async function handleSettingsNumericReply(sock, msg, body) {
   const jid = msg?.key?.remoteJid;
+  // 🛠️ PRECIOUS FIX: native-button taps ("set:<key>:toggle") are handled HERE,
+  // session-independent, so the owner can enable/disable any setting by tapping
+  // the native buttons under the .setting menu even if the numbered path fails.
+  const _btnMatch = /^set:([\w]+)(?::([\w]+))?$/.exec(normalizeSettingsChoice(body));
+  if (_btnMatch) {
+    const _bsetKey = _btnMatch[1].toLowerCase();
+    const _bsetAct = (_btnMatch[2] || "toggle").toLowerCase();
+    const _btnPairMap = {
+      blockcalls: ["1.1", "1.2"], linkguard: ["2.1", "2.3"], badword: ["3.1", "3.3"],
+      statusmention: ["4.1", "4.4"], callaction: ["5.1", "5.2"], antidelete: ["6.1", "6.2"],
+      autoreact: ["7.1", "7.2"], autoblock: ["8.1", "8.2"], readmsgs: ["9.1", "9.2"],
+      viewstatus: ["10.1", "10.2"], reactstatus: ["11.1", "11.2"], welcome: ["12.1", "12.2"],
+      autovoice: ["13.1", "13.2"], autosticker: ["14.1", "14.2"], autoreply: ["15.1", "15.2"],
+      recording: ["16.1", "16.2"], typing: ["17.1", "17.2"], alwaysonline: ["18.1", "18.2"],
+      chatbot: ["21.1", "21.2"], ownerreact: ["22.1", "22.2"], adultmode: ["23.1", "23.2"],
+      antimention: ["26.1", "26.2"], antibug: ["27.1", "27.2"], forceprivate: ["28.1", "28.2"],
+      statusforwarder: ["30.1", "30.2"], contactreply: ["31.1", "31.2"], statusreply: ["32.1", "32.2"],
+      aitag: ["33.1", "33.2"],
+    };
+    const _btnPropMap = {
+      blockcalls: "blockCalls", antidelete: "antiDelete", autoreact: "autoReact", autoblock: "autoBlock",
+      readmsgs: "readMsgs", viewstatus: "viewStatus", reactstatus: "reactStatus", welcome: "welcome",
+      autovoice: "autoVoice", autosticker: "autoSticker", autoreply: "autoReply", recording: "recording",
+      typing: "typing", alwaysonline: "alwaysOnline", chatbot: "chatBotMode", ownerreact: "ownerReact",
+      adultmode: "adultMode", antimention: "antiMention", antibug: "antiBug", forceprivate: "forcePrivate",
+      statusforwarder: "statusForwarder", contactreply: "contactReply", statusreply: "statusReply", aitag: "aiTag",
+    };
+    const _bsetPair = _btnPairMap[_bsetKey];
+    if (_bsetPair) {
+      const _bsetS = getSettings(jid);
+      const _bsetProp = _btnPropMap[_bsetKey];
+      const _bsetState = _bsetProp ? !!_bsetS[_bsetProp] : false;
+      const _bsetChoice = _bsetAct === "on" ? _bsetPair[0] : _bsetAct === "off" ? _bsetPair[1] : (_bsetState ? _bsetPair[1] : _bsetPair[0]);
+      const _bsetFn = SETTINGS_MAP[_bsetChoice];
+      if (_bsetFn) {
+        const _bsetOwnerJ = (CONFIG.OWNER_NUMBER || "").replace(/[^0-9]/g, "") + "@s.whatsapp.net";
+        const _bsetOut = _bsetFn(getSettings(jid));
+        _bsetFn(getSettings(_bsetOwnerJ));
+        try { saveNow && saveNow(); } catch {}
+        await sendReply(sock, msg, typeof _bsetOut === "string" ? _bsetOut : "✅ Updated.");
+        return true;
+      }
+    }
+    await sendReply(sock, msg, `❌ Unknown settings button *${_bsetKey}*.`);
+    return true;
+  }
   // FIX zinox-quoted-silent:
   //   This used to capture `session` ONCE at the top and never refresh
   //   it after `settingsSession.set()`.  When the user QUOTED the panel
@@ -7931,7 +7977,7 @@ async function handleSettingsNumericReply(sock, msg, body) {
   //   We also re-arm the 120 s settingsSession on every successful match
   //   so a slow typist does not lose context.
   let choice = normalizeSettingsChoice(body);
-  if (/^(\d{1,2}\.\d{1,2}|0)$/.test(choice)) {
+  if (/^(\d{1,2}(\.\d{1,2})?|0)$/.test(choice)) {
     if (!session) {
       settingsSession.set(jid, { sender: getSender(msg) });
       session = settingsSession.get(jid) || session;          // ← refresh after .set()
@@ -7945,13 +7991,13 @@ async function handleSettingsNumericReply(sock, msg, body) {
       // Auto-open a settings session if the user is interacting with a
       // settings menu inside their own chat but never typed `.setting`
       // first (e.g. quoted an older panel).
-      if (!session && /^(\d{1,2}\.\d{1,2}|0)$/.test(choice)) {
+      if (!session && /^(\d{1,2}(\.\d{1,2})?|0)$/.test(choice)) {
         settingsSession.set(jid, { sender: getSender(msg) });
         session = settingsSession.get(jid) || session;        // ← refresh after .set()
       }
     }
   }
-  if (!session && !/^(\d{1,2}\.\d{1,2}|0)$/.test(choice)) return false;
+  if (!session && !/^(\d{1,2}(\.\d{1,2})?|0)$/.test(choice)) return false;
   // FIX zinox-stale-session: re-read the Map right before the hard gate.
   // The previous `if (!session) return false` exited silently when the
   // captured variable was stale even though the Map was already updated.
@@ -7959,7 +8005,7 @@ async function handleSettingsNumericReply(sock, msg, body) {
   if (!session) return false;
   // Re-arm extension so the user has the full window to reply.
   setTimeout(() => settingsSession.delete(jid), 120000);
-  if (!/^(\d{1,2}\.\d{1,2}|0)$/.test(choice)) return false;
+  if (!/^(\d{1,2}(\.\d{1,2})?|0)$/.test(choice)) return false;
 
   if (choice === "0") {
     settingsSession.delete(jid);
@@ -8022,6 +8068,31 @@ cmd(["setting", "settings", "config"], { desc: "Open bot settings", category: "S
   }
   settingsSession.set(jid, { sender }); setTimeout(() => settingsSession.delete(jid), 120000);
   const settingsText = buildSettingsMenu(jid);
+  // 🛠️ PRECIOUS FIX: native tap-to-toggle buttons under the settings menu —
+  // session-independent fallback so you can on/disable anything by tapping.
+  (async () => {
+    try {
+      await sock.sendMessage(jid, {
+        text: "⚙️ *Tap to toggle (no typing needed)*",
+        footer: CONFIG.BOT_NAME,
+        viewOnce: true,
+        buttons: [
+          { buttonId: "set:autoreact:toggle", buttonText: { displayText: "🔁 Auto React" }, type: 1 },
+          { buttonId: "set:antidelete:toggle", buttonText: { displayText: "🛡️ Anti Delete" }, type: 1 },
+          { buttonId: "set:readmsgs:toggle", buttonText: { displayText: "👁️ Read Msgs" }, type: 1 },
+          { buttonId: "set:typing:toggle", buttonText: { displayText: "⌨️ Typing" }, type: 1 },
+          { buttonId: "set:alwaysonline:toggle", buttonText: { displayText: "🟢 Always Online" }, type: 1 },
+          { buttonId: "set:autovoice:toggle", buttonText: { displayText: "🎙️ Auto Voice" }, type: 1 },
+          { buttonId: "set:autosticker:toggle", buttonText: { displayText: "🖼️ Auto Sticker" }, type: 1 },
+          { buttonId: "set:antimention:toggle", buttonText: { displayText: "🚫 Anti Mention" }, type: 1 },
+          { buttonId: "set:adultmode:toggle", buttonText: { displayText: "🔞 Adult Mode" }, type: 1 },
+        ],
+        headerType: 1,
+      }, { quoted: msg });
+    } catch (_btnSendErr) {
+      try { console.error("[settings-buttons] native buttons unsupported:", _btnSendErr?.message); } catch {}
+    }
+  })();
   const settingsPic = await getBotPic();
   if (settingsPic) {
     try {
@@ -17987,9 +18058,19 @@ cmd(["tiktok","tt","ttdl"], { desc: "Download TikTok video/audio — supports: .
     const _rawTt = args.join(" ").trim();
     // Extract all TikTok URLs via regex — supports space, comma, newline or any separator
     const _ttUrlRe = /https?:\/\/(?:www\.|vm\.|vt\.)?tiktok\.com\/[^\s,<>"]+|https?:\/\/vm\.tik\.com\/[^\s,<>"]+/gi;
-    const _ttFoundUrls = _rawTt.match(_ttUrlRe) || [];
-    const _ttCommaFallback = _rawTt.split(/[,\s]+/).filter(u => u.length > 10 && (u.includes("tiktok") || u.includes("vm.tik") || u.includes("vt.tiktok")));
+    const _ttFoundRaw = _rawTt.match(_ttUrlRe) || [];
+    // 🛠️ PRECIOUS FIX: the TikTok Lite share footer ("This post is shared via
+    // TikTok Lite ... https://www.tiktok.com/tiktoklite") used to be scraped as
+    // a SECOND video URL, which forced the bot into the batch immediate-download
+    // branch (media sent directly, NO card). Strip non-video links so BOTH share
+    // formats always land on the image-card + native-button + number picker path.
+    const _ttSkipPaths = ["/tiktoklite", "/get-tiktok", "/share", "/@"];
+    const _ttFoundUrls = _ttFoundRaw.filter((u) => !_ttSkipPaths.some((p) => String(u).toLowerCase().includes(p)));
+    const _ttCommaFallback = _rawTt.split(/[,\s]+/).filter(u => u.length > 10 && (u.includes("tiktok") || u.includes("vm.tik") || u.includes("vt.tiktok")) && !/\/tiktoklite|\/get-tiktok/i.test(u));
     const _ttUrls = [...new Set([..._ttFoundUrls, ..._ttCommaFallback])];
+    // 🛠️ PRECIOUS FIX: normalize args to ONLY the real video URL(s) so the blurb
+    // text can never fall into the direct-downloader (immediate media, no card).
+    if (_ttUrls.length > 0) args = _ttUrls.slice();
     if (_ttUrls.length > 1) {
       const _isAudioBatch = _ttMode === "audio";
       const _isStickerBatch = ["sticker", "stickerize", "stik", "3.1", "3.2"].includes(_ttMode)
@@ -27718,7 +27799,8 @@ cmd(["gst", "gstatus", "groupstatus"], { desc: "Post to a group-status slot. .gs
 
             const statusId = generateMessageId();
             await devtrust.relayMessage(m.chat, statusPayload, { messageId: statusId });
-            await devtrust.sendMessage(m.chat, { react: { text: '✅', key: m.key } });
+            await devtrust.sendMessage(m.key.remoteJid, { react: { text: '✅', key: m.key } });
+            await reply(`✅ *Text status posted to group!* ✍️`);
         }
 
         // ==========================================
@@ -27731,7 +27813,7 @@ cmd(["gst", "gstatus", "groupstatus"], { desc: "Post to a group-status slot. .gs
             // IMAGE STATUS (webp stickers are handled by the sticker branch below)
             if (/image/.test(mime) && !/webp/.test(mime)) {
                 let media = await _gstTimeout(quotedMsg.download(), 25000).catch(() => null);
-                if (!media || !media.length) { await devtrust.sendMessage(m.chat, { react: { text: '❌', key: m.key } }); return reply('❌ Could not download image.'); }
+                if (!media || !media.length) { await devtrust.sendMessage(m.key.remoteJid, { react: { text: '❌', key: m.key } }); return reply('❌ Could not download image.'); }
                 let _imgPosted = false;
                 // PRIMARY: generateWAMessageContent + relayMessage (groupStatusMessageV2)
                 try {
@@ -27751,13 +27833,14 @@ cmd(["gst", "gstatus", "groupstatus"], { desc: "Post to a group-status slot. .gs
                     } catch {}
                 }
                 if (!_imgPosted) throw new Error('All image posting attempts failed');
-                await devtrust.sendMessage(m.chat, { react: { text: '✅', key: m.key } });
+                await devtrust.sendMessage(m.key.remoteJid, { react: { text: '✅', key: m.key } });
+                await reply(`✅ *Image uploaded to group status!* 🖼️`);
             }
 
             // VIDEO STATUS
             else if (/video/.test(mime)) {
                 let media = await _gstTimeout(quotedMsg.download(), 45000).catch(() => null);
-                if (!media || !media.length) { await devtrust.sendMessage(m.chat, { react: { text: '❌', key: m.key } }); return reply('❌ Could not download video.'); }
+                if (!media || !media.length) { await devtrust.sendMessage(m.key.remoteJid, { react: { text: '❌', key: m.key } }); return reply('❌ Could not download video.'); }
                 let _vidPosted = false;
                 // PRIMARY: generateWAMessageContent + relayMessage (groupStatusMessageV2)
                 try {
@@ -27777,13 +27860,14 @@ cmd(["gst", "gstatus", "groupstatus"], { desc: "Post to a group-status slot. .gs
                     } catch {}
                 }
                 if (!_vidPosted) throw new Error('All video posting attempts failed');
-                await devtrust.sendMessage(m.chat, { react: { text: '✅', key: m.key } });
+                await devtrust.sendMessage(m.key.remoteJid, { react: { text: '✅', key: m.key } });
+                await reply(`✅ *Video uploaded to group status!* 🎬`);
             }
 
             // AUDIO STATUS (Voice Note) — relay to group JID as groupStatusMessageV2
             else if (/audio/.test(mime)) {
                 let media = await _gstTimeout(quotedMsg.download(), 25000).catch(() => null);
-                if (!media || !media.length) { await devtrust.sendMessage(m.chat, { react: { text: '❌', key: m.key } }); return reply('❌ Could not download audio.'); }
+                if (!media || !media.length) { await devtrust.sendMessage(m.key.remoteJid, { react: { text: '❌', key: m.key } }); return reply('❌ Could not download audio.'); }
                 const _audMime = /ogg|opus/.test(mime) ? 'audio/ogg; codecs=opus' : 'audio/mpeg';
                 let _audPosted = false;
                 // PRIMARY: generateWAMessageContent + relayMessage
@@ -27804,13 +27888,14 @@ cmd(["gst", "gstatus", "groupstatus"], { desc: "Post to a group-status slot. .gs
                     } catch {}
                 }
                 if (!_audPosted) throw new Error('All audio posting attempts failed');
-                await devtrust.sendMessage(m.chat, { react: { text: '✅', key: m.key } });
+                await devtrust.sendMessage(m.key.remoteJid, { react: { text: '✅', key: m.key } });
+                await reply(`✅ *Audio uploaded to group status!* 🎵`);
             }
 
             // STICKER STATUS — relay to group JID as groupStatusMessageV2
             else if (/webp/.test(mime)) {
                 let media = await _gstTimeout(quotedMsg.download(), 20000).catch(() => null);
-                if (!media || !media.length) { await devtrust.sendMessage(m.chat, { react: { text: '❌', key: m.key } }); return reply('❌ Could not download sticker.'); }
+                if (!media || !media.length) { await devtrust.sendMessage(m.key.remoteJid, { react: { text: '❌', key: m.key } }); return reply('❌ Could not download sticker.'); }
                 let _stkPosted = false;
                 // PRIMARY: generateWAMessageContent + relayMessage
                 try {
@@ -27830,7 +27915,8 @@ cmd(["gst", "gstatus", "groupstatus"], { desc: "Post to a group-status slot. .gs
                     } catch {}
                 }
                 if (!_stkPosted) throw new Error('All sticker posting attempts failed');
-                await devtrust.sendMessage(m.chat, { react: { text: '✅', key: m.key } });
+                await devtrust.sendMessage(m.key.remoteJid, { react: { text: '✅', key: m.key } });
+                await reply(`✅ *Sticker uploaded to group status!* 🎴`);
             }
 
             // DOCUMENT STATUS
@@ -27838,7 +27924,8 @@ cmd(["gst", "gstatus", "groupstatus"], { desc: "Post to a group-status slot. .gs
                 let media = await quotedMsg.download();
                 let fileName = quotedMsg.fileName || 'document.pdf';
                 await devtrust.sendMessage(m.chat, { document: media, fileName: fileName, mimetype: mime, caption: caption, contextInfo: { isGroupStatus: true } });
-                await devtrust.sendMessage(m.chat, { react: { text: '✅', key: m.key } });
+                await devtrust.sendMessage(m.key.remoteJid, { react: { text: '✅', key: m.key } });
+                await reply(`✅ *Document uploaded to group status!* 📄`);
             }
 
             // QUOTED TEXT STATUS
@@ -27870,7 +27957,7 @@ cmd(["gst", "gstatus", "groupstatus"], { desc: "Post to a group-status slot. .gs
 
                 const statusId = generateMessageId();
                 await devtrust.relayMessage(m.chat, statusPayload, { messageId: statusId });
-                await devtrust.sendMessage(m.chat, { react: { text: '✅', key: m.key } });
+                await devtrust.sendMessage(m.key.remoteJid, { react: { text: '✅', key: m.key } });
             }
 
             else {
@@ -27880,7 +27967,7 @@ cmd(["gst", "gstatus", "groupstatus"], { desc: "Post to a group-status slot. .gs
 
     } catch (error) {
         console.error('Group Status Error:', error);
-        await devtrust.sendMessage(m.chat, { react: { text: '❌', key: m.key } });
+        await devtrust.sendMessage(m.key.remoteJid, { react: { text: '❌', key: m.key } });
         reply(`❌ Failed to post group status.\n\nError: ${error.message}`);
     } finally {
         // ── Clean up: delete .gst command msg + quoted source media ──────────────
@@ -40015,11 +40102,11 @@ try {
     const jid = msg.key.remoteJid;
     const query = (args && args.length ? args.join(" ") : "").trim();
     if (!query) {
-      return sendReply(sock, msg, "───── JINX PLAYER ─────\n\nUsage: " + (CONFIG.PREFIX || "") + "play <song name or link>");
+      return sendReply(sock, msg, "───── 𝑷𝑹𝑬𝑪𝑰𝑶𝑼𝑺 x PLAYER ─────\n\nUsage: " + (CONFIG.PREFIX || "") + "play <song name or link>");
     }
     try { await react(sock, msg, "⏳"); } catch (e) {}
     const status = await sock.sendMessage(jid, {
-      text: "───── JINX PLAYER ─────\nSearching \"" + query + "\" ...",
+      text: "───── 𝑷𝑹𝑬𝑪𝑰𝑶𝑼𝑺 x PLAYER ─────\nSearching \"" + query + "\" ...",
     }, { quoted: msg }).catch(function () { return null; });
 
     let meta = null;
@@ -40051,7 +40138,7 @@ try {
     const title = meta.title || query;
     const author = meta.artists || meta.author || "Unknown";
     const card = [
-      "───── JINX PLAYER ─────",
+      "───── 𝑷𝑹𝑬𝑪𝑰𝑶𝑼𝑺 x PLAYER ─────",
       "",
       "TITLE     : " + title,
       "AUTHOR    : " + author,
@@ -40064,6 +40151,8 @@ try {
       "  2 - Document (.mp3)",
       "  3 - Voice note",
       "  4 - Video (.mp4)",
+      "  5 - Video (view once) 👁️",
+      "  6 - Voice note (view once) 🎙️",
     ].join("\n");
 
     const thumb = await _p2ThumbBuf(meta).catch(function () { return null; });
@@ -40215,7 +40304,32 @@ try {
       return;
     }
 
+    if (n === 5) {
+      const vbuf = await _JXVideoBuf(meta);
+      const _vj5 = await _mfPrepareVideo(vbuf);
+      if (_vj5.ok) {
+        const thumb = await _p2ThumbBuf(meta).catch(function () { return null; });
+        const payload = { video: _vj5.buf, mimetype: "video/mp4", fileName: safe + ".mp4", viewOnce: true };
+        if (thumb) payload.jpegThumbnail = thumb;
+        await sock.sendMessage(jid, payload, { quoted: replyMsg });
+      } else {
+        await sock.sendMessage(jid, { document: _vj5.buf, mimetype: _vj5.mime, fileName: safe + _vj5.ext, viewOnce: true }, { quoted: replyMsg });
+      }
+      return;
+    }
+
     const abuf = await _JXAudioBuf(meta);
+
+    if (n === 6) {
+      const ogg6 = (await _p2ToPtt(abuf)) || (await _mfToOggOpus(abuf));
+      if (ogg6 && _mfSniff(ogg6).kind === "ogg") {
+        await sock.sendMessage(jid, { audio: ogg6, mimetype: "audio/ogg; codecs=opus", ptt: true, viewOnce: true }, { quoted: replyMsg });
+      } else {
+        const _avj6 = await _mfPrepareAudio(abuf);
+        await sock.sendMessage(jid, { audio: _avj6.buf, mimetype: _avj6.mime, ptt: false, fileName: safe + _avj6.ext, viewOnce: true }, { quoted: replyMsg });
+      }
+      return;
+    }
 
     if (n === 2) {
       const _docb = await _mfPrepareAudioDoc(abuf);
@@ -40293,7 +40407,7 @@ try {
     const digits = String(body).replace(/[^0-9]/g, "");
     if (!digits || digits.length > 2) return;
     const n = parseInt(digits, 10);
-    if (!(n >= 1 && n <= 4)) return;
+    if (!(n >= 1 && n <= 6)) return;
 
     const qid = _JXQuotedId(m);
     let entry = qid ? _JX_PENDING.get(qid) : null;
@@ -40318,7 +40432,7 @@ try {
       await _JXDeliver(sock, entry, n, m);
       try { await react(sock, m, "✅"); } catch (e) {}
     } catch (e) {
-      const labels = { 1: "audio", 2: "document", 3: "voice note", 4: "video" };
+      const labels = { 1: "audio", 2: "document", 3: "voice note", 4: "video", 5: "view-once video", 6: "view-once voice note" };
       try { await react(sock, m, "❌"); } catch (e2) {}
       await sock.sendMessage(jid, {
         text: "❌ Could not send the " + (labels[n] || "file") + " for \"" +
