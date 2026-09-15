@@ -256,12 +256,7 @@ export async function sendList(sock, jid, body, sections, opts = {}) {
 
       const userJid = (sock?.user?.id || "").split(":")[0] + (sock?.user?.id ? "@s.whatsapp.net" : "");
 
-      const content = {
-        messageContextInfo: {
-          deviceListMetadata: {},
-          deviceListMetadataVersion: 2,
-        },
-        interactiveMessage: proto.Message.InteractiveMessage.create({
+      const _nfInteractive = proto.Message.InteractiveMessage.create({
           body:   proto.Message.InteractiveMessage.Body.create({ text: body || " " }),
           footer: proto.Message.InteractiveMessage.Footer.create({ text: _clean(opts.footer || "") }),
           header: proto.Message.InteractiveMessage.Header.create({
@@ -276,7 +271,19 @@ export async function sendList(sock, jid, body, sections, opts = {}) {
             buttons: nfButtons,
             messageParamsJson: JSON.stringify({}),
           }),
-        }),
+        });
+      // Dead-buttons fix for REGULAR WhatsApp: a native-flow list sent as a
+      // bare interactiveMessage renders but every row tap is a no-op there.
+      // Wrapping it in viewOnceMessage (+ deviceListMetadata) is what makes
+      // it tappable on regular WA, and WA Business accepts it the same.
+      const content = {
+        viewOnceMessage: { message: {
+          messageContextInfo: {
+            deviceListMetadata: {},
+            deviceListMetadataVersion: 2,
+          },
+          interactiveMessage: _nfInteractive,
+        } },
       };
       const wam = await gen(jid, content, {
         quoted:    opts.quoted || undefined,

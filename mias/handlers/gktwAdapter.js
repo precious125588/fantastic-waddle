@@ -399,6 +399,40 @@ function _textFallbackInteractive(header, body, buttons, footer) {
   ].filter(Boolean).join("\n\n");
 }
 
+// ─── Internal: native-flow relay with regular-WhatsApp compatibility ─────────
+// WHY THIS EXISTS (dead buttons on normal WhatsApp):
+//   WhatsApp Business renders a bare `interactiveMessage` fine, but REGULAR
+//   WhatsApp only treats native-flow buttons/lists as tappable when the
+//   interactive payload rides inside a `viewOnceMessage` wrapper carrying
+//   `messageContextInfo.deviceListMetadata`. Sent unwrapped, the buttons
+//   render but every tap is a no-op — the "dead button" symptom. We send the
+//   viewOnce-wrapped form FIRST (works on both regular WA and WA Business)
+//   and fall back to the bare form if a client/server rejects the wrapper.
+async function _relayNativeFlow(sock, jid, interactiveMsg, quoted) {
+  const B       = await getBaileys();
+  const proto   = B.proto;
+  const userJid = (sock?.user?.id || "").split(":")[0] + "@s.whatsapp.net";
+  const genOpts = { userJid };
+  if (quoted) genOpts.quoted = quoted;
+
+  const _mci = { deviceListMetadata: {}, deviceListMetadataVersion: 2 };
+  const variants = [
+    // 1) viewOnce-wrapped — REQUIRED for buttons to be tappable on regular WA
+    { viewOnceMessage: { message: { messageContextInfo: _mci, interactiveMessage: interactiveMsg } } },
+    // 2) bare interactiveMessage + messageContextInfo (legacy fallback)
+    { messageContextInfo: _mci, interactiveMessage: interactiveMsg },
+  ];
+  let lastErr = null;
+  for (const content of variants) {
+    try {
+      const full = proto.Message.create(content);
+      const gen  = await B.generateWAMessageFromContent(jid, full, genOpts);
+      return await sock.relayMessage(jid, gen.message, { messageId: gen.key.id });
+    } catch (e) { lastErr = e; }
+  }
+  throw lastErr || new Error("native-flow relay failed");
+}
+
 // ─── Interactive message (native-flow) ────────────────────────────────────────
 
 /**
@@ -453,12 +487,8 @@ export async function sendInteractiveMessage(sock, jid, params) {
       ...(hasContextInfo ? { contextInfo: proto.ContextInfo.create(contextInfo) } : {}),
     });
 
-    const fullContent = proto.Message.create({ interactiveMessage: interactiveMsg });
-    const genOpts     = { userJid: sock.user?.id };
-    if (quoted) genOpts.quoted = quoted;
-
-    const generated = await B.generateWAMessageFromContent(jid, fullContent, genOpts);
-    return await sock.relayMessage(jid, generated.message, { messageId: generated.key.id });
+    // viewOnce-wrapped relay so buttons are tappable on REGULAR WhatsApp too
+    return await _relayNativeFlow(sock, jid, interactiveMsg, quoted);
   } catch {
     // ── Plain-text fallback ────────────────────────────────────────────────────
     const text = _textFallbackInteractive(header, body, buttons, footer);
@@ -557,6 +587,37 @@ export async function sendRichInteractive(sock, jid, params) {
 
     // ── List message via Baileys proto ─────────────────────────────────────
     if (isListMode && sections?.length) {
+      // ── Native-flow single_select FIRST ─────────────────────────────────
+      // Legacy `listMessage` still renders but its open-button is DEAD on
+      // current WhatsApp. interactiveMessage + single_select, viewOnce-wrapped,
+      // is the only list that stays tappable on BOTH regular WA and Business.
+      try {
+        const _cl = (s) => String(s || "").replace(/[*_~`<>[\]›]/g, "").trim();
+        const nfSecs = sections.map(sec => ({
+          title: _cl(sec.title || "Menu").slice(0, 24) || "Menu",
+          rows: (sec.rows || []).slice(0, 100).map(r => ({
+            title:       _cl(r.title || "Option").slice(0, 72) || "Option",
+            description: _cl(r.description || "").slice(0, 96),
+            id:          String(r.id || r.rowId || r.title || "row").slice(0, 256),
+          })),
+        })).filter(sec => sec.rows.length);
+        if (!nfSecs.length) throw new Error("no rows");
+        const nfIM = proto.Message.InteractiveMessage.create({
+          body:   proto.Message.InteractiveMessage.Body.create({ text: body || " " }),
+          footer: proto.Message.InteractiveMessage.Footer.create({ text: _cl(footer) }),
+          header: proto.Message.InteractiveMessage.Header.create({
+            hasMediaAttachment: false,
+            ...((listTitle || header) ? { title: _cl(listTitle || header).slice(0, 60) } : {}),
+          }),
+          nativeFlowMessage: proto.Message.InteractiveMessage.NativeFlowMessage.create({
+            buttons: [{ name: "single_select", buttonParamsJson: JSON.stringify({
+              title: _cl(buttonText || "Open").slice(0, 24) || "Open", sections: nfSecs }) }],
+            messageParamsJson: JSON.stringify({}),
+          }),
+          ...(hasContextInfo ? { contextInfo: proto.ContextInfo.create(contextInfo) } : {}),
+        });
+        return await _relayNativeFlow(sock, jid, nfIM, quoted);
+      } catch {}
       try {
         const rows = sections.flatMap(s =>
           (s.rows || []).map(r =>
@@ -653,12 +714,8 @@ export async function sendRichInteractive(sock, jid, params) {
       ...(hasContextInfo ? { contextInfo: proto.ContextInfo.create(contextInfo) } : {}),
     });
 
-    const fullContent = proto.Message.create({ interactiveMessage: interactiveMsg });
-    const genOpts     = { userJid: sock.user?.id };
-    if (quoted) genOpts.quoted = quoted;
-
-    const generated = await B.generateWAMessageFromContent(jid, fullContent, genOpts);
-    return await sock.relayMessage(jid, generated.message, { messageId: generated.key.id });
+    // viewOnce-wrapped relay so buttons are tappable on REGULAR WhatsApp too
+    return await _relayNativeFlow(sock, jid, interactiveMsg, quoted);
 
   } catch {
     // ── Graceful degradation: image+caption then buttons (two sends) ──────
