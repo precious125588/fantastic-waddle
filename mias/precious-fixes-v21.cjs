@@ -149,6 +149,14 @@ const _nkiriPickStore = new Map();
 const JX_PLAY_TTL_MS = 20 * 60 * 1000;
 const _jxPlayPending = new Map();
 const _jxPlayLatestByChat = new Map();
+const MOVIE_PICK_TTL_MS = 10 * 60 * 1000;
+const _moviePickStore = new Map();
+const BOOST6_TTL_MS = 10 * 60 * 1000;
+const _boost6Store = new Map();
+const GST_PICK_TTL_MS = 10 * 60 * 1000;
+const _gstPickStore = new Map();
+let _v21BoostNumericHandler = null;
+let _v21GstNumericHandler = null;
 
 function _nkiriGetState(jid) {
   const state = _nkiriPickStore.get(jid);
@@ -185,14 +193,221 @@ function _jxPlaySweep() {
   }
 }
 
+function _getTimedState(store, jid, ttlMs) {
+  const state = store.get(jid);
+  if (!state) return null;
+  if (Date.now() - Number(state.ts || 0) > ttlMs) {
+    store.delete(jid);
+    return null;
+  }
+  return state;
+}
+
+function _setTimedState(store, jid, next, ttlMs) {
+  if (!jid || !next || typeof next !== 'object') return null;
+  const state = { ...next, ts: Date.now() };
+  store.set(jid, state);
+  const t = setTimeout(() => {
+    const cur = store.get(jid);
+    if (cur && cur.ts === state.ts) store.delete(jid);
+  }, ttlMs + 1000);
+  t?.unref?.();
+  return state;
+}
+
+function _clearTimedState(store, jid) {
+  if (jid) store.delete(jid);
+}
+
+function _safeBaseName(name, fallback = 'file', limit = 80) {
+  const out = String(name || fallback)
+    .replace(/[\\/:*?"<>|]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return (out || fallback).slice(0, limit);
+}
+
+function _extFromUrl(url) {
+  try {
+    const clean = String(url || '').split(/[?#]/)[0];
+    const ext = path.extname(clean || '').toLowerCase();
+    return ext || '';
+  } catch {
+    return '';
+  }
+}
+
+function _mimeFromExt(ext = '') {
+  const value = String(ext || '').toLowerCase().replace(/^\./, '');
+  return value == 'mp3' ? 'audio/mpeg'
+    : value == 'm4a' ? 'audio/mp4'
+    : value == 'ogg' ? 'audio/ogg; codecs=opus'
+    : value == 'wav' ? 'audio/wav'
+    : value == 'mp4' ? 'video/mp4'
+    : value == 'mkv' ? 'video/x-matroska'
+    : value == 'webm' ? 'video/webm'
+    : value == 'avi' ? 'video/x-msvideo'
+    : 'application/octet-stream';
+}
+
+function _looksLikeHtmlOrJson(buf) {
+  if (!Buffer.isBuffer(buf) || !buf.length) return false;
+  const head = buf.subarray(0, 512).toString('utf8').trim().toLowerCase();
+  return /^<!doctype/.test(head) || /^<html/.test(head) || /^\{/.test(head) || /^\[/.test(head);
+}
+
+function _audioMetaFromHead(head, contentType = '', url = '') {
+  const buf = Buffer.isBuffer(head) ? head : Buffer.from(head || []);
+  const ct = String(contentType || '').toLowerCase();
+  const extHint = _extFromUrl(url);
+  const ftyp = buf.length >= 12 ? buf.subarray(4, 8).toString('ascii') : '';
+  const box = buf.length >= 16 ? buf.subarray(8, 16).toString('ascii').toLowerCase() : '';
+  if (buf.length >= 3 && buf.subarray(0, 3).toString('ascii') === 'ID3') return { ok: true, ext: '.mp3', mimetype: 'audio/mpeg' };
+  if (buf.length >= 2 && buf[0] === 0xff && (buf[1] & 0xe0) === 0xe0) return { ok: true, ext: '.mp3', mimetype: 'audio/mpeg' };
+  if (buf.length >= 4 && buf.subarray(0, 4).toString('ascii') === 'OggS') return { ok: true, ext: '.ogg', mimetype: 'audio/ogg; codecs=opus' };
+  if (buf.length >= 12 && buf.subarray(0, 4).toString('ascii') === 'RIFF' && buf.subarray(8, 12).toString('ascii') === 'WAVE') return { ok: true, ext: '.wav', mimetype: 'audio/wav' };
+  if (ftyp === 'ftyp' && (/m4a|mp4|isom|mp42|dash/.test(box) || /audio\/mp4|audio\/aac|audio\/x-m4a/.test(ct) || extHint === '.m4a')) return { ok: true, ext: '.m4a', mimetype: 'audio/mp4' };
+  if (buf.length >= 4 && buf[0] === 0x1a && buf[1] === 0x45 && buf[2] === 0xdf && buf[3] === 0xa3) return { ok: true, ext: '.webm', mimetype: /audio\//.test(ct) ? ct : 'audio/webm' };
+  if (/audio\//.test(ct)) return { ok: true, ext: extHint || '.bin', mimetype: ct };
+  return { ok: false, ext: extHint || '.bin', mimetype: ct || 'application/octet-stream' };
+}
+
+function _videoMetaFromHead(head, contentType = '', url = '') {
+  const buf = Buffer.isBuffer(head) ? head : Buffer.from(head || []);
+  const ct = String(contentType || '').toLowerCase();
+  const extHint = _extFromUrl(url);
+  const ftyp = buf.length >= 12 ? buf.subarray(4, 8).toString('ascii') : '';
+  if (ftyp === 'ftyp') return { ok: true, ext: '.mp4', mimetype: 'video/mp4' };
+  if (buf.length >= 4 && buf[0] === 0x1a && buf[1] === 0x45 && buf[2] === 0xdf && buf[3] === 0xa3) {
+    const mime = /audio\//.test(ct) ? 'video/webm' : (/video\//.test(ct) ? ct : 'video/webm');
+    return { ok: true, ext: extHint == '.mkv' ? '.mkv' : '.webm', mimetype: mime };
+  }
+  if (/video\//.test(ct)) return { ok: true, ext: extHint || '.mp4', mimetype: ct };
+  return { ok: false, ext: extHint || '.bin', mimetype: ct || 'application/octet-stream' };
+}
+
+async function _writeTempFile(prefix, ext, buf) {
+  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), prefix));
+  const filePath = path.join(dir, 'media' + (ext || '.bin'));
+  await fs.promises.writeFile(filePath, buf);
+  return { dir, filePath, size: buf.length };
+}
+
+async function _fetchBinaryToTemp(url, { maxBytes = 80 * 1024 * 1024, timeout = 180000, prefix = 'v21bin-' } = {}) {
+  const res = await axios.get(url, {
+    responseType: 'arraybuffer',
+    timeout,
+    maxRedirects: 5,
+    headers: { 'User-Agent': 'Mozilla/5.0', Accept: '*/*' },
+    validateStatus: (code) => code >= 200 && code < 400,
+  });
+  const contentType = String(res.headers?.['content-type'] || '').toLowerCase();
+  const advertisedSize = Number(res.headers?.['content-length'] || 0);
+  if (advertisedSize && advertisedSize > maxBytes) throw new Error('file is larger than allowed size');
+  const buf = Buffer.from(res.data || []);
+  if (!buf.length) throw new Error('provider returned an empty file');
+  if (buf.length > maxBytes) throw new Error('file is larger than allowed size');
+  if (_looksLikeHtmlOrJson(buf) && !/audio\/|video\/|octet-stream|application\/x-matroska/.test(contentType)) {
+    throw new Error('provider returned a web page instead of media');
+  }
+  const tmp = await _writeTempFile(prefix, _extFromUrl(url) || '.bin', buf);
+  return { ...tmp, contentType, advertisedSize: advertisedSize || buf.length, url, head: buf.subarray(0, 8192) };
+}
+
+async function _sendFilePath(sock, jid, kind, filePath, extra = {}, quoted) {
+  try {
+    return await sock.sendMessage(jid, { [kind]: { url: filePath }, ...extra }, { quoted });
+  } catch (firstError) {
+    try {
+      return await sock.sendMessage(jid, { [kind]: fs.createReadStream(filePath), ...extra }, { quoted });
+    } catch {
+      throw firstError;
+    }
+  }
+}
+
+async function _transcodeAudioFile(inputPath, targetExt) {
+  const target = String(targetExt || '').toLowerCase() === 'ogg' ? 'ogg' : 'mp3';
+  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'v21aud-'));
+  const outPath = path.join(dir, 'out.' + target);
+  const args = target === 'ogg'
+    ? ['-y', '-i', inputPath, '-vn', '-ac', '2', '-ar', '48000', '-c:a', 'libopus', '-b:a', '128k', outPath]
+    : ['-y', '-i', inputPath, '-vn', '-ac', '2', '-ar', '44100', '-c:a', 'libmp3lame', '-b:a', '192k', outPath];
+  await runFfmpeg(args, 180000);
+  return { dir, filePath: outPath, ext: target === 'ogg' ? '.ogg' : '.mp3', mimetype: target === 'ogg' ? 'audio/ogg; codecs=opus' : 'audio/mpeg' };
+}
+
+async function _transcodeVideoToMp4(inputPath) {
+  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'v21vid-'));
+  const outPath = path.join(dir, 'out.mp4');
+  await runFfmpeg(['-y', '-i', inputPath, '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', '-c:a', 'aac', '-b:a', '128k', outPath], 300000);
+  return { dir, filePath: outPath, ext: '.mp4', mimetype: 'video/mp4' };
+}
+
+function _messageContextInfo(msg) {
+  return msg?.message?.extendedTextMessage?.contextInfo
+    || msg?.message?.imageMessage?.contextInfo
+    || msg?.message?.videoMessage?.contextInfo
+    || msg?.message?.audioMessage?.contextInfo
+    || msg?.message?.documentMessage?.contextInfo
+    || msg?.message?.buttonsResponseMessage?.contextInfo
+    || msg?.message?.listResponseMessage?.contextInfo
+    || msg?.message?.interactiveResponseMessage?.contextInfo
+    || msg?.message?.messageContextInfo
+    || null;
+}
+
+function _quotedMessageOf(msg) {
+  const ctxi = _messageContextInfo(msg);
+  return ctxi?.quotedMessage ? unwrap(ctxi.quotedMessage) : null;
+}
+
+function _innerMediaOf(messageNode) {
+  const m = unwrap(messageNode || {});
+  if (!m || typeof m !== 'object') return null;
+  if (m.imageMessage) return { kind: 'image', raw: m.imageMessage };
+  if (m.videoMessage) return { kind: 'video', raw: m.videoMessage };
+  if (m.audioMessage) return { kind: 'audio', raw: m.audioMessage };
+  if (m.stickerMessage) return { kind: 'sticker', raw: m.stickerMessage };
+  if (m.documentMessage) return { kind: 'document', raw: m.documentMessage };
+  return null;
+}
+
+function _textOfMessage(messageNode) {
+  const m = unwrap(messageNode || {});
+  return m?.conversation || m?.extendedTextMessage?.text || m?.imageMessage?.caption || m?.videoMessage?.caption || '';
+}
+
+async function _bufferFromInner(ctx, inner) {
+  const dl = ctx.downloadContentFromMessage;
+  if (typeof dl !== 'function') return null;
+  let out = Buffer.from([]);
+  const stream = await dl(inner.raw, inner.kind === 'document' ? 'document' : inner.kind);
+  for await (const chunk of stream) out = Buffer.concat([out, chunk]);
+  return out;
+}
+
+function _parseCountText(raw) {
+  const norm = String(raw || '').trim().replace(/[ ,]+/g, '');
+  if (!/^\d{1,9}$/.test(norm)) return NaN;
+  return Number(norm);
+}
+
+function _boostLabel(kind) {
+  const value = String(kind || '').toLowerCase();
+  return value === 'followers' ? 'Followers' : value === 'likes' ? 'Likes' : 'Views';
+}
+
+
 /* ── module ──────────────────────────────────────────────────────────────── */
 
 function install(ctx) {
-  const report = { nkiri: false, play: false, tgsticker: false, shazam: false, gst: false };
+  const report = { nkiri: false, movie: false, play: false, upload8: false, boost6: false, tgsticker: false, shazam: false, gst: false };
   const { cmd, CONFIG, sendReply, react } = ctx;
   const PREFIX = (CONFIG && CONFIG.PREFIX) || '.';
 
   const safeReact = (sock, msg, emoji) => { try { return react(sock, msg, emoji); } catch { return Promise.resolve(); } };
+
 
   /* ══════════════════════════════════════════════════════════════════════
      .nkiri — search → seasons → episodes → download-as-document
@@ -200,12 +415,11 @@ function install(ctx) {
   try {
     const nkiriSearch = async (sock, msg, args) => {
       const q = (args || []).join(' ').trim();
-      if (!q) return sendReply(sock, msg, `🎬 *Nkiri Movies & Series*\n\nUsage: *${PREFIX}nkiri <title>* or *${PREFIX}movie <title>*\nExample: *${PREFIX}nkiri avengers*`);
+      if (!q) return sendReply(sock, msg, `🎬 *Nkiri Movies & Series*\n\nUsage: *${PREFIX}nkiri <title>*\nExample: *${PREFIX}nkiri avengers*`);
       await safeReact(sock, msg, '🎬');
       const statusMsg = await sock.sendMessage(msg.key.remoteJid, { text: `🎬 *Nkiri Search*\n\n⏳ Searching for *${q}* ...` }, { quoted: msg }).catch(() => null);
       const skey = statusMsg?.key;
       try {
-        // search (max 20) — the upstream (nkiri.com) can be slow, so retry.
         let results = [];
         for (let i = 0; i < 3 && !results.length; i++) {
           try {
@@ -220,11 +434,6 @@ function install(ctx) {
           return safeReact(sock, msg, '❌');
         }
 
-        // Build native-flow single_select list with SHORT ids.
-        // WhatsApp single_select row ids can silently fail when a full
-        // movie URL is stuffed into the payload; cancel still works because
-        // its quick-reply id is tiny. Cache the search results and only send
-        // `.nkpick <index>` through the button payload.
         const chat = msg.key.remoteJid;
         _nkiriSetState(chat, {
           stage: 'results',
@@ -245,12 +454,9 @@ function install(ctx) {
         const body = `🎬 *Nkiri — "${q}"*\n\nFound *${results.length}* result${results.length > 1 ? 's' : ''}. Tap *Open Results* and pick one.`;
         if (skey) await sock.sendMessage(msg.key.remoteJid, { delete: skey }).catch(() => {});
         if (typeof ctx.sendNativeFlowListMenu === 'function') {
-          await ctx.sendNativeFlowListMenu(sock, msg.key.remoteJid, msg, body,
-            [{ title: 'Search Results', rows }],
-            [{ text: '❌ Cancel', id: `${PREFIX}nkcancel` }]);
+          await ctx.sendNativeFlowListMenu(sock, msg.key.remoteJid, msg, body, [{ title: 'Search Results', rows }], [{ text: '❌ Cancel', id: `${PREFIX}nkcancel` }]);
         } else {
-          const text = body + '\n\n' + rows.map(r => r.title).join('\n');
-          await sendReply(sock, msg, text);
+          await sendReply(sock, msg, body + '\n\n' + rows.map(r => r.title).join('\n'));
         }
         return safeReact(sock, msg, '✅');
       } catch (e) {
@@ -259,7 +465,6 @@ function install(ctx) {
       }
     };
 
-    // pick a title → info → if series: season list; if movie: download directly
     const nkPick = async (sock, msg, args) => {
       const chat = msg.key.remoteJid;
       const token = (args || []).join(' ').trim();
@@ -280,8 +485,6 @@ function install(ctx) {
         const r = d?.result || d?.data || {};
         const links = Array.isArray(r.downloadLinks) ? r.downloadLinks : [];
         if (!links.length) return sendReply(sock, msg, `❌ No download links found for *${r.title || url}*.`);
-
-        // Group links by season using SxxEyy in the filename.
         const bySeason = {};
         const movieLinks = [];
         for (const l of links) {
@@ -292,20 +495,10 @@ function install(ctx) {
           } else movieLinks.push(l);
         }
         const seasons = Object.keys(bySeason).map(Number).sort((a, b) => a - b);
-
         if (seasons.length) {
-          // TV SERIES → season picker
-          const seasonRows = seasons.map((s) => ({
-            season: s,
-            episodes: (bySeason[s] || []).slice().sort((a, b) => a.ep - b.ep),
-          }));
-          _nkiriSetState(chat, {
-            stage: 'seasons',
-            title: r.title || pickedTitle || 'Series',
-            sourceUrl: url,
-            seasons: seasonRows,
-          });
-          const rows = seasons.map(s => ({
+          const seasonRows = seasons.map((s) => ({ season: s, episodes: (bySeason[s] || []).slice().sort((a, b) => a.ep - b.ep) }));
+          _nkiriSetState(chat, { stage: 'seasons', title: r.title || pickedTitle || 'Series', sourceUrl: url, seasons: seasonRows });
+          const rows = seasons.map((s) => ({
             title: `📺 Season ${s}`,
             description: `${bySeason[s].length} episode${bySeason[s].length > 1 ? 's' : ''}`,
             id: `${PREFIX}nkseason ${s}`,
@@ -319,8 +512,6 @@ function install(ctx) {
           }
           return safeReact(sock, msg, '✅');
         }
-
-        // MOVIE → straight to download (document)
         _nkiriClearState(chat);
         return nkDeliver(sock, msg, movieLinks[0] || links[0], r.title || pickedTitle || 'Movie');
       } catch (e) {
@@ -328,20 +519,16 @@ function install(ctx) {
       }
     };
 
-    // pick a season → episode picker
     const nkSeason = async (sock, msg, args) => {
       const chat = msg.key.remoteJid;
       const payload = (args || []).join(' ').trim();
       let season = NaN;
       let title = 'Series';
       let eps = [];
-
       if (/^\d+$/.test(payload)) {
         const state = _nkiriGetState(chat);
         season = parseInt(payload, 10);
-        const seasonEntry = state?.stage === 'seasons'
-          ? (state.seasons || []).find((entry) => Number(entry.season) === season)
-          : null;
+        const seasonEntry = state?.stage === 'seasons' ? (state.seasons || []).find((entry) => Number(entry.season) === season) : null;
         if (!seasonEntry) return sendReply(sock, msg, `❌ That season picker expired. Run *${PREFIX}nkiri <title>* again.`);
         title = state.title || title;
         eps = (seasonEntry.episodes || []).slice().sort((a, b) => a.ep - b.ep);
@@ -364,14 +551,12 @@ function install(ctx) {
           return sendReply(sock, msg, `❌ Error loading season: ${e.message}`);
         }
       }
-
       if (isNaN(season)) return sendReply(sock, msg, `❌ Invalid season selection.`);
       await safeReact(sock, msg, '⏳');
       try {
         if (!eps.length) return sendReply(sock, msg, `❌ No episodes found for Season ${season}.`);
-
         _nkiriSetState(chat, { stage: 'episodes', title, season, episodes: eps });
-        const rows = eps.map(e => ({
+        const rows = eps.map((e) => ({
           title: `🎞️ Episode ${e.ep}`,
           description: 'Tap to download',
           id: `${PREFIX}nkep ${e.ep}`,
@@ -389,7 +574,6 @@ function install(ctx) {
       }
     };
 
-    // pick an episode → resolve direct link → send as document
     const nkEp = async (sock, msg, args) => {
       const chat = msg.key.remoteJid;
       const token = (args || []).join(' ').trim();
@@ -397,9 +581,7 @@ function install(ctx) {
       let titleHint = null;
       if (/^\d+$/.test(token)) {
         const state = _nkiriGetState(chat);
-        const picked = state?.stage === 'episodes'
-          ? (state.episodes || []).find((entry) => Number(entry.ep) === Number(token))
-          : null;
+        const picked = state?.stage === 'episodes' ? (state.episodes || []).find((entry) => Number(entry.ep) === Number(token)) : null;
         if (!picked?.url) return sendReply(sock, msg, `❌ That episode picker expired. Run *${PREFIX}nkiri <title>* again.`);
         dlPage = picked.url;
         titleHint = state.title ? `${state.title} S${String(state.season || '').padStart(2, '0')}E${String(picked.ep).padStart(2, '0')}` : null;
@@ -409,7 +591,6 @@ function install(ctx) {
       return nkDeliver(sock, msg, dlPage, titleHint);
     };
 
-    // resolve downloadwella page → direct link → send document FROM URL (never buffered)
     async function nkDeliver(sock, msg, dlPageUrl, titleHint) {
       const chat = msg.key.remoteJid;
       const statusMsg = await sock.sendMessage(chat, { text: `⬇️ *Nkiri Download*\n\n⏳ Resolving direct link...` }, { quoted: msg }).catch(() => null);
@@ -418,21 +599,12 @@ function install(ctx) {
         const d = await dcGet('/nkiri/download', { url: dlPageUrl }, 45000);
         if (!d?.success || !d?.download_url) throw new Error(d?.error || d?.message || 'no download url');
         const directUrl = d.download_url;
-        const filename = d.filename || decodeURIComponent(directUrl.split('/').pop() || 'nkiri.mkv');
+        const ext = _extFromUrl(directUrl) || '.mkv';
+        const filename = d.filename || `${_safeBaseName(titleHint || 'nkiri')}${ext}`;
         const size = d.size || '';
-        const caption = `🎬 *${titleHint || filename.replace(/\.(mkv|mp4|avi)$/i, '')}*${size ? `\n📦 Size: ${size}` : ''}\n\n_Sent as document • powered by Nkiri_`;
-
+        const caption = `🎬 *${titleHint || filename.replace(/\.(mkv|mp4|avi|webm)$/i, '')}*${size ? `\n📦 Size: ${size}` : ''}\n\n_Sent as document_`;
         if (skey) await sock.sendMessage(chat, { delete: skey }).catch(() => {});
-
-        // Send from URL — WhatsApp/Baileys streams it, so even a multi-GB file
-        // never fills the bot's RAM or blocks the event loop.
-        await race(sock.sendMessage(chat, {
-          document: { url: directUrl },
-          fileName: filename,
-          mimetype: 'video/x-matroska',
-          caption,
-        }, { quoted: msg }), 120000, 'document send');
-
+        await race(sock.sendMessage(chat, { document: { url: directUrl }, fileName: filename, mimetype: _mimeFromExt(ext), caption }, { quoted: msg }), 120000, 'document send');
         return safeReact(sock, msg, '✅');
       } catch (e) {
         if (skey) await ctx.editMessage?.(sock, chat, skey, `❌ Download failed: ${e.message}\n\n_The file may be too large or the link expired._`).catch(() => {});
@@ -446,19 +618,150 @@ function install(ctx) {
       return safeReact(sock, msg, '👍');
     };
 
-    cmd(['nkiri', 'nkiri2', 'movie2', 'movie'], { desc: 'Search & download Nkiri movies/series — .nkiri <title>', category: 'DOWNLOAD' }, nkiriSearch);
-    cmd(['nkpick'],   { desc: 'Internal: nkiri title pick',   category: 'DOWNLOAD' }, nkPick);
-    cmd(['nkseason'], { desc: 'Internal: nkiri season pick',  category: 'DOWNLOAD' }, nkSeason);
-    cmd(['nkep'],     { desc: 'Internal: nkiri episode pick', category: 'DOWNLOAD' }, nkEp);
-    cmd(['nkcancel'], { desc: 'Internal: nkiri cancel',       category: 'DOWNLOAD' }, nkCancel);
-    cmd(['moviedl'],  { desc: 'Use .movie native picker instead', category: 'DOWNLOAD' }, async (sock, msg) => {
-      await sendReply(sock, msg, `🎬 Use *${PREFIX}movie <title>* and pick from the native Nkiri list.\n\n_The movie flow now uses buttons only — no ${PREFIX}moviedl step needed._`);
-    });
+    cmd(['nkiri', 'nkiri2', 'movie2'], { desc: 'Search & download Nkiri movies/series — .nkiri <title>', category: 'DOWNLOAD' }, nkiriSearch);
+    cmd(['nkpick'], { desc: 'Internal: nkiri title pick', category: 'DOWNLOAD' }, nkPick);
+    cmd(['nkseason'], { desc: 'Internal: nkiri season pick', category: 'DOWNLOAD' }, nkSeason);
+    cmd(['nkep'], { desc: 'Internal: nkiri episode pick', category: 'DOWNLOAD' }, nkEp);
+    cmd(['nkcancel'], { desc: 'Internal: nkiri cancel', category: 'DOWNLOAD' }, nkCancel);
     report.nkiri = true;
   } catch (e) { console.log('[precious-v21] nkiri error:', e && e.message); }
 
   /* ══════════════════════════════════════════════════════════════════════
-     .play — keep current banner, add emoji numbers + native picker buttons
+     .movie — netnaija/native movie picker (separate from nkiri)
+     ══════════════════════════════════════════════════════════════════════ */
+  try {
+    const MOVIE_API_BASE = String(process.env.MYNETNAIJA_API || CONFIG.MYNETNAIJA_API || '').replace(/\/+$/, '');
+    const movieJson = async (suffix, params, timeout = 30000) => {
+      if (!MOVIE_API_BASE) throw new Error('MYNETNAIJA_API is not configured');
+      const res = await axios.get(MOVIE_API_BASE + suffix, {
+        params,
+        timeout,
+        headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'application/json' },
+        validateStatus: () => true,
+      });
+      const contentType = String(res.headers?.['content-type'] || '').toLowerCase();
+      const data = res.data;
+      if (/html/.test(contentType) || (typeof data === 'string' && /<!doctype|<html/i.test(data))) {
+        throw new Error(`Netnaija API returned HTTP ${res.status}`);
+      }
+      return data;
+    };
+    const movieList = (data) => {
+      const list = data?.results || data?.data?.results || data?.data || data?.movies || [];
+      return Array.isArray(list) ? list.filter((item) => item && (item.url || item.link)) : [];
+    };
+    const movieInfo = (data) => {
+      const d = data?.data || data?.result || data || {};
+      const download = d?.download || {};
+      const fileUrl = download?.url || download?.download_url || download?.direct_url || d?.download_url || d?.file_url || d?.fileUrl || null;
+      return {
+        title: d?.title || d?.name || 'Movie',
+        fileUrl: typeof fileUrl === 'string' && /^https?:\/\//i.test(fileUrl) ? fileUrl : null,
+        fileName: download?.file_name || d?.file_name || '',
+        fileExt: String(download?.file_ext || d?.file_ext || '').toLowerCase(),
+        fileSize: download?.file_size || d?.file_size || '',
+        host: download?.host || d?.host || '',
+      };
+    };
+    const movieSearch = async (sock, msg, args) => {
+      const q = (args || []).join(' ').trim();
+      if (!q) return sendReply(sock, msg, `🎬 *Movie Search*\n\nUsage: *${PREFIX}movie <title>*\nExample: *${PREFIX}movie extraction 3*`);
+      await safeReact(sock, msg, '🎬');
+      const chat = msg.key.remoteJid;
+      const statusMsg = await sock.sendMessage(chat, { text: `🎬 *Movie Search*\n\n⏳ Searching for *${q}* ...` }, { quoted: msg }).catch(() => null);
+      const skey = statusMsg?.key;
+      try {
+        let results = [];
+        for (const params of [{ q }, { query: q }]) {
+          try {
+            const data = await movieJson('/search', params, 30000);
+            const arr = movieList(data).slice(0, 20);
+            if (arr.length) { results = arr; break; }
+          } catch {}
+        }
+        if (!results.length) {
+          if (skey) await ctx.editMessage?.(sock, chat, skey, `❌ No Netnaija results for *${q}*.`).catch(() => {});
+          else await sendReply(sock, msg, `❌ No Netnaija results for *${q}*.`);
+          return safeReact(sock, msg, '❌');
+        }
+        _setTimedState(_moviePickStore, chat, {
+          stage: 'results',
+          sender: msg?.key?.participant || msg?.key?.remoteJid || '',
+          query: q,
+          results: results.map((item) => ({
+            title: String(item.title || item.name || 'Untitled movie'),
+            url: item.url || item.link || '',
+            year: item.year || item.date || '',
+            rating: item.rating || item.score || '',
+          })),
+        }, MOVIE_PICK_TTL_MS);
+        const rows = results.map((item, index) => ({
+          title: `${index + 1}. ${String(item.title || item.name || 'Untitled movie').slice(0, 60)}`,
+          description: [item.year || item.date || '', item.rating ? `⭐ ${item.rating}` : ''].filter(Boolean).join(' • ') || 'Tap to open',
+          id: `${PREFIX}movpick ${index + 1}`,
+          rowId: `${PREFIX}movpick ${index + 1}`,
+        }));
+        const body = `🎬 *Movie Search — "${q}"*\n\nFound *${results.length}* result${results.length > 1 ? 's' : ''}. Tap *Open Categories* and choose your movie.`;
+        if (skey) await sock.sendMessage(chat, { delete: skey }).catch(() => {});
+        if (typeof ctx.sendNativeFlowListMenu === 'function') {
+          await ctx.sendNativeFlowListMenu(sock, chat, msg, body, [{ title: 'Movie Results', rows }], [{ text: '❌ Cancel', id: `${PREFIX}movcancel` }]);
+        } else {
+          await sendReply(sock, msg, body + '\n\n' + rows.map((r) => r.title).join('\n'));
+        }
+        return safeReact(sock, msg, '✅');
+      } catch (e) {
+        if (skey) await ctx.editMessage?.(sock, chat, skey, `❌ Movie search failed: ${e.message}`).catch(() => {});
+        else await sendReply(sock, msg, `❌ Movie search failed: ${e.message}`);
+        return safeReact(sock, msg, '❌');
+      }
+    };
+    const movPick = async (sock, msg, args) => {
+      const chat = msg.key.remoteJid;
+      const token = (args || []).join(' ').trim();
+      let picked = null;
+      if (/^\d+$/.test(token)) {
+        const state = _getTimedState(_moviePickStore, chat, MOVIE_PICK_TTL_MS);
+        const idx = Number(token) - 1;
+        picked = state?.stage === 'results' ? state.results?.[idx] : null;
+      } else if (/^https?:\/\//i.test(token)) {
+        picked = { title: 'Movie', url: token };
+      }
+      if (!picked?.url) return sendReply(sock, msg, `❌ That movie picker expired. Run *${PREFIX}movie <title>* again.`);
+      await safeReact(sock, msg, '⬇️');
+      const statusMsg = await sock.sendMessage(chat, { text: `🎬 *Movie Download*\n\n⏳ Opening *${picked.title || 'movie'}* ...` }, { quoted: msg }).catch(() => null);
+      const skey = statusMsg?.key;
+      try {
+        const data = await movieJson('/info', { url: picked.url }, 35000);
+        const info = movieInfo(data);
+        if (!info.fileUrl) throw new Error('movie file url missing from Netnaija response');
+        const ext = info.fileExt ? (String(info.fileExt).startsWith('.') ? String(info.fileExt) : `.${info.fileExt}`) : (_extFromUrl(info.fileUrl) || '.mp4');
+        const fileName = info.fileName || `${_safeBaseName(info.title || picked.title || 'movie')}${ext}`;
+        const caption = `🎬 *${info.title || picked.title || 'Movie'}*${info.fileSize ? `\n📦 Size: ${info.fileSize}` : ''}${info.host ? `\n🌐 Host: ${info.host}` : ''}`;
+        if (skey) await sock.sendMessage(chat, { delete: skey }).catch(() => {});
+        await race(sock.sendMessage(chat, { document: { url: info.fileUrl }, fileName, mimetype: _mimeFromExt(ext), caption }, { quoted: msg }), 120000, 'movie document send');
+        _clearTimedState(_moviePickStore, chat);
+        return safeReact(sock, msg, '✅');
+      } catch (e) {
+        if (skey) await ctx.editMessage?.(sock, chat, skey, `❌ Movie download failed: ${e.message}`).catch(() => {});
+        else await sendReply(sock, msg, `❌ Movie download failed: ${e.message}`);
+        return safeReact(sock, msg, '❌');
+      }
+    };
+    const movCancel = async (sock, msg) => {
+      _clearTimedState(_moviePickStore, msg?.key?.remoteJid);
+      return safeReact(sock, msg, '👍');
+    };
+    cmd(['movie'], { desc: 'Search & download Netnaija movies — .movie <title>', category: 'DOWNLOAD' }, movieSearch);
+    cmd(['movpick'], { desc: 'Internal: movie title pick', category: 'DOWNLOAD' }, movPick);
+    cmd(['movcancel'], { desc: 'Internal: movie cancel', category: 'DOWNLOAD' }, movCancel);
+    cmd(['moviedl'], { desc: 'Use .movie native picker instead', category: 'DOWNLOAD' }, async (sock, msg) => {
+      await sendReply(sock, msg, `🎬 Use *${PREFIX}movie <title>* and pick from the native movie list.\n\n_This movie flow now stays on the native picker — no ${PREFIX}moviedl step needed._`);
+    });
+    report.movie = true;
+  } catch (e) { console.log('[precious-v21] movie error:', e && e.message); }
+
+  /* ══════════════════════════════════════════════════════════════════════
+     .play — native picker with verified local media delivery
      ══════════════════════════════════════════════════════════════════════ */
   try {
     const PLAY_HEADER = '───── 𝑷𝑹𝑬𝑪𝑰𝑶𝑼𝑺 x PLAYER ─────';
@@ -466,14 +769,7 @@ function install(ctx) {
     const playSender = (msg) => String(msg?.key?.participant || msg?.key?.remoteJid || '');
     const playSameChat = (a, b) => playNormChat(a) === playNormChat(b);
     const playQuotedId = (msg) => {
-      const c = msg?.message?.extendedTextMessage?.contextInfo
-        || msg?.message?.imageMessage?.contextInfo
-        || msg?.message?.videoMessage?.contextInfo
-        || msg?.message?.documentMessage?.contextInfo
-        || msg?.message?.buttonsResponseMessage?.contextInfo
-        || msg?.message?.listResponseMessage?.contextInfo
-        || msg?.message?.interactiveResponseMessage?.contextInfo
-        || msg?.message?.messageContextInfo;
+      const c = _messageContextInfo(msg);
       return c?.stanzaId || c?.quotedMessage?.key?.id || null;
     };
     const playYtId = (input) => {
@@ -484,19 +780,20 @@ function install(ctx) {
       if (/^[A-Za-z0-9_-]{6,}$/.test(raw)) return raw;
       return '';
     };
-    const playExtract = (data) => {
-      const d = data?.result || data?.data || data || {};
-      const dlUrl = d.download_url || d.dl_url || d.url || d.audio || d.mp3 || d.link || null;
-      const videoUrl = d.video_url || d.source || d.video || d.watch_url || d.youtube_url || null;
+    const playExtract = (payload) => {
+      const source = payload?.result || payload?.data || payload || {};
+      const nested = source?.result || source?.data || source;
+      const dlUrl = nested?.download_url || nested?.dl_url || nested?.url || nested?.audio || nested?.mp3 || nested?.link || null;
+      const videoUrl = nested?.video_url || nested?.source || nested?.video || nested?.watch_url || nested?.youtube_url || null;
       return {
-        title: d.title || d.song || d.name || null,
-        artists: d.artist || d.artists || d.author || d.channel || null,
-        duration: d.duration || d.length || d.timestamp || null,
-        views: d.views || d.view_count || null,
-        dlUrl,
-        videoUrl,
-        videoId: playYtId(videoUrl || d.videoId || d.id || ''),
-        thumb: d.thumbnail || d.thumb || d.image || null,
+        title: nested?.title || nested?.song || nested?.name || null,
+        artists: nested?.artist || nested?.artists || nested?.author || nested?.channel || null,
+        duration: nested?.duration || nested?.length || nested?.timestamp || null,
+        views: nested?.views || nested?.view_count || null,
+        dlUrl: typeof dlUrl === 'string' && /^https?:\/\//i.test(dlUrl) ? dlUrl : null,
+        videoUrl: typeof videoUrl === 'string' && /^https?:\/\//i.test(videoUrl) ? videoUrl : null,
+        videoId: playYtId(videoUrl || nested?.videoId || nested?.id || ''),
+        thumb: nested?.thumbnail || nested?.thumb || nested?.image || null,
       };
     };
     const playStore = (keyId, jid, msg, meta) => {
@@ -589,24 +886,61 @@ function install(ctx) {
       '',
       '────────────────────────',
       'Reply here with a number:',
-      '  1️⃣ - Audio',
-      '  2️⃣ - Document (.mp3)',
-      '  3️⃣ - Voice note',
-      '  4️⃣ - Video (.mp4)',
-      '  5️⃣ - Video (view once) 👁️',
-      '  6️⃣ - Voice note (view once) 🎙️',
+      '  1 - Audio',
+      '  2 - Document (.mp3)',
+      '  3 - Voice note',
+      '  4 - Video (.mp4)',
     ].join('\n');
     const playSections = () => [{
       title: 'Formats',
       rows: [
-        { id: `${PREFIX}jxplaypick 1`, rowId: `${PREFIX}jxplaypick 1`, title: '1️⃣ Audio', description: 'Send standard audio' },
-        { id: `${PREFIX}jxplaypick 2`, rowId: `${PREFIX}jxplaypick 2`, title: '2️⃣ Document (.mp3)', description: 'Send MP3 as document' },
-        { id: `${PREFIX}jxplaypick 3`, rowId: `${PREFIX}jxplaypick 3`, title: '3️⃣ Voice note', description: 'Send as push-to-talk' },
-        { id: `${PREFIX}jxplaypick 4`, rowId: `${PREFIX}jxplaypick 4`, title: '4️⃣ Video (.mp4)', description: 'Send MP4 video' },
-        { id: `${PREFIX}jxplaypick 5`, rowId: `${PREFIX}jxplaypick 5`, title: '5️⃣ Video (view once) 👁️', description: 'Send video as view once' },
-        { id: `${PREFIX}jxplaypick 6`, rowId: `${PREFIX}jxplaypick 6`, title: '6️⃣ Voice note (view once) 🎙️', description: 'Send voice note as view once' },
+        { id: `${PREFIX}jxplaypick 1`, rowId: `${PREFIX}jxplaypick 1`, title: 'Audio', description: 'Send standard audio' },
+        { id: `${PREFIX}jxplaypick 2`, rowId: `${PREFIX}jxplaypick 2`, title: 'Document (.mp3)', description: 'Send MP3 as document' },
+        { id: `${PREFIX}jxplaypick 3`, rowId: `${PREFIX}jxplaypick 3`, title: 'Voice note', description: 'Send as push-to-talk' },
+        { id: `${PREFIX}jxplaypick 4`, rowId: `${PREFIX}jxplaypick 4`, title: 'Video (.mp4)', description: 'Send MP4 video' },
       ],
     }];
+    const playResolveAudioUrl = async (meta) => {
+      const tries = [];
+      const ytUrl = meta?.videoUrl || (meta?.videoId ? `https://www.youtube.com/watch?v=${meta.videoId}` : '');
+      if (/^https?:\/\//i.test(String(meta?.dlUrl || ''))) tries.push(async () => meta.dlUrl);
+      if (ytUrl) tries.push(async () => playExtract(await dcGet('/download/ytmp3', { url: ytUrl }, 35000)).dlUrl || null);
+      if (ytUrl) tries.push(async () => playExtract(await dcGet('/play', { query: ytUrl }, 35000)).dlUrl || null);
+      if (CONFIG.GIFTED_API && CONFIG.GIFTED_KEY && ytUrl) tries.push(async () => {
+        const { data } = await axios.get(`${CONFIG.GIFTED_API}/api/download/ytmp3?apikey=${CONFIG.GIFTED_KEY}&url=${encodeURIComponent(ytUrl)}`, { timeout: 60000 });
+        return data?.result?.download_url || data?.result?.url || data?.result?.audio || data?.result?.mp3 || null;
+      });
+      for (const fn of tries) {
+        try {
+          const out = await fn();
+          if (typeof out === 'string' && /^https?:\/\//i.test(out)) return out;
+        } catch {}
+      }
+      return null;
+    };
+    const playResolveVideoUrl = async (meta) => {
+      const tries = [];
+      const ytUrl = meta?.videoUrl || (meta?.videoId ? `https://www.youtube.com/watch?v=${meta.videoId}` : '');
+      if (ytUrl) tries.push(async () => {
+        const d = await dcGet('/download/ytmp4', { url: ytUrl }, 40000);
+        return d?.result?.download_url || d?.result?.url || d?.download_url || d?.url || null;
+      });
+      if (ytUrl) tries.push(async () => {
+        const d = await dcGet('/play', { query: ytUrl, type: 'video' }, 35000);
+        return d?.result?.download_url || d?.result?.url || d?.download_url || d?.url || null;
+      });
+      if (CONFIG.GIFTED_API && CONFIG.GIFTED_KEY && ytUrl) tries.push(async () => {
+        const { data } = await axios.get(`${CONFIG.GIFTED_API}/api/download/ytmp4?apikey=${CONFIG.GIFTED_KEY}&url=${encodeURIComponent(ytUrl)}`, { timeout: 60000 });
+        return data?.result?.download_url || data?.result?.url || data?.result?.video || data?.result?.mp4 || null;
+      });
+      for (const fn of tries) {
+        try {
+          const out = await fn();
+          if (typeof out === 'string' && /^https?:\/\//i.test(out)) return out;
+        } catch {}
+      }
+      return null;
+    };
     const playSearch = async (sock, msg, args) => {
       const jid = msg.key.remoteJid;
       const query = (args || []).join(' ').trim();
@@ -618,29 +952,19 @@ function install(ctx) {
         let meta = null;
         if (isUrl) {
           try {
-            const r = await dcGet('/download/ytmp3', { url: query }, 30000);
-            meta = playExtract(r);
+            meta = playExtract(await dcGet('/download/ytmp3', { url: query }, 30000));
             if (query && !meta.videoUrl) meta.videoUrl = query;
           } catch {}
         } else {
           try {
-            const r = await dcGet('/play', { query }, 30000);
-            meta = playExtract(r);
+            meta = playExtract(await dcGet('/play', { query }, 30000));
           } catch {}
           if (!meta?.title && !meta?.videoUrl) {
             try {
               const ytSearch = require('yt-search');
               const res = await ytSearch(query);
               const hit = Array.isArray(res?.videos) ? res.videos[0] : (Array.isArray(res) ? res[0] : null);
-              if (hit) meta = {
-                title: hit.title || query,
-                artists: hit.author?.name || hit.author || 'Unknown',
-                duration: hit.timestamp || hit.duration?.timestamp || null,
-                views: hit.views || null,
-                videoUrl: hit.url || '',
-                videoId: hit.videoId || playYtId(hit.url || ''),
-                thumb: hit.thumbnail || null,
-              };
+              if (hit) meta = { title: hit.title || query, artists: hit.author?.name || hit.author || 'Unknown', duration: hit.timestamp || hit.duration?.timestamp || null, views: hit.views || null, videoUrl: hit.url || '', videoId: hit.videoId || playYtId(hit.url || ''), thumb: hit.thumbnail || null };
             } catch {}
           }
         }
@@ -653,9 +977,7 @@ function install(ctx) {
           sent = await ctx.sendNativeFlowListMenu(sock, jid, msg, card, playSections(), [{ text: '❌ Cancel', id: `${PREFIX}jxplaycancel` }], `${CONFIG.BOT_NAME} • Player`, thumb ? { headerImage: thumb, headerText: 'PLAYER' } : {});
         }
         if (!sent?.key?.id) {
-          sent = thumb
-            ? await sock.sendMessage(jid, { image: thumb, caption: card }, { quoted: msg }).catch(() => null)
-            : await sock.sendMessage(jid, { text: card }, { quoted: msg }).catch(() => null);
+          sent = thumb ? await sock.sendMessage(jid, { image: thumb, caption: card }, { quoted: msg }).catch(() => null) : await sock.sendMessage(jid, { text: card }, { quoted: msg }).catch(() => null);
         }
         if (!sent?.key?.id) throw new Error('could not send player card');
         playStore(sent.key.id, jid, msg, meta);
@@ -671,26 +993,54 @@ function install(ctx) {
       if (!entry?.meta) return sendReply(sock, msg, `❌ That player card expired. Run *${PREFIX}play <song>* again.`);
       const meta = entry.meta;
       const jid = msg.key.remoteJid;
-      const title = String(meta.title || 'audio').trim();
+      const title = _safeBaseName(meta.title || 'audio');
       const status = await sock.sendMessage(jid, { text: `⬇️ ${PLAY_HEADER}\nPreparing *${title}* ...` }, { quoted: msg }).catch(() => null);
+      const cleanup = new Set();
       try {
-        if (mode === 4 || mode === 5) {
-          const videoBuf = typeof ctx._p2VideoBuf === 'function' ? await ctx._p2VideoBuf(meta) : null;
-          if (!Buffer.isBuffer(videoBuf) || !videoBuf.length) throw new Error('video buffer unavailable');
-          await sock.sendMessage(jid, { video: videoBuf, mimetype: 'video/mp4', fileName: `${title.replace(/[^\w\-. ]+/g, ' ').trim() || 'video'}.mp4`, viewOnce: mode === 5 }, { quoted: msg });
+        if (mode === 4) {
+          const videoUrl = await playResolveVideoUrl(meta);
+          if (!videoUrl) throw new Error('no valid video file url');
+          let fetched = await _fetchBinaryToTemp(videoUrl, { maxBytes: 180 * 1024 * 1024, timeout: 240000, prefix: 'jxvid-' });
+          cleanup.add(fetched.dir);
+          let info = _videoMetaFromHead(fetched.head, fetched.contentType, videoUrl);
+          if (!info.ok) throw new Error('provider returned invalid video bytes');
+          if (info.ext !== '.mp4') {
+            const converted = await _transcodeVideoToMp4(fetched.filePath);
+            cleanup.add(converted.dir);
+            fetched = { ...fetched, filePath: converted.filePath };
+            info = converted;
+          }
+          await _sendFilePath(sock, jid, 'video', fetched.filePath, { mimetype: 'video/mp4', fileName: `${title}.mp4` }, msg);
         } else {
-          const audioBuf = typeof ctx._p2AudioBuf === 'function' ? await ctx._p2AudioBuf(meta) : null;
-          if (!Buffer.isBuffer(audioBuf) || !audioBuf.length) throw new Error('audio buffer unavailable');
-          if (mode === 2) {
-            await sock.sendMessage(jid, { document: audioBuf, mimetype: 'audio/mpeg', fileName: `${title.replace(/[^\w\-. ]+/g, ' ').trim() || 'audio'}.mp3` }, { quoted: msg });
-          } else if (mode === 3 || mode === 6) {
-            let out = audioBuf;
-            try {
-              if (mode === 3 && typeof ctx._p2ToPtt === 'function') out = await ctx._p2ToPtt(audioBuf, 'audio/mpeg');
-            } catch {}
-            await sock.sendMessage(jid, { audio: out, mimetype: mode === 3 ? 'audio/ogg; codecs=opus' : 'audio/mpeg', ptt: true, viewOnce: mode === 6 }, { quoted: msg });
+          const audioUrl = await playResolveAudioUrl(meta);
+          if (!audioUrl) throw new Error('no valid audio file url');
+          let fetched = await _fetchBinaryToTemp(audioUrl, { maxBytes: 80 * 1024 * 1024, timeout: 240000, prefix: 'jxaud-' });
+          cleanup.add(fetched.dir);
+          let info = _audioMetaFromHead(fetched.head, fetched.contentType, audioUrl);
+          if (!info.ok) throw new Error('provider returned invalid audio bytes');
+          let sendPath = fetched.filePath;
+          let sendMime = info.mimetype;
+          let sendExt = info.ext || '.mp3';
+          if (mode === 2 || (mode === 1 && !['.mp3', '.m4a', '.ogg'].includes(sendExt))) {
+            const converted = await _transcodeAudioFile(fetched.filePath, 'mp3');
+            cleanup.add(converted.dir);
+            sendPath = converted.filePath;
+            sendMime = converted.mimetype;
+            sendExt = converted.ext;
+          }
+          if (mode === 3) {
+            if (sendExt !== '.ogg') {
+              const converted = await _transcodeAudioFile(sendPath, 'ogg');
+              cleanup.add(converted.dir);
+              sendPath = converted.filePath;
+              sendMime = converted.mimetype;
+              sendExt = converted.ext;
+            }
+            await _sendFilePath(sock, jid, 'audio', sendPath, { mimetype: 'audio/ogg; codecs=opus', ptt: true }, msg);
+          } else if (mode === 2) {
+            await _sendFilePath(sock, jid, 'document', sendPath, { mimetype: 'audio/mpeg', fileName: `${title}.mp3` }, msg);
           } else {
-            await sock.sendMessage(jid, { audio: audioBuf, mimetype: 'audio/mpeg', ptt: false, fileName: `${title.replace(/[^\w\-. ]+/g, ' ').trim() || 'audio'}.mp3` }, { quoted: msg });
+            await _sendFilePath(sock, jid, 'audio', sendPath, { mimetype: sendMime, ptt: false, fileName: `${title}${sendExt}` }, msg);
           }
         }
         if (status?.key) await sock.sendMessage(jid, { delete: status.key }).catch(() => {});
@@ -699,11 +1049,13 @@ function install(ctx) {
         if (status?.key) await ctx.editMessage?.(sock, jid, status.key, `❌ Download failed: ${e.message}`).catch(() => {});
         else await sendReply(sock, msg, `❌ Download failed: ${e.message}`);
         await safeReact(sock, msg, '❌');
+      } finally {
+        for (const dir of cleanup) await fs.promises.rm(dir, { recursive: true, force: true }).catch(() => {});
       }
     };
     const playPick = async (sock, msg, args) => {
       const token = Number(String((args || []).join(' ').trim() || '0'));
-      if (!Number.isInteger(token) || token < 1 || token > 6) return sendReply(sock, msg, `❌ Invalid player option. Use 1-6.`);
+      if (!Number.isInteger(token) || token < 1 || token > 4) return sendReply(sock, msg, `❌ Invalid player option. Use 1-4.`);
       return playDeliver(sock, msg, token);
     };
     const playCancel = async (sock, msg) => {
@@ -713,11 +1065,196 @@ function install(ctx) {
       _jxPlayLatestByChat.delete(jid);
       return safeReact(sock, msg, '👍');
     };
-    cmd(['play', 'music', 'song'], { desc: 'Play song — native picker with emoji-numbered formats', category: 'DOWNLOAD' }, playSearch);
+    cmd(['play', 'music', 'song'], { desc: 'Play song — native picker with working local media delivery', category: 'DOWNLOAD' }, playSearch);
     cmd(['jxplaypick'], { desc: 'Internal: player format pick', category: 'DOWNLOAD' }, playPick);
     cmd(['jxplaycancel'], { desc: 'Internal: player cancel', category: 'DOWNLOAD' }, playCancel);
     report.play = true;
   } catch (e) { console.log('[precious-v21] play error:', e && e.message); }
+
+  /* ══════════════════════════════════════════════════════════════════════
+     .8upload — exact endpoint probe with honest provider errors
+     ══════════════════════════════════════════════════════════════════════ */
+  try {
+    const upload8 = async (sock, msg, args) => {
+      const url = (args || []).join(' ').trim();
+      if (!/^https?:\/\//i.test(url)) return sendReply(sock, msg, `📤 *8Upload*\n\nUsage: *${PREFIX}8upload <direct file url>*`);
+      await safeReact(sock, msg, '📤');
+      const chat = msg.key.remoteJid;
+      const statusMsg = await sock.sendMessage(chat, { text: `📤 *8Upload*\n\n⏳ Sending your file link to the provider...` }, { quoted: msg }).catch(() => null);
+      const skey = statusMsg?.key;
+      try {
+        const res = await axios.get(`${DC}/8upload`, {
+          params: { url },
+          timeout: 45000,
+          headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'application/json,text/html;q=0.9,*/*;q=0.8' },
+          validateStatus: () => true,
+        });
+        const data = res.data;
+        const contentType = String(res.headers?.['content-type'] || '').toLowerCase();
+        if (/html/.test(contentType) || (typeof data === 'string' && /david cyril api docs|<!doctype|<html/i.test(data))) {
+          throw new Error('the 8upload endpoint currently returns a 404/blocked docs page');
+        }
+        const result = data?.result || data?.data || data || {};
+        if (!(data?.success === true || data?.status === true)) {
+          throw new Error(data?.message || data?.error || `HTTP ${res.status}`);
+        }
+        const outUrl = result?.url || result?.download_url || result?.file || result?.link || '';
+        const lines = [
+          '✅ *8Upload*',
+          outUrl ? `🔗 ${outUrl}` : null,
+          result?.id ? `🆔 ${result.id}` : null,
+          result?.message ? String(result.message) : null,
+        ].filter(Boolean).join('\n');
+        if (skey) await sock.sendMessage(chat, { delete: skey }).catch(() => {});
+        await sendReply(sock, msg, lines || '✅ 8Upload finished.');
+        return safeReact(sock, msg, '✅');
+      } catch (e) {
+        if (skey) await ctx.editMessage?.(sock, chat, skey, `❌ 8Upload failed: ${e.message}`).catch(() => {});
+        else await sendReply(sock, msg, `❌ 8Upload failed: ${e.message}`);
+        return safeReact(sock, msg, '❌');
+      }
+    };
+    cmd(['8upload'], { desc: 'Upload a direct file URL through the 8upload endpoint', category: 'TOOLS' }, upload8);
+    report.upload8 = true;
+  } catch (e) { console.log('[precious-v21] 8upload error:', e && e.message); }
+
+  /* ══════════════════════════════════════════════════════════════════════
+     .boost6 — native flow: choose type, then reply with a count
+     ══════════════════════════════════════════════════════════════════════ */
+  try {
+    const boost6Start = async (sock, msg, args) => {
+      const url = (args || []).join(' ').trim();
+      if (!/^https?:\/\//i.test(url) || !/tiktok\.com|vm\.tiktok\.com|vt\.tiktok\.com/i.test(url)) {
+        return sendReply(sock, msg, `⚡ *Boost6*\n\nUsage: *${PREFIX}boost6 <TikTok video/profile link>*`);
+      }
+      const chat = msg.key.remoteJid;
+      _setTimedState(_boost6Store, chat, { stage: 'kind', sender: msg?.key?.participant || msg?.key?.remoteJid || '', url }, BOOST6_TTL_MS);
+      const rows = [
+        { id: `${PREFIX}boost6pick likes`, rowId: `${PREFIX}boost6pick likes`, title: '👍 Likes', description: 'Increase likes' },
+        { id: `${PREFIX}boost6pick followers`, rowId: `${PREFIX}boost6pick followers`, title: '👥 Followers', description: 'Increase followers' },
+        { id: `${PREFIX}boost6pick views`, rowId: `${PREFIX}boost6pick views`, title: '👀 Views', description: 'Increase views' },
+      ];
+      const body = `⚡ *Boost6*\n\nTarget: ${url}\n\nPick what you want to boost.`;
+      if (typeof ctx.sendNativeFlowListMenu === 'function') {
+        await ctx.sendNativeFlowListMenu(sock, chat, msg, body, [{ title: 'Boost Type', rows }], [{ text: '❌ Cancel', id: `${PREFIX}boost6cancel` }]);
+      } else {
+        await sendReply(sock, msg, body + '\n\n1. Likes\n2. Followers\n3. Views');
+      }
+      return safeReact(sock, msg, '✅');
+    };
+    const boost6Pick = async (sock, msg, args) => {
+      const chat = msg.key.remoteJid;
+      const state = _getTimedState(_boost6Store, chat, BOOST6_TTL_MS);
+      const kind = String((args || []).join(' ').trim() || '').toLowerCase();
+      if (!state || state.stage !== 'kind' || !['likes', 'followers', 'views'].includes(kind)) {
+        return sendReply(sock, msg, `❌ That Boost6 picker expired. Run *${PREFIX}boost6 <link>* again.`);
+      }
+      _setTimedState(_boost6Store, chat, { stage: 'count', sender: state.sender, url: state.url, kind }, BOOST6_TTL_MS);
+      await sendReply(sock, msg, `⚡ *Boost6*\n\nReply with the *${_boostLabel(kind)}* count you want for:\n${state.url}`);
+      return safeReact(sock, msg, '✅');
+    };
+    const boost6Submit = async (sock, msg, countValue) => {
+      const chat = msg.key.remoteJid;
+      const state = _getTimedState(_boost6Store, chat, BOOST6_TTL_MS);
+      if (!state || state.stage !== 'count') return false;
+      const count = Number(countValue);
+      if (!Number.isFinite(count) || count <= 0) {
+        await sendReply(sock, msg, '❌ Send a valid numeric count.');
+        return true;
+      }
+      await safeReact(sock, msg, '⚡');
+      const statusMsg = await sock.sendMessage(chat, { text: `⚡ *Boost6*\n\n⏳ Sending ${count} ${_boostLabel(state.kind).toLowerCase()} request...` }, { quoted: msg }).catch(() => null);
+      const skey = statusMsg?.key;
+      try {
+        const attempts = [
+          { url: state.url, type: state.kind, count },
+          { url: state.url, type: state.kind, amount: count },
+          { url: state.url, action: state.kind, count },
+          { url: state.url, service: state.kind, amount: count },
+        ];
+        let finalData = null;
+        let finalMessage = '';
+        for (const params of attempts) {
+          const res = await axios.get(`${DC}/api/tiktok/boost6`, {
+            params,
+            timeout: 45000,
+            headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'application/json,text/html;q=0.9,*/*;q=0.8' },
+            validateStatus: () => true,
+          });
+          const data = res.data;
+          const contentType = String(res.headers?.['content-type'] || '').toLowerCase();
+          if (/html/.test(contentType) || (typeof data === 'string' && /<!doctype|<html/i.test(data))) {
+            throw new Error(`Boost6 endpoint returned HTTP ${res.status}`);
+          }
+          finalData = data;
+          finalMessage = String(data?.message || data?.error || `HTTP ${res.status}`);
+          if (data?.success === true || data?.status === true) break;
+          if (!/missing required parameter/i.test(finalMessage)) break;
+        }
+        _clearTimedState(_boost6Store, chat);
+        if (!(finalData?.success === true || finalData?.status === true)) {
+          throw new Error(finalMessage || 'provider rejected the request');
+        }
+        const result = finalData?.result || finalData?.data || finalData || {};
+        const lines = [
+          '✅ *Boost6*',
+          `🎯 Type: ${_boostLabel(state.kind)}`,
+          `🔢 Count: ${count}`,
+          result?.message ? String(result.message) : null,
+          result?.task_id ? `🆔 Task: ${result.task_id}` : null,
+        ].filter(Boolean).join('\n');
+        if (skey) await sock.sendMessage(chat, { delete: skey }).catch(() => {});
+        await sendReply(sock, msg, lines);
+        return safeReact(sock, msg, '✅');
+      } catch (e) {
+        _clearTimedState(_boost6Store, chat);
+        if (skey) await ctx.editMessage?.(sock, chat, skey, `❌ Boost6 failed: ${e.message}`).catch(() => {});
+        else await sendReply(sock, msg, `❌ Boost6 failed: ${e.message}`);
+        await safeReact(sock, msg, '❌');
+        return true;
+      }
+    };
+    const boost6Count = async (sock, msg, args) => {
+      const count = _parseCountText((args || []).join(' '));
+      return boost6Submit(sock, msg, count);
+    };
+    const boost6Cancel = async (sock, msg) => {
+      _clearTimedState(_boost6Store, msg?.key?.remoteJid);
+      return safeReact(sock, msg, '👍');
+    };
+    _v21BoostNumericHandler = async (sock, msg, body) => {
+      const chat = msg?.key?.remoteJid || '';
+      const state = _getTimedState(_boost6Store, chat, BOOST6_TTL_MS);
+      if (!state || state.stage !== 'count') return false;
+      const sender = msg?.key?.participant || msg?.key?.remoteJid || '';
+      if (state.sender && sender && state.sender !== sender) return false;
+      const count = _parseCountText(body);
+      if (!Number.isFinite(count) || count <= 0) return false;
+      await boost6Submit(sock, msg, count);
+      return true;
+    };
+    cmd(['boost6'], { desc: 'Boost TikTok likes/followers/views with a native flow', category: 'TOOLS' }, boost6Start);
+    cmd(['boost6pick'], { desc: 'Internal: boost6 type pick', category: 'TOOLS' }, boost6Pick);
+    cmd(['boost6count'], { desc: 'Internal: boost6 count input', category: 'TOOLS' }, boost6Count);
+    cmd(['boost6cancel'], { desc: 'Internal: boost6 cancel', category: 'TOOLS' }, boost6Cancel);
+    report.boost6 = true;
+  } catch (e) { console.log('[precious-v21] boost6 error:', e && e.message); }
+
+  try {
+    if (typeof ctx.setSettingsReply === 'function') {
+      const previousSettingsReply = typeof globalThis.__PRECIOUS_SETTINGS_REPLY__ === 'function' ? globalThis.__PRECIOUS_SETTINGS_REPLY__ : null;
+      ctx.setSettingsReply(async (sock, msg, body) => {
+        if (typeof _v21BoostNumericHandler === 'function') {
+          try { if (await _v21BoostNumericHandler(sock, msg, body)) return true; } catch {}
+        }
+        if (typeof _v21GstNumericHandler === 'function') {
+          try { if (await _v21GstNumericHandler(sock, msg, body)) return true; } catch {}
+        }
+        if (typeof previousSettingsReply === 'function') return previousSettingsReply(sock, msg, body);
+        return false;
+      });
+    }
+  } catch (e) { console.log('[precious-v21] numeric hook error:', e && e.message); }
 
   /* ══════════════════════════════════════════════════════════════════════
      .tgsticker — Telegram sticker pack → WhatsApp stickers
@@ -835,81 +1372,150 @@ function install(ctx) {
     report.shazam = true;
   } catch (e) { console.log('[precious-v21] shazam error:', e && e.message); }
 
+
   /* ══════════════════════════════════════════════════════════════════════
-     .gst — re-pin the v20 fixed handler (timeout + watchdog + always settle)
+     .gst — direct group post, or DM native group picker
      ══════════════════════════════════════════════════════════════════════ */
   try {
     const genId = () => 'PREC' + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
-    const innerOf = (m) => {
-      if (!m) return null;
-      if (m.imageMessage) return { kind: 'image', raw: m.imageMessage };
-      if (m.videoMessage) return { kind: 'video', raw: m.videoMessage };
-      if (m.audioMessage) return { kind: 'audio', raw: m.audioMessage };
-      if (m.stickerMessage) return { kind: 'sticker', raw: m.stickerMessage };
-      if (m.documentMessage) return { kind: 'document', raw: m.documentMessage };
-      return null;
-    };
-    const textOf = (m) => m?.conversation || m?.extendedTextMessage?.text || m?.imageMessage?.caption || m?.videoMessage?.caption || '';
-    const bufOf = async (inner) => {
-      const dl = ctx.downloadContentFromMessage;
-      if (typeof dl !== 'function') return null;
-      let b = Buffer.from([]);
-      const stream = await dl(inner.raw, inner.kind === 'document' ? 'document' : inner.kind);
-      for await (const c of stream) b = Buffer.concat([b, c]);
-      return b;
-    };
-    async function postStatus(sock, chat, memberJids, payload) {
+    const isGroupJid = (jid) => /@g\.us$/i.test(String(jid || ''));
+    async function postStatus(sock, targetChat, memberJids, payload, { allowChatFallback = true } = {}) {
       const opts = { statusJidList: memberJids, messageId: genId() };
       const errs = [];
-      try { await race(sock.sendMessage('status@broadcast', { ...payload, contextInfo: { isGroupStatus: true, mentionedJid: [] } }, opts), 45000, 'status upload'); return true; }
-      catch (e) { errs.push('broadcast: ' + (e && e.message)); }
-      try { await race(sock.sendMessage(chat, { ...payload, contextInfo: { isGroupStatus: true } }), 30000, 'in-chat'); return true; }
-      catch (e) { errs.push('in-chat: ' + (e && e.message)); }
+      try {
+        await race(sock.sendMessage('status@broadcast', { ...payload, contextInfo: { isGroupStatus: true, mentionedJid: [] } }, opts), 45000, 'status upload');
+        return true;
+      } catch (e) { errs.push('broadcast: ' + (e && e.message)); }
+      if (!allowChatFallback) throw new Error(errs.join(' | ') || 'status upload failed');
+      try {
+        await race(sock.sendMessage(targetChat, { ...payload, contextInfo: { isGroupStatus: true } }), 30000, 'in-chat');
+        return true;
+      } catch (e) { errs.push('in-chat: ' + (e && e.message)); }
       throw new Error(errs.join(' | ') || 'all posting failed');
     }
+    async function memberList(sock, targetChat) {
+      let memberJids = [];
+      try {
+        const meta = await race(sock.groupMetadata(targetChat), 15000, 'groupMetadata');
+        memberJids = (meta?.participants || []).map((p) => (typeof p.id === 'string' ? p.id : String(p.id || ''))).filter(Boolean);
+      } catch {}
+      return memberJids;
+    }
+    async function buildPayload(sock, msg, args) {
+      const text = (args || []).join(' ').trim();
+      const quoted = _quotedMessageOf(msg);
+      const qInner = _innerMediaOf(quoted) || _innerMediaOf(unwrap(msg.message || {}));
+      const quotedText = quoted ? _textOfMessage(quoted) : '';
+      if (!qInner && !text && !quotedText) return { error: `📢 *Group Status*\n\nReply to media + *${PREFIX}gst*, or *${PREFIX}gst <text>* for a text status.` };
+      if (qInner) {
+        const buf = await race(_bufferFromInner(ctx, qInner), 60000, 'media download');
+        if (!buf || !buf.length) throw new Error('could not download the media');
+        const payload = qInner.kind === 'image' ? { image: buf, caption: text || qInner.raw.caption || '' }
+          : qInner.kind === 'video' ? { video: buf, caption: text || qInner.raw.caption || '' }
+          : qInner.kind === 'audio' ? { audio: buf, mimetype: qInner.raw.mimetype || 'audio/mpeg' }
+          : qInner.kind === 'sticker' ? { sticker: buf }
+          : { document: buf, mimetype: qInner.raw.mimetype || 'application/octet-stream', fileName: qInner.raw.fileName || 'file' };
+        return { payload };
+      }
+      return { payload: { text: text || quotedText } };
+    }
+    async function listJoinedGroups(sock) {
+      const all = await sock.groupFetchAllParticipating().catch(() => ({}));
+      return Object.values(all || {})
+        .filter((g) => g && isGroupJid(g.id))
+        .map((g) => ({ id: g.id, subject: g.subject || g.name || g.id }))
+        .sort((a, b) => String(a.subject).localeCompare(String(b.subject)));
+    }
+    const gstPick = async (sock, msg, args) => {
+      const chat = msg.key.remoteJid;
+      const state = _getTimedState(_gstPickStore, chat, GST_PICK_TTL_MS);
+      if (!state || state.stage !== 'pick') return sendReply(sock, msg, `❌ That group picker expired. Run *${PREFIX}gst* again.`);
+      const sender = msg?.key?.participant || msg?.key?.remoteJid || '';
+      if (state.sender && sender && state.sender !== sender) return sendReply(sock, msg, '❌ This picker belongs to a different user.');
+      const token = String((args || []).join(' ').trim() || '0');
+      const idx = Number(token) - 1;
+      const picked = Number.isInteger(idx) ? state.groups?.[idx] : null;
+      if (!picked?.id) return sendReply(sock, msg, '❌ Invalid group choice.');
+      await safeReact(sock, msg, '🌀');
+      const statusMsg = await sock.sendMessage(chat, { text: `📢 *Group Status*\n\n⏳ Uploading to *${picked.subject}* ...` }, { quoted: msg }).catch(() => null);
+      const skey = statusMsg?.key;
+      try {
+        const memberJids = await memberList(sock, picked.id);
+        await postStatus(sock, picked.id, memberJids, state.payload, { allowChatFallback: false });
+        _clearTimedState(_gstPickStore, chat);
+        if (skey) await sock.sendMessage(chat, { delete: skey }).catch(() => {});
+        await sendReply(sock, msg, `✅ Posted to *${picked.subject}*.`).catch(() => {});
+        return safeReact(sock, msg, '✅');
+      } catch (e) {
+        if (skey) await ctx.editMessage?.(sock, chat, skey, `❌ Group status failed: ${e.message}`).catch(() => {});
+        else await sendReply(sock, msg, `❌ Group status failed: ${e.message}`).catch(() => {});
+        return safeReact(sock, msg, '❌');
+      }
+    };
+    const gstCancel = async (sock, msg) => {
+      _clearTimedState(_gstPickStore, msg?.key?.remoteJid);
+      return safeReact(sock, msg, '👍');
+    };
+    _v21GstNumericHandler = async (sock, msg, body) => {
+      const chat = msg?.key?.remoteJid || '';
+      const state = _getTimedState(_gstPickStore, chat, GST_PICK_TTL_MS);
+      if (!state || state.stage !== 'pick') return false;
+      const sender = msg?.key?.participant || msg?.key?.remoteJid || '';
+      if (state.sender && sender && state.sender !== sender) return false;
+      const pick = _parseCountText(body);
+      if (!Number.isInteger(pick) || pick < 1 || pick > (state.groups || []).length) return false;
+      await gstPick(sock, msg, [String(pick)]);
+      return true;
+    };
     const gstHandler = async (sock, msg, args) => {
       const chat = msg.key.remoteJid;
-      if (!String(chat || '').endsWith('@g.us')) return sendReply(sock, msg, '👥 *Group Status* is group-only.');
+      const inGroup = isGroupJid(chat);
       let settled = false;
       const reactOnce = async (emoji) => { if (settled) return; settled = true; try { await (ctx.forceReaction || react)(sock, msg, emoji); } catch {} };
       await reactOnce('🌀'); settled = false;
       const watchdog = setTimeout(() => reactOnce('❌'), 90000);
       try {
-        const text = (args || []).join(' ').trim();
-        const ctxi = msg.message?.extendedTextMessage?.contextInfo || msg.message?.imageMessage?.contextInfo || msg.message?.videoMessage?.contextInfo || null;
-        const quoted = ctxi?.quotedMessage ? unwrap(ctxi.quotedMessage) : null;
-        const qInner = innerOf(quoted) || innerOf(unwrap(msg.message || {}));
-        const quotedText = quoted ? textOf(quoted) : '';
-        if (!qInner && !text && !quotedText) {
+        const prepared = await buildPayload(sock, msg, args);
+        if (prepared.error) {
           clearTimeout(watchdog);
           await reactOnce('❌');
-          return sendReply(sock, msg, `📢 *Group Status*\n\nReply to media + *${PREFIX}gst*, or *${PREFIX}gst <text>* for a text status.`);
+          return sendReply(sock, msg, prepared.error);
         }
-        let memberJids = [];
-        try { const meta = await race(sock.groupMetadata(chat), 15000, 'groupMetadata'); memberJids = (meta?.participants || []).map(p => (typeof p.id === 'string' ? p.id : String(p.id || ''))).filter(Boolean); } catch {}
-        let payload;
-        if (qInner) {
-          const buf = await race(bufOf(qInner), 60000, 'media download');
-          if (!buf || !buf.length) throw new Error('could not download the media');
-          payload = qInner.kind === 'image' ? { image: buf, caption: text || qInner.raw.caption || '' }
-                  : qInner.kind === 'video' ? { video: buf, caption: text || qInner.raw.caption || '' }
-                  : qInner.kind === 'audio' ? { audio: buf, mimetype: 'audio/mpeg' }
-                  : qInner.kind === 'sticker' ? { sticker: buf }
-                  : { document: buf, mimetype: qInner.raw.mimetype || 'application/octet-stream', fileName: qInner.raw.fileName || 'file' };
+        if (inGroup) {
+          // Group chats must post immediately — never open the DM/native picker here.
+          const memberJids = await memberList(sock, chat);
+          await postStatus(sock, chat, memberJids, prepared.payload, { allowChatFallback: true });
+          clearTimeout(watchdog);
+          await reactOnce('✅');
+          await sendReply(sock, msg, '✅ Posted to group status.').catch(() => {});
+          return;
+        }
+        const groups = await listJoinedGroups(sock);
+        if (!groups.length) {
+          clearTimeout(watchdog);
+          await reactOnce('❌');
+          return sendReply(sock, msg, '❌ No joined groups found for GST.');
+        }
+        _setTimedState(_gstPickStore, chat, { stage: 'pick', sender: msg?.key?.participant || msg?.key?.remoteJid || '', payload: prepared.payload, groups }, GST_PICK_TTL_MS);
+        const rows = groups.slice(0, 50).map((g, i) => ({ title: `${i + 1}. ${String(g.subject).slice(0, 60)}`, description: g.id, id: `${PREFIX}gstpick ${i + 1}`, rowId: `${PREFIX}gstpick ${i + 1}` }));
+        const body = `📢 *Group Status*\n\nPick the group you want to post this status to.`;
+        if (typeof ctx.sendNativeFlowListMenu === 'function') {
+          await ctx.sendNativeFlowListMenu(sock, chat, msg, body, [{ title: 'Your Groups', rows }], [{ text: '❌ Cancel', id: `${PREFIX}gstcancel` }]);
         } else {
-          payload = { text: text || quotedText };
+          await sendReply(sock, msg, body + '\n\n' + rows.map((r) => r.title).join('\n'));
         }
-        await postStatus(sock, chat, memberJids, payload);
         clearTimeout(watchdog);
         await reactOnce('✅');
-        await sendReply(sock, msg, '✅ Posted to group status.').catch(() => {});
+        return;
       } catch (e) {
         clearTimeout(watchdog);
         await reactOnce('❌');
         await sendReply(sock, msg, `❌ Group status failed: ${e.message}`).catch(() => {});
       }
     };
-    cmd(['gst', 'gstatus', 'groupstatus'], { desc: 'Post to group status', category: 'GROUP' }, gstHandler);
+    cmd(['gst', 'gstatus', 'groupstatus'], { desc: 'Post to group status or choose a group in DM', category: 'GROUP' }, gstHandler);
+    cmd(['gstpick'], { desc: 'Internal: GST group pick', category: 'GROUP' }, gstPick);
+    cmd(['gstcancel'], { desc: 'Internal: GST cancel', category: 'GROUP' }, gstCancel);
     report.gst = true;
   } catch (e) { console.log('[precious-v21] gst error:', e && e.message); }
 

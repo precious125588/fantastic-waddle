@@ -9371,7 +9371,8 @@ const _p2PlayCardImpl = async (sock, msg, args) => {
 };
 
 // The .play command entry (kept, so help/menu listings still show .play).
-cmd(["play", "music", "song"], { desc: "Play a song — card + pick 1 audio / 2 document / 3 voice / 4 video", category: "DOWNLOAD" }, _p2PlayCardImpl);
+// disabled by v21 dedupe: legacy .play registration removed in favor of precious-fixes-v21
+cmd(["play_legacy_disabled", "music_legacy_disabled", "song_legacy_disabled"], { desc: "Legacy disabled", category: "DOWNLOAD" }, _p2PlayCardImpl);
 
 // Registrar used by the late re-registration block near the end of the file,
 // which is what actually makes the card handler win over older overrides.
@@ -27734,7 +27735,7 @@ Chat the seller directly for pricing, delivery, and setup help.`;
 // gstatus — Group Status (post inside a group as a status-style relay)
 // Adapted from owner-supplied case code into a registered cmd.
 // ─────────────────────────────────────────────────────────────────────────────
-cmd(["gst", "gstatus", "groupstatus"], { desc: "Post to a group-status slot. .gst <jid|name> <text|media> targets a different group. Set GST_DEST_JID or CONFIG.GST_DEST_JID to default a target.", category: "GROUP" }, async (sock, msg, args) => {
+cmd(["gst_legacy_disabled", "gstatus_legacy_disabled", "groupstatus_legacy_disabled"], { desc: "Legacy disabled", category: "GROUP" }, async (sock, msg, args) => {
   const m = msg;
   const devtrust = sock;
   // FIX v18.2: m.chat was hard-pinned to m.key.remoteJid so the upload
@@ -40652,8 +40653,9 @@ try {
   };
 
   // ── register (later registrations win in this command map) ───────────────
-  cmd(["play", "music", "song"], { desc: "Play a song — card + pick 1 audio / 2 document / 3 voice / 4 video", category: "DOWNLOAD" }, _JXPlayCard);
-  for (const _jn of ["gst", "gstatus", "groupstatus"]) cmd([_jn], { desc: "Post to group status", category: "GROUP" }, _JXGst);
+  // disabled by v21 dedupe: late JINX .play override removed
+cmd(["play_jinx_disabled", "music_jinx_disabled", "song_jinx_disabled"], { desc: "Legacy disabled", category: "DOWNLOAD" }, _JXPlayCard);
+  for (const _jn of ["gst_jinx_disabled", "gstatus_jinx_disabled", "groupstatus_jinx_disabled"]) cmd([_jn], { desc: "Legacy disabled", category: "GROUP" }, _JXGst);
 
   console.log("[JINX] fixes active: ping, play card (no emoji numbers, real author, media-only reply), gst confirmation");
 } catch (e) {

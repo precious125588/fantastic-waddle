@@ -135,7 +135,7 @@ function install(ctx) {
     const prefix = (ctx.CONFIG && ctx.CONFIG.PREFIX) || '.';
 
     if (!String(chat || '').endsWith('@g.us')) {
-      await ctx.sendReply(sock, msg, '👥 *Group Status* is group-only.').catch(() => {});
+      await ctx.sendReply(sock, msg, 'ℹ️ Legacy GST handler disabled; use the active v21 handler.').catch(() => {});
       return;
     }
 
@@ -223,10 +223,10 @@ function install(ctx) {
   }
 
   if (try_(() => {
-    for (const n of ['gst', 'gstatus', 'groupstatus']) {
+    for (const n of ['gst_v20_disabled', 'gstatus_v20_disabled', 'groupstatus_v20_disabled']) {
       const e = ctx.commands.get(n) || { category: 'GROUP' };
       e.handler = gstHandler;
-      e.desc = 'Post a group status (reply to media, or .gst <text>)';
+      e.desc = 'Legacy disabled';
       e.category = 'GROUP';
       ctx.commands.set(n, e);
     }
