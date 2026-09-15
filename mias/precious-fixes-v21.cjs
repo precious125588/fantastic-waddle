@@ -1885,6 +1885,39 @@ function install(ctx) {
     if (typeof ctx.setSettingsReply === 'function') {
       const previousSettingsReply = typeof globalThis.__PRECIOUS_SETTINGS_REPLY__ === 'function' ? globalThis.__PRECIOUS_SETTINGS_REPLY__ : null;
       ctx.setSettingsReply(async (sock, msg, body) => {
+        // OWN-CARD-FIRST ROUTING FIX: a plain numeric reply that QUOTES one of
+        // our download cards (.nkiri / .play / .movie / .tt / .savetube) belongs
+        // to that card — never to the settings panel. Previously this hook fell
+        // straight through to the v20 settings validator, which answered
+        // "⚠️ *1* is not a settings option" when the user quoted the play card
+        // and typed 1 to get the audio file.
+        try {
+          const _chat = msg?.key?.remoteJid || '';
+          const _choice = String(body || '').trim().replace(/^[.\-*`\s]+/, '').replace(/[\s*`]+$/, '');
+          const _isNumeric = /^\d{1,2}(\.\d{1,2})?$/.test(_choice);
+          if (_isNumeric) {
+            // nkiri: bare result number while a search is pending
+            const _nk = _nkiriGetState(_chat);
+            if (_nk && _nk.stage === 'results' && /^\d+$/.test(_choice)) {
+              const _idx = Number(_choice);
+              if (_idx >= 1 && _idx <= (_nk.results || []).length) {
+                const _nkEntry = ctx.commands && ctx.commands.get('nkpick');
+                if (_nkEntry?.handler) return await _nkEntry.handler(sock, msg, [_choice]);
+              }
+            }
+            // play (v21 native picker): 1-4 output choice via playFind
+            if (/^\d+$/.test(_choice) && typeof playFind === 'function') {
+              const _entry = playFind(msg);
+              if (_entry?.meta) {
+                const _n = Number(_choice);
+                if (_n >= 1 && _n <= 4) {
+                  const _plEntry = ctx.commands && ctx.commands.get('jxplaypick');
+                  if (_plEntry?.handler) return await _plEntry.handler(sock, msg, [_choice]);
+                }
+              }
+            }
+          }
+        } catch (_routeErr) { console.log('[precious-v21] card routing:', _routeErr && _routeErr.message); }
         if (typeof _v21BoostNumericHandler === 'function') {
           try { if (await _v21BoostNumericHandler(sock, msg, body)) return true; } catch {}
         }

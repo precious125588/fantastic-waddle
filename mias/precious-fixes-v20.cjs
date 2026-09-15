@@ -663,6 +663,16 @@ function install(ctx) {
     // never steal a .play picker reply
     if (playCardOwnsReply(msg) && !/^set:/i.test(raw)) return false;
 
+    // QUOTED-CARD FIX: a numeric reply that QUOTES a message is normally a
+    // reply to one of the bot's download cards (.play / .nkiri / .tt / movie),
+    // NOT a settings panel answer — and on normal (non-Business) WhatsApp the
+    // native-flow taps never arrive at all, so quoting + typing the number is
+    // the ONLY way users can use those pickers. If there is no live settings
+    // session in this chat, let the quoted card claim the reply instead of
+    // mis-answering "⚠️ *1* is not a settings option".
+    const _quotedHas = !!(msg.message?.extendedTextMessage?.contextInfo?.quotedMessage);
+    if (!active && _quotedHas && isCode && !/^set:/i.test(raw)) return false;
+
     // a settings panel must be alive, a quoted panel must work, and a tap must always work
     const active = !!(ctx.settingsSession && ctx.settingsSession.get(jid));
     const quoted = !!(msg.message?.extendedTextMessage?.contextInfo?.quotedMessage) || /^set:/i.test(raw);

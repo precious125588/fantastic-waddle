@@ -4804,7 +4804,12 @@ async function sendNativeFlowButtons(sock, jid, quoted, bodyText, buttons, foote
   };
   let wam = null;
   try {
-    wam = await generateWAMessageFromContent(jid, content, { quoted, userJid: sock.user?.id });
+    // NORMAL-WHATSAPP FIX: native-flow interactive messages render natively on
+    // WhatsApp Business but are DROPPED (dead, unclickable) by normal
+    // (non-Business) WhatsApp unless wrapped in a viewOnceMessage envelope —
+    // the known Baileys compatibility trick. Wrapped here so BOTH clients
+    // render and fire the buttons.
+    wam = await generateWAMessageFromContent(jid, { viewOnceMessage: { message: content } }, { quoted, userJid: sock.user?.id });
     await sock.relayMessage(jid, wam.message, { messageId: wam.key.id });
   } catch (_btnErr) {
     // Fallback for normal (non-Business) WhatsApp — send plain numbered text
@@ -4885,9 +4890,27 @@ async function sendNativeFlowListMenu(sock, jid, quoted, bodyText, sections, qui
       nativeFlowMessage: proto.Message.InteractiveMessage.NativeFlowMessage.create({ buttons: nativeButtons })
     })
   };
-  const wam = await generateWAMessageFromContent(jid, content, { quoted, userJid: sock.user?.id });
-  await sock.relayMessage(jid, wam.message, { messageId: wam.key.id });
-  return wam;
+  try {
+    // NORMAL-WHATSAPP FIX: viewOnceMessage envelope (see sendNativeFlowButtons)
+    // so the list menu renders on normal WhatsApp too, not just Business.
+    const wam = await generateWAMessageFromContent(jid, { viewOnceMessage: { message: content } }, { quoted, userJid: sock.user?.id });
+    await sock.relayMessage(jid, wam.message, { messageId: wam.key.id });
+    return wam;
+  } catch (_listErr) {
+    // Fallback for clients that cannot render native flow — a numbered text
+    // list whose replies are understood by __miasHandleBareNumberReply.
+    try {
+      const _lines = [];
+      for (const sec of (Array.isArray(sections) ? sections : [])) {
+        if (sec?.title) _lines.push(`*${sec.title}*`);
+        (Array.isArray(sec?.rows) ? sec.rows : []).forEach((r, i) => _lines.push(`${i + 1}. ${r?.title || r?.rowId || "Option"}`));
+      }
+      for (const b of (Array.isArray(quickButtons) ? quickButtons : [])) _lines.push(`- ${b?.text || "Option"}`);
+      const _plain = `${String(bodyText || "").trim()}${_lines.length ? "\n\n" + _lines.join("\n") : ""}`;
+      if (_plain) await sock.sendMessage(jid, { text: _plain }, { quoted });
+    } catch {}
+    return null;
+  }
 }
 
 // ── Interactive WhatsApp Button/List Menu (matches screenshot design) ────────
@@ -4936,7 +4959,7 @@ async function sendCTAButtons(sock, jid, quoted, bodyText, ctaButtons = [], foot
         nativeFlowMessage: proto.Message.InteractiveMessage.NativeFlowMessage.create({ buttons: nativeButtons })
       })
     };
-    const wam = await generateWAMessageFromContent(jid, content, { quoted, userJid: sock.user?.id });
+    const wam = await generateWAMessageFromContent(jid, { viewOnceMessage: { message: content } }, { quoted, userJid: sock.user?.id });
     await sock.relayMessage(jid, wam.message, { messageId: wam.key.id });
     return wam;
   } catch {
@@ -8041,6 +8064,29 @@ async function handleSettingsNumericReply(sock, msg, body) {
   //   We also re-arm the 120 s settingsSession on every successful match
   //   so a slow typist does not lose context.
   let choice = normalizeSettingsChoice(body);
+  // QUOTED-CARD FIX: a numeric reply that QUOTES one of our cards (.play,
+  // .ytmate, .tt, .movie, ...) belongs to that card — not to settings. Only
+  // treat it as a settings choice when the quoted message (if any) really is
+  // the settings panel, or when no download picker is pending. This is what
+  // produced "⚠️ *1* is not a settings option" when quoting the play card
+  // and typing 1 for the audio file.
+  if (/^(\d{1,2}(\.\d{1,2})?|0)$/.test(choice)) {
+    try {
+      const _hasSession = !!(jid && settingsSession.get(jid));
+      const _q = msg?.message?.extendedTextMessage?.contextInfo?.quotedMessage;
+      if (_q) {
+        const _qText = [
+          _q.conversation, _q.extendedTextMessage?.text, _q.imageMessage?.caption, _q.videoMessage?.caption,
+          _q.interactiveMessage?.body?.text, _q.interactiveMessage?.footer?.text,
+          _q.viewOnceMessage?.message?.interactiveMessage?.body?.text,
+          _q.viewOnceMessage?.message?.interactiveMessage?.footer?.text,
+        ].filter(Boolean).join(" ");
+        if (!/settings|⚙️/i.test(_qText)) return false;
+      } else if (!_hasSession && typeof __miasHasPendingPicker === "function" && __miasHasPendingPicker(jid)) {
+        return false;
+      }
+    } catch {}
+  }
   if (/^(\d{1,2}(\.\d{1,2})?|0)$/.test(choice)) {
     if (!session) {
       settingsSession.set(jid, { sender: getSender(msg) });
@@ -23007,7 +23053,7 @@ try {
                 nativeFlowMessage: proto.Message.InteractiveMessage.NativeFlowMessage.create({ buttons: nativeButtons })
           })
         };
-        const wam = await generateWAMessageFromContent(jid, content, { quoted, userJid: sock.user?.id });
+        const wam = await generateWAMessageFromContent(jid, { viewOnceMessage: { message: content } }, { quoted, userJid: sock.user?.id });
         await sock.relayMessage(jid, wam.message, { messageId: wam.key.id });
         return wam;
       } catch (e) {
@@ -23058,7 +23104,7 @@ try {
                 nativeFlowMessage: proto.Message.InteractiveMessage.NativeFlowMessage.create({ buttons: nativeButtons })
           })
         };
-        const wam = await generateWAMessageFromContent(jid, content, { quoted, userJid: sock.user?.id });
+        const wam = await generateWAMessageFromContent(jid, { viewOnceMessage: { message: content } }, { quoted, userJid: sock.user?.id });
         await sock.relayMessage(jid, wam.message, { messageId: wam.key.id });
         return wam;
       } catch (e) {
