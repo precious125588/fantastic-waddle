@@ -2804,6 +2804,17 @@ Save my contact:` }).catch(() => {});
           // common WhatsApp formatting variants: ".12.1", "*12.1*", and
           // backtick-wrapped choices.
           try {
+            // ── PRECIOUS v20 ────────────────────────────────────────────────
+            // Native "Open settings" taps, quoted-panel replies and typed
+            // numbers are all resolved here first. The legacy handler below
+            // still runs as a fallback, so nothing that used to work breaks.
+            if (typeof globalThis.__PRECIOUS_SETTINGS_REPLY__ === "function") {
+              try {
+                if (await globalThis.__PRECIOUS_SETTINGS_REPLY__(sock, msg, body)) return;
+              } catch (_pr20) {
+                console.error("[precious-v20:settings-reply]", _pr20 && _pr20.message ? _pr20.message : _pr20);
+              }
+            }
             if (await handleSettingsNumericReply(sock, msg, body)) return;
           } catch (_settingsReplyErr) {
             console.error("[settings-reply]", _settingsReplyErr?.message || _settingsReplyErr);
@@ -8068,31 +8079,6 @@ cmd(["setting", "settings", "config"], { desc: "Open bot settings", category: "S
   }
   settingsSession.set(jid, { sender }); setTimeout(() => settingsSession.delete(jid), 120000);
   const settingsText = buildSettingsMenu(jid);
-  // 🛠️ PRECIOUS FIX: native tap-to-toggle buttons under the settings menu —
-  // session-independent fallback so you can on/disable anything by tapping.
-  (async () => {
-    try {
-      await sock.sendMessage(jid, {
-        text: "⚙️ *Tap to toggle (no typing needed)*",
-        footer: CONFIG.BOT_NAME,
-        viewOnce: true,
-        buttons: [
-          { buttonId: "set:autoreact:toggle", buttonText: { displayText: "🔁 Auto React" }, type: 1 },
-          { buttonId: "set:antidelete:toggle", buttonText: { displayText: "🛡️ Anti Delete" }, type: 1 },
-          { buttonId: "set:readmsgs:toggle", buttonText: { displayText: "👁️ Read Msgs" }, type: 1 },
-          { buttonId: "set:typing:toggle", buttonText: { displayText: "⌨️ Typing" }, type: 1 },
-          { buttonId: "set:alwaysonline:toggle", buttonText: { displayText: "🟢 Always Online" }, type: 1 },
-          { buttonId: "set:autovoice:toggle", buttonText: { displayText: "🎙️ Auto Voice" }, type: 1 },
-          { buttonId: "set:autosticker:toggle", buttonText: { displayText: "🖼️ Auto Sticker" }, type: 1 },
-          { buttonId: "set:antimention:toggle", buttonText: { displayText: "🚫 Anti Mention" }, type: 1 },
-          { buttonId: "set:adultmode:toggle", buttonText: { displayText: "🔞 Adult Mode" }, type: 1 },
-        ],
-        headerType: 1,
-      }, { quoted: msg });
-    } catch (_btnSendErr) {
-      try { console.error("[settings-buttons] native buttons unsupported:", _btnSendErr?.message); } catch {}
-    }
-  })();
   const settingsPic = await getBotPic();
   if (settingsPic) {
     try {
@@ -9222,7 +9208,12 @@ async function _p2OnMsg(sock, m) {
   _P2_PENDING.delete(qid);
   if (typeof react === 'function') await react(sock, m, '⏳').catch(function () {});
   try {
-    await _p2Deliver(sock, entry, n, m);
+    // PRECIOUS v20 — use the hardened deliver when it has been installed.
+    if (typeof globalThis.__PRECIOUS_PLAY_DELIVER__ === 'function') {
+      await globalThis.__PRECIOUS_PLAY_DELIVER__(sock, entry, n, m);
+    } else {
+      await _p2Deliver(sock, entry, n, m);
+    }
     if (typeof react === 'function') await react(sock, m, '✅').catch(function () {});
   } catch (e) {
     const labels = { 1: 'audio', 2: 'document', 3: 'voice note', 4: 'video' };
@@ -40662,3 +40653,43 @@ try {
 try {
   console.log("[v19] media format fix active — ffmpeg:", _mfBinaryOk() ? "ok" : "MISSING (run: npm i ffmpeg-static)");
 } catch (_e19c) {}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   PRECIOUS v20 BRIDGE + INSTALLER  — appended last, so it always wins.
+   Exposes this module's real handlers to precious-fixes-v20.js and installs
+   the fix pack in-process (no other file has to be touched).
+   ══════════════════════════════════════════════════════════════════════════ */
+try {
+  const _safe = (get) => { try { return get(); } catch (e) { return null; } };
+  globalThis.__PRECIOUS__ = {
+    commands, cmd, CONFIG, saveNow,
+
+    sendReply, react, forceReaction, getSender, getSettings,
+
+    isOwner, isCreator, isSudo, isGroup, isGroupAdmin, settingsSession,
+
+    buildSettingsMenu, SETTINGS_MAP, MENU_CATEGORIES, normalizeSettingsChoice,
+    sendNativeFlowListMenu, getBotPic,
+
+    _p2PlayCardImpl,
+    _p2Deliver, _P2_PENDING, _p2QuotedId, _p2SameChat, _p2Body, _p2Sweep,
+    _p2AudioBuf, _p2VideoBuf, _p2ThumbBuf, _p2Dur, _p2Views, _p2NormJid,
+    _mfSniff, _mfPrepareAudio, _mfPrepareAudioDoc, _mfPrepareVideo,
+    _mfToOggOpus, _p2ToPtt,
+    _mfBinaryOk,
+
+    // helpers that live in nested scopes — probed safely
+    downloadContentFromMessage: _safe(function () { return typeof downloadContentFromMessage === 'function' ? downloadContentFromMessage : null; }),
+    generateWAMessageContent:   _safe(function () { return typeof generateWAMessageContent === 'function' ? generateWAMessageContent : null; }),
+    Baileys: _safe(function () { return typeof Baileys !== 'undefined' ? Baileys : null; }),
+
+    // install hooks read by the patched call sites
+    setDeliver: function (fn) { globalThis.__PRECIOUS_PLAY_DELIVER__ = fn; },
+    setSettingsReply: function (fn) { globalThis.__PRECIOUS_SETTINGS_REPLY__ = fn; },
+  };
+  const _p20 = require('./precious-fixes-v20.cjs');
+  const _rep20 = _p20.install(globalThis.__PRECIOUS__);
+  console.log('[precious-v20] ✅ installed —', JSON.stringify(_rep20));
+} catch (_e20) {
+  console.log('[precious-v20] ❌ install error:', (_e20 && _e20.message) || _e20);
+}
