@@ -8072,19 +8072,67 @@ async function handleSettingsNumericReply(sock, msg, body) {
   // and typing 1 for the audio file.
   if (/^(\d{1,2}(\.\d{1,2})?|0)$/.test(choice)) {
     try {
+      // PRECIOUS FIX v22 (settings was stealing download-picker choices):
+      //   1. Unwrap EVERY wrapper layer of the quoted message (ephemeral,
+      //      viewOnce v1/v2/extension, documentWithCaption, edited) and scan
+      //      conversation text, captions, interactive bodies/footers/headers,
+      //      legacy buttons/list text — not just two interactive fields —
+      //      before deciding the quote is the settings panel. A quote of the
+      //      play/ytmate/savetube/tt/movie/nkiri card is NOT settings, so we
+      //      return false and let the picker handle the digit.
+      //   2. A bare digit ("1".."99") is NEVER a valid settings option (those
+      //      look like "6.1"); when a download picker is pending it belongs
+      //      to the picker — settings must stay silent instead of replying
+      //      "Unknown settings option *1*" after the file already arrived.
+      const _unwrapQ = (m) => {
+        let cur = m;
+        for (let i = 0; i < 6 && cur && typeof cur === "object"; i++) {
+          const nxt = cur.ephemeralMessage?.message
+            || cur.viewOnceMessage?.message
+            || cur.viewOnceMessageV2?.message
+            || cur.viewOnceMessageV2Extension?.message
+            || cur.documentWithCaptionMessage?.message
+            || cur.editedMessage?.message || null;
+          if (!nxt) break;
+          cur = nxt;
+        }
+        return cur;
+      };
+      const _rawQ = msg?.message?.extendedTextMessage?.contextInfo?.quotedMessage
+        || msg?.message?.imageMessage?.contextInfo?.quotedMessage
+        || msg?.message?.videoMessage?.contextInfo?.quotedMessage
+        || msg?.message?.audioMessage?.contextInfo?.quotedMessage
+        || msg?.message?.documentMessage?.contextInfo?.quotedMessage
+        || msg?.message?.stickerMessage?.contextInfo?.quotedMessage || null;
+      const _q = _unwrapQ(_rawQ);
+      const _collectQ = (m, acc) => {
+        acc = acc || [];
+        if (!m || typeof m !== "object") return acc;
+        acc.push(
+          m.conversation, m.extendedTextMessage?.text,
+          m.imageMessage?.caption, m.videoMessage?.caption, m.documentMessage?.caption,
+          m.interactiveMessage?.body?.text, m.interactiveMessage?.footer?.text,
+          m.interactiveMessage?.header?.title,
+          m.buttonsMessage?.contentText, m.buttonsMessage?.footer,
+          m.listMessage?.description, m.listMessage?.title,
+          (m.listMessage?.footer && (m.listMessage.footer.text || m.listMessage.footer)),
+        );
+        for (const k of Object.keys(m)) {
+          const v = m[k];
+          if (v && typeof v === "object" && v.message && typeof v.message === "object") _collectQ(v.message, acc);
+        }
+        return acc;
+      };
+      const _qText = _q ? _collectQ(_q).filter(Boolean).join(" ") : "";
+      const _isSettingsPanel = /settings|⚙️/i.test(_qText);
       const _hasSession = !!(jid && settingsSession.get(jid));
-      const _q = msg?.message?.extendedTextMessage?.contextInfo?.quotedMessage;
-      if (_q) {
-        const _qText = [
-          _q.conversation, _q.extendedTextMessage?.text, _q.imageMessage?.caption, _q.videoMessage?.caption,
-          _q.interactiveMessage?.body?.text, _q.interactiveMessage?.footer?.text,
-          _q.viewOnceMessage?.message?.interactiveMessage?.body?.text,
-          _q.viewOnceMessage?.message?.interactiveMessage?.footer?.text,
-        ].filter(Boolean).join(" ");
-        if (!/settings|⚙️/i.test(_qText)) return false;
-      } else if (!_hasSession && typeof __miasHasPendingPicker === "function" && __miasHasPendingPicker(jid)) {
-        return false;
-      }
+      const _pickerPending = typeof __miasHasPendingPicker === "function" && __miasHasPendingPicker(jid);
+      // Quoted something that is not the settings panel → not ours, stay silent.
+      if (_q && !_isSettingsPanel) return false;
+      // Bare digit that is not a real settings option while a picker is
+      // pending → belongs to the picker, even if a settings session exists.
+      if (_pickerPending && /^\d{1,2}$/.test(choice) && !SETTINGS_MAP[choice]) return false;
+      if (!_q && !_hasSession && _pickerPending) return false;
     } catch {}
   }
   if (/^(\d{1,2}(\.\d{1,2})?|0)$/.test(choice)) {
