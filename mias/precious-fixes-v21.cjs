@@ -67,9 +67,13 @@ function ffmpegBin() {
 
 function runFfmpeg(args, timeoutMs = 90000) {
   return new Promise((resolve, reject) => {
-    const pr = spawn(ffmpegBin(), args, { stdio: ['ignore', 'ignore', 'pipe'] });
+    let pr = null;
+    try { pr = spawn(ffmpegBin(), args, { stdio: ['ignore', 'ignore', 'pipe'] }); } catch (e) { return reject(e); }
+    // Missing/empty stdout|stderr means the binary could not be started —
+    // attaching .on to null throws "Cannot read properties of null (reading 'on')".
+    if (!pr || !pr.stderr) return reject(new Error(ffmpegBin() + ' could not be started (binary not found)'));
     let err = '';
-    pr.stderr.on('data', d => { err += d.toString(); });
+    try { pr.stderr.on('data', d => { err += d.toString(); }); } catch {}
     const to = setTimeout(() => { try { pr.kill('SIGKILL'); } catch {} reject(new Error('ffmpeg timeout')); }, timeoutMs);
     pr.on('error', e => { clearTimeout(to); reject(e); });
     pr.on('close', c => { clearTimeout(to); c === 0 ? resolve() : reject(new Error('ffmpeg exited ' + c + ': ' + err.slice(-200))); });
@@ -339,33 +343,68 @@ async function _transcodeVideoToMp4(inputPath) {
   return { dir, filePath: outPath, ext: '.mp4', mimetype: 'video/mp4' };
 }
 
+function _probeParseFfprobeJson(out) {
+  try {
+    const j = JSON.parse(out);
+    const streams = (j && j.streams) || [];
+    const v = streams.find((s) => s && s.codec_type === 'video');
+    const a = streams.find((s) => s && s.codec_type === 'audio');
+    if (!v) return null;
+    return { hasVideo: true, vcodec: String(v.codec_name || '').toLowerCase(), acodec: String((a && a.codec_name) || '').toLowerCase(), hasAudio: !!a };
+  } catch { return null; }
+}
+function _probeParseFfmpegStderr(err) {
+  try {
+    // ffmpeg prints "Stream #0:0[0x1](und): Video: h264 (High) ..." on modern
+    // builds and "Stream #0:0: Video: h264 ..." on older ones — parse per-line
+    // and match the codec token after "Video:"/"Audio:" regardless of the
+    // [index](lang) decoration between the stream id and the colon.
+    const lines = String(err || '').split(/\r?\n/);
+    let v = null;
+    let a = null;
+    for (const line of lines) {
+      if (!/Stream #\d+:\d+/.test(line)) continue;
+      const vm = line.match(/:\s*Video:\s*([^,\s(]+)/i);
+      const am = line.match(/:\s*Audio:\s*([^,\s(]+)/i);
+      if (vm && v === null) v = String(vm[1]).toLowerCase();
+      if (am && a === null) a = String(am[1]).toLowerCase();
+    }
+    if (!v) return null;
+    return { hasVideo: true, vcodec: v, acodec: a || '', hasAudio: !!a };
+  } catch { return null; }
+}
+// ffprobe-less fallback: some hosts ship ffmpeg but NOT ffprobe, and a missing
+// ffprobe used to crash the video path with "Cannot read properties of null
+// (reading 'on')" (spawn returns a child with a null stdout). Parse the stream
+// lines out of `ffmpeg -i` stderr instead of crashing.
+function _probeVideoCodecsViaFfmpeg(filePath) {
+  return new Promise((resolve) => {
+    let pr = null;
+    try { pr = spawn(ffmpegBin(), ['-i', filePath], { stdio: ['ignore', 'ignore', 'pipe'] }); } catch { return resolve(null); }
+    if (!pr || !pr.stderr) return resolve(null);
+    let err = '';
+    try { pr.stderr.on('data', (d) => { err += d.toString(); }); } catch {}
+    pr.on('error', () => resolve(_probeParseFfmpegStderr(err)));
+    pr.on('close', () => resolve(_probeParseFfmpegStderr(err)));
+  });
+}
 function _probeVideoCodecs(filePath) {
   return new Promise((resolve) => {
     let bin = 'ffprobe';
     try { const fp = require('ffprobe-static'); if (fp && fp.path) bin = fp.path; } catch {}
-    const pr = spawn(bin, ['-v', 'error', '-print_format', 'json', '-show_streams', filePath], { stdio: ['ignore', 'pipe', 'ignore'] });
+    let pr = null;
+    try { pr = spawn(bin, ['-v', 'error', '-print_format', 'json', '-show_streams', filePath], { stdio: ['ignore', 'pipe', 'ignore'] }); } catch { return _probeVideoCodecsViaFfmpeg(filePath).then(resolve); }
+    if (!pr || !pr.stdout) return _probeVideoCodecsViaFfmpeg(filePath).then(resolve);
     let out = '';
     let err = '';
-    pr.stdout.on('data', (d) => { out += d.toString(); });
-    pr.stderr.on('data', (d) => { err += d.toString(); });
+    try { pr.stdout.on('data', (d) => { out += d.toString(); }); } catch {}
+    try { pr.stderr.on('data', (d) => { err += d.toString(); }); } catch {}
     const to = setTimeout(() => { try { pr.kill('SIGKILL'); } catch {} resolve(null); }, 20000);
-    pr.on('error', () => { clearTimeout(to); resolve(null); });
+    pr.on('error', () => { clearTimeout(to); _probeVideoCodecsViaFfmpeg(filePath).then(resolve); });
     pr.on('close', (c) => {
       clearTimeout(to);
-      if (c !== 0) return resolve(null);
-      try {
-        const j = JSON.parse(out);
-        const streams = (j && j.streams) || [];
-        const v = streams.find((s) => s && s.codec_type === 'video');
-        const a = streams.find((s) => s && s.codec_type === 'audio');
-        if (!v) return resolve(null);
-        resolve({
-          hasVideo: true,
-          vcodec: String(v.codec_name || '').toLowerCase(),
-          acodec: String((a && a.codec_name) || '').toLowerCase(),
-          hasAudio: !!a,
-        });
-      } catch { resolve(null); }
+      if (c !== 0) return _probeVideoCodecsViaFfmpeg(filePath).then(resolve);
+      resolve(_probeParseFfprobeJson(out));
     });
   });
 }
@@ -1359,27 +1398,45 @@ function install(ctx) {
         const base = await playEnrich({}, raw);
         const ytUrl = /^https?:\/\/(?:www\.)?(?:youtube\.com|youtu\.be)\//i.test(raw) ? raw : base.videoUrl;
         if (!ytUrl) throw new Error('could not resolve a YouTube video from your input');
-        const res = await axios.get(`${DC}/download/y2mate`, {
-          params: { url: ytUrl },
-          timeout: 45000,
-          headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'application/json,text/plain,*/*' },
-          validateStatus: () => true,
-        });
-        const data = res.data;
-        const result = data?.result || {};
-        const contentType = String(res.headers?.['content-type'] || '').toLowerCase();
-        if (/html/.test(contentType) || (typeof data === 'string' && /<!doctype|<html/i.test(data))) throw new Error(`YTMate API returned HTTP ${res.status}`);
-        if (!(data?.success === true) || !result?.title) throw new Error(data?.message || data?.error || `HTTP ${res.status}`);
-        const entry = {
-          stage: 'format',
-          sender: msg?.key?.participant || msg?.key?.remoteJid || '',
-          ytUrl,
-          videoId: result.id || base.videoId || playYtId(ytUrl),
-          title: result.title || base.title || raw,
-          author: result.author || base.artists || 'Unknown',
-          thumbnail: result.thumbnail || base.thumb || '',
-          source: result.source || ytUrl,
-        };
+        // YTMate's upstream (y2mate) 502s often — never block the picker on it.
+        let entry = null;
+        try {
+          const res = await axios.get(`${DC}/download/y2mate`, {
+            params: { url: ytUrl },
+            timeout: 45000,
+            headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'application/json,text/plain,*/*' },
+            validateStatus: () => true,
+          });
+          const data = res.data;
+          const result = data?.result || {};
+          const contentType = String(res.headers?.['content-type'] || '').toLowerCase();
+          const isHtml = /html/.test(contentType) || (typeof data === 'string' && /<!doctype|<html/i.test(data));
+          if (!isHtml && (data?.success === true) && result?.title) {
+            entry = {
+              stage: 'format',
+              sender: msg?.key?.participant || msg?.key?.remoteJid || '',
+              ytUrl,
+              videoId: result.id || base.videoId || playYtId(ytUrl),
+              title: result.title || base.title || raw,
+              author: result.author || base.artists || 'Unknown',
+              thumbnail: result.thumbnail || base.thumb || '',
+              source: result.source || ytUrl,
+            };
+          }
+        } catch {}
+        if (!entry) {
+          if (!base.videoUrl && !base.videoId) throw new Error('YTMate is temporarily down (HTTP 502) and no video could be resolved — try again in a few minutes.');
+          entry = {
+            stage: 'format',
+            sender: msg?.key?.participant || msg?.key?.remoteJid || '',
+            ytUrl: base.videoUrl || ytUrl,
+            videoId: base.videoId || playYtId(ytUrl),
+            title: base.title || raw,
+            author: base.artists || 'Unknown',
+            thumbnail: base.thumb || '',
+            source: ytUrl,
+          };
+        }
         _setTimedState(_ytmateStore, chat, entry, YTMATE_TTL_MS);
         if (skey) await sock.sendMessage(chat, { delete: skey }).catch(() => {});
         const card = ytmateCardText(entry);
@@ -1427,22 +1484,28 @@ function install(ctx) {
       const status = await sock.sendMessage(chat, { text: `⬇️ *YTMate*\n\nPreparing *${title}* (${quality}) ...` }, { quoted: msg }).catch(() => null);
       const cleanup = new Set();
       try {
-        const res = await axios.get(`${DC}/download/y2mate`, {
-          params: { url: state.ytUrl, format, quality },
-          timeout: 45000,
-          headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'application/json,text/plain,*/*' },
-          validateStatus: () => true,
-        });
-        const data = res.data;
-        const result = data?.result || {};
-        if (!(data?.success === true)) throw new Error(data?.message || data?.error || `HTTP ${res.status}`);
+        // YTMate 502 fallback: try the y2mate provider, and on ANY failure go
+        // straight to the direct resolvers (ytmp4 / play / gifted) so the user
+        // still gets their file instead of "HTTP 502".
         let finalUrl = '';
-        if (/^https?:\/\//i.test(String(result?.download || ''))) {
-          const ok = await _probeRemoteMedia(result.download, format === 'mp4' ? 'video' : 'audio');
-          if (ok?.url) finalUrl = ok.url;
-        }
+        try {
+          const res = await axios.get(`${DC}/download/y2mate`, {
+            params: { url: state.ytUrl, format, quality },
+            timeout: 45000,
+            headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'application/json,text/plain,*/*' },
+            validateStatus: () => true,
+          });
+          const data = res.data;
+          const result = data?.result || {};
+          const contentType = String(res.headers?.['content-type'] || '').toLowerCase();
+          const isHtml = /html/.test(contentType) || (typeof data === 'string' && /<!doctype|<html/i.test(data));
+          if (!isHtml && (data?.success === true) && /^https?:\/\//i.test(String(result?.download || ''))) {
+            const ok = await _probeRemoteMedia(result.download, format === 'mp4' ? 'video' : 'audio');
+            if (ok?.url) finalUrl = ok.url;
+          }
+        } catch {}
         if (!finalUrl) finalUrl = format === 'mp4' ? await playResolveVideoUrl(meta) : await playResolveAudioUrl(meta);
-        if (!finalUrl) throw new Error('no working media file was returned');
+        if (!finalUrl) throw new Error('YTMate is down (HTTP 502) and no fallback stream could be found — try again in a few minutes.');
         if (format === 'mp4') {
           let fetched = await _fetchBinaryToTemp(finalUrl, { maxBytes: 180 * 1024 * 1024, timeout: 240000, prefix: 'ytmatev-' });
           cleanup.add(fetched.dir);

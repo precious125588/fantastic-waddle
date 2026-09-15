@@ -194,10 +194,17 @@ module.exports = {
             description: g.id,
           }));
           const body = '📢 *Group Status*\n\nPick the group you want to post this status to.';
+          const plainFallback = body + '\n\n' + groups.map((g, i) => `${i + 1}. ${g.subject}`).join('\n') + `\n\nReply *${PREFIX}gstpick <number>* to pick.`;
           if (typeof ctx.sendNativeFlowListMenu === 'function') {
-            await ctx.sendNativeFlowListMenu(sock, chat, msg, body, [{ title: 'Your Groups', rows }], [{ text: '❌ Cancel', id: `${PREFIX}gstcancel` }]);
+            try {
+              await ctx.sendNativeFlowListMenu(sock, chat, msg, body, [{ title: 'Your Groups', rows }], [{ text: '❌ Cancel', id: `${PREFIX}gstcancel` }]);
+            } catch (_nf) {
+              // If the native menu fails to render, never leave the user with
+              // silence — send a plain numbered list they can reply to.
+              await sendReply(sock, msg, plainFallback).catch(() => {});
+            }
           } else {
-            await sendReply(sock, msg, body + '\n\n' + groups.map((g, i) => `${i + 1}. ${g.subject}`).join('\n') + `\n\nReply *${PREFIX}gstpick <number>* to pick.`);
+            await sendReply(sock, msg, plainFallback);
           }
           clearTimeout(watchdog);
           await reactOnce('✅');
@@ -224,6 +231,26 @@ module.exports = {
       bind(['gst', 'gstatus', 'groupstatus', 'gcstatus'], gstHandler);
       bind(['gstpick'], gstPick);
       bind(['gstcancel'], gstCancel);
+
+      // Keep-alive: some late patches re-register .gst AFTER this module runs
+      // (async installs / setInterval re-binds, e.g. precious-v21's own poller).
+      // Re-assert our handler every 2.5s so a DM picker can never be silently
+      // replaced by a group-only handler again.
+      try {
+        const _gstKeepAlive = setInterval(() => {
+          try {
+            if (!ctx.commands || typeof ctx.commands.get !== 'function') return;
+            for (const n of ['gst', 'gstatus', 'groupstatus', 'gcstatus']) {
+              const ex = ctx.commands.get(n);
+              if (ex && ex.handler !== gstHandler) {
+                ex.handler = gstHandler;
+                ctx.commands.set(n, ex);
+              }
+            }
+          } catch {}
+        }, 2500);
+        if (typeof _gstKeepAlive.unref === 'function') { try { _gstKeepAlive.unref(); } catch {} }
+      } catch {}
       report.gstPicker = true;
     } catch (e) {
       console.log('[precious-gst-picker] install error:', (e && e.message) || e);
