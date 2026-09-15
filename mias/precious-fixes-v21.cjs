@@ -144,10 +144,51 @@ async function tgToWebp(buffer, url) {
   }
 }
 
+const NKIRI_PICK_TTL_MS = 10 * 60 * 1000;
+const _nkiriPickStore = new Map();
+const JX_PLAY_TTL_MS = 20 * 60 * 1000;
+const _jxPlayPending = new Map();
+const _jxPlayLatestByChat = new Map();
+
+function _nkiriGetState(jid) {
+  const state = _nkiriPickStore.get(jid);
+  if (!state) return null;
+  if (Date.now() - Number(state.ts || 0) > NKIRI_PICK_TTL_MS) {
+    _nkiriPickStore.delete(jid);
+    return null;
+  }
+  return state;
+}
+
+function _nkiriSetState(jid, next) {
+  if (!jid || !next || typeof next !== 'object') return null;
+  const state = { ...next, ts: Date.now() };
+  _nkiriPickStore.set(jid, state);
+  setTimeout(() => {
+    const current = _nkiriPickStore.get(jid);
+    if (current && current.ts === state.ts) _nkiriPickStore.delete(jid);
+  }, NKIRI_PICK_TTL_MS + 1000).unref?.();
+  return state;
+}
+
+function _nkiriClearState(jid) {
+  if (jid) _nkiriPickStore.delete(jid);
+}
+
+function _jxPlaySweep() {
+  const now = Date.now();
+  for (const [key, entry] of _jxPlayPending.entries()) {
+    if (!entry || now - Number(entry.ts || 0) > JX_PLAY_TTL_MS) _jxPlayPending.delete(key);
+  }
+  for (const [chatKey, key] of _jxPlayLatestByChat.entries()) {
+    if (!_jxPlayPending.has(key)) _jxPlayLatestByChat.delete(chatKey);
+  }
+}
+
 /* ── module ──────────────────────────────────────────────────────────────── */
 
 function install(ctx) {
-  const report = { nkiri: false, tgsticker: false, shazam: false, gst: false };
+  const report = { nkiri: false, play: false, tgsticker: false, shazam: false, gst: false };
   const { cmd, CONFIG, sendReply, react } = ctx;
   const PREFIX = (CONFIG && CONFIG.PREFIX) || '.';
 
@@ -159,7 +200,7 @@ function install(ctx) {
   try {
     const nkiriSearch = async (sock, msg, args) => {
       const q = (args || []).join(' ').trim();
-      if (!q) return sendReply(sock, msg, `🎬 *Nkiri Movies & Series*\n\nUsage: *${PREFIX}nkiri <title>*\nExample: *${PREFIX}nkiri avengers*`);
+      if (!q) return sendReply(sock, msg, `🎬 *Nkiri Movies & Series*\n\nUsage: *${PREFIX}nkiri <title>* or *${PREFIX}movie <title>*\nExample: *${PREFIX}nkiri avengers*`);
       await safeReact(sock, msg, '🎬');
       const statusMsg = await sock.sendMessage(msg.key.remoteJid, { text: `🎬 *Nkiri Search*\n\n⏳ Searching for *${q}* ...` }, { quoted: msg }).catch(() => null);
       const skey = statusMsg?.key;
@@ -179,11 +220,27 @@ function install(ctx) {
           return safeReact(sock, msg, '❌');
         }
 
-        // Build native-flow single_select list (tap → runs .nkpick <url>)
+        // Build native-flow single_select list with SHORT ids.
+        // WhatsApp single_select row ids can silently fail when a full
+        // movie URL is stuffed into the payload; cancel still works because
+        // its quick-reply id is tiny. Cache the search results and only send
+        // `.nkpick <index>` through the button payload.
+        const chat = msg.key.remoteJid;
+        _nkiriSetState(chat, {
+          stage: 'results',
+          query: q,
+          results: results.map((r) => ({
+            title: String(r.title || r.name || 'Unknown'),
+            url: r.url || r.link || '',
+            categories: Array.isArray(r.categories) ? r.categories.slice(0, 3) : [],
+            date: r.date || '',
+          })),
+        });
         const rows = results.map((r, i) => ({
           title: `${i + 1}. ${String(r.title || r.name || 'Unknown').slice(0, 60)}`,
           description: (r.categories || []).slice(0, 3).join(' • ') || (r.date || ''),
-          rowId: `${PREFIX}nkpick ${r.url || r.link}`,
+          id: `${PREFIX}nkpick ${i + 1}`,
+          rowId: `${PREFIX}nkpick ${i + 1}`,
         }));
         const body = `🎬 *Nkiri — "${q}"*\n\nFound *${results.length}* result${results.length > 1 ? 's' : ''}. Tap *Open Results* and pick one.`;
         if (skey) await sock.sendMessage(msg.key.remoteJid, { delete: skey }).catch(() => {});
@@ -204,7 +261,18 @@ function install(ctx) {
 
     // pick a title → info → if series: season list; if movie: download directly
     const nkPick = async (sock, msg, args) => {
-      const url = (args || [])[0];
+      const chat = msg.key.remoteJid;
+      const token = (args || []).join(' ').trim();
+      let url = token;
+      let pickedTitle = '';
+      if (/^\d+$/.test(token)) {
+        const state = _nkiriGetState(chat);
+        const idx = Number(token) - 1;
+        const picked = state?.stage === 'results' ? state.results?.[idx] : null;
+        if (!picked?.url) return sendReply(sock, msg, `❌ That picker expired. Run *${PREFIX}nkiri <title>* again.`);
+        url = picked.url;
+        pickedTitle = picked.title || '';
+      }
       if (!url || !/^https?:\/\//i.test(url)) return sendReply(sock, msg, `❌ Invalid selection.`);
       await safeReact(sock, msg, '⏳');
       try {
@@ -227,12 +295,23 @@ function install(ctx) {
 
         if (seasons.length) {
           // TV SERIES → season picker
+          const seasonRows = seasons.map((s) => ({
+            season: s,
+            episodes: (bySeason[s] || []).slice().sort((a, b) => a.ep - b.ep),
+          }));
+          _nkiriSetState(chat, {
+            stage: 'seasons',
+            title: r.title || pickedTitle || 'Series',
+            sourceUrl: url,
+            seasons: seasonRows,
+          });
           const rows = seasons.map(s => ({
             title: `📺 Season ${s}`,
             description: `${bySeason[s].length} episode${bySeason[s].length > 1 ? 's' : ''}`,
-            rowId: `${PREFIX}nkseason ${url}|${s}`,
+            id: `${PREFIX}nkseason ${s}`,
+            rowId: `${PREFIX}nkseason ${s}`,
           }));
-          const body = `🎬 *${r.title || 'Series'}*\n\nThis is a TV series with *${seasons.length}* season${seasons.length > 1 ? 's' : ''}. Pick a season:`;
+          const body = `🎬 *${r.title || pickedTitle || 'Series'}*\n\nThis is a TV series with *${seasons.length}* season${seasons.length > 1 ? 's' : ''}. Pick a season:`;
           if (typeof ctx.sendNativeFlowListMenu === 'function') {
             await ctx.sendNativeFlowListMenu(sock, msg.key.remoteJid, msg, body, [{ title: 'Seasons', rows }], [{ text: '❌ Cancel', id: `${PREFIX}nkcancel` }]);
           } else {
@@ -242,7 +321,8 @@ function install(ctx) {
         }
 
         // MOVIE → straight to download (document)
-        return nkDeliver(sock, msg, movieLinks[0] || links[0], r.title || 'Movie');
+        _nkiriClearState(chat);
+        return nkDeliver(sock, msg, movieLinks[0] || links[0], r.title || pickedTitle || 'Movie');
       } catch (e) {
         return sendReply(sock, msg, `❌ Error loading title: ${e.message}`);
       }
@@ -250,29 +330,54 @@ function install(ctx) {
 
     // pick a season → episode picker
     const nkSeason = async (sock, msg, args) => {
+      const chat = msg.key.remoteJid;
       const payload = (args || []).join(' ').trim();
-      const [url, sStr] = payload.split('|');
-      const season = parseInt(sStr, 10);
-      if (!url || isNaN(season)) return sendReply(sock, msg, `❌ Invalid season selection.`);
+      let season = NaN;
+      let title = 'Series';
+      let eps = [];
+
+      if (/^\d+$/.test(payload)) {
+        const state = _nkiriGetState(chat);
+        season = parseInt(payload, 10);
+        const seasonEntry = state?.stage === 'seasons'
+          ? (state.seasons || []).find((entry) => Number(entry.season) === season)
+          : null;
+        if (!seasonEntry) return sendReply(sock, msg, `❌ That season picker expired. Run *${PREFIX}nkiri <title>* again.`);
+        title = state.title || title;
+        eps = (seasonEntry.episodes || []).slice().sort((a, b) => a.ep - b.ep);
+      } else {
+        const [url, sStr] = payload.split('|');
+        season = parseInt(sStr, 10);
+        if (!url || isNaN(season)) return sendReply(sock, msg, `❌ Invalid season selection.`);
+        await safeReact(sock, msg, '⏳');
+        try {
+          const d = await dcGet('/movies/info', { url }, 30000);
+          const r = d?.result || d?.data || {};
+          title = r.title || title;
+          const links = Array.isArray(r.downloadLinks) ? r.downloadLinks : [];
+          for (const l of links) {
+            const m = decodeURIComponent(l).match(/S(\d{1,2})E(\d{1,3})/i);
+            if (m && parseInt(m[1], 10) === season) eps.push({ ep: parseInt(m[2], 10), url: l });
+          }
+          eps.sort((a, b) => a.ep - b.ep);
+        } catch (e) {
+          return sendReply(sock, msg, `❌ Error loading season: ${e.message}`);
+        }
+      }
+
+      if (isNaN(season)) return sendReply(sock, msg, `❌ Invalid season selection.`);
       await safeReact(sock, msg, '⏳');
       try {
-        const d = await dcGet('/movies/info', { url }, 30000);
-        const r = d?.result || d?.data || {};
-        const links = Array.isArray(r.downloadLinks) ? r.downloadLinks : [];
-        const eps = [];
-        for (const l of links) {
-          const m = decodeURIComponent(l).match(/S(\d{1,2})E(\d{1,3})/i);
-          if (m && parseInt(m[1], 10) === season) eps.push({ ep: parseInt(m[2], 10), url: l });
-        }
-        eps.sort((a, b) => a.ep - b.ep);
         if (!eps.length) return sendReply(sock, msg, `❌ No episodes found for Season ${season}.`);
 
+        _nkiriSetState(chat, { stage: 'episodes', title, season, episodes: eps });
         const rows = eps.map(e => ({
           title: `🎞️ Episode ${e.ep}`,
           description: 'Tap to download',
-          rowId: `${PREFIX}nkep ${e.url}`,
+          id: `${PREFIX}nkep ${e.ep}`,
+          rowId: `${PREFIX}nkep ${e.ep}`,
         }));
-        const body = `📺 *${r.title || 'Series'} — Season ${season}*\n\n*${eps.length}* episode${eps.length > 1 ? 's' : ''}. Pick an episode to download (sent as a document):`;
+        const body = `📺 *${title} — Season ${season}*\n\n*${eps.length}* episode${eps.length > 1 ? 's' : ''}. Pick an episode to download (sent as a document):`;
         if (typeof ctx.sendNativeFlowListMenu === 'function') {
           await ctx.sendNativeFlowListMenu(sock, msg.key.remoteJid, msg, body, [{ title: `Season ${season} Episodes`, rows }], [{ text: '❌ Cancel', id: `${PREFIX}nkcancel` }]);
         } else {
@@ -286,10 +391,22 @@ function install(ctx) {
 
     // pick an episode → resolve direct link → send as document
     const nkEp = async (sock, msg, args) => {
-      const dlPage = (args || [])[0];
+      const chat = msg.key.remoteJid;
+      const token = (args || []).join(' ').trim();
+      let dlPage = token;
+      let titleHint = null;
+      if (/^\d+$/.test(token)) {
+        const state = _nkiriGetState(chat);
+        const picked = state?.stage === 'episodes'
+          ? (state.episodes || []).find((entry) => Number(entry.ep) === Number(token))
+          : null;
+        if (!picked?.url) return sendReply(sock, msg, `❌ That episode picker expired. Run *${PREFIX}nkiri <title>* again.`);
+        dlPage = picked.url;
+        titleHint = state.title ? `${state.title} S${String(state.season || '').padStart(2, '0')}E${String(picked.ep).padStart(2, '0')}` : null;
+      }
       if (!dlPage) return sendReply(sock, msg, `❌ Invalid episode selection.`);
       await safeReact(sock, msg, '⬇️');
-      return nkDeliver(sock, msg, dlPage, null);
+      return nkDeliver(sock, msg, dlPage, titleHint);
     };
 
     // resolve downloadwella page → direct link → send document FROM URL (never buffered)
@@ -324,161 +441,283 @@ function install(ctx) {
       }
     }
 
-    const nkCancel = async (sock, msg) => safeReact(sock, msg, '👍');
+    const nkCancel = async (sock, msg) => {
+      _nkiriClearState(msg?.key?.remoteJid);
+      return safeReact(sock, msg, '👍');
+    };
 
-    cmd(['nkiri', 'nkiri2', 'movie2'], { desc: 'Search & download Nkiri movies/series — .nkiri <title>', category: 'DOWNLOAD' }, nkiriSearch);
+    cmd(['nkiri', 'nkiri2', 'movie2', 'movie'], { desc: 'Search & download Nkiri movies/series — .nkiri <title>', category: 'DOWNLOAD' }, nkiriSearch);
     cmd(['nkpick'],   { desc: 'Internal: nkiri title pick',   category: 'DOWNLOAD' }, nkPick);
     cmd(['nkseason'], { desc: 'Internal: nkiri season pick',  category: 'DOWNLOAD' }, nkSeason);
     cmd(['nkep'],     { desc: 'Internal: nkiri episode pick', category: 'DOWNLOAD' }, nkEp);
     cmd(['nkcancel'], { desc: 'Internal: nkiri cancel',       category: 'DOWNLOAD' }, nkCancel);
+    cmd(['moviedl'],  { desc: 'Use .movie native picker instead', category: 'DOWNLOAD' }, async (sock, msg) => {
+      await sendReply(sock, msg, `🎬 Use *${PREFIX}movie <title>* and pick from the native Nkiri list.\n\n_The movie flow now uses buttons only — no ${PREFIX}moviedl step needed._`);
+    });
     report.nkiri = true;
   } catch (e) { console.log('[precious-v21] nkiri error:', e && e.message); }
 
   /* ══════════════════════════════════════════════════════════════════════
-     .movie — native-flow picker mirroring Nkiri (no moviedl prompts)
+     .play — keep current banner, add emoji numbers + native picker buttons
      ══════════════════════════════════════════════════════════════════════ */
   try {
-    const MOVIE_API = (CONFIG && CONFIG.MYNETNAIJA_API) || `${DC}/movies`;
-
-    async function movieJson(pathOrUrl, params, timeout = 30000) {
-      const url = /^https?:\/\//i.test(String(pathOrUrl || '')) ? String(pathOrUrl) : `${MOVIE_API}${pathOrUrl}`;
-      let lastErr = null;
-      for (let attempt = 1; attempt <= 3; attempt++) {
-        try {
-          const { data } = await axios.get(url, {
-            params: params || {}, timeout,
-            headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'application/json' },
-            validateStatus: () => true,
-          });
-          if (data && data.success === false && /timeout/i.test(String(data.message || data.error || '')) && attempt < 3) {
-            await new Promise(r => setTimeout(r, 900 * attempt));
-            continue;
-          }
-          return data;
-        } catch (e) {
-          lastErr = e;
-          if (attempt < 3) { await new Promise(r => setTimeout(r, 800 * attempt)); continue; }
-        }
-      }
-      throw lastErr || new Error('movie provider request failed');
-    }
-
-    function movieList(data) {
-      const list = data?.results || data?.data?.results || data?.data || data?.movies || [];
-      return Array.isArray(list) ? list.filter(item => item && (item.url || item.link)) : [];
-    }
-
-    function movieInfo(data) {
-      const d = data?.data || data || {};
-      const download = d?.download || {};
-      const fileUrl = download?.url || download?.download_url || download?.direct_url || d?.download_url || d?.file_url;
+    const PLAY_HEADER = '───── 𝑷𝑹𝑬𝑪𝑰𝑶𝑼𝑺 x PLAYER ─────';
+    const playNormChat = (jid) => String(jid || '').replace(/:\d+(?=@)/, '');
+    const playSender = (msg) => String(msg?.key?.participant || msg?.key?.remoteJid || '');
+    const playSameChat = (a, b) => playNormChat(a) === playNormChat(b);
+    const playQuotedId = (msg) => {
+      const c = msg?.message?.extendedTextMessage?.contextInfo
+        || msg?.message?.imageMessage?.contextInfo
+        || msg?.message?.videoMessage?.contextInfo
+        || msg?.message?.documentMessage?.contextInfo
+        || msg?.message?.buttonsResponseMessage?.contextInfo
+        || msg?.message?.listResponseMessage?.contextInfo
+        || msg?.message?.interactiveResponseMessage?.contextInfo
+        || msg?.message?.messageContextInfo;
+      return c?.stanzaId || c?.quotedMessage?.key?.id || null;
+    };
+    const playYtId = (input) => {
+      const raw = String(input || '').trim();
+      if (!raw) return '';
+      const m = raw.match(/(?:youtu\.be\/|youtube\.com\/(?:watch\?v=|shorts\/|embed\/))([A-Za-z0-9_-]{6,})/i);
+      if (m) return m[1];
+      if (/^[A-Za-z0-9_-]{6,}$/.test(raw)) return raw;
+      return '';
+    };
+    const playExtract = (data) => {
+      const d = data?.result || data?.data || data || {};
+      const dlUrl = d.download_url || d.dl_url || d.url || d.audio || d.mp3 || d.link || null;
+      const videoUrl = d.video_url || d.source || d.video || d.watch_url || d.youtube_url || null;
       return {
-        title: d?.title || d?.name || 'Movie',
-        description: d?.description || d?.overview || '',
-        thumbnail: d?.thumbnail || d?.poster || d?.image || '',
-        genre: d?.genre || d?.genres || '',
-        fileUrl: (typeof fileUrl === 'string' && /^https?:\/\//i.test(fileUrl)) ? fileUrl : null,
-        fileName: download?.file_name || '',
-        fileExt: String(download?.file_ext || '').toLowerCase(),
-        fileSize: download?.file_size || '',
+        title: d.title || d.song || d.name || null,
+        artists: d.artist || d.artists || d.author || d.channel || null,
+        duration: d.duration || d.length || d.timestamp || null,
+        views: d.views || d.view_count || null,
+        dlUrl,
+        videoUrl,
+        videoId: playYtId(videoUrl || d.videoId || d.id || ''),
+        thumb: d.thumbnail || d.thumb || d.image || null,
       };
-    }
-
-    function movieMime(ext = '') {
-      const value = String(ext).toLowerCase().replace(/^\./, '');
-      return value === 'mp4' || value === 'm4v' ? 'video/mp4'
-        : value === 'mkv' ? 'video/x-matroska'
-        : value === 'webm' ? 'video/webm'
-        : value === 'avi' ? 'video/x-msvideo'
-        : 'application/octet-stream';
-    }
-
-    const movieSearch = async (sock, msg, args) => {
-      const q = (args || []).join(' ').trim();
-      if (!q) return sendReply(sock, msg, `🎬 *Movie Search*\n\nUsage: *${PREFIX}movie <title>*\nExample: *${PREFIX}movie avengers endgame*`);
-      await safeReact(sock, msg, '🎬');
-      const statusMsg = await sock.sendMessage(msg.key.remoteJid, { text: `🎬 *Movie Search*\n\n⏳ Searching for *${q}* ...` }, { quoted: msg }).catch(() => null);
-      const skey = statusMsg?.key;
+    };
+    const playStore = (keyId, jid, msg, meta) => {
+      if (!keyId || !jid || !meta) return;
+      _jxPlaySweep();
+      const entry = { jid: playNormChat(jid), user: playSender(msg), meta: { ...meta }, ts: Date.now() };
+      _jxPlayPending.set(String(keyId), entry);
+      _jxPlayLatestByChat.set(playNormChat(jid), String(keyId));
+      const timer = setTimeout(() => {
+        const cur = _jxPlayPending.get(String(keyId));
+        if (cur && cur.ts === entry.ts) _jxPlayPending.delete(String(keyId));
+        const latest = _jxPlayLatestByChat.get(playNormChat(jid));
+        if (latest === String(keyId)) _jxPlayLatestByChat.delete(playNormChat(jid));
+      }, JX_PLAY_TTL_MS + 1000);
+      timer?.unref?.();
+    };
+    const playFind = (msg) => {
+      _jxPlaySweep();
+      const jid = msg?.key?.remoteJid || '';
+      const user = playSender(msg);
+      const quoted = playQuotedId(msg);
+      if (quoted) {
+        const entry = _jxPlayPending.get(String(quoted));
+        if (entry && playSameChat(entry.jid, jid) && (!entry.user || !user || entry.user === user)) return entry;
+      }
+      const latestKey = _jxPlayLatestByChat.get(playNormChat(jid));
+      if (!latestKey) return null;
+      const latest = _jxPlayPending.get(String(latestKey));
+      if (!latest || !playSameChat(latest.jid, jid)) return null;
+      if (latest.user && user && latest.user !== user) return null;
+      return latest;
+    };
+    const playDur = (v) => typeof ctx._p2Dur === 'function' ? ctx._p2Dur(v) : String(v || '0:00');
+    const playViews = (v) => typeof ctx._p2Views === 'function' ? ctx._p2Views(v) : String(v || '0');
+    const playThumb = async (meta) => {
+      if (typeof ctx._p2ThumbBuf === 'function') {
+        try {
+          const b = await ctx._p2ThumbBuf(meta);
+          if (Buffer.isBuffer(b) && b.length) return b;
+        } catch {}
+      }
+      if (meta?.thumb) {
+        try {
+          const r = await axios.get(meta.thumb, { responseType: 'arraybuffer', timeout: 20000 });
+          const b = Buffer.from(r.data || []);
+          if (b.length) return b;
+        } catch {}
+      }
+      return null;
+    };
+    const playEnrich = async (meta, query) => {
+      const out = { ...(meta || {}) };
+      if (!out.videoUrl && out.videoId) out.videoUrl = `https://www.youtube.com/watch?v=${out.videoId}`;
+      if (!out.videoId && out.videoUrl) out.videoId = playYtId(out.videoUrl);
+      if ((!out.title || !out.artists || !out.views || !out.duration) && out.videoUrl) {
+        try {
+          const { data } = await axios.get(`https://www.youtube.com/oembed?url=${encodeURIComponent(out.videoUrl)}&format=json`, { timeout: 15000 });
+          if (data?.title && !out.title) out.title = data.title;
+          if (data?.author_name && !out.artists) out.artists = data.author_name;
+          if (data?.thumbnail_url && !out.thumb) out.thumb = data.thumbnail_url;
+        } catch {}
+      }
+      if ((!out.title || !out.artists || !out.videoUrl) && query) {
+        try {
+          const ytSearch = require('yt-search');
+          const res = await ytSearch(query);
+          const hit = Array.isArray(res?.videos) ? res.videos[0] : (Array.isArray(res) ? res[0] : null);
+          if (hit) {
+            if (!out.title && hit.title) out.title = hit.title;
+            if (!out.artists && (hit.author?.name || hit.author)) out.artists = hit.author?.name || hit.author;
+            if (!out.duration && (hit.timestamp || hit.duration?.timestamp)) out.duration = hit.timestamp || hit.duration?.timestamp;
+            if (!out.views && hit.views) out.views = hit.views;
+            if (!out.videoUrl && hit.url) out.videoUrl = hit.url;
+            if (!out.videoId && hit.videoId) out.videoId = hit.videoId;
+            if (!out.thumb && hit.thumbnail) out.thumb = hit.thumbnail;
+          }
+        } catch {}
+      }
+      if (!out.title) out.title = query || out.videoUrl || 'Unknown title';
+      if (!out.artists) out.artists = 'Unknown';
+      return out;
+    };
+    const playCardText = (meta) => [
+      PLAY_HEADER,
+      '',
+      'TITLE     : ' + (meta.title || 'Unknown title'),
+      'AUTHOR    : ' + (meta.artists || 'Unknown'),
+      'DURATION  : ' + playDur(meta.duration),
+      'VIEWS     : ' + playViews(meta.views),
+      '',
+      '────────────────────────',
+      'Reply here with a number:',
+      '  1️⃣ - Audio',
+      '  2️⃣ - Document (.mp3)',
+      '  3️⃣ - Voice note',
+      '  4️⃣ - Video (.mp4)',
+      '  5️⃣ - Video (view once) 👁️',
+      '  6️⃣ - Voice note (view once) 🎙️',
+    ].join('\n');
+    const playSections = () => [{
+      title: 'Formats',
+      rows: [
+        { id: `${PREFIX}jxplaypick 1`, rowId: `${PREFIX}jxplaypick 1`, title: '1️⃣ Audio', description: 'Send standard audio' },
+        { id: `${PREFIX}jxplaypick 2`, rowId: `${PREFIX}jxplaypick 2`, title: '2️⃣ Document (.mp3)', description: 'Send MP3 as document' },
+        { id: `${PREFIX}jxplaypick 3`, rowId: `${PREFIX}jxplaypick 3`, title: '3️⃣ Voice note', description: 'Send as push-to-talk' },
+        { id: `${PREFIX}jxplaypick 4`, rowId: `${PREFIX}jxplaypick 4`, title: '4️⃣ Video (.mp4)', description: 'Send MP4 video' },
+        { id: `${PREFIX}jxplaypick 5`, rowId: `${PREFIX}jxplaypick 5`, title: '5️⃣ Video (view once) 👁️', description: 'Send video as view once' },
+        { id: `${PREFIX}jxplaypick 6`, rowId: `${PREFIX}jxplaypick 6`, title: '6️⃣ Voice note (view once) 🎙️', description: 'Send voice note as view once' },
+      ],
+    }];
+    const playSearch = async (sock, msg, args) => {
+      const jid = msg.key.remoteJid;
+      const query = (args || []).join(' ').trim();
+      if (!query) return sendReply(sock, msg, `${PLAY_HEADER}\n\nUsage: ${PREFIX}play <song name or link>`);
+      await safeReact(sock, msg, '⏳');
+      const status = await sock.sendMessage(jid, { text: `${PLAY_HEADER}\nSearching "${query}" ...` }, { quoted: msg }).catch(() => null);
       try {
-        let results = [];
-        for (let i = 0; i < 3 && !results.length; i++) {
+        const isUrl = /^https?:\/\//i.test(query);
+        let meta = null;
+        if (isUrl) {
           try {
-            const data = await movieJson('/search', { q }, 30000);
-            const arr = movieList(data).slice(0, 20);
-            if (arr.length) results = arr;
+            const r = await dcGet('/download/ytmp3', { url: query }, 30000);
+            meta = playExtract(r);
+            if (query && !meta.videoUrl) meta.videoUrl = query;
           } catch {}
-        }
-        if (!results.length) {
-          if (skey) await ctx.editMessage?.(sock, msg.key.remoteJid, skey, `❌ No movie results for *${q}* (or the server is busy — try again).`).catch(() => {});
-          else await sendReply(sock, msg, `❌ No movie results for *${q}*.`);
-          return safeReact(sock, msg, '❌');
-        }
-
-        const rows = results.map((r, i) => ({
-          title: `${i + 1}. ${String(r.title || r.name || 'Unknown').slice(0, 60)}`,
-          description: (r.genre || r.genres || r.category || r.date || '').toString().slice(0, 72),
-          rowId: `${PREFIX}movpick ${r.url || r.link}`,
-        }));
-        const body = `🎬 *Movie Results — "${q}"*\n\nFound *${results.length}* result${results.length > 1 ? 's' : ''}. Tap *Open Results* and pick one.`;
-        if (skey) await sock.sendMessage(msg.key.remoteJid, { delete: skey }).catch(() => {});
-        if (typeof ctx.sendNativeFlowListMenu === 'function') {
-          await ctx.sendNativeFlowListMenu(sock, msg.key.remoteJid, msg, body,
-            [{ title: 'Movie Results', rows }],
-            [{ text: '❌ Cancel', id: `${PREFIX}movcancel` }]);
         } else {
-          await sendReply(sock, msg, body + `\n\n⚠️ Native picker unavailable on this build.`);
+          try {
+            const r = await dcGet('/play', { query }, 30000);
+            meta = playExtract(r);
+          } catch {}
+          if (!meta?.title && !meta?.videoUrl) {
+            try {
+              const ytSearch = require('yt-search');
+              const res = await ytSearch(query);
+              const hit = Array.isArray(res?.videos) ? res.videos[0] : (Array.isArray(res) ? res[0] : null);
+              if (hit) meta = {
+                title: hit.title || query,
+                artists: hit.author?.name || hit.author || 'Unknown',
+                duration: hit.timestamp || hit.duration?.timestamp || null,
+                views: hit.views || null,
+                videoUrl: hit.url || '',
+                videoId: hit.videoId || playYtId(hit.url || ''),
+                thumb: hit.thumbnail || null,
+              };
+            } catch {}
+          }
         }
-        return safeReact(sock, msg, '✅');
+        meta = await playEnrich(meta || {}, query);
+        const card = playCardText(meta);
+        const thumb = await playThumb(meta);
+        if (status?.key) await sock.sendMessage(jid, { delete: status.key }).catch(() => {});
+        let sent = null;
+        if (typeof ctx.sendNativeFlowListMenu === 'function') {
+          sent = await ctx.sendNativeFlowListMenu(sock, jid, msg, card, playSections(), [{ text: '❌ Cancel', id: `${PREFIX}jxplaycancel` }], `${CONFIG.BOT_NAME} • Player`, thumb ? { headerImage: thumb, headerText: 'PLAYER' } : {});
+        }
+        if (!sent?.key?.id) {
+          sent = thumb
+            ? await sock.sendMessage(jid, { image: thumb, caption: card }, { quoted: msg }).catch(() => null)
+            : await sock.sendMessage(jid, { text: card }, { quoted: msg }).catch(() => null);
+        }
+        if (!sent?.key?.id) throw new Error('could not send player card');
+        playStore(sent.key.id, jid, msg, meta);
+        await safeReact(sock, msg, '✅');
       } catch (e) {
-        if (skey) await ctx.editMessage?.(sock, msg.key.remoteJid, skey, `❌ Movie search error: ${e.message}`).catch(() => {});
-        return safeReact(sock, msg, '❌');
+        if (status?.key) await ctx.editMessage?.(sock, jid, status.key, `❌ Play search failed: ${e.message}`).catch(() => {});
+        else await sendReply(sock, msg, `❌ Play search failed: ${e.message}`);
+        await safeReact(sock, msg, '❌');
       }
     };
-
-    const movPick = async (sock, msg, args) => {
-      const pageUrl = (args || []).join(' ').trim();
-      if (!pageUrl || !/^https?:\/\//i.test(pageUrl)) return sendReply(sock, msg, `❌ Invalid movie selection.`);
-      await safeReact(sock, msg, '⬇️');
-      const chat = msg.key.remoteJid;
-      const statusMsg = await sock.sendMessage(chat, { text: `⬇️ *Movie Download*\n\n⏳ Resolving direct movie file...` }, { quoted: msg }).catch(() => null);
-      const skey = statusMsg?.key;
+    const playDeliver = async (sock, msg, mode) => {
+      const entry = playFind(msg);
+      if (!entry?.meta) return sendReply(sock, msg, `❌ That player card expired. Run *${PREFIX}play <song>* again.`);
+      const meta = entry.meta;
+      const jid = msg.key.remoteJid;
+      const title = String(meta.title || 'audio').trim();
+      const status = await sock.sendMessage(jid, { text: `⬇️ ${PLAY_HEADER}\nPreparing *${title}* ...` }, { quoted: msg }).catch(() => null);
       try {
-        const data = await movieJson('/info', { url: pageUrl }, 30000);
-        const info = movieInfo(data);
-        if (!info.fileUrl) throw new Error('no direct movie file was returned by the provider');
-        const filename = info.fileName || decodeURIComponent(info.fileUrl.split('/').pop() || `${info.title || 'movie'}.mp4`);
-        const ext = info.fileExt || path.extname(filename || '') || '.mp4';
-        const caption = [
-          `🎬 *${info.title || filename.replace(/\.(mkv|mp4|avi|webm)$/i, '')}*`,
-          info.genre ? `🏷️ ${Array.isArray(info.genre) ? info.genre.join(', ') : info.genre}` : '',
-          info.fileSize ? `📦 Size: ${info.fileSize}` : '',
-          info.description ? `\n📝 ${String(info.description).slice(0, 500)}` : '',
-          `\n_Sent as document • native movie picker_`,
-        ].filter(Boolean).join('\n');
-
-        if (skey) await sock.sendMessage(chat, { delete: skey }).catch(() => {});
-        await race(sock.sendMessage(chat, {
-          document: { url: info.fileUrl },
-          fileName: filename,
-          mimetype: movieMime(ext),
-          caption,
-        }, { quoted: msg }), 120000, 'movie document send');
-        return safeReact(sock, msg, '✅');
+        if (mode === 4 || mode === 5) {
+          const videoBuf = typeof ctx._p2VideoBuf === 'function' ? await ctx._p2VideoBuf(meta) : null;
+          if (!Buffer.isBuffer(videoBuf) || !videoBuf.length) throw new Error('video buffer unavailable');
+          await sock.sendMessage(jid, { video: videoBuf, mimetype: 'video/mp4', fileName: `${title.replace(/[^\w\-. ]+/g, ' ').trim() || 'video'}.mp4`, viewOnce: mode === 5 }, { quoted: msg });
+        } else {
+          const audioBuf = typeof ctx._p2AudioBuf === 'function' ? await ctx._p2AudioBuf(meta) : null;
+          if (!Buffer.isBuffer(audioBuf) || !audioBuf.length) throw new Error('audio buffer unavailable');
+          if (mode === 2) {
+            await sock.sendMessage(jid, { document: audioBuf, mimetype: 'audio/mpeg', fileName: `${title.replace(/[^\w\-. ]+/g, ' ').trim() || 'audio'}.mp3` }, { quoted: msg });
+          } else if (mode === 3 || mode === 6) {
+            let out = audioBuf;
+            try {
+              if (mode === 3 && typeof ctx._p2ToPtt === 'function') out = await ctx._p2ToPtt(audioBuf, 'audio/mpeg');
+            } catch {}
+            await sock.sendMessage(jid, { audio: out, mimetype: mode === 3 ? 'audio/ogg; codecs=opus' : 'audio/mpeg', ptt: true, viewOnce: mode === 6 }, { quoted: msg });
+          } else {
+            await sock.sendMessage(jid, { audio: audioBuf, mimetype: 'audio/mpeg', ptt: false, fileName: `${title.replace(/[^\w\-. ]+/g, ' ').trim() || 'audio'}.mp3` }, { quoted: msg });
+          }
+        }
+        if (status?.key) await sock.sendMessage(jid, { delete: status.key }).catch(() => {});
+        await safeReact(sock, msg, '✅');
       } catch (e) {
-        if (skey) await ctx.editMessage?.(sock, chat, skey, `❌ Movie download failed: ${e.message}`).catch(() => {});
-        else await sendReply(sock, msg, `❌ Movie download failed: ${e.message}`);
-        return safeReact(sock, msg, '❌');
+        if (status?.key) await ctx.editMessage?.(sock, jid, status.key, `❌ Download failed: ${e.message}`).catch(() => {});
+        else await sendReply(sock, msg, `❌ Download failed: ${e.message}`);
+        await safeReact(sock, msg, '❌');
       }
     };
-
-    const movCancel = async (sock, msg) => safeReact(sock, msg, '👍');
-    const moviedlRedirect = async (sock, msg) => sendReply(sock, msg, `🎬 Use *${PREFIX}movie <title>* and tap the native picker result.\n\n_This build no longer uses ${PREFIX}moviedl as the main flow._`);
-
-    cmd(['movie'],     { desc: 'Search & download movies via native picker — .movie <title>', category: 'DOWNLOAD' }, movieSearch);
-    cmd(['movpick'],   { desc: 'Internal: movie pick',    category: 'DOWNLOAD' }, movPick);
-    cmd(['movcancel'], { desc: 'Internal: movie cancel',  category: 'DOWNLOAD' }, movCancel);
-    cmd(['moviedl'],   { desc: 'Use .movie native picker instead', category: 'DOWNLOAD' }, moviedlRedirect);
-  } catch (e) { console.log('[precious-v21] movie error:', e && e.message); }
+    const playPick = async (sock, msg, args) => {
+      const token = Number(String((args || []).join(' ').trim() || '0'));
+      if (!Number.isInteger(token) || token < 1 || token > 6) return sendReply(sock, msg, `❌ Invalid player option. Use 1-6.`);
+      return playDeliver(sock, msg, token);
+    };
+    const playCancel = async (sock, msg) => {
+      const jid = playNormChat(msg?.key?.remoteJid || '');
+      const latestKey = _jxPlayLatestByChat.get(jid);
+      if (latestKey) _jxPlayPending.delete(latestKey);
+      _jxPlayLatestByChat.delete(jid);
+      return safeReact(sock, msg, '👍');
+    };
+    cmd(['play', 'music', 'song'], { desc: 'Play song — native picker with emoji-numbered formats', category: 'DOWNLOAD' }, playSearch);
+    cmd(['jxplaypick'], { desc: 'Internal: player format pick', category: 'DOWNLOAD' }, playPick);
+    cmd(['jxplaycancel'], { desc: 'Internal: player cancel', category: 'DOWNLOAD' }, playCancel);
+    report.play = true;
+  } catch (e) { console.log('[precious-v21] play error:', e && e.message); }
 
   /* ══════════════════════════════════════════════════════════════════════
      .tgsticker — Telegram sticker pack → WhatsApp stickers
