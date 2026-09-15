@@ -743,7 +743,7 @@ function ensureDirectoryExists(dirPath) {
 // (this is why the site "counted for 60 seconds"). We now cache the result
 // for 6 hours, cap the lookup at 6 seconds, and fall back to a known-good
 // version instead of failing the whole pairing.
-const FALLBACK_WA_VERSION = [2, 3000, 1023223821];
+const FALLBACK_WA_VERSION = [2, 3000, 1043857760];
 let _waVersionCache = { version: null, at: 0 };
 const WA_VERSION_TTL = 6 * 60 * 60 * 1000;
 
@@ -1000,9 +1000,11 @@ async function startpairing(nexusDevNumber, options = {}) {
         // FIX ("couldn't link device"): WhatsApp only accepts an 8-character
         // pairing code from a desktop-Chrome style client. Safari/macOS
         // fingerprints are accepted for QR but routinely rejected right after
-        // the user types the code. QR keeps macOS/Chrome, code uses
-        // Ubuntu/Chrome — the combination WhatsApp links reliably.
-        browser: pairingMode === 'qr' ? Browsers.macOS('Chrome') : Browsers.ubuntu('Chrome'),
+        // the user types the code. v23: QR also uses the Ubuntu/Chrome
+        // fingerprint now — macOS/Chrome QR payloads were the "fake QR /
+        // loads forever" symptom on the web UI. Both modes use the same,
+        // reliably-accepted desktop-Chrome client.
+        browser: Browsers.ubuntu('Chrome'),
         getMessage: async key => {
             if (!store) return { conversation: '' };
             const jid = key.remoteJid;
@@ -1012,8 +1014,11 @@ async function startpairing(nexusDevNumber, options = {}) {
         // The pairing socket is disposable and is handed to MIAS after the
         // link. Do not download chat history or generate link previews here.
         shouldSyncHistoryMessage: () => false,
-        connectTimeoutMs: 30000,
-        defaultQueryTimeoutMs: 20000,
+        // v23: the 30s connect timeout was the "loads forever then couldn't
+        // link" killer on Railway/Replit — the handshake often takes 35-50s
+        // on a cold dyno. Raised to 60s so the code is actually delivered.
+        connectTimeoutMs: 60000,
+        defaultQueryTimeoutMs: 30000,
         keepAliveIntervalMs: 45000,
         emitOwnEvents: true,
         fireInitQueries: true,
