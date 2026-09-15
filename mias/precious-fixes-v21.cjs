@@ -410,19 +410,20 @@ function _probeVideoCodecs(filePath) {
 }
 
 // Guarantee a WhatsApp-playable MP4: H.264 video + AAC audio + faststart moov.
-// If the source already is H.264/AAC we only re-mux (fast copy) — no quality loss.
+// WHATSAPP FIX (black screen with sound): WhatsApp mobile only reliably plays
+// H.264 **Baseline/Main profile** — YouTube and most APIs serve High profile,
+// which renders as a black video with audio. We therefore ALWAYS re-encode to
+// Main profile + yuv420p + even dimensions + faststart. The old `-c copy`
+// fast path was removed: it preserved the High profile and caused the bug.
 async function _ensureWaVideo(inputPath, { timeoutMs = 300000 } = {}) {
   const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'wavid-'));
   const outPath = path.join(dir, 'wa.mp4');
-  const probe = await _probeVideoCodecs(inputPath);
-  const good = probe && probe.hasVideo && (probe.vcodec === 'h264' || probe.vcodec === 'avc1') && (probe.acodec === 'aac' || probe.acodec === 'mp4a');
-  if (good) {
-    try {
-      await runFfmpeg(['-y', '-i', inputPath, '-c', 'copy', '-movflags', '+faststart', outPath], 120000);
-      return { dir, filePath: outPath };
-    } catch {}
-  }
-  await runFfmpeg(['-y', '-i', inputPath, '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart', outPath], timeoutMs);
+  await runFfmpeg(['-y', '-i', inputPath,
+    '-c:v', 'libx264', '-profile:v', 'main', '-level', '3.1',
+    '-preset', 'veryfast', '-pix_fmt', 'yuv420p',
+    '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2:force_original_aspect_ratio=decrease',
+    '-c:a', 'aac', '-b:a', '128k', '-ar', '44100',
+    '-movflags', '+faststart', outPath], timeoutMs);
   return { dir, filePath: outPath };
 }
 
@@ -1193,6 +1194,24 @@ function install(ctx) {
       if (/^https?:\/\//i.test(String(meta?.dlUrl || ''))) tries.push(async () => meta.dlUrl);
       if (ytUrl) tries.push(async () => playExtract(await dcGet('/download/ytmp3', { url: ytUrl }, 35000)).dlUrl || null);
       if (ytUrl) tries.push(async () => playExtract(await dcGet('/play', { query: ytUrl }, 35000)).dlUrl || null);
+      // INDEPENDENT PROVIDERS — must NOT share the David Cyril host, so a
+      // David Cyril / y2mate outage (HTTP 502) can no longer kill the chain.
+      if (ytUrl) tries.push(async () => {
+        try {
+          const { data } = await axios.get(`https://api.siputzx.my.id/api/d/ytmp3?url=${encodeURIComponent(ytUrl)}`, { timeout: 45000, validateStatus: () => true });
+          const r = data?.data || data?.result || data;
+          const u = r?.download || r?.dl || r?.url;
+          return /^https?:\/\//i.test(String(u || '')) ? u : null;
+        } catch { return null; }
+      });
+      if (ytUrl) tries.push(async () => {
+        try {
+          const { data } = await axios.get(`https://api.nexoracle.com/downloader/ytmp3?apikey=free_key@maher_apis&url=${encodeURIComponent(ytUrl)}`, { timeout: 45000, validateStatus: () => true });
+          const r = data?.result || data;
+          const u = r?.dllink || r?.download_url || r?.url;
+          return /^https?:\/\//i.test(String(u || '')) ? u : null;
+        } catch { return null; }
+      });
       if (CONFIG.GIFTED_API && CONFIG.GIFTED_KEY && ytUrl) tries.push(async () => {
         const { data } = await axios.get(`${CONFIG.GIFTED_API}/api/download/ytmp3?apikey=${CONFIG.GIFTED_KEY}&url=${encodeURIComponent(ytUrl)}`, { timeout: 60000 });
         return data?.result?.download_url || data?.result?.url || data?.result?.audio || data?.result?.mp3 || null;
@@ -1213,6 +1232,24 @@ function install(ctx) {
       if (/^https?:\/\//i.test(String(meta?.videoDlUrl || meta?.videoUrlDirect || ''))) tries.push(async () => meta.videoDlUrl || meta.videoUrlDirect);
       if (ytUrl) tries.push(async () => playExtract(await dcGet('/download/ytmp4', { url: ytUrl }, 40000)).dlUrl || null);
       if (ytUrl) tries.push(async () => playExtract(await dcGet('/play', { query: ytUrl, type: 'video' }, 40000)).dlUrl || null);
+      // INDEPENDENT PROVIDERS — must NOT share the David Cyril host, so a
+      // David Cyril / y2mate outage (HTTP 502) can no longer kill the chain.
+      if (ytUrl) tries.push(async () => {
+        try {
+          const { data } = await axios.get(`https://api.siputzx.my.id/api/d/ytmp4?url=${encodeURIComponent(ytUrl)}`, { timeout: 45000, validateStatus: () => true });
+          const r = data?.data || data?.result || data;
+          const u = r?.download || r?.dl || r?.url;
+          return /^https?:\/\//i.test(String(u || '')) ? u : null;
+        } catch { return null; }
+      });
+      if (ytUrl) tries.push(async () => {
+        try {
+          const { data } = await axios.get(`https://api.nexoracle.com/downloader/ytmp4?apikey=free_key@maher_apis&url=${encodeURIComponent(ytUrl)}`, { timeout: 45000, validateStatus: () => true });
+          const r = data?.result || data;
+          const u = r?.dllink || r?.download_url || r?.url;
+          return /^https?:\/\//i.test(String(u || '')) ? u : null;
+        } catch { return null; }
+      });
       if (CONFIG.GIFTED_API && CONFIG.GIFTED_KEY && ytUrl) tries.push(async () => {
         const { data } = await axios.get(`${CONFIG.GIFTED_API}/api/download/ytmp4?apikey=${CONFIG.GIFTED_KEY}&url=${encodeURIComponent(ytUrl)}`, { timeout: 60000 });
         return data?.result?.download_url || data?.result?.url || data?.result?.video || data?.result?.mp4 || null;
@@ -1484,10 +1521,11 @@ function install(ctx) {
       const status = await sock.sendMessage(chat, { text: `⬇️ *YTMate*\n\nPreparing *${title}* (${quality}) ...` }, { quoted: msg }).catch(() => null);
       const cleanup = new Set();
       try {
-        // YTMate 502 fallback: try the y2mate provider, and on ANY failure go
-        // straight to the direct resolvers (ytmp4 / play / gifted) so the user
-        // still gets their file instead of "HTTP 502".
+        // YTMate 502 fallback: try the y2mate provider, then the independent
+        // resolvers (siputzx / nexoracle / gifted) inside playResolve*Url, so
+        // a David Cyril outage no longer kills the whole chain.
         let finalUrl = '';
+        let y2mateFailed = false;
         try {
           const res = await axios.get(`${DC}/download/y2mate`, {
             params: { url: state.ytUrl, format, quality },
@@ -1495,6 +1533,7 @@ function install(ctx) {
             headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'application/json,text/plain,*/*' },
             validateStatus: () => true,
           });
+          if (res.status >= 500) y2mateFailed = true;
           const data = res.data;
           const result = data?.result || {};
           const contentType = String(res.headers?.['content-type'] || '').toLowerCase();
@@ -1503,7 +1542,8 @@ function install(ctx) {
             const ok = await _probeRemoteMedia(result.download, format === 'mp4' ? 'video' : 'audio');
             if (ok?.url) finalUrl = ok.url;
           }
-        } catch {}
+        } catch { y2mateFailed = true; }
+        if (y2mateFailed) console.log('[precious-v21] YTMate upstream 502/down — switching to independent fallback providers');
         if (!finalUrl) finalUrl = format === 'mp4' ? await playResolveVideoUrl(meta) : await playResolveAudioUrl(meta);
         if (!finalUrl) throw new Error('YTMate is down (HTTP 502) and no fallback stream could be found — try again in a few minutes.');
         if (format === 'mp4') {
@@ -2101,9 +2141,24 @@ function install(ctx) {
         const rows = groups.slice(0, 50).map((g, i) => ({ title: `${i + 1}. ${String(g.subject).slice(0, 60)}`, description: g.id, id: `${PREFIX}gstpick ${i + 1}`, rowId: `${PREFIX}gstpick ${i + 1}` }));
         const body = `📢 *Group Status*\n\nPick the group you want to post this status to.`;
         if (typeof ctx.sendNativeFlowListMenu === 'function') {
-          await ctx.sendNativeFlowListMenu(sock, chat, msg, body, [{ title: 'Your Groups', rows }], [{ text: '❌ Cancel', id: `${PREFIX}gstcancel` }]);
+          try {
+            // Native list menus are silently DROPPED by WhatsApp when the
+            // payload is oversized or the session cannot carry native flow —
+            // that made DM .gst go completely silent. Race it against a
+            // short window; if nothing lands, fall back to a plain numbered
+            // text list (the numeric handler below understands the replies).
+            const nativeSent = await Promise.race([
+              ctx.sendNativeFlowListMenu(sock, chat, msg, body, [{ title: 'Your Groups', rows }], [{ text: '❌ Cancel', id: `${PREFIX}gstcancel` }]).catch(() => null),
+              new Promise((r) => setTimeout(() => r(null), 8000)),
+            ]);
+            if (!nativeSent?.key?.id) throw new Error('native flow menu not delivered');
+          } catch {
+            const numList = rows.map((r, i) => `${i + 1} - ${String(r.title).replace(/^\d+\.\s*/, '')}`).join('\n');
+            await sendReply(sock, msg, `${body}\n\nReply with a NUMBER to choose:\n\n${numList}\n\nReply ${PREFIX}gstcancel to stop.`).catch(() => {});
+          }
         } else {
-          await sendReply(sock, msg, body + '\n\n' + rows.map((r) => r.title).join('\n'));
+          const numList = rows.map((r, i) => `${i + 1} - ${String(r.title).replace(/^\d+\.\s*/, '')}`).join('\n');
+          await sendReply(sock, msg, `${body}\n\nReply with a NUMBER to choose:\n\n${numList}\n\nReply ${PREFIX}gstcancel to stop.`);
         }
         clearTimeout(watchdog);
         await reactOnce('✅');

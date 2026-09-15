@@ -1397,7 +1397,7 @@ function _saveNamesSoon() {
     _namesDirty = false;
     try {
       const obj = {};
-      const entries = Array.from(pushNameCache.entries()).slice(-5000);
+      const entries = Array.from(pushNameCache.entries()).slice(-2000);
       for (const [k, v] of entries) obj[k] = v;
       fs.writeFileSync(NAMES_FILE, JSON.stringify(obj), "utf8");
     } catch {}
@@ -3727,7 +3727,10 @@ ${_aiedIsGroup ? `📢 *Group:* ${_aiedGroupName || remoteJid}
             let groupName = "";
             if (isGroupChat) {
               try {
-                const meta = await sock.groupMetadata(remoteJid);
+                // PERF FIX: read from the local group-metadata cache first;
+                // only hit the network when the chat is not cached yet.
+                const meta = _groupMetaCache.get(remoteJid) || await sock.groupMetadata(remoteJid).catch(() => null);
+                if (meta) _groupMetaCache.set(remoteJid, meta);
                 groupName = meta?.subject || "";
               } catch {}
             }
@@ -14338,10 +14341,27 @@ ${CONFIG.PREFIX}remind <time> <message>
   await sendReply(sock, msg, `⏰ *Reminder Set!*\n\n📌 Message: *${text}*\n⏱️ In: *${disp}*\n🕐 Fires at: *~${fireAt} (Lagos)*`);
 });
 cmd(["vv", "viewonce"], { desc: "Reveal view-once message (reply to it)", category: "TOOLS" }, async (sock, msg) => {
-  const ctx = msg.message?.extendedTextMessage?.contextInfo;
+  const ctx = msg.message?.extendedTextMessage?.contextInfo
+    || msg.message?.imageMessage?.contextInfo
+    || msg.message?.videoMessage?.contextInfo
+    || msg.message?.documentMessage?.contextInfo
+    || null;
   if (!ctx?.quotedMessage) { await react(sock, msg, "❌"); return; }
   await react(sock, msg, "🌀");
-  const vo = ctx.quotedMessage?.viewOnceMessage?.message || ctx.quotedMessage?.viewOnceMessageV2?.message || ctx.quotedMessage?.viewOnceMessageV2Extension?.message || ctx.quotedMessage;
+  // FIX (vv not working): unwrap EVERY wrapper layer — ephemeralMessage,
+  // viewOnce v1 / v2 / v2Extension, documentWithCaption. The old code only
+  // unwrapped one level, so any view-once media that arrived inside an
+  // ephemeral (or double-wrapped) container fell through to the ❌ silently.
+  let vo = ctx.quotedMessage;
+  for (let i = 0; i < 5; i++) {
+    const inner = vo?.viewOnceMessage?.message
+      || vo?.viewOnceMessageV2?.message
+      || vo?.viewOnceMessageV2Extension?.message
+      || vo?.ephemeralMessage?.message
+      || vo?.documentWithCaptionMessage?.message;
+    if (!inner || inner === vo) break;
+    vo = inner;
+  }
   const jid = msg.key.remoteJid;
   let _vvSent = false;
   try {
@@ -14349,19 +14369,19 @@ cmd(["vv", "viewonce"], { desc: "Reveal view-once message (reply to it)", catego
       const stream = await downloadContentFromMessage(vo.imageMessage, "image");
       let buf = Buffer.from([]);
       for await (const c of stream) buf = Buffer.concat([buf, c]);
-      await sock.sendMessage(msg.key.remoteJid, { image: buf }, { quoted: msg });
+      await sock.sendMessage(msg.key.remoteJid, { image: buf, caption: vo.imageMessage.caption || undefined }, { quoted: msg });
       _vvSent = true;
     } else if (vo.videoMessage) {
       const stream = await downloadContentFromMessage(vo.videoMessage, "video");
       let buf = Buffer.from([]);
       for await (const c of stream) buf = Buffer.concat([buf, c]);
-      await sock.sendMessage(msg.key.remoteJid, { video: buf }, { quoted: msg });
+      await sock.sendMessage(msg.key.remoteJid, { video: buf, caption: vo.videoMessage.caption || undefined }, { quoted: msg });
       _vvSent = true;
     } else if (vo.audioMessage) {
       const stream = await downloadContentFromMessage(vo.audioMessage, "audio");
       let buf = Buffer.from([]);
       for await (const c of stream) buf = Buffer.concat([buf, c]);
-      await sock.sendMessage(msg.key.remoteJid, { audio: buf, mimetype: "audio/mp4" }, { quoted: msg });
+      await sock.sendMessage(msg.key.remoteJid, { audio: buf, mimetype: vo.audioMessage.mimetype || "audio/mp4", ptt: !!vo.audioMessage.ptt }, { quoted: msg });
       _vvSent = true;
     } else {
       await react(sock, msg, "❌");
@@ -14403,9 +14423,13 @@ cmd(["vv2","lol","wow","hehe","😂","🙂","omor","chai","🥀"], { desc: "Save
   // group mapping before falling back to the numeric session identity.
   if (senderJid.endsWith("@lid") && isGroup(msg)) {
     try {
-      const meta = await sock.groupMetadata(msg.key.remoteJid);
-      updateLidMappingsFromMeta(meta);
-      senderJid = resolveLid(senderJid);
+      // PERF FIX: cache-first lookup — a network groupMetadata() round-trip
+      // on every quoted message made big accounts feel very slow.
+      const meta = _groupMetaCache.get(msg.key.remoteJid) || await sock.groupMetadata(msg.key.remoteJid).catch(() => null);
+      if (meta) {
+        updateLidMappingsFromMeta(meta);
+        senderJid = resolveLid(senderJid);
+      }
     } catch {}
   }
   const senderMentionJid = senderJid.endsWith("@s.whatsapp.net") ? senderJid : "";
@@ -18846,14 +18870,35 @@ cmd("apk", { desc: "Download APK", category: "DOWNLOAD" }, async (sock, msg, arg
           }
         } catch {}
         if (!apkSizeOk) return;
-        const buf = await axios.get(result.dl, { responseType: "arraybuffer", timeout: 120000 });
-        if (buf.data && buf.data.length > 1000) {
-          if (buf.data.length > 95 * 1024 * 1024) {
-            // Still too large after download — send link
-            await editMessage(sock, jid, apkKey, `📱 *MIAS MDX APK*\n\n⬢ Searching... ✅\n⬡ APK too large to send via WhatsApp (${Math.round(buf.data.length/1024/1024)}MB)\n\n📥 *Download link:*\n${result.dl}`);
+        // FIX (bot restarting on .apk): stream the APK to a temp FILE instead
+        // of `responseType: "arraybuffer"`. Buffering a 50-150MB APK in RAM
+        // caused exit-137 OOM kills on small Railway containers, which looked
+        // like "the bot restarts whenever I use .apk".
+        const _fsA = require("fs"), _osA = require("os"), _pathA = require("path");
+        const _tmpDirA = await _fsA.promises.mkdtemp(_pathA.join(_osA.tmpdir(), "apkdl-"));
+        const _apkFile = _pathA.join(_tmpDirA, "app.apk");
+        let _apkBytes = 0;
+        try {
+          const _respA = await axios.get(result.dl, { responseType: "stream", timeout: 300000, maxRedirects: 5, headers: { "User-Agent": "Mozilla/5.0" } });
+          await new Promise((res2, rej2) => {
+            const ws = _fsA.createWriteStream(_apkFile);
+            _respA.data.on("data", (c) => { _apkBytes += c.length; if (_apkBytes > 95 * 1024 * 1024) _respA.data.destroy(Object.assign(new Error("too-large"), { __tooLarge: true })); });
+            _respA.data.on("error", rej2);
+            ws.on("error", rej2);
+            ws.on("finish", res2);
+            _respA.data.pipe(ws);
+          });
+        } catch (e2) {
+          await _fsA.promises.rm(_tmpDirA, { recursive: true, force: true }).catch(() => {});
+          if (e2?.__tooLarge || String(e2?.message) === "too-large") {
+            await editMessage(sock, jid, apkKey, `📱 *MIAS MDX APK*\n\n⬢ Searching... ✅\n⬡ APK too large to send via WhatsApp (>95MB)\n\n📥 *Download link:*\n${result.dl}\n\n📛 App: ${result.name || query}`);
             return;
           }
-          await sock.sendMessage(jid, { document: Buffer.from(buf.data), mimetype: "application/vnd.android.package-archive", fileName: `${(result.name || query).replace(/[^a-zA-Z0-9 ]/g, "_")}.apk` }, { quoted: msg });
+          throw e2;
+        }
+        if (_apkBytes > 1000) {
+          await sock.sendMessage(jid, { document: { url: _apkFile }, mimetype: "application/vnd.android.package-archive", fileName: `${(result.name || query).replace(/[^a-zA-Z0-9 ]/g, "_")}.apk` }, { quoted: msg });
+          await _fsA.promises.rm(_tmpDirA, { recursive: true, force: true }).catch(() => {});
           await editMessage(sock, jid, apkKey, `📱 *MIAS MDX APK*\n\n⬢ Searching... ✅\n⬢ Downloading... ✅\n⬢ Sending... ✅\n\n✅ *${result.name}* sent!${result.desc ? "\n📝 " + result.desc.slice(0, 200) : ""}`);
           return;
         }
