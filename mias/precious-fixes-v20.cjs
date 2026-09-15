@@ -660,21 +660,76 @@ function install(ctx) {
     const isCode = /^\d{1,2}(\.\d{1,2})?$/.test(tag);
     if (!isCode && tag !== '0') return false;
 
+    // v23 (TDZ crash fix): `active` was used below BEFORE its `const`
+    // declaration, which threw a ReferenceError on every quoted reply. The
+    // catch-all in the caller then fell through to the legacy handler, which
+    // auto-armed a settings session on the digit and answered "❌ Unknown
+    // settings option *1*". Declared HERE so the quoted-card guard can use it.
+    const active = !!(ctx.settingsSession && ctx.settingsSession.get(jid));
+
     // never steal a .play picker reply
     if (playCardOwnsReply(msg) && !/^set:/i.test(raw)) return false;
 
-    // QUOTED-CARD FIX: a numeric reply that QUOTES a message is normally a
-    // reply to one of the bot's download cards (.play / .nkiri / .tt / movie),
-    // NOT a settings panel answer — and on normal (non-Business) WhatsApp the
-    // native-flow taps never arrive at all, so quoting + typing the number is
-    // the ONLY way users can use those pickers. If there is no live settings
-    // session in this chat, let the quoted card claim the reply instead of
-    // mis-answering "⚠️ *1* is not a settings option".
+    // QUOTED-CARD FIX (v23 — hardened): a numeric reply that QUOTES a message
+    // is normally a reply to one of the bot's download cards (.play / .nkiri /
+    // .tt / .movie / .savetube / .ytmate), NOT a settings panel answer — and on
+    // normal (non-Business) WhatsApp the native-flow taps never arrive at all,
+    // so quoting + typing the number is the ONLY way users can use those
+    // pickers. What actually happened: the user quoted the play card, typed 1,
+    // and — because a stale settings session was still alive in the chat — the
+    // panel auto-armed and answered "❌ Unknown settings option *1*" right
+    // after the file had already been delivered. From now on, a QUOTED numeric
+    // reply only belongs to settings when the quoted message really IS the
+    // settings panel (its text contains ⚙️/Settings) — everything else is
+    // handed back to the picker.
     const _quotedHas = !!(msg.message?.extendedTextMessage?.contextInfo?.quotedMessage);
+    if (_quotedHas && isCode && !/^set:/i.test(raw)) {
+      try {
+        const _unwrapQ = (m) => {
+          let cur = m;
+          for (let i = 0; i < 6 && cur && typeof cur === 'object'; i++) {
+            const nxt = cur.ephemeralMessage?.message
+              || cur.viewOnceMessage?.message
+              || cur.viewOnceMessageV2?.message
+              || cur.viewOnceMessageV2Extension?.message
+              || cur.documentWithCaptionMessage?.message
+              || cur.editedMessage?.message || null;
+            if (!nxt) break;
+            cur = nxt;
+          }
+          return cur;
+        };
+        const _rawQ = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage
+          || msg.message?.imageMessage?.contextInfo?.quotedMessage
+          || msg.message?.videoMessage?.contextInfo?.quotedMessage
+          || msg.message?.audioMessage?.contextInfo?.quotedMessage
+          || msg.message?.documentMessage?.contextInfo?.quotedMessage || null;
+        const _q = _unwrapQ(_rawQ);
+        const _collectQ = (m, acc) => {
+          acc = acc || [];
+          if (!m || typeof m !== 'object') return acc;
+          acc.push(
+            m.conversation, m.extendedTextMessage?.text,
+            m.imageMessage?.caption, m.videoMessage?.caption, m.documentMessage?.caption,
+            m.interactiveMessage?.body?.text, m.interactiveMessage?.footer?.text,
+            m.interactiveMessage?.header?.title,
+            m.buttonsMessage?.contentText, m.buttonsMessage?.footer,
+            m.listMessage?.description, m.listMessage?.title,
+          );
+          for (const k of Object.keys(m)) {
+            const v = m[k];
+            if (v && typeof v === 'object' && v.message && typeof v.message === 'object') _collectQ(v.message, acc);
+          }
+          return acc;
+        };
+        const _qText = _q ? _collectQ(_q).filter(Boolean).join(' ') : '';
+        const _isSettingsPanel = /settings|⚙️/i.test(_qText);
+        if (_q && !_isSettingsPanel) return false; // quoted a download card — not settings
+      } catch (e) {}
+    }
     if (!active && _quotedHas && isCode && !/^set:/i.test(raw)) return false;
 
     // a settings panel must be alive, a quoted panel must work, and a tap must always work
-    const active = !!(ctx.settingsSession && ctx.settingsSession.get(jid));
     const quoted = !!(msg.message?.extendedTextMessage?.contextInfo?.quotedMessage) || /^set:/i.test(raw);
     if (!active && !quoted) return false;
 

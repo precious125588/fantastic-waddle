@@ -383,7 +383,7 @@ const fetchLatestBaileysVersion =
     ? fetchLatestBaileysVersionRaw
     : typeof fetchLatestWaWebVersionRaw === "function"
       ? fetchLatestWaWebVersionRaw
-      : async () => ({ version: [2, 3000, 1017531287], isLatest: false });
+      : async () => ({ version: [2, 3000, 1043857760], isLatest: false });
 let makeWASocket =
   typeof makeWASocketFromExports === "function"
     ? makeWASocketFromExports
@@ -4799,7 +4799,7 @@ async function sendNativeFlowButtons(sock, jid, quoted, bodyText, buttons, foote
       body: proto.Message.InteractiveMessage.Body.create({ text: bodyText }),
       footer: proto.Message.InteractiveMessage.Footer.create({ text: footer }),
       header: proto.Message.InteractiveMessage.Header.create({ hasMediaAttachment: false }),
-      nativeFlowMessage: proto.Message.InteractiveMessage.NativeFlowMessage.create({ buttons: nativeButtons })
+      nativeFlowMessage: proto.Message.InteractiveMessage.NativeFlowMessage.create({ buttons: nativeButtons, messageParamsJson: JSON.stringify({}), messageVersion: 1 })
     })
   };
   let wam = null;
@@ -4887,7 +4887,7 @@ async function sendNativeFlowListMenu(sock, jid, quoted, bodyText, sections, qui
       body: proto.Message.InteractiveMessage.Body.create({ text: bodyText }),
       footer: proto.Message.InteractiveMessage.Footer.create({ text: footer }),
       header: proto.Message.InteractiveMessage.Header.create(headerObj),
-      nativeFlowMessage: proto.Message.InteractiveMessage.NativeFlowMessage.create({ buttons: nativeButtons })
+      nativeFlowMessage: proto.Message.InteractiveMessage.NativeFlowMessage.create({ buttons: nativeButtons, messageParamsJson: JSON.stringify({}), messageVersion: 1 })
     })
   };
   try {
@@ -4956,7 +4956,7 @@ async function sendCTAButtons(sock, jid, quoted, bodyText, ctaButtons = [], foot
         body:   proto.Message.InteractiveMessage.Body.create({ text: bodyText }),
         footer: proto.Message.InteractiveMessage.Footer.create({ text: footer }),
         header: proto.Message.InteractiveMessage.Header.create({ hasMediaAttachment: false }),
-        nativeFlowMessage: proto.Message.InteractiveMessage.NativeFlowMessage.create({ buttons: nativeButtons })
+        nativeFlowMessage: proto.Message.InteractiveMessage.NativeFlowMessage.create({ buttons: nativeButtons, messageParamsJson: JSON.stringify({}), messageVersion: 1 })
       })
     };
     const wam = await generateWAMessageFromContent(jid, { viewOnceMessage: { message: content } }, { quoted, userJid: sock.user?.id });
@@ -5388,7 +5388,7 @@ async function _mbAssembleInteractive(sock, jid, { bodyText = "", footer = "", h
       contextInfo,
       ...(carouselCards
         ? { carouselMessage: proto.Message.InteractiveMessage.CarouselMessage.create({ cards: carouselCards }) }
-        : { nativeFlowMessage: proto.Message.InteractiveMessage.NativeFlowMessage.create({ buttons: nativeButtons, ...(params ? { messageParamsJson: JSON.stringify(params) } : {}) }) }),
+        : { nativeFlowMessage: proto.Message.InteractiveMessage.NativeFlowMessage.create({ buttons: nativeButtons, messageParamsJson: JSON.stringify(params || {}), messageVersion: 1 }) }),
     }),
   };
   const wam = await generateWAMessageFromContent(jid, content, { quoted, userJid: sock.user?.id });
@@ -5538,7 +5538,7 @@ class MBCarousel {
         nativeCards.push(proto.Message.InteractiveMessage.create({
           header: proto.Message.InteractiveMessage.Header.create(headerObj),
           body: proto.Message.InteractiveMessage.Body.create({ text: c._body }),
-          nativeFlowMessage: proto.Message.InteractiveMessage.NativeFlowMessage.create({ buttons: c._buttons.map(_mbButtonToNativeFlow).filter(Boolean) }),
+          nativeFlowMessage: proto.Message.InteractiveMessage.NativeFlowMessage.create({ buttons: c._buttons.map(_mbButtonToNativeFlow).filter(Boolean), messageParamsJson: JSON.stringify({}), messageVersion: 1 }),
         }));
       }
       return await _mbAssembleInteractive(this._sock, jid, { bodyText: this._body, footer: this._footer, carouselCards: nativeCards }, quoted);
@@ -8127,11 +8127,16 @@ async function handleSettingsNumericReply(sock, msg, body) {
       const _isSettingsPanel = /settings|⚙️/i.test(_qText);
       const _hasSession = !!(jid && settingsSession.get(jid));
       const _pickerPending = typeof __miasHasPendingPicker === "function" && __miasHasPendingPicker(jid);
+      // PRECIOUS v23: a quoted play/download card can be recognised by its
+      // signature text too (PLAYER banner / "Reply here with a number"), even
+      // if the picker store entry expired. Never answer those from settings.
+      const _isPlayCard = /PLAYER|Reply here with a number|Reply to this message with/i.test(_qText);
       // Quoted something that is not the settings panel → not ours, stay silent.
       if (_q && !_isSettingsPanel) return false;
+      if (_q && _isPlayCard) return false;
       // Bare digit that is not a real settings option while a picker is
       // pending → belongs to the picker, even if a settings session exists.
-      if (_pickerPending && /^\d{1,2}$/.test(choice) && !SETTINGS_MAP[choice]) return false;
+      if (_pickerPending && /^\d{1,2}$/.test(choice)) return false;
       if (!_q && !_hasSession && _pickerPending) return false;
     } catch {}
   }
@@ -21859,6 +21864,29 @@ function __miasHasPendingPicker(jid) {
     if (movie && now - movie.ts <= 10 * 60 * 1000) return true;
     if (_lastAdultResults.get(__miasPickerKey(jid)) || _lastAdultResults.get(jid)) return true;
     if (_menuPickStore.get(__miasPickerKey(jid)) || _menuPickStore.get(jid)) return true;
+    // PRECIOUS v23: the JINX / v2 play-card stores were NOT consulted here,
+    // so while a .play card was waiting for its 1-6 choice the settings
+    // handler thought no picker was active, auto-armed a settings session on
+    // the bare digit and answered "❌ Unknown settings option *1*" right
+    // after the file had already been delivered. Count live play-card
+    // entries for this chat as a pending picker too.
+    try {
+      const _num = (j) => String(j || "").replace(/:\d+(?=@)/, "").replace(/[^0-9]/g, "");
+      const _n1 = _num(jid);
+      if (_n1 && typeof _P2_PENDING !== "undefined" && _P2_PENDING && _P2_PENDING.size) {
+        for (const kv of _P2_PENDING) {
+          const e = kv && kv[1];
+          if (e && _num(e.jid) === _n1 && now - (e.ts || 0) <= 10 * 60 * 1000) return true;
+        }
+      }
+      const _jx = globalThis.__JX_PENDING__;
+      if (_n1 && _jx && _jx.size) {
+        for (const kv of _jx) {
+          const e = kv && kv[1];
+          if (e && _num(e.jid) === _n1 && now - (e.ts || 0) <= 20 * 60 * 1000) return true;
+        }
+      }
+    } catch {}
   } catch {}
   return false;
 }
@@ -22811,10 +22839,9 @@ cmd(["flowmenu", "flowui", "radiomenu"], { desc: "Send menu as nativeFlow (radio
       body:   proto.Message.InteractiveMessage.Body.create({ text: `*${CONFIG.BOT_NAME || "MIAS"}* — Select a command` }),
       footer: proto.Message.InteractiveMessage.Footer.create({ text: `v${CONFIG.VERSION || ""} • Powered by 𝑷𝑹𝑬𝑪𝑰𝑶𝑼𝑺 x` }),
       header: proto.Message.InteractiveMessage.Header.create({ title: `🚀 ${CONFIG.BOT_NAME || "MIAS"} FLOW`, hasMediaAttachment: false }),
-      nativeFlowMessage: proto.Message.InteractiveMessage.NativeFlowMessage.create({
-        buttons: [{
+      nativeFlowMessage: proto.Message.InteractiveMessage.NativeFlowMessage.create({ buttons: [{
           name: "single_select",
-          buttonParamsJson: JSON.stringify({ title: "📋 OPEN MENU", sections })
+          buttonParamsJson: JSON.stringify({ title: "📋 OPEN MENU", sections, messageParamsJson: JSON.stringify({}), messageVersion: 1 })
         }],
         messageParamsJson: ""
       }),
@@ -23098,7 +23125,7 @@ try {
                     fileLength: upload.fileLength,
                   }
                 }),
-                nativeFlowMessage: proto.Message.InteractiveMessage.NativeFlowMessage.create({ buttons: nativeButtons })
+                nativeFlowMessage: proto.Message.InteractiveMessage.NativeFlowMessage.create({ buttons: nativeButtons, messageParamsJson: JSON.stringify({}), messageVersion: 1 })
           })
         };
         const wam = await generateWAMessageFromContent(jid, { viewOnceMessage: { message: content } }, { quoted, userJid: sock.user?.id });
@@ -23149,7 +23176,7 @@ try {
                     fileLength: upload.fileLength,
                   }
                 }),
-                nativeFlowMessage: proto.Message.InteractiveMessage.NativeFlowMessage.create({ buttons: nativeButtons })
+                nativeFlowMessage: proto.Message.InteractiveMessage.NativeFlowMessage.create({ buttons: nativeButtons, messageParamsJson: JSON.stringify({}), messageVersion: 1 })
           })
         };
         const wam = await generateWAMessageFromContent(jid, { viewOnceMessage: { message: content } }, { quoted, userJid: sock.user?.id });
@@ -40290,6 +40317,9 @@ try {
   const _JX_TTL = 20 * 60 * 1000;
   const _JX_PENDING = new Map();
   const _JX_BOUND = new WeakSet();
+  // Expose the JINX picker store so __miasHasPendingPicker() can see a live
+  // play card and keep bare digits away from the settings handler.
+  try { globalThis.__JX_PENDING__ = _JX_PENDING; } catch (e) {}
 
   function _JXNorm(jid) {
     try {
