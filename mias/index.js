@@ -1504,6 +1504,7 @@ function defaultSettings() {
     recording: false, typing: false, alwaysOnline: true,
     workMode: "public", language: "en", chatBotMode: false,
     ownerReact: false, adultDl: false, movieDl: "disable",
+    forcePrivate: false, autoDownload: 'off', statusForwarder: false,
     buttonsMode: false,
     stickerGuard: "delete", linkGuard: "delete",
     // ── v4.9.4 NEW ──────────────────────────────────────────────────
@@ -4680,17 +4681,18 @@ function _findInteractiveSelectionId(value, seen = new Set()) {
       if ((s.startsWith("{") && s.endsWith("}")) || (s.startsWith("[") && s.endsWith("]"))) {
         try { return _findInteractiveSelectionId(JSON.parse(s), seen); } catch {}
       }
+      if (isCommandBody(s) || s.startsWith("BTN:") || /^set:[\w]+(?::[\w]+)?$/i.test(s)) return s;
       return "";
     }
     if (typeof value !== "object") return "";
     if (seen.has(value)) return "";
     seen.add(value);
-    for (const key of ["id", "selectedId", "buttonId", "rowId", "name"]) {
+    for (const key of ["id", "selectedId", "selectedRowId", "selectedButtonId", "buttonId", "rowId", "name"]) {
       const raw = value?.[key];
       if (!raw) continue;
       const s = String(raw).trim();
       if (!s) continue;
-       if (isCommandBody(s) || s.startsWith("BTN:")) return s;
+       if (isCommandBody(s) || s.startsWith("BTN:") || /^set:[\w]+(?::[\w]+)?$/i.test(s)) return s;
     }
     if (Array.isArray(value)) {
       for (const item of value) {
@@ -8238,6 +8240,7 @@ cmd(["textmenu", "txmenu", "plaintextmenu"], { desc: "Switch to plain text menu 
   const ownerS = getSettings(ownerJid);
   ownerS.buttonsMode = false;
   getSettings(msg.key.remoteJid).buttonsMode = false;
+  setButtonMode(false);
   saveNow();
   await _sendPlainReply(sock, msg, `📝 *Text Menu Mode: ✅ ENABLED*
 
@@ -8254,6 +8257,7 @@ cmd(["listmenu", "interactivemenu", "btnlistmenu"], { desc: "Switch to interacti
   const ownerS = getSettings(ownerJid);
   ownerS.buttonsMode = true;
   getSettings(msg.key.remoteJid).buttonsMode = true;
+  setButtonMode(true);
   saveNow();
   await _sendPlainReply(sock, msg, `🗂️ *Interactive List Menu Mode: ✅ ENABLED*
 

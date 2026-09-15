@@ -335,6 +335,152 @@ function install(ctx) {
   } catch (e) { console.log('[precious-v21] nkiri error:', e && e.message); }
 
   /* ══════════════════════════════════════════════════════════════════════
+     .movie — native-flow picker mirroring Nkiri (no moviedl prompts)
+     ══════════════════════════════════════════════════════════════════════ */
+  try {
+    const MOVIE_API = (CONFIG && CONFIG.MYNETNAIJA_API) || `${DC}/movies`;
+
+    async function movieJson(pathOrUrl, params, timeout = 30000) {
+      const url = /^https?:\/\//i.test(String(pathOrUrl || '')) ? String(pathOrUrl) : `${MOVIE_API}${pathOrUrl}`;
+      let lastErr = null;
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          const { data } = await axios.get(url, {
+            params: params || {}, timeout,
+            headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'application/json' },
+            validateStatus: () => true,
+          });
+          if (data && data.success === false && /timeout/i.test(String(data.message || data.error || '')) && attempt < 3) {
+            await new Promise(r => setTimeout(r, 900 * attempt));
+            continue;
+          }
+          return data;
+        } catch (e) {
+          lastErr = e;
+          if (attempt < 3) { await new Promise(r => setTimeout(r, 800 * attempt)); continue; }
+        }
+      }
+      throw lastErr || new Error('movie provider request failed');
+    }
+
+    function movieList(data) {
+      const list = data?.results || data?.data?.results || data?.data || data?.movies || [];
+      return Array.isArray(list) ? list.filter(item => item && (item.url || item.link)) : [];
+    }
+
+    function movieInfo(data) {
+      const d = data?.data || data || {};
+      const download = d?.download || {};
+      const fileUrl = download?.url || download?.download_url || download?.direct_url || d?.download_url || d?.file_url;
+      return {
+        title: d?.title || d?.name || 'Movie',
+        description: d?.description || d?.overview || '',
+        thumbnail: d?.thumbnail || d?.poster || d?.image || '',
+        genre: d?.genre || d?.genres || '',
+        fileUrl: (typeof fileUrl === 'string' && /^https?:\/\//i.test(fileUrl)) ? fileUrl : null,
+        fileName: download?.file_name || '',
+        fileExt: String(download?.file_ext || '').toLowerCase(),
+        fileSize: download?.file_size || '',
+      };
+    }
+
+    function movieMime(ext = '') {
+      const value = String(ext).toLowerCase().replace(/^\./, '');
+      return value === 'mp4' || value === 'm4v' ? 'video/mp4'
+        : value === 'mkv' ? 'video/x-matroska'
+        : value === 'webm' ? 'video/webm'
+        : value === 'avi' ? 'video/x-msvideo'
+        : 'application/octet-stream';
+    }
+
+    const movieSearch = async (sock, msg, args) => {
+      const q = (args || []).join(' ').trim();
+      if (!q) return sendReply(sock, msg, `🎬 *Movie Search*\n\nUsage: *${PREFIX}movie <title>*\nExample: *${PREFIX}movie avengers endgame*`);
+      await safeReact(sock, msg, '🎬');
+      const statusMsg = await sock.sendMessage(msg.key.remoteJid, { text: `🎬 *Movie Search*\n\n⏳ Searching for *${q}* ...` }, { quoted: msg }).catch(() => null);
+      const skey = statusMsg?.key;
+      try {
+        let results = [];
+        for (let i = 0; i < 3 && !results.length; i++) {
+          try {
+            const data = await movieJson('/search', { q }, 30000);
+            const arr = movieList(data).slice(0, 20);
+            if (arr.length) results = arr;
+          } catch {}
+        }
+        if (!results.length) {
+          if (skey) await ctx.editMessage?.(sock, msg.key.remoteJid, skey, `❌ No movie results for *${q}* (or the server is busy — try again).`).catch(() => {});
+          else await sendReply(sock, msg, `❌ No movie results for *${q}*.`);
+          return safeReact(sock, msg, '❌');
+        }
+
+        const rows = results.map((r, i) => ({
+          title: `${i + 1}. ${String(r.title || r.name || 'Unknown').slice(0, 60)}`,
+          description: (r.genre || r.genres || r.category || r.date || '').toString().slice(0, 72),
+          rowId: `${PREFIX}movpick ${r.url || r.link}`,
+        }));
+        const body = `🎬 *Movie Results — "${q}"*\n\nFound *${results.length}* result${results.length > 1 ? 's' : ''}. Tap *Open Results* and pick one.`;
+        if (skey) await sock.sendMessage(msg.key.remoteJid, { delete: skey }).catch(() => {});
+        if (typeof ctx.sendNativeFlowListMenu === 'function') {
+          await ctx.sendNativeFlowListMenu(sock, msg.key.remoteJid, msg, body,
+            [{ title: 'Movie Results', rows }],
+            [{ text: '❌ Cancel', id: `${PREFIX}movcancel` }]);
+        } else {
+          await sendReply(sock, msg, body + `\n\n⚠️ Native picker unavailable on this build.`);
+        }
+        return safeReact(sock, msg, '✅');
+      } catch (e) {
+        if (skey) await ctx.editMessage?.(sock, msg.key.remoteJid, skey, `❌ Movie search error: ${e.message}`).catch(() => {});
+        return safeReact(sock, msg, '❌');
+      }
+    };
+
+    const movPick = async (sock, msg, args) => {
+      const pageUrl = (args || []).join(' ').trim();
+      if (!pageUrl || !/^https?:\/\//i.test(pageUrl)) return sendReply(sock, msg, `❌ Invalid movie selection.`);
+      await safeReact(sock, msg, '⬇️');
+      const chat = msg.key.remoteJid;
+      const statusMsg = await sock.sendMessage(chat, { text: `⬇️ *Movie Download*\n\n⏳ Resolving direct movie file...` }, { quoted: msg }).catch(() => null);
+      const skey = statusMsg?.key;
+      try {
+        const data = await movieJson('/info', { url: pageUrl }, 30000);
+        const info = movieInfo(data);
+        if (!info.fileUrl) throw new Error('no direct movie file was returned by the provider');
+        const filename = info.fileName || decodeURIComponent(info.fileUrl.split('/').pop() || `${info.title || 'movie'}.mp4`);
+        const ext = info.fileExt || path.extname(filename || '') || '.mp4';
+        const caption = [
+          `🎬 *${info.title || filename.replace(/\.(mkv|mp4|avi|webm)$/i, '')}*`,
+          info.genre ? `🏷️ ${Array.isArray(info.genre) ? info.genre.join(', ') : info.genre}` : '',
+          info.fileSize ? `📦 Size: ${info.fileSize}` : '',
+          info.description ? `\n📝 ${String(info.description).slice(0, 500)}` : '',
+          `\n_Sent as document • native movie picker_`,
+        ].filter(Boolean).join('\n');
+
+        if (skey) await sock.sendMessage(chat, { delete: skey }).catch(() => {});
+        await race(sock.sendMessage(chat, {
+          document: { url: info.fileUrl },
+          fileName: filename,
+          mimetype: movieMime(ext),
+          caption,
+        }, { quoted: msg }), 120000, 'movie document send');
+        return safeReact(sock, msg, '✅');
+      } catch (e) {
+        if (skey) await ctx.editMessage?.(sock, chat, skey, `❌ Movie download failed: ${e.message}`).catch(() => {});
+        else await sendReply(sock, msg, `❌ Movie download failed: ${e.message}`);
+        return safeReact(sock, msg, '❌');
+      }
+    };
+
+    const movCancel = async (sock, msg) => safeReact(sock, msg, '👍');
+    const moviedlRedirect = async (sock, msg) => sendReply(sock, msg, `🎬 Use *${PREFIX}movie <title>* and tap the native picker result.\n\n_This build no longer uses ${PREFIX}moviedl as the main flow._`);
+
+    cmd(['movie'],     { desc: 'Search & download movies via native picker — .movie <title>', category: 'DOWNLOAD' }, movieSearch);
+    cmd(['movpick'],   { desc: 'Internal: movie pick',    category: 'DOWNLOAD' }, movPick);
+    cmd(['movcancel'], { desc: 'Internal: movie cancel',  category: 'DOWNLOAD' }, movCancel);
+    cmd(['moviedl'],   { desc: 'Use .movie native picker instead', category: 'DOWNLOAD' }, moviedlRedirect);
+  } catch (e) { console.log('[precious-v21] movie error:', e && e.message); }
+
+  /* ══════════════════════════════════════════════════════════════════════
      .tgsticker — Telegram sticker pack → WhatsApp stickers
      ══════════════════════════════════════════════════════════════════════ */
   try {
