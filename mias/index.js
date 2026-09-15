@@ -22766,7 +22766,7 @@ const _GROUP_ONLY_CATEGORY = "GROUP";
 // "this is a group command" instead of silently failing or crashing.
 try {
   for (const [name, entry] of commands.entries()) {
-    if (entry?.category === _GROUP_ONLY_CATEGORY && !entry.__gcWrapped) {
+    if (entry?.category === _GROUP_ONLY_CATEGORY && !entry.__gcWrapped && !['gst','gstatus','groupstatus'].includes(String(name))) {
       const original = entry.handler;
       entry.handler = async function _gcGuarded(sock, msg, args) {
         if (!(msg.key.remoteJid || "").endsWith("@g.us")) {

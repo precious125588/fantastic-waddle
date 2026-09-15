@@ -155,6 +155,8 @@ const BOOST6_TTL_MS = 10 * 60 * 1000;
 const _boost6Store = new Map();
 const GST_PICK_TTL_MS = 10 * 60 * 1000;
 const _gstPickStore = new Map();
+const YTMATE_TTL_MS = 10 * 60 * 1000;
+const _ytmateStore = new Map();
 let _v21BoostNumericHandler = null;
 let _v21GstNumericHandler = null;
 
@@ -315,15 +317,8 @@ async function _fetchBinaryToTemp(url, { maxBytes = 80 * 1024 * 1024, timeout = 
 }
 
 async function _sendFilePath(sock, jid, kind, filePath, extra = {}, quoted) {
-  try {
-    return await sock.sendMessage(jid, { [kind]: { url: filePath }, ...extra }, { quoted });
-  } catch (firstError) {
-    try {
-      return await sock.sendMessage(jid, { [kind]: fs.createReadStream(filePath), ...extra }, { quoted });
-    } catch {
-      throw firstError;
-    }
-  }
+  const buf = Buffer.isBuffer(filePath) ? filePath : await fs.promises.readFile(filePath);
+  return await sock.sendMessage(jid, { [kind]: buf, ...extra }, { quoted });
 }
 
 async function _transcodeAudioFile(inputPath, targetExt) {
@@ -399,6 +394,125 @@ function _boostLabel(kind) {
 }
 
 
+function _imageMetaFromHead(buf, contentType = '', url = '') {
+  const b = Buffer.isBuffer(buf) ? buf : Buffer.from(buf || []);
+  const ct = String(contentType || '').toLowerCase();
+  const ext = _extFromUrl(url) || '.jpg';
+  if (b.length >= 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return { ok: true, ext: '.jpg', mimetype: 'image/jpeg' };
+  if (b.length >= 8 && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) return { ok: true, ext: '.png', mimetype: 'image/png' };
+  if (b.length >= 12 && b.subarray(0, 4).toString('ascii') === 'RIFF' && b.subarray(8, 12).toString('ascii') === 'WEBP') return { ok: true, ext: '.webp', mimetype: 'image/webp' };
+  if (b.length >= 6 && (b.subarray(0, 6).toString('ascii') === 'GIF87a' || b.subarray(0, 6).toString('ascii') === 'GIF89a')) return { ok: true, ext: '.gif', mimetype: 'image/gif' };
+  if (/^image\//.test(ct)) return { ok: true, ext, mimetype: ct.split(';')[0] || _mimeFromExt(ext) };
+  return { ok: false, ext: '', mimetype: '' };
+}
+
+function _binaryMetaFromHead(buf, contentType = '', url = '') {
+  const image = _imageMetaFromHead(buf, contentType, url);
+  if (image.ok) return { ...image, kind: 'image' };
+  const video = _videoMetaFromHead(buf, contentType, url);
+  if (video.ok) return { ...video, kind: 'video' };
+  const audio = _audioMetaFromHead(buf, contentType, url);
+  if (audio.ok) return { ...audio, kind: 'audio' };
+  const ext = _extFromUrl(url) || '.bin';
+  const ct = String(contentType || '').toLowerCase();
+  if (/^application\//.test(ct) || /\.(apk|zip|pdf|docx?|xlsx?|pptx?)(?:$|[?#])/i.test(String(url || ''))) {
+    return { ok: true, ext, mimetype: ct.split(';')[0] || _mimeFromExt(ext), kind: 'document' };
+  }
+  return { ok: false, ext, mimetype: ct || _mimeFromExt(ext), kind: 'document' };
+}
+
+function _collectHttpUrls(value, out = [], seen = new Set()) {
+  if (!value) return out;
+  if (typeof value === 'string') {
+    if (/^https?:\/\//i.test(value)) out.push(value);
+    return out;
+  }
+  if (typeof value !== 'object') return out;
+  if (seen.has(value)) return out;
+  seen.add(value);
+  if (Array.isArray(value)) {
+    for (const item of value) _collectHttpUrls(item, out, seen);
+    return out;
+  }
+  for (const v of Object.values(value)) _collectHttpUrls(v, out, seen);
+  return out;
+}
+
+async function _probeRemoteMedia(url, kind = 'any') {
+  try {
+    const res = await axios.get(url, {
+      responseType: 'stream',
+      timeout: 45000,
+      maxRedirects: 5,
+      headers: { 'User-Agent': 'Mozilla/5.0', Accept: '*/*' },
+      validateStatus: () => true,
+    });
+    if (!(res.status >= 200 && res.status < 400)) {
+      res.data?.destroy?.();
+      return null;
+    }
+    const contentType = String(res.headers?.['content-type'] || '').toLowerCase();
+    const chunks = [];
+    let total = 0;
+    for await (const chunk of res.data) {
+      if (!chunk?.length) continue;
+      chunks.push(chunk);
+      total += chunk.length;
+      if (total >= 8192) break;
+    }
+    res.data?.destroy?.();
+    const head = Buffer.concat(chunks);
+    if (!head.length) return null;
+    const meta = _binaryMetaFromHead(head, contentType, url);
+    if (!meta.ok) return null;
+    if (kind !== 'any' && meta.kind !== kind) return null;
+    return { url, contentType, meta };
+  } catch {
+    return null;
+  }
+}
+
+async function _downloadFirstWorkingMedia(urls, { kind = 'any', maxBytes = 180 * 1024 * 1024, timeout = 240000, prefix = 'v21dl-' } = {}) {
+  let lastErr = null;
+  const list = [...new Set((urls || []).filter((u) => /^https?:\/\//i.test(String(u || ''))))];
+  for (const url of list) {
+    try {
+      const fetched = await _fetchBinaryToTemp(url, { maxBytes, timeout, prefix });
+      const meta = _binaryMetaFromHead(fetched.head, fetched.contentType, url);
+      if (!meta.ok) {
+        await fs.promises.rm(fetched.dir, { recursive: true, force: true }).catch(() => {});
+        continue;
+      }
+      if (kind !== 'any' && meta.kind !== kind) {
+        await fs.promises.rm(fetched.dir, { recursive: true, force: true }).catch(() => {});
+        continue;
+      }
+      return { url, fetched, meta };
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  throw lastErr || new Error('no working media file was returned');
+}
+
+async function _thumbBufferFromUrl(url) {
+  if (!/^https?:\/\//i.test(String(url || ''))) return null;
+  try {
+    const res = await axios.get(url, {
+      responseType: 'arraybuffer',
+      timeout: 20000,
+      maxRedirects: 5,
+      headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'image/*,*/*;q=0.8' },
+      validateStatus: (code) => code >= 200 && code < 400,
+    });
+    const buf = Buffer.from(res.data || []);
+    return buf.length ? buf : null;
+  } catch {
+    return null;
+  }
+}
+
+
 /* ── module ──────────────────────────────────────────────────────────────── */
 
 function install(ctx) {
@@ -407,6 +521,30 @@ function install(ctx) {
   const PREFIX = (CONFIG && CONFIG.PREFIX) || '.';
 
   const safeReact = (sock, msg, emoji) => { try { return react(sock, msg, emoji); } catch { return Promise.resolve(); } };
+
+  const hardBind = (names, meta, handler) => {
+    try { cmd(names, meta, handler); } catch {}
+    const list = Array.isArray(names) ? names : [names];
+    if (ctx.commands && typeof ctx.commands.set === 'function') {
+      for (const name of list) {
+        const previous = ctx.commands.get(name) || {};
+        ctx.commands.set(name, { ...previous, ...meta, handler });
+      }
+    }
+  };
+  const getPrevHandler = (...names) => {
+    for (const name of names.flat()) {
+      const h = ctx.commands?.get?.(name)?.handler;
+      if (typeof h === 'function') return h;
+    }
+    return null;
+  };
+  const previousMovieHandler = getPrevHandler('movie');
+  const previousMoviedlHandler = getPrevHandler('moviedl');
+  const previousFacebookHandler = getPrevHandler('facebook', 'fb');
+  const previousTeraboxHandler = getPrevHandler('terabox', 'tera', 'teradl');
+  const previousApkHandler = getPrevHandler('apk');
+  const previousAioHandler = getPrevHandler('aio', 'alldl', 'universaldl');
 
 
   /* ══════════════════════════════════════════════════════════════════════
@@ -651,9 +789,10 @@ function install(ctx) {
       return Array.isArray(list) ? list.filter((item) => item && (item.url || item.link)) : [];
     };
     const movieInfo = (data) => {
-      const d = data?.data || data?.result || data || {};
+      const d = data?.result || data?.data || data || {};
       const download = d?.download || {};
-      const fileUrl = download?.url || download?.download_url || download?.direct_url || d?.download_url || d?.file_url || d?.fileUrl || null;
+      const directCandidates = [download?.url, download?.download_url, download?.direct_url, d?.download_url, d?.file_url, d?.fileUrl, d?.downloadLink, d?.download_link];
+      const fileUrl = directCandidates.find((u) => typeof u === 'string' && /^https?:\/\//i.test(u)) || null;
       return {
         title: d?.title || d?.name || 'Movie',
         fileUrl: typeof fileUrl === 'string' && /^https?:\/\//i.test(fileUrl) ? fileUrl : null,
@@ -661,6 +800,8 @@ function install(ctx) {
         fileExt: String(download?.file_ext || d?.file_ext || '').toLowerCase(),
         fileSize: download?.file_size || d?.file_size || '',
         host: download?.host || d?.host || '',
+        thumbnail: d?.thumbnail || d?.image || '',
+        downloadLinks: [ ...(Array.isArray(d?.downloadLinks) ? d.downloadLinks : []), d?.downloadLink, d?.download_link ].filter((u) => typeof u === 'string' && /^https?:\/\//i.test(String(u || ''))),
       };
     };
     const movieSearch = async (sock, msg, args) => {
@@ -693,6 +834,8 @@ function install(ctx) {
             url: item.url || item.link || '',
             year: item.year || item.date || '',
             rating: item.rating || item.score || '',
+            thumbnail: item.thumbnail || '',
+            downloadLinks: [ ...(Array.isArray(item.downloadLinks) ? item.downloadLinks : []), item.downloadLink, item.download_link, item.download ].filter((u) => typeof u === 'string' && /^https?:\/\//i.test(String(u || ''))),
           })),
         }, MOVIE_PICK_TTL_MS);
         const rows = results.map((item, index) => ({
@@ -732,8 +875,29 @@ function install(ctx) {
       const skey = statusMsg?.key;
       try {
         const data = await movieJson('/info', { url: picked.url }, 35000);
-        const info = movieInfo(data);
-        if (!info.fileUrl) throw new Error('movie file url missing from Netnaija response');
+        let info = movieInfo(data);
+        if (!info.fileUrl) {
+          const firstDl = info.downloadLinks?.[0] || picked.downloadLinks?.[0] || '';
+          if (/^https?:\/\//i.test(firstDl)) {
+            try {
+              const d = await dcGet('/nkiri/download', { url: firstDl }, 45000);
+              if (d?.success === true && /^https?:\/\//i.test(String(d?.download_url || ''))) {
+                const resolvedExt = path.extname(String(d?.filename || '')) || _extFromUrl(d.download_url) || '.mkv';
+                info = {
+                  ...info,
+                  title: info.title || picked.title || 'Movie',
+                  fileUrl: d.download_url,
+                  fileName: info.fileName || d.filename || `${_safeBaseName(info.title || picked.title || 'movie')}${resolvedExt}`,
+                  fileExt: info.fileExt || resolvedExt,
+                  fileSize: info.fileSize || d.size || '',
+                  host: info.host || 'downloadwella',
+                };
+              }
+            } catch {}
+          }
+        }
+        if (!info.fileUrl && typeof previousMoviedlHandler === 'function') return previousMoviedlHandler(sock, msg, [picked.title || picked.url]);
+        if (!info.fileUrl) throw new Error('movie file url missing from current API response');
         const ext = info.fileExt ? (String(info.fileExt).startsWith('.') ? String(info.fileExt) : `.${info.fileExt}`) : (_extFromUrl(info.fileUrl) || '.mp4');
         const fileName = info.fileName || `${_safeBaseName(info.title || picked.title || 'movie')}${ext}`;
         const caption = `🎬 *${info.title || picked.title || 'Movie'}*${info.fileSize ? `\n📦 Size: ${info.fileSize}` : ''}${info.host ? `\n🌐 Host: ${info.host}` : ''}`;
@@ -751,10 +915,10 @@ function install(ctx) {
       _clearTimedState(_moviePickStore, msg?.key?.remoteJid);
       return safeReact(sock, msg, '👍');
     };
-    cmd(['movie'], { desc: 'Search & download Netnaija movies — .movie <title>', category: 'DOWNLOAD' }, movieSearch);
-    cmd(['movpick'], { desc: 'Internal: movie title pick', category: 'DOWNLOAD' }, movPick);
-    cmd(['movcancel'], { desc: 'Internal: movie cancel', category: 'DOWNLOAD' }, movCancel);
-    cmd(['moviedl'], { desc: 'Use .movie native picker instead', category: 'DOWNLOAD' }, async (sock, msg) => {
+    hardBind(['movie'], { desc: 'Search & download Netnaija movies — .movie <title>', category: 'DOWNLOAD' }, movieSearch);
+    hardBind(['movpick'], { desc: 'Internal: movie title pick', category: 'DOWNLOAD' }, movPick);
+    hardBind(['movcancel'], { desc: 'Internal: movie cancel', category: 'DOWNLOAD' }, movCancel);
+    hardBind(['moviedl'], { desc: 'Use .movie native picker instead', category: 'DOWNLOAD' }, async (sock, msg) => {
       await sendReply(sock, msg, `🎬 Use *${PREFIX}movie <title>* and pick from the native movie list.\n\n_This movie flow now stays on the native picker — no ${PREFIX}moviedl step needed._`);
     });
     report.movie = true;
@@ -912,8 +1076,10 @@ function install(ctx) {
       });
       for (const fn of tries) {
         try {
-          const out = await fn();
-          if (typeof out === 'string' && /^https?:\/\//i.test(out)) return out;
+          const candidate = await fn();
+          if (!candidate) continue;
+          const ok = await _probeRemoteMedia(candidate, 'audio');
+          if (ok?.url) return ok.url;
         } catch {}
       }
       return null;
@@ -921,22 +1087,19 @@ function install(ctx) {
     const playResolveVideoUrl = async (meta) => {
       const tries = [];
       const ytUrl = meta?.videoUrl || (meta?.videoId ? `https://www.youtube.com/watch?v=${meta.videoId}` : '');
-      if (ytUrl) tries.push(async () => {
-        const d = await dcGet('/download/ytmp4', { url: ytUrl }, 40000);
-        return d?.result?.download_url || d?.result?.url || d?.download_url || d?.url || null;
-      });
-      if (ytUrl) tries.push(async () => {
-        const d = await dcGet('/play', { query: ytUrl, type: 'video' }, 35000);
-        return d?.result?.download_url || d?.result?.url || d?.download_url || d?.url || null;
-      });
+      if (/^https?:\/\//i.test(String(meta?.videoDlUrl || meta?.videoUrlDirect || ''))) tries.push(async () => meta.videoDlUrl || meta.videoUrlDirect);
+      if (ytUrl) tries.push(async () => playExtract(await dcGet('/download/ytmp4', { url: ytUrl }, 40000)).dlUrl || null);
+      if (ytUrl) tries.push(async () => playExtract(await dcGet('/play', { query: ytUrl, type: 'video' }, 40000)).dlUrl || null);
       if (CONFIG.GIFTED_API && CONFIG.GIFTED_KEY && ytUrl) tries.push(async () => {
         const { data } = await axios.get(`${CONFIG.GIFTED_API}/api/download/ytmp4?apikey=${CONFIG.GIFTED_KEY}&url=${encodeURIComponent(ytUrl)}`, { timeout: 60000 });
         return data?.result?.download_url || data?.result?.url || data?.result?.video || data?.result?.mp4 || null;
       });
       for (const fn of tries) {
         try {
-          const out = await fn();
-          if (typeof out === 'string' && /^https?:\/\//i.test(out)) return out;
+          const candidate = await fn();
+          if (!candidate) continue;
+          const ok = await _probeRemoteMedia(candidate, 'video');
+          if (ok?.url) return ok.url;
         } catch {}
       }
       return null;
@@ -1065,11 +1228,285 @@ function install(ctx) {
       _jxPlayLatestByChat.delete(jid);
       return safeReact(sock, msg, '👍');
     };
-    cmd(['play', 'music', 'song'], { desc: 'Play song — native picker with working local media delivery', category: 'DOWNLOAD' }, playSearch);
-    cmd(['jxplaypick'], { desc: 'Internal: player format pick', category: 'DOWNLOAD' }, playPick);
-    cmd(['jxplaycancel'], { desc: 'Internal: player cancel', category: 'DOWNLOAD' }, playCancel);
+    hardBind(['play', 'music', 'song'], { desc: 'Play song — native picker with working local media delivery', category: 'DOWNLOAD' }, playSearch);
+    hardBind(['jxplaypick'], { desc: 'Internal: player format pick', category: 'DOWNLOAD' }, playPick);
+    hardBind(['jxplaycancel'], { desc: 'Internal: player cancel', category: 'DOWNLOAD' }, playCancel);
     report.play = true;
   } catch (e) { console.log('[precious-v21] play error:', e && e.message); }
+
+
+  /* ══════════════════════════════════════════════════════════════════════
+     .ytmate — image card + native format → bitrate picker
+     ══════════════════════════════════════════════════════════════════════ */
+  try {
+    const ytmateCardText = (entry) => [
+      '🎵 *YTMate*',
+      '',
+      'TITLE     : ' + (entry.title || 'Unknown title'),
+      'AUTHOR    : ' + (entry.author || 'Unknown'),
+      'SOURCE    : YouTube',
+      '',
+      'Choose a format from the menu.',
+    ].join('\n');
+    const ytmateRows = [
+      { id: `${PREFIX}ytmatepick mp4`, rowId: `${PREFIX}ytmatepick mp4`, title: 'MP4 Video', description: 'Send as video' },
+      { id: `${PREFIX}ytmatepick mp3`, rowId: `${PREFIX}ytmatepick mp3`, title: 'MP3 Audio', description: 'Send as audio' },
+      { id: `${PREFIX}ytmatepick mp4doc`, rowId: `${PREFIX}ytmatepick mp4doc`, title: 'MP4 Document', description: 'Send MP4 as document' },
+      { id: `${PREFIX}ytmatepick mp3doc`, rowId: `${PREFIX}ytmatepick mp3doc`, title: 'MP3 Document', description: 'Send MP3 as document' },
+    ];
+    const ytmateStart = async (sock, msg, args) => {
+      const raw = (args || []).join(' ').trim();
+      if (!raw) return sendReply(sock, msg, `🎵 *YTMate*\n\nUsage: *${PREFIX}ytmate <youtube url or song name>*`);
+      await safeReact(sock, msg, '🎵');
+      const chat = msg.key.remoteJid;
+      const statusMsg = await sock.sendMessage(chat, { text: `🎵 *YTMate*\n\n⏳ Resolving *${raw}* ...` }, { quoted: msg }).catch(() => null);
+      const skey = statusMsg?.key;
+      try {
+        const base = await playEnrich({}, raw);
+        const ytUrl = /^https?:\/\/(?:www\.)?(?:youtube\.com|youtu\.be)\//i.test(raw) ? raw : base.videoUrl;
+        if (!ytUrl) throw new Error('could not resolve a YouTube video from your input');
+        const res = await axios.get(`${DC}/download/y2mate`, {
+          params: { url: ytUrl },
+          timeout: 45000,
+          headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'application/json,text/plain,*/*' },
+          validateStatus: () => true,
+        });
+        const data = res.data;
+        const result = data?.result || {};
+        const contentType = String(res.headers?.['content-type'] || '').toLowerCase();
+        if (/html/.test(contentType) || (typeof data === 'string' && /<!doctype|<html/i.test(data))) throw new Error(`YTMate API returned HTTP ${res.status}`);
+        if (!(data?.success === true) || !result?.title) throw new Error(data?.message || data?.error || `HTTP ${res.status}`);
+        const entry = {
+          stage: 'format',
+          sender: msg?.key?.participant || msg?.key?.remoteJid || '',
+          ytUrl,
+          videoId: result.id || base.videoId || playYtId(ytUrl),
+          title: result.title || base.title || raw,
+          author: result.author || base.artists || 'Unknown',
+          thumbnail: result.thumbnail || base.thumb || '',
+          source: result.source || ytUrl,
+        };
+        _setTimedState(_ytmateStore, chat, entry, YTMATE_TTL_MS);
+        if (skey) await sock.sendMessage(chat, { delete: skey }).catch(() => {});
+        const card = ytmateCardText(entry);
+        const thumb = await _thumbBufferFromUrl(entry.thumbnail);
+        if (thumb) await sock.sendMessage(chat, { image: thumb, caption: card }, { quoted: msg }).catch(() => sendReply(sock, msg, card));
+        else await sendReply(sock, msg, card);
+        if (typeof ctx.sendNativeFlowListMenu === 'function') {
+          await ctx.sendNativeFlowListMenu(sock, chat, msg, 'Choose the output format.', [{ title: 'YTMate Formats', rows: ytmateRows }], [{ text: '❌ Cancel', id: `${PREFIX}ytmatecancel` }]);
+        } else {
+          await sendReply(sock, msg, 'Choose the output format.\n\nMP4 Video\nMP3 Audio\nMP4 Document\nMP3 Document');
+        }
+        return safeReact(sock, msg, '✅');
+      } catch (e) {
+        if (skey) await ctx.editMessage?.(sock, chat, skey, `❌ YTMate failed: ${e.message}`).catch(() => {});
+        else await sendReply(sock, msg, `❌ YTMate failed: ${e.message}`);
+        return safeReact(sock, msg, '❌');
+      }
+    };
+    const ytmatePick = async (sock, msg, args) => {
+      const chat = msg.key.remoteJid;
+      const state = _getTimedState(_ytmateStore, chat, YTMATE_TTL_MS);
+      const mode = String((args || []).join(' ').trim() || '').toLowerCase();
+      if (!state || state.stage !== 'format') return sendReply(sock, msg, `❌ That YTMate picker expired. Run *${PREFIX}ytmate <youtube url>* again.`);
+      if (!['mp4', 'mp3', 'mp4doc', 'mp3doc'].includes(mode)) return sendReply(sock, msg, '❌ Invalid YTMate format.');
+      const quality = mode.startsWith('mp4') ? '720p' : '128kbps';
+      _setTimedState(_ytmateStore, chat, { ...state, stage: 'quality', mode, quality }, YTMATE_TTL_MS);
+      const rows = [{ id: `${PREFIX}ytmatequality ${quality}`, rowId: `${PREFIX}ytmatequality ${quality}`, title: quality, description: mode.startsWith('mp4') ? 'Available video quality from current API' : 'Available audio bitrate from current API' }];
+      if (typeof ctx.sendNativeFlowListMenu === 'function') {
+        await ctx.sendNativeFlowListMenu(sock, chat, msg, `Choose the available ${mode.startsWith('mp4') ? 'video quality' : 'audio bitrate'}.`, [{ title: mode.startsWith('mp4') ? 'Video Quality' : 'Audio Bitrate', rows }], [{ text: '❌ Cancel', id: `${PREFIX}ytmatecancel` }]);
+      } else {
+        await sendReply(sock, msg, `Available ${mode.startsWith('mp4') ? 'video quality' : 'audio bitrate'}: ${quality}`);
+      }
+      return safeReact(sock, msg, '✅');
+    };
+    const ytmateQuality = async (sock, msg, args) => {
+      const chat = msg.key.remoteJid;
+      const state = _getTimedState(_ytmateStore, chat, YTMATE_TTL_MS);
+      const pickedQuality = String((args || []).join(' ').trim() || '');
+      if (!state || state.stage !== 'quality') return sendReply(sock, msg, `❌ That YTMate picker expired. Run *${PREFIX}ytmate <youtube url>* again.`);
+      const mode = state.mode;
+      const quality = pickedQuality || state.quality;
+      const format = mode.startsWith('mp4') ? 'mp4' : 'mp3';
+      const title = _safeBaseName(state.title || 'youtube');
+      const meta = { videoUrl: state.ytUrl, videoId: state.videoId, title: state.title, artists: state.author, thumb: state.thumbnail };
+      const status = await sock.sendMessage(chat, { text: `⬇️ *YTMate*\n\nPreparing *${title}* (${quality}) ...` }, { quoted: msg }).catch(() => null);
+      const cleanup = new Set();
+      try {
+        const res = await axios.get(`${DC}/download/y2mate`, {
+          params: { url: state.ytUrl, format, quality },
+          timeout: 45000,
+          headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'application/json,text/plain,*/*' },
+          validateStatus: () => true,
+        });
+        const data = res.data;
+        const result = data?.result || {};
+        if (!(data?.success === true)) throw new Error(data?.message || data?.error || `HTTP ${res.status}`);
+        let finalUrl = '';
+        if (/^https?:\/\//i.test(String(result?.download || ''))) {
+          const ok = await _probeRemoteMedia(result.download, format === 'mp4' ? 'video' : 'audio');
+          if (ok?.url) finalUrl = ok.url;
+        }
+        if (!finalUrl) finalUrl = format === 'mp4' ? await playResolveVideoUrl(meta) : await playResolveAudioUrl(meta);
+        if (!finalUrl) throw new Error('no working media file was returned');
+        if (format === 'mp4') {
+          let fetched = await _fetchBinaryToTemp(finalUrl, { maxBytes: 180 * 1024 * 1024, timeout: 240000, prefix: 'ytmatev-' });
+          cleanup.add(fetched.dir);
+          let info = _videoMetaFromHead(fetched.head, fetched.contentType, finalUrl);
+          if (!info.ok) throw new Error('provider returned invalid video bytes');
+          if (info.ext !== '.mp4') {
+            const converted = await _transcodeVideoToMp4(fetched.filePath);
+            cleanup.add(converted.dir);
+            fetched = { ...fetched, filePath: converted.filePath };
+          }
+          if (mode === 'mp4doc') await _sendFilePath(sock, chat, 'document', fetched.filePath, { mimetype: 'video/mp4', fileName: `${title}.mp4` }, msg);
+          else await _sendFilePath(sock, chat, 'video', fetched.filePath, { mimetype: 'video/mp4', fileName: `${title}.mp4`, caption: `🎬 *${state.title}*` }, msg);
+        } else {
+          let fetched = await _fetchBinaryToTemp(finalUrl, { maxBytes: 80 * 1024 * 1024, timeout: 240000, prefix: 'ytmatea-' });
+          cleanup.add(fetched.dir);
+          let sendPath = fetched.filePath;
+          let info = _audioMetaFromHead(fetched.head, fetched.contentType, finalUrl);
+          if (!info.ok) throw new Error('provider returned invalid audio bytes');
+          if (info.ext !== '.mp3') {
+            const converted = await _transcodeAudioFile(fetched.filePath, 'mp3');
+            cleanup.add(converted.dir);
+            sendPath = converted.filePath;
+          }
+          if (mode === 'mp3doc') await _sendFilePath(sock, chat, 'document', sendPath, { mimetype: 'audio/mpeg', fileName: `${title}.mp3` }, msg);
+          else await _sendFilePath(sock, chat, 'audio', sendPath, { mimetype: 'audio/mpeg', ptt: false, fileName: `${title}.mp3` }, msg);
+        }
+        _clearTimedState(_ytmateStore, chat);
+        if (status?.key) await sock.sendMessage(chat, { delete: status.key }).catch(() => {});
+        return safeReact(sock, msg, '✅');
+      } catch (e) {
+        if (status?.key) await ctx.editMessage?.(sock, chat, status.key, `❌ YTMate download failed: ${e.message}`).catch(() => {});
+        else await sendReply(sock, msg, `❌ YTMate download failed: ${e.message}`);
+        return safeReact(sock, msg, '❌');
+      } finally {
+        for (const dir of cleanup) await fs.promises.rm(dir, { recursive: true, force: true }).catch(() => {});
+      }
+    };
+    const ytmateCancel = async (sock, msg) => {
+      _clearTimedState(_ytmateStore, msg?.key?.remoteJid);
+      return safeReact(sock, msg, '👍');
+    };
+    hardBind(['ytmate'], { desc: 'YouTube via YTMate — image card + format/bitrate picker', category: 'DOWNLOAD' }, ytmateStart);
+    hardBind(['ytmatepick'], { desc: 'Internal: YTMate format pick', category: 'DOWNLOAD' }, ytmatePick);
+    hardBind(['ytmatequality'], { desc: 'Internal: YTMate quality pick', category: 'DOWNLOAD' }, ytmateQuality);
+    hardBind(['ytmatecancel'], { desc: 'Internal: YTMate cancel', category: 'DOWNLOAD' }, ytmateCancel);
+  } catch (e) { console.log('[precious-v21] ytmate error:', e && e.message); }
+
+  /* ══════════════════════════════════════════════════════════════════════
+     facebook / terabox / apk / aio — David Cyril primary chains
+     ══════════════════════════════════════════════════════════════════════ */
+  try {
+    const dcJson = async (url, params, timeout = 45000) => {
+      const res = await axios.get(url, {
+        params,
+        timeout,
+        headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'application/json,text/plain,*/*' },
+        validateStatus: () => true,
+      });
+      const data = res.data;
+      const contentType = String(res.headers?.['content-type'] || '').toLowerCase();
+      if (/html/.test(contentType) || (typeof data === 'string' && /david cyril api docs|<!doctype|<html/i.test(data))) throw new Error(`provider returned HTTP ${res.status}`);
+      return data;
+    };
+    const sendByFetched = async (sock, msg, fetchedPack, fallbackName, caption = '') => {
+      const { fetched, meta } = fetchedPack;
+      try {
+        if (meta.kind === 'video') return await _sendFilePath(sock, msg.key.remoteJid, 'video', fetched.filePath, { mimetype: 'video/mp4', fileName: fallbackName || `video${meta.ext || '.mp4'}`, caption }, msg);
+        if (meta.kind === 'audio') return await _sendFilePath(sock, msg.key.remoteJid, 'audio', fetched.filePath, { mimetype: meta.mimetype || 'audio/mpeg', ptt: false, fileName: fallbackName || `audio${meta.ext || '.mp3'}` }, msg);
+        if (meta.kind === 'image') return await _sendFilePath(sock, msg.key.remoteJid, 'image', fetched.filePath, { mimetype: meta.mimetype || 'image/jpeg', caption }, msg);
+        return await _sendFilePath(sock, msg.key.remoteJid, 'document', fetched.filePath, { mimetype: meta.mimetype || 'application/octet-stream', fileName: fallbackName || `file${meta.ext || '.bin'}`, caption }, msg);
+      } finally {
+        await fs.promises.rm(fetched.dir, { recursive: true, force: true }).catch(() => {});
+      }
+    };
+    const facebookHandler = async (sock, msg, args) => {
+      const url = String((args || [])[0] || '').trim();
+      if (!/^https?:\/\//i.test(url)) return sendReply(sock, msg, `📘 *Facebook*\n\nUsage: *${PREFIX}facebook <facebook url>*`);
+      await safeReact(sock, msg, '📘');
+      try {
+        const data = await dcJson(`${DC}/facebook`, { url }, 45000);
+        if (!(data?.success === true)) throw new Error(data?.message || 'facebook api failed');
+        const pickedUrl = data?.result?.downloads?.hd?.url || data?.result?.downloads?.sd?.url || '';
+        if (!/^https?:\/\//i.test(String(pickedUrl || ''))) throw new Error('facebook api returned no media url');
+        const fetched = await _downloadFirstWorkingMedia([pickedUrl], { kind: 'video', maxBytes: 180 * 1024 * 1024, prefix: 'fbdc-' });
+        await sendByFetched(sock, msg, fetched, `${_safeBaseName(data?.result?.title || 'facebook')}.mp4`, `📘 *${data?.result?.title || 'Facebook Video'}*`);
+        return safeReact(sock, msg, '✅');
+      } catch (e) {
+        if (typeof previousFacebookHandler === 'function') return previousFacebookHandler(sock, msg, args);
+        await sendReply(sock, msg, `❌ Facebook failed: ${e.message}`);
+        return safeReact(sock, msg, '❌');
+      }
+    };
+    const teraboxHandler = async (sock, msg, args) => {
+      const url = String((args || [])[0] || '').trim();
+      if (!/^https?:\/\//i.test(url)) return sendReply(sock, msg, `📦 *Terabox*\n\nUsage: *${PREFIX}terabox <terabox url>*`);
+      await safeReact(sock, msg, '📦');
+      try {
+        const data = await dcJson(`${DC}/download/terabox`, { url }, 50000);
+        if (data?.success === false && data?.message) throw new Error(data.message);
+        const candidates = _collectHttpUrls(data).filter((u) => u != url);
+        const fetched = await _downloadFirstWorkingMedia(candidates, { kind: 'any', maxBytes: 350 * 1024 * 1024, prefix: 'teradc-' });
+        await sendByFetched(sock, msg, fetched, `${_safeBaseName('terabox_file')}${fetched.meta.ext || '.bin'}`, '📦 *Terabox Download*');
+        return safeReact(sock, msg, '✅');
+      } catch (e) {
+        if (typeof previousTeraboxHandler === 'function') return previousTeraboxHandler(sock, msg, args);
+        await sendReply(sock, msg, `❌ Terabox failed: ${e.message}`);
+        return safeReact(sock, msg, '❌');
+      }
+    };
+    const apkHandler = async (sock, msg, args) => {
+      const query = (args || []).join(' ').trim();
+      if (!query) return sendReply(sock, msg, `📱 *APK*\n\nUsage: *${PREFIX}apk <app name>*`);
+      await safeReact(sock, msg, '📱');
+      try {
+        const primary = await dcJson(`${DC}/download/apk`, { text: query }, 45000);
+        if (primary?.status === true && /^https?:\/\//i.test(String(primary?.apk?.downloadLink || ''))) {
+          const fetched = await _downloadFirstWorkingMedia([primary.apk.downloadLink], { kind: 'document', maxBytes: 300 * 1024 * 1024, prefix: 'apkdc-' });
+          const icon = await _thumbBufferFromUrl(primary?.apk?.icon);
+          const caption = `📱 *${primary?.apk?.name || query}*${primary?.apk?.package ? `\n📦 Package: ${primary.apk.package}` : ''}${primary?.apk?.lastUpdated ? `\n🆕 Version: ${primary.apk.lastUpdated}` : ''}`;
+          if (icon) await sock.sendMessage(msg.key.remoteJid, { image: icon, caption }, { quoted: msg }).catch(() => {});
+          await sendByFetched(sock, msg, fetched, `${_safeBaseName(primary?.apk?.name || query)}.apk`, caption);
+          return safeReact(sock, msg, '✅');
+        }
+        const secondary = await dcJson(`${DC}/download/android1`, { q: query }, 45000);
+        if (secondary?.success === true && Array.isArray(secondary?.data) && secondary.data.length && typeof previousApkHandler === 'function') return previousApkHandler(sock, msg, [secondary.data[0]?.name || query]);
+        throw new Error(primary?.error || primary?.message || secondary?.message || 'no working apk download was returned');
+      } catch (e) {
+        if (typeof previousApkHandler === 'function') return previousApkHandler(sock, msg, args);
+        await sendReply(sock, msg, `❌ APK failed: ${e.message}`);
+        return safeReact(sock, msg, '❌');
+      }
+    };
+    const aioHandler = async (sock, msg, args) => {
+      const url = String((args || [])[0] || '').trim();
+      if (!/^https?:\/\//i.test(url)) return sendReply(sock, msg, `📥 *AIO Downloader*\n\nUsage: *${PREFIX}aio <social url>*`);
+      await safeReact(sock, msg, '📥');
+      const endpoints = [`${DC}/download/aio`, `${DC}/download/aiov2`, `${DC}/download/aiov3`];
+      let lastErr = null;
+      for (const endpoint of endpoints) {
+        try {
+          const data = await dcJson(endpoint, { url }, 50000);
+          const candidates = _collectHttpUrls(data).filter((u) => u != url && !/ytimg|googleusercontent|\.jpg(?:$|[?#])|\.jpeg(?:$|[?#])|\.png(?:$|[?#])|\.webp(?:$|[?#])/i.test(String(u || '')));
+          const fetched = await _downloadFirstWorkingMedia(candidates, { kind: 'any', maxBytes: 180 * 1024 * 1024, prefix: 'aiodc-' });
+          await sendByFetched(sock, msg, fetched, `${_safeBaseName('aio_download')}${fetched.meta.ext || '.bin'}`, '📥 *AIO Download*');
+          return safeReact(sock, msg, '✅');
+        } catch (e) {
+          lastErr = e;
+        }
+      }
+      if (typeof previousAioHandler === 'function') return previousAioHandler(sock, msg, args);
+      await sendReply(sock, msg, `❌ AIO failed: ${(lastErr && lastErr.message) || 'no downloadable media found'}`);
+      return safeReact(sock, msg, '❌');
+    };
+    hardBind(['facebook', 'fb'], { desc: 'Download best-quality Facebook media', category: 'DOWNLOAD' }, facebookHandler);
+    hardBind(['terabox', 'tera', 'teradl'], { desc: 'Download Terabox media', category: 'DOWNLOAD' }, teraboxHandler);
+    hardBind(['apk'], { desc: 'Download APK with David Cyril primary/secondary/legacy fallback', category: 'DOWNLOAD' }, apkHandler);
+    hardBind(['aio', 'alldl', 'universaldl'], { desc: 'Universal downloader via David Cyril v1/v2/v3 then legacy fallback', category: 'DOWNLOAD' }, aioHandler);
+  } catch (e) { console.log('[precious-v21] social downloaders error:', e && e.message); }
 
   /* ══════════════════════════════════════════════════════════════════════
      .8upload — exact endpoint probe with honest provider errors
@@ -1233,10 +1670,10 @@ function install(ctx) {
       await boost6Submit(sock, msg, count);
       return true;
     };
-    cmd(['boost6'], { desc: 'Boost TikTok likes/followers/views with a native flow', category: 'TOOLS' }, boost6Start);
-    cmd(['boost6pick'], { desc: 'Internal: boost6 type pick', category: 'TOOLS' }, boost6Pick);
-    cmd(['boost6count'], { desc: 'Internal: boost6 count input', category: 'TOOLS' }, boost6Count);
-    cmd(['boost6cancel'], { desc: 'Internal: boost6 cancel', category: 'TOOLS' }, boost6Cancel);
+    hardBind(['boost6'], { desc: 'Boost TikTok likes/followers/views with a native flow', category: 'TOOLS' }, boost6Start);
+    hardBind(['boost6pick'], { desc: 'Internal: boost6 type pick', category: 'TOOLS' }, boost6Pick);
+    hardBind(['boost6count'], { desc: 'Internal: boost6 count input', category: 'TOOLS' }, boost6Count);
+    hardBind(['boost6cancel'], { desc: 'Internal: boost6 cancel', category: 'TOOLS' }, boost6Cancel);
     report.boost6 = true;
   } catch (e) { console.log('[precious-v21] boost6 error:', e && e.message); }
 
@@ -1513,9 +1950,9 @@ function install(ctx) {
         await sendReply(sock, msg, `❌ Group status failed: ${e.message}`).catch(() => {});
       }
     };
-    cmd(['gst', 'gstatus', 'groupstatus'], { desc: 'Post to group status or choose a group in DM', category: 'GROUP' }, gstHandler);
-    cmd(['gstpick'], { desc: 'Internal: GST group pick', category: 'GROUP' }, gstPick);
-    cmd(['gstcancel'], { desc: 'Internal: GST cancel', category: 'GROUP' }, gstCancel);
+    hardBind(['gst', 'gstatus', 'groupstatus'], { desc: 'Post to group status or choose a group in DM', category: 'GROUP' }, gstHandler);
+    hardBind(['gstpick'], { desc: 'Internal: GST group pick', category: 'GROUP' }, gstPick);
+    hardBind(['gstcancel'], { desc: 'Internal: GST cancel', category: 'GROUP' }, gstCancel);
     report.gst = true;
   } catch (e) { console.log('[precious-v21] gst error:', e && e.message); }
 
