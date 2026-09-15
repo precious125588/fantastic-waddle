@@ -483,6 +483,8 @@ export async function sendInteractiveMessage(sock, jid, params) {
       }),
       nativeFlowMessage: proto.Message.InteractiveMessage.NativeFlowMessage.create({
         buttons: builtButtons,
+        messageParamsJson: JSON.stringify({}),
+        messageVersion: 1,
       }),
       ...(hasContextInfo ? { contextInfo: proto.ContextInfo.create(contextInfo) } : {}),
     });
@@ -613,6 +615,7 @@ export async function sendRichInteractive(sock, jid, params) {
             buttons: [{ name: "single_select", buttonParamsJson: JSON.stringify({
               title: _cl(buttonText || "Open").slice(0, 24) || "Open", sections: nfSecs }) }],
             messageParamsJson: JSON.stringify({}),
+            messageVersion: 1,
           }),
           ...(hasContextInfo ? { contextInfo: proto.ContextInfo.create(contextInfo) } : {}),
         });
@@ -710,6 +713,8 @@ export async function sendRichInteractive(sock, jid, params) {
       header: headerProto,
       nativeFlowMessage: proto.Message.InteractiveMessage.NativeFlowMessage.create({
         buttons: builtButtons,
+        messageParamsJson: JSON.stringify({}),
+        messageVersion: 1,
       }),
       ...(hasContextInfo ? { contextInfo: proto.ContextInfo.create(contextInfo) } : {}),
     });
@@ -759,7 +764,7 @@ export async function fetchLatestBaileysVersion() {
     if (typeof B.fetchLatestBaileysVersion === "function") return B.fetchLatestBaileysVersion();
     if (typeof B.fetchLatestWaWebVersion === "function") return B.fetchLatestWaWebVersion();
   } catch {}
-  return { version: [2, 3000, 1017531287], isLatest: false };
+  return { version: [2, 3000, 1043857760], isLatest: false };
 }
 
 // ─── Store / socket helpers ───────────────────────────────────────────────────

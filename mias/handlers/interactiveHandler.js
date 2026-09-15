@@ -270,6 +270,7 @@ export async function sendList(sock, jid, body, sections, opts = {}) {
           nativeFlowMessage: proto.Message.InteractiveMessage.NativeFlowMessage.create({
             buttons: nfButtons,
             messageParamsJson: JSON.stringify({}),
+            messageVersion: 1,
           }),
         });
       // Dead-buttons fix for REGULAR WhatsApp: a native-flow list sent as a
