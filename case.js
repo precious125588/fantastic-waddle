@@ -3399,14 +3399,47 @@ case 'apkdl': {
 │ 📥 *Download:* [Click Here](${download_link})
 │
 ╰────────────⬣
-⏳ *Sending file...*`
+⏳ *Downloading safely (streamed, max 5GB)...*`
         }, { quoted: m });
         
-        await devtrust.sendMessage(m.chat, {
-            document: { url: download_link },
-            fileName: `${title || packageId}.apk`,
-            mimetype: 'application/vnd.android.package-archive'
-        }, { quoted: m });
+        // Stream to disk with a hard 5GB cap — never buffer the whole APK in
+        // RAM, so big files can never OOM/restart the bot.
+        const MAX_APK_BYTES = 5 * 1024 * 1024 * 1024;
+        const tmpFile = path.join(os.tmpdir(), 'apk_' + Date.now() + '.apk');
+        let received = 0;
+        try {
+            const { data: apkStream } = await axios.get(String(download_link), {
+                responseType: 'stream',
+                timeout: 15 * 60 * 1000,
+                maxRedirects: 5,
+                headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
+                validateStatus: (c) => c >= 200 && c < 400
+            });
+            await new Promise((resolve, reject) => {
+                const writer = fs.createWriteStream(tmpFile);
+                apkStream.on('data', (chunk) => {
+                    received += chunk.length;
+                    if (received > MAX_APK_BYTES) { writer.destroy(); reject(new Error('APK is larger than the 5GB safety cap.')); }
+                });
+                apkStream.on('error', (e) => { writer.destroy(); reject(e); });
+                apkStream.pipe(writer);
+                writer.on('finish', () => resolve());
+                writer.on('error', (e) => reject(e));
+            });
+            if (received === 0) throw new Error('Empty APK stream received.');
+            const apkBuf = fs.readFileSync(tmpFile);
+            // Deliver as a WhatsApp document with the official Android MIME type.
+            await devtrust.sendMessage(m.chat, {
+                document: apkBuf,
+                fileName: (String(title || packageId).replace(/[\\/:*?"<>|\n\r\t]/g, '_').trim() || packageId) + '.apk',
+                mimetype: 'application/vnd.android.package-archive',
+                caption: `📦 *${title || packageId}*\n📌 *Version:* ${version || 'N/A'}\n💾 *Size:* ${(received / (1024 * 1024)).toFixed(1)} MB`
+            }, { quoted: m });
+        } catch (streamErr) {
+            throw streamErr;
+        } finally {
+            try { fs.unlinkSync(tmpFile); } catch {}
+        }
         
     } catch (e) {
         console.error('APK download error:', e);
