@@ -21186,7 +21186,27 @@ async function _downloadVideoBuf(directUrl, referer) {
   return buf;
 }
 
-cmd(["creategc", "newgroup", "newgroup2"], { desc: "Create a new WhatsApp group with optional description", category: "OWNER", ownerOnly: true }, async (sock, msg, args) => {
+cmd(["creategc", "newgroup", "newgroup2"], { desc: "Create a new WhatsApp group. DM chat → sender auto-added; recipients optional (| pipe, @mentions, or .add later); invite link DM'd to anyone WhatsApp refuses to add.", category: "OWNER", ownerOnly: true }, async (sock, msg, args) => {
+  // PRECIOUS FIX v3 ──────────────────────────────────────────────────────────
+  // (1) DM chat → the SENDER (whoever typed the command) is AUTO-ADDED as the
+  //     first participant.  No self-typing your own number.
+  // (2) Optional extras ─ numbers from | pipe and @mentions ─ merged + deduped
+  //     + normalised to <digits>@s.whatsapp.net.
+  // (3) Group chat → no auto-add; only | pipe and @mentions are used.
+  // (4) WhatsApp refuses to add some numbers (privacy, new accounts).  We
+  //     DM the invite link to those phone numbers as a fallback and report
+  //     it in the success message.
+  // (5) SENDER'S WhatsApp profile picture becomes the group icon; the user
+  //     can change it later with .setgcpic (uses the wrapped
+  //     sock.updateProfilePicture at mias/index.js ~L500).
+  // ──────────────────────────────────────────────────────────────────────────
+  const _remoteJid = msg.key.remoteJid || "";
+  const _isDM = String(_remoteJid).endsWith("@s.whatsapp.net");
+  const _senderJid = msg.key.participant || msg.participant
+                   || (_isDM ? _remoteJid : null);
+  const _senderNum = String(_senderJid || "")
+    .split("@")[0].split(":")[0].replace(/[^0-9]/g, "");
+
   const ctx = msg.message?.extendedTextMessage?.contextInfo
     || msg.message?.imageMessage?.contextInfo
     || msg.message?.videoMessage?.contextInfo
@@ -21194,43 +21214,62 @@ cmd(["creategc", "newgroup", "newgroup2"], { desc: "Create a new WhatsApp group 
   const mentioned = Array.from(new Set((ctx?.mentionedJid || []).filter(Boolean)));
   const raw = args.join(" ").trim();
 
-  if (!raw) {
+  if (!raw && !_isDM) {
     await sendReply(sock, msg,
 `📋 *Create Group — Usage*
 
-*${CONFIG.PREFIX}creategc* <Name> | <numbers> | <description (optional)>
+*${CONFIG.PREFIX}creategc* <Name> [| <numbers> [| <description> ]]
 
 *Examples:*
+${CONFIG.PREFIX}creategc My Crew
 ${CONFIG.PREFIX}creategc My Crew | 2348012345678,2348098765432
-${CONFIG.PREFIX}creategc Study Group | 2348012345678 | Welcome to the study group!
+${CONFIG.PREFIX}creategc Study Group | 2347012345678 | Welcome to the study group!
 
-You can also *mention users* with @:
-${CONFIG.PREFIX}creategc My Crew @user1 @user2`);
+Tip: send this from a DM and you are auto-added as the first member.
+Add more numbers through the | pipe (optional) or with *.add* / *.adduser*.
+Your profile picture becomes the group icon — change it with *.setgcpic*.`);
     return;
   }
 
   const parts = raw.split("|").map(v => v.trim());
-  const subject = parts[0] || "";
-  const desc = parts[2] ? parts[2].trim() : "";
-  const participantNums = (parts[1] || "")
-    .split(/[ ,\n]+/)
+  const subjectFromArgs = parts[0] || "";
+  const desc = (parts[2] || "").trim();
+  const subject = subjectFromArgs || (_isDM ? `Group by ${_senderNum || "me"}` : "");
+
+  const _pipeNums = (parts[1] || "")
+    .split(/[ ,]+/)
     .map(v => v.replace(/[^0-9]/g, ""))
     .filter(v => v.length >= 7)
     .map(v => `${v}@s.whatsapp.net`);
-  const participants = Array.from(new Set([...mentioned, ...participantNums]));
+
+  const __norm = (jid) => {
+    const s = String(jid || "").trim();
+    if (!s) return null;
+    if (s.includes("@"))
+      return s.includes(":") ? s.split(":")[0] + "@s.whatsapp.net" : s;
+    const d = s.replace(/[^0-9]/g, "");
+    return d.length >= 7 ? `${d}@s.whatsapp.net` : null;
+  };
+  const _seen = new Set();
+  const participants = [];
+  const _push = (rawJid) => {
+    const j = __norm(rawJid);
+    if (!j || _seen.has(j)) return;
+    _seen.add(j);
+    participants.push(j);
+  };
+  if (_isDM && _senderJid) _push(_senderJid);  // DM → auto-add sender
+  for (const n of _pipeNums)   _push(n);       // | numbers optional
+  for (const m of mentioned)   _push(m);       // @mentions optional
 
   if (!subject) {
-    await sendReply(sock, msg, `❌ *Group name is required.*\n\nUsage: *${CONFIG.PREFIX}creategc <Name> | <numbers>*`);
-    return;
-  }
-  if (!participants.length) {
-    await sendReply(sock, msg, `❌ *Add at least one participant* (number or @mention).`);
+    await sendReply(sock, msg, `❌ *Group name is required.*\n\nUsage: *${CONFIG.PREFIX}creategc <Name>*`);
     return;
   }
 
   await react(sock, msg, "⏳");
   const jid = msg.key.remoteJid;
-  const statusMsg = await sock.sendMessage(jid, { text:
+  await sock.sendMessage(jid, { text:
 `👥 *Creating Group...*
 
 📛 Name: *${subject}*${desc ? `\n📝 Desc: ${desc}` : ""}
@@ -21241,45 +21280,84 @@ ${CONFIG.PREFIX}creategc My Crew @user1 @user2`);
   try {
     const created = await sock.groupCreate(subject, participants);
 
-    // Set description if provided
     if (desc) {
       try { await sock.groupUpdateDescription(created.id, desc); } catch {}
     }
 
-    // Get invite link
     const inviteCode = await sock.groupInviteCode(created.id).catch(() => "");
     const inviteLink = inviteCode ? `https://chat.whatsapp.com/${inviteCode}` : "—";
 
-    // Get accurate member count from metadata
-    let addedCount = participants.length;
-    let failedCount = 0;
+    let addedList = [];
+    let failedList = [];
     try {
       const meta = await sock.groupMetadata(created.id);
-      // bot itself is also a member, so subtract 1 for added count
-      addedCount = Math.max(0, meta.participants.length - 1);
-      failedCount = participants.length - addedCount;
-    } catch {}
+      const inGroup = new Set(
+        (meta.participants || []).map(p =>
+          String(p.id || p.jid || p.phoneNumber || "")
+            .split(":")[0] + "@s.whatsapp.net")
+      );
+      for (const p of participants) {
+        const j = String(p).split(":")[0] + "@s.whatsapp.net";
+        (inGroup.has(j) ? addedList : failedList).push(j);
+      }
+      if (_senderJid) {
+        const sj = String(_senderJid).split(":")[0] + "@s.whatsapp.net";
+        if (!addedList.includes(sj)) addedList.unshift(sj);
+        const idx = failedList.indexOf(sj);
+        if (idx !== -1) failedList.splice(idx, 1);
+      }
+    } catch {
+      for (const p of participants)
+        addedList.push(String(p).split(":")[0] + "@s.whatsapp.net");
+    }
+
+    // DM the invite link to anyone WhatsApp refused to add directly.
+    if (failedList.length && inviteCode) {
+      for (const p of failedList) {
+        try {
+          await sock.sendMessage(p, {
+            text:
+`👋 You've been invited to *${subject}*
+
+🔗 ${inviteLink}
+
+${desc ? "📝 " + desc : ""}`,
+          });
+        } catch {}
+      }
+    }
 
     await react(sock, msg, "✅");
-    await editMessage(sock, jid, null,
-`✅ *Group Created Successfully!*
+    let _reply = `✅ *Group Created Successfully!*\n\n📛 *Name:* ${subject}${desc ? `\n📝 *Desc:* ${desc}` : ""}\n👤 *Added:* ${addedList.length} member(s)`;
+    if (failedList.length)
+      _reply += `\n⚠️ ${failedList.length} couldn't be added directly — invite link DM'd as fallback.`;
+    _reply += `\n🔗 *Invite Link:*\n${inviteLink}\n🆔 *Group ID:* ${created.id.split("@")[0]}`;
+    await editMessage(sock, jid, null, _reply);
 
-📛 *Name:* ${subject}${desc ? `\n📝 *Desc:* ${desc}` : ""}
-👤 *Added:* ${addedCount} member(s)${failedCount > 0 ? ` _(${failedCount} couldn't be added)_` : ""}
-🔗 *Invite Link:*
-${inviteLink}
-🆔 *Group ID:* ${created.id.split("@")[0]}`);
     if (inviteCode) {
       await sendCTAButtons(sock, jid, msg,
         `✅ *${subject}* created!\n_Share or join using the buttons below_`,
         [
-          { type: "url",  text: "🔗 Join Group",          url: inviteLink },
-          { type: "copy", text: "📋 Copy Invite Link",    value: inviteLink, id: "gc_invite_copy" },
-          { type: "copy", text: "🆔 Copy Group ID",       value: created.id.split("@")[0], id: "gc_id_copy" },
+          { type: "url",  text: "🔗 Join Group",       url: inviteLink },
+          { type: "copy", text: "📋 Copy Invite Link", value: inviteLink, id: "gc_invite_copy" },
+          { type: "copy", text: "🆔 Copy Group ID",    value: created.id.split("@")[0], id: "gc_id_copy" },
         ],
         `${CONFIG.BOT_NAME} • Group Created`
       ).catch(() => {});
     }
+
+    // SENDER'S DP → group icon.
+    try {
+      if (_senderJid && typeof sock.updateProfilePicture === "function") {
+        const picUrl = await sock.profilePictureUrl(_senderJid, "image").catch(() => null);
+        if (picUrl) {
+          const r = await axios.get(picUrl, { responseType: "arraybuffer", timeout: 15000 }).catch(() => null);
+          if (r?.data && Buffer.byteLength(r.data) >= 5000) {
+            await sock.updateProfilePicture(created.id, r.data).catch(() => {});
+          }
+        }
+      }
+    } catch { /* non-fatal; user can set the icon later with .setgcpic */ }
   } catch (e) {
     await react(sock, msg, "❌");
     await editMessage(sock, jid, null,

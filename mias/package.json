@@ -11,6 +11,7 @@
   "dependencies": {
     "@distube/ytdl-core": "^4.16.10",
     "@ginkohub/speedtest-js": "^0.0.2",
+    "cox": "file:../cox",
     "@hapi/boom": "^10.0.1",
     "@resvg/resvg-js": "^2.6.2",
     "@whiskeysockets/baileys": "npm:@itsliaaa/baileys@latest",

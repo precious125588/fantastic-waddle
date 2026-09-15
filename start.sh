@@ -25,17 +25,29 @@ for d in mias; do
 done
 
 # ── GKTW helper ──────────────────────────────────────────────────────────────
-# @itsreimau/gktw does not exist on npm and its GitHub repo is 404, so there is
-# nothing to install. MIAS runs on raw Baileys through its adapter.
-# If you ever get a real helper package, set GKTW_PACKAGE=<name> and it will be
-# installed into mias/ with zero code changes.
-if [ -n "$GKTW_PACKAGE" ]; then
-  for d in mias; do
-    [ -d "$d" ] || continue
-    echo "[MAIS] Installing helper $GKTW_PACKAGE into $d..."
-    (cd "$d" && npm install "$GKTW_PACKAGE" --no-audit --no-fund --save-optional) \
-      || echo "[MAIS] helper $GKTW_PACKAGE unavailable in $d — Baileys fallback active."
-  done
+# The upstream @itsreimau/gktw package is 404 on npm and on GitHub, so a local
+# drop-in called "cox" lives at <repo>/cox and is wired in via `file:` here.
+# Setting GKTW_PACKAGE=<name> still works as a manual override; otherwise cox is
+# installed automatically so MIAS' gktwAdapter lights up with no code changes.
+GKTW_PACKAGE="${GKTW_PACKAGE:-cox}"
+for d in mias; do
+  [ -d "$d" ] || continue
+  echo "[MAIS] Installing helper $GKTW_PACKAGE into $d..."
+  (cd "$d" && npm install "../${cox_pkg:-cox}/.." --save --no-audit --no-fund) 2>/dev/null \
+    || (cd "$d" && npm install "$GKTW_PACKAGE" --no-audit --no-fund --save-optional) \
+    || echo "[MAIS] helper $GKTW_PACKAGE unavailable in $d — Baileys fallback active."
+done
+
+# ── Bad MAC repair: clear stale Signal session keys once. ────────────────────
+# The Railway logs show repeated "Session error: Error: Bad MAC" coming from
+# libsignal/src/crypto.js:87 because useMultiFileAuthState reloads poisoned
+# pre-keys off the persisted auth folder after every reconnect. Wipe the
+# app-state-sync-* snapshots and keep creds.json (so you don't get re-paired);
+# WhatsApp will rebuild the prekeys on next connect. Set KEEP_BAD_MAC=1 to
+# disable.
+if [ "${KEEP_BAD_MAC:-0}" != "1" ] && [ -d "${AUTH_DIR:-prezzy_auth}" ]; then
+  cleared=$(find "${AUTH_DIR:-prezzy_auth}" -maxdepth 1 -type d -name 'app-state-sync-*' -print -exec rm -rf {} + 2>/dev/null | wc -l)
+  echo "[MAIS] Bad-MAC repair: cleared $cleared stale app-state-sync-* snapshot(s) from ${AUTH_DIR:-prezzy_auth}"
 fi
 
 echo "[MAIS] Starting..."
