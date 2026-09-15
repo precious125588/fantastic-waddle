@@ -114,8 +114,47 @@ async function sendRichInteractive(spec) {
   const { sock, jid } = spec || {};
   if (!sock || !jid) throw new Error("cox.sendRichInteractive: sock & jid required");
 
-  const buttons = Array.isArray(spec.buttons) ? spec.buttons : [];
-  const buttonStyle = ("hero" === spec.style || "buttons" === spec.style) ? 1 : 1;
+  // Normalise the buttons into native-flow wire shape ({name, buttonParamsJson}).
+  // Callers may already hand us wire-shaped buttons or simple {text,id,url,...}
+  // objects — both are converted here so the proto build below is always valid.
+  const rawButtons = Array.isArray(spec.buttons) ? spec.buttons : [];
+  const buttons = rawButtons.map((b, i) => {
+    if (!b || typeof b !== "object") return null;
+    // Already in wire shape (has a `name`) — keep as-is.
+    if (b.name && typeof b.buttonParamsJson === "string") return b;
+    if (b.url || b.type === "url") {
+      return { name: "cta_url", buttonParamsJson: JSON.stringify({
+        display_text: b.text || `Link ${i + 1}`,
+        url: b.url || "", merchant_url: b.url || "",
+      })};
+    }
+    if (b.copyCode || b.type === "copy") {
+      return { name: "cta_copy", buttonParamsJson: JSON.stringify({
+        display_text: b.text || "Copy", copy_code: b.copyCode || b.id || "",
+      })};
+    }
+    if (b.phone || b.type === "call") {
+      return { name: "cta_call", buttonParamsJson: JSON.stringify({
+        display_text: b.text || "Call", phone_number: b.phone || "",
+      })};
+    }
+    if (b.type === "single_select" && b.sections) {
+      return { name: "single_select", buttonParamsJson: JSON.stringify({
+        title: b.text || "Open", sections: b.sections,
+      })};
+    }
+    // default: quick reply
+    return { name: "quick_reply", buttonParamsJson: JSON.stringify({
+      display_text: b.text || `Option ${i + 1}`, id: b.id || String(i),
+    })};
+  }).filter(Boolean);
+
+  // List style: prepend a single_select button that opens the sections.
+  if (spec.style === "list" && Array.isArray(spec.listSections) && spec.listSections.length) {
+    buttons.unshift({ name: "single_select", buttonParamsJson: JSON.stringify({
+      title: spec.buttonText || "Menu", sections: spec.listSections,
+    })});
+  }
 
   const header = spec.image
     ? { imageMessage: spec.image, hasMediaAttachment: true }
@@ -125,38 +164,70 @@ async function sendRichInteractive(spec) {
           subtitle: spec.subtitle || "",
           hasMediaAttachment: false,
         }
-      : undefined;
+      : { title: spec.title || "", hasMediaAttachment: false };
 
-  const payload = {
-    text: spec.text || "",
-    footer: spec.footer || "",
-    header,
-    buttons,
-    buttonText: spec.buttonText || "Open",
-    headerType: spec.image ? 4 : 1,
-  };
+  // ── NORMAL-WHATSAPP FIX (dead buttons) ─────────────────────────────────────
+  // A bare `interactiveMessage` sent through sock.sendMessage() renders on
+  // WhatsApp Business but every tap is a NO-OP on REGULAR WhatsApp. The
+  // reliable path is a proto-encoded interactiveMessage that carries
+  // messageContextInfo.deviceListMetadata, wrapped in a viewOnceMessage
+  // envelope, and relayed via generateWAMessageFromContent + relayMessage.
+  // We try that first, then fall back to the bare form, then plain text.
+  const B = await _loadBaileys();
+  const proto = B && B.proto;
+  const NF = proto?.Message?.InteractiveMessage?.NativeFlowMessage?.NativeFlowButton;
+  const _mci = { deviceListMetadata: {}, deviceListMetadataVersion: 2 };
+  const userJid = (sock?.user?.id || "").split(":")[0] + "@s.whatsapp.net";
 
-  if (spec.style === "list") {
-    payload.text = spec.text || "";
-    payload.sections = spec.listSections || [];
-    payload.buttonText = spec.buttonText || "Menu";
-    payload.footer = spec.footer || "";
-    payload.headerType = spec.image ? 4 : 1;
+  if (proto && typeof B.generateWAMessageFromContent === "function" && typeof sock.relayMessage === "function") {
+    let interactiveMsg = null;
+    try {
+      const built = NF
+        ? buttons.map((b) => { try { return NF.create(b); } catch { return b; } })
+        : buttons;
+      interactiveMsg = proto.Message.InteractiveMessage.create({
+        body:   proto.Message.InteractiveMessage.Body.create({ text: spec.text || "" }),
+        footer: proto.Message.InteractiveMessage.Footer.create({ text: spec.footer || "" }),
+        header: proto.Message.InteractiveMessage.Header.create(header),
+        nativeFlowMessage: proto.Message.InteractiveMessage.NativeFlowMessage.create({
+          buttons: built,
+          messageParamsJson: JSON.stringify({}),
+          messageVersion: 1,
+        }),
+        ...(spec.contextInfo ? { contextInfo: spec.contextInfo } : {}),
+      });
+    } catch (e) {
+      interactiveMsg = null;
+    }
+    if (interactiveMsg) {
+      const genOpts = { userJid };
+      if (spec.quoted) genOpts.quoted = spec.quoted;
+      const variants = [
+        // 1) viewOnce-wrapped — REQUIRED for taps to register on regular WA
+        { viewOnceMessage: { message: { messageContextInfo: _mci, interactiveMessage: interactiveMsg } } },
+        // 2) bare interactiveMessage + messageContextInfo (legacy fallback)
+        { messageContextInfo: _mci, interactiveMessage: interactiveMsg },
+      ];
+      for (const content of variants) {
+        try {
+          const full = proto.Message.create(content);
+          const gen  = await B.generateWAMessageFromContent(jid, full, genOpts);
+          return await sock.relayMessage(jid, gen.message, { messageId: gen.key.id });
+        } catch (e) { /* try next variant */ }
+      }
+    }
   }
 
-  return sock.sendMessage(jid, {
-    interactiveMessage: {
-      body: { text: spec.text || "" },
-      footer: { text: spec.footer || "" },
-      header,
-      nativeFlowMessage: {
-        buttons,
-        messageParamsJson: JSON.stringify({}),
-      },
-      contextInfo: spec.contextInfo || undefined,
-    },
-    messageParamsJson: "",
-  }, { quoted: spec.quoted });
+  // ── Fallback: plain text with numbered options (always works) ─────────────
+  const btnLines = rawButtons.length
+    ? rawButtons.map((b, i) => `${i + 1}. ${b.text || b.title || "Option"}`).join("\n")
+    : "";
+  const listLines = (spec.style === "list" && Array.isArray(spec.listSections))
+    ? spec.listSections.flatMap((sec) => (sec.rows || []).map((r, i) => `${i + 1}. ${r.title || "Option"}`)).join("\n")
+    : "";
+  const text = [spec.text || "", btnLines || listLines, spec.footer ? `_${spec.footer}_` : ""]
+    .filter(Boolean).join("\n\n");
+  return sock.sendMessage(jid, { text }, spec.quoted ? { quoted: spec.quoted } : {});
 }
 
 const sendHeroCard    = (spec) => sendRichInteractive({ ...spec, style: "hero"    });
