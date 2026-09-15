@@ -302,8 +302,16 @@ process.on('uncaughtException', (err) => {
     if (process.env.DEBUG_LOGS === '1') return; // full verbose mode
     // Silence console.log — all routine output goes to background
     console.log = () => {};
-    // Keep console.error fully visible — this is where real problems show
-    // console.warn stays visible too so important warnings aren't hidden
+    // PRECIOUS v22 hot-fix: also swallow libsignal "Bad MAC" noise from
+    // console.error, otherwise it floods the Railway panel and triggers
+    // PM2 restart loops.
+    const _origErr = console.error;
+    console.error = function (...args) {
+      const s = args.map(a => a && a.message ? a.message : String(a || '')).join(' ');
+      if (/bad\s*mac|BadMAC|libsignal/i.test(s)) return;
+      return _origErr.apply(console, args);
+    };
+    // Keep console.warn visible too so important warnings aren't hidden
   })();
 const { Baileys, BAILEYS_PACKAGE } = await (async () => {
   for (const pkg of ["@whiskeysockets/baileys"]) {
@@ -7907,6 +7915,18 @@ function normalizeSettingsChoice(value) {
 
 async function handleSettingsNumericReply(sock, msg, body) {
   const jid = msg?.key?.remoteJid;
+  // PRECIOUS v22 hot-fix: bail out when the incoming message is a list /
+  // button / native-flow response. The user tapped an in-bot card (.play,
+  // .ytmate, .movie, ...) not a settings row; the picker handler must win.
+  try {
+    const _mm = msg && msg.message;
+    if (_mm && (
+      _mm.listResponseMessage
+      || _mm.buttonsResponseMessage
+      || _mm.interactiveResponseMessage
+      || _mm.templateButtonReplyMessage
+    )) return false;
+  } catch {}
   // 🛠️ PRECIOUS FIX: native-button taps ("set:<key>:toggle") are handled HERE,
   // session-independent, so the owner can enable/disable any setting by tapping
   // the native buttons under the .setting menu even if the numbered path fails.

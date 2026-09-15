@@ -522,6 +522,42 @@ function install(ctx) {
 
   const safeReact = (sock, msg, emoji) => { try { return react(sock, msg, emoji); } catch { return Promise.resolve(); } };
 
+  /* ── PRECIOUS v22 hot-fix ──────────────────────────────────────────────────
+     Player helpers were previously `const`-declared inside the .play try-block,
+     which made them invisible to the .ytmate try-block -> ReferenceError floods
+     in Railway logs ("playEnrich is not defined"). Forward-declare them at
+     install() scope (let) so both try-blocks share them; .play try-block
+     reassigns them with the real bodies. */
+
+  const __normalizePlayJid = (jid) => String(jid || '').replace(/:\d+(?=@)/, '');
+
+  const PLAY_HEADER_22 = '───── 𝑷𝑹𝑬𝑪𝑰𝑶𝑼𝑺 x PLAYER ─────';
+  const JX_PLAY_TTL_MS_22 = 10 * 60 * 1000;
+  const _jxPlayPending_22 = new Map();
+  const _jxPlayLatestByChat_22 = new Map();
+  const _jxPlaySweep_22 = () => {
+    const now = Date.now();
+    for (const [key, entry] of _jxPlayPending_22.entries()) {
+      if (!entry || now - Number(entry.ts || 0) > JX_PLAY_TTL_MS_22) _jxPlayPending_22.delete(key);
+    }
+    for (const [chatKey, key] of _jxPlayLatestByChat_22.entries()) {
+      if (!_jxPlayPending_22.has(key)) _jxPlayLatestByChat_22.delete(chatKey);
+    }
+  };
+
+  // forward declarations — reassigned in .play try-block, used by .ytmate
+  let playEnrich = async () => ({});
+  let playYtId = () => '';
+  let playThumb = async () => null;
+  let playResolveAudioUrl = async () => null;
+  let playResolveVideoUrl = async () => null;
+  let playExtract = (p) => ({});
+  let playSameChat = (a, b) => __normalizePlayJid(a) === __normalizePlayJid(b);
+  let playNormChat = __normalizePlayJid;
+  let playStore = () => {};
+  let playFind = () => null;
+  /* ── end hot-fix ─────────────────────────────────────────────────────────── */
+
   const hardBind = (names, meta, handler) => {
     try { cmd(names, meta, handler); } catch {}
     const list = Array.isArray(names) ? names : [names];
@@ -928,15 +964,15 @@ function install(ctx) {
      .play — native picker with verified local media delivery
      ══════════════════════════════════════════════════════════════════════ */
   try {
-    const PLAY_HEADER = '───── 𝑷𝑹𝑬𝑪𝑰𝑶𝑼𝑺 x PLAYER ─────';
-    const playNormChat = (jid) => String(jid || '').replace(/:\d+(?=@)/, '');
+    const PLAY_HEADER = PLAY_HEADER_22;
+    playNormChat = __normalizePlayJid;
     const playSender = (msg) => String(msg?.key?.participant || msg?.key?.remoteJid || '');
-    const playSameChat = (a, b) => playNormChat(a) === playNormChat(b);
+    playSameChat = (a, b) => __normalizePlayJid(a) === __normalizePlayJid(b);
     const playQuotedId = (msg) => {
       const c = _messageContextInfo(msg);
       return c?.stanzaId || c?.quotedMessage?.key?.id || null;
     };
-    const playYtId = (input) => {
+    playYtId = (input) => {
       const raw = String(input || '').trim();
       if (!raw) return '';
       const m = raw.match(/(?:youtu\.be\/|youtube\.com\/(?:watch\?v=|shorts\/|embed\/))([A-Za-z0-9_-]{6,})/i);
@@ -944,7 +980,7 @@ function install(ctx) {
       if (/^[A-Za-z0-9_-]{6,}$/.test(raw)) return raw;
       return '';
     };
-    const playExtract = (payload) => {
+    playExtract = (payload) => {
       const source = payload?.result || payload?.data || payload || {};
       const nested = source?.result || source?.data || source;
       const dlUrl = nested?.download_url || nested?.dl_url || nested?.url || nested?.audio || nested?.mp3 || nested?.link || null;
@@ -960,7 +996,7 @@ function install(ctx) {
         thumb: nested?.thumbnail || nested?.thumb || nested?.image || null,
       };
     };
-    const playStore = (keyId, jid, msg, meta) => {
+    playStore = (keyId, jid, msg, meta) => {
       if (!keyId || !jid || !meta) return;
       _jxPlaySweep();
       const entry = { jid: playNormChat(jid), user: playSender(msg), meta: { ...meta }, ts: Date.now() };
@@ -974,7 +1010,7 @@ function install(ctx) {
       }, JX_PLAY_TTL_MS + 1000);
       timer?.unref?.();
     };
-    const playFind = (msg) => {
+    playFind = (msg) => {
       _jxPlaySweep();
       const jid = msg?.key?.remoteJid || '';
       const user = playSender(msg);
@@ -992,7 +1028,7 @@ function install(ctx) {
     };
     const playDur = (v) => typeof ctx._p2Dur === 'function' ? ctx._p2Dur(v) : String(v || '0:00');
     const playViews = (v) => typeof ctx._p2Views === 'function' ? ctx._p2Views(v) : String(v || '0');
-    const playThumb = async (meta) => {
+    playThumb = async (meta) => {
       if (typeof ctx._p2ThumbBuf === 'function') {
         try {
           const b = await ctx._p2ThumbBuf(meta);
@@ -1008,7 +1044,7 @@ function install(ctx) {
       }
       return null;
     };
-    const playEnrich = async (meta, query) => {
+    playEnrich = async (meta, query) => {
       const out = { ...(meta || {}) };
       if (!out.videoUrl && out.videoId) out.videoUrl = `https://www.youtube.com/watch?v=${out.videoId}`;
       if (!out.videoId && out.videoUrl) out.videoId = playYtId(out.videoUrl);
@@ -1064,7 +1100,7 @@ function install(ctx) {
         { id: `${PREFIX}jxplaypick 4`, rowId: `${PREFIX}jxplaypick 4`, title: 'Video (.mp4)', description: 'Send MP4 video' },
       ],
     }];
-    const playResolveAudioUrl = async (meta) => {
+    playResolveAudioUrl = async (meta) => {
       const tries = [];
       const ytUrl = meta?.videoUrl || (meta?.videoId ? `https://www.youtube.com/watch?v=${meta.videoId}` : '');
       if (/^https?:\/\//i.test(String(meta?.dlUrl || ''))) tries.push(async () => meta.dlUrl);
@@ -1084,7 +1120,7 @@ function install(ctx) {
       }
       return null;
     };
-    const playResolveVideoUrl = async (meta) => {
+    playResolveVideoUrl = async (meta) => {
       const tries = [];
       const ytUrl = meta?.videoUrl || (meta?.videoId ? `https://www.youtube.com/watch?v=${meta.videoId}` : '');
       if (/^https?:\/\//i.test(String(meta?.videoDlUrl || meta?.videoUrlDirect || ''))) tries.push(async () => meta.videoDlUrl || meta.videoUrlDirect);
@@ -1173,6 +1209,21 @@ function install(ctx) {
             fetched = { ...fetched, filePath: converted.filePath };
             info = converted;
           }
+          // Faststart: re-write the mp4 so the moov atom is at the front.
+          // DASH-style YouTube videos return mp4 containers whose moov
+          // sits at the tail; WhatsApp rejects those as
+          // "This file isn't available".
+          try {
+            const fs2 = fs;
+            const faststarted = await (async () => {
+              const dir = await fs2.promises.mkdtemp(path.join(os.tmpdir(), 'jxfast-'));
+              const outPath = path.join(dir, 'faststart.mp4');
+              await runFfmpeg(['-y', '-i', fetched.filePath, '-c', 'copy', '-movflags', '+faststart', outPath], 120000);
+              return { dir, filePath: outPath };
+            })();
+            cleanup.add(faststarted.dir);
+            fetched = { ...fetched, filePath: faststarted.filePath };
+          } catch (_e2) { /* keep existing file if faststart fails */ }
           await _sendFilePath(sock, jid, 'video', fetched.filePath, { mimetype: 'video/mp4', fileName: `${title}.mp4` }, msg);
         } else {
           const audioUrl = await playResolveAudioUrl(meta);
@@ -1184,7 +1235,11 @@ function install(ctx) {
           let sendPath = fetched.filePath;
           let sendMime = info.mimetype;
           let sendExt = info.ext || '.mp3';
-          if (mode === 2 || (mode === 1 && !['.mp3', '.m4a', '.ogg'].includes(sendExt))) {
+          // Modes 1 (audio) and 2 (audio document) ALWAYS go through the mp3
+          // transcoder. WhatsApp rejects raw m4a/webm as "audio"
+          // attachments and m4a from DASH YouTube streams is the #1 cause
+          // of "This file isn't available".
+          if (mode === 1 || mode === 2) {
             const converted = await _transcodeAudioFile(fetched.filePath, 'mp3');
             cleanup.add(converted.dir);
             sendPath = converted.filePath;
