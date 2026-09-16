@@ -64,42 +64,52 @@ module.exports = {
         }
       }
 
+      // V25-OK: real group status relay
+      // WHY THE OLD ONE LIED: the fallback did
+      //     sock.sendMessage('status@broadcast', …)
+      // which RESOLVES successfully but does NOT create a group-status ring
+      // entry, so the handler replied "✅ Posted to group status." while nothing
+      // was ever visible. A group status must be RELAYED as a
+      // groupStatusMessageV2 envelope with a statusJidList. We now report ✅
+      // only when such a relay actually resolved, and we try the group JID
+      // first (the form the working in-repo poster uses) then status@broadcast.
       async function uploadAndRelay(sock, groupId, payload) {
         const memberJids = await groupMembers(sock, groupId);
         const opts = memberJids.length ? { statusJidList: memberJids } : {};
+        const newId = () => 'MIASG' + Date.now().toString(36).toUpperCase() + Math.random().toString(36).slice(2, 8).toUpperCase();
 
-        // Path 1 — native group status envelope (best quality, native ring)
+        let g = null;
         try {
           const mod = await import('@whiskeysockets/baileys');
-          let g = mod.generateWAMessageContent;
+          g = mod.generateWAMessageContent;
+          if (typeof g !== 'function' && mod.default && typeof mod.default.generateWAMessageContent === 'function') g = mod.default.generateWAMessageContent;
           if (typeof g !== 'function' && ctx.generateWAMessageContent) g = ctx.generateWAMessageContent;
-          if (typeof g === 'function') {
-            const upload = typeof sock.waUploadToServer === 'function' ? sock.waUploadToServer.bind(sock) : undefined;
-            let inner = null;
-            if (payload.kind === 'text') inner = await g({ text: payload.text || '' }, upload ? { upload } : {});
-            else if (payload.kind === 'image') inner = await g({ image: payload.buf, caption: payload.caption || '' }, upload ? { upload } : {});
-            else if (payload.kind === 'video') inner = await g({ video: payload.buf, caption: payload.caption || '', mimetype: 'video/mp4' }, upload ? { upload } : {});
-            else if (payload.kind === 'audio') inner = await g({ audio: payload.buf, mimetype: 'audio/ogg; codecs=opus', ptt: false }, upload ? { upload } : {});
-            else if (payload.kind === 'sticker') inner = await g({ sticker: payload.buf }, upload ? { upload } : {});
-            if (inner) {
-              await sock.relayMessage('status@broadcast', { groupStatusMessageV2: { message: inner } }, {
-                ...opts,
-                messageId: 'MIASG' + Date.now().toString(36).toUpperCase() + Math.random().toString(36).slice(2, 8).toUpperCase(),
-              });
-              return true;
-            }
-          }
         } catch {}
+        if (typeof g !== 'function') return { ok: false, error: 'generateWAMessageContent unavailable in this Baileys build' };
 
-        // Path 2 — plain status@broadcast send (fallback)
+        const upload = typeof sock.waUploadToServer === 'function' ? sock.waUploadToServer.bind(sock) : undefined;
+        const genOpts = upload ? { upload } : {};
+        let inner = null;
         try {
-          if (payload.kind === 'text') await sock.sendMessage('status@broadcast', { text: payload.text || '' }, opts);
-          else if (payload.kind === 'image') await sock.sendMessage('status@broadcast', { image: payload.buf, caption: payload.caption || '' }, opts);
-          else if (payload.kind === 'video') await sock.sendMessage('status@broadcast', { video: payload.buf, caption: payload.caption || '', mimetype: 'video/mp4' }, opts);
-          else if (payload.kind === 'audio') await sock.sendMessage('status@broadcast', { audio: payload.buf, mimetype: 'audio/ogg; codecs=opus', ptt: false }, opts);
-          else if (payload.kind === 'sticker') await sock.sendMessage('status@broadcast', { sticker: payload.buf }, opts);
-          return true;
-        } catch { return false; }
+          if (payload.kind === 'text') inner = await g({ text: payload.text || '' }, genOpts);
+          else if (payload.kind === 'image') inner = await g({ image: payload.buf, caption: payload.caption || '' }, genOpts);
+          else if (payload.kind === 'video') inner = await g({ video: payload.buf, caption: payload.caption || '', mimetype: 'video/mp4' }, genOpts);
+          else if (payload.kind === 'audio') inner = await g({ audio: payload.buf, mimetype: 'audio/ogg; codecs=opus', ptt: false }, genOpts);
+          else if (payload.kind === 'sticker') inner = await g({ sticker: payload.buf }, genOpts);
+        } catch (e) {
+          return { ok: false, error: 'media upload failed: ' + ((e && e.message) || e) };
+        }
+        if (!inner) return { ok: false, error: 'could not build the status content' };
+
+        const targets = [groupId, 'status@broadcast'];
+        let lastErr = '';
+        for (const t of targets) {
+          try {
+            await sock.relayMessage(t, { groupStatusMessageV2: { message: inner } }, { ...opts, messageId: newId() });
+            return { ok: true, delivered: memberJids.length || 1, via: t };
+          } catch (e) { lastErr = (e && e.message) || String(e); }
+        }
+        return { ok: false, error: lastErr || 'relay rejected' };
       }
 
       async function buildPayload(msg) {
@@ -133,10 +143,13 @@ module.exports = {
             await reactOnce('❌');
             return sendReply(sock, msg, payload.error);
           }
-          const ok = await uploadAndRelay(sock, chat, payload);
+          // V25-OK: gst honest result
+          const res = await uploadAndRelay(sock, chat, payload);
           clearTimeout(watchdog);
-          await reactOnce(ok ? '✅' : '❌');
-          return sendReply(sock, msg, ok ? '✅ Posted to group status.' : '❌ Failed to post group status — check bot logs.').catch(() => {});
+          await reactOnce(res.ok ? '✅' : '❌');
+          return sendReply(sock, msg, res.ok
+            ? `✅ Posted to this group's status ring (${res.delivered} recipient${res.delivered === 1 ? '' : 's'}).`
+            : `❌ Group status was NOT posted — ${res.error || 'unknown error'}. Nothing was sent.`).catch(() => {});
         } catch (e) {
           clearTimeout(watchdog);
           await reactOnce('❌');

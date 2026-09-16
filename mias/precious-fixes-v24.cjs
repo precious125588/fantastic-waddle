@@ -96,35 +96,104 @@ function ytId(url) {
   return m ? m[1] : null;
 }
 
-// ── YouTube download with MULTIPLE APIs (fallback chain) ─────────────────
+// ── ytFindFirst: song NAME → YouTube URL (uses the bundled yt-search) ──────
+async function ytFindFirst(query) {
+  try {
+    const yts = require('yt-search');
+    const r = await yts(String(query || '').trim());
+    const v = (r && r.videos && r.videos[0]) || (Array.isArray(r) ? r[0] : null);
+    if (v && v.url) return v.url;
+    if (v && v.videoId) return 'https://www.youtube.com/watch?v=' + v.videoId;
+  } catch {}
+  try {
+    const r = await axios.get('https://www.youtube.com/results?search_query=' + encodeURIComponent(query), { headers: UA, timeout: 15000 });
+    const m = String(r.data || '').match(/"videoId":"([A-Za-z0-9_-]{11})"/);
+    if (m) return 'https://www.youtube.com/watch?v=' + m[1];
+  } catch {}
+  return null;
+}
+
+// V25-OK: ytDownload working providers
+// Every candidate is magic-number checked. A candidate that returns an HTML
+// error page, a JSON blob, or a file under 32 KB is REJECTED and the next
+// provider is tried — this is what kills the old "video isn't available /
+// file is corrupted" message, which was simply an error page sent as mp4.
 async function ytDownload(url, mode /* 'audio'|'video' */, quality) {
-  const id = ytId(url); const full = id ? `https://youtu.be/${id}` : url;
+  const id = ytId(url); const full = id ? ('https://youtu.be/' + id) : url;
   const q = String(quality || (mode === 'audio' ? '128' : '360'));
   const tries = [];
+
+  // 1) the repo's own DavidCyril client, when the host exposed it
+  try {
+    const dc = (globalThis.__PRECIOUS__ && globalThis.__PRECIOUS__.dcGet) || globalThis.__MIAS_DC_GET__;
+    if (typeof dc === 'function') {
+      if (mode === 'audio') tries.push(async () => {
+        const r = await dc('/download/ytmp3', { url: full }, 30000);
+        const d = r && r.ok ? r.data : null;
+        const u = d && (d.result && (d.result.download_url || d.result.url) || d.download_url || d.url);
+        return u && { url: u, title: (d && d.result && d.result.title) || '' };
+      });
+      else tries.push(async () => {
+        const r = await dc('/download/ytmp4', { url: full, quality: q }, 45000);
+        const d = r && r.ok ? r.data : null;
+        const u = d && (d.result && (d.result.download_url || d.result.url) || d.download_url || d.url);
+        return u && { url: u, title: (d && d.result && d.result.title) || '' };
+      });
+    }
+  } catch {}
+
+  // 2) proven public mirrors kept from the working play pipeline
   if (mode === 'audio') {
     tries.push(
-      async () => { const d = await getJson(`https://api.davidcyriltech.my.id/download/ytmp3?url=${encodeURIComponent(full)}`); const u = d?.result?.download_url || d?.result?.url || d?.download_url; return u && { url: u, title: d?.result?.title }; },
-      async () => { const d = await getJson(`https://api.giftedtech.co.ke/api/download/ytmp3?apikey=gifted&url=${encodeURIComponent(full)}`); const u = d?.result?.download_url || d?.result?.url; return u && { url: u, title: d?.result?.title }; },
-      async () => { const d = await getJson(`https://api.dreaded.site/api/ytdl/audio?url=${encodeURIComponent(full)}`); const u = d?.result?.url || d?.url; return u && { url: u }; },
-      async () => { const d = await getJson(`https://api.princetechn.com/api/download/ytmp3?apikey=prince&url=${encodeURIComponent(full)}`); const u = d?.result?.download_url || d?.result?.url; return u && { url: u, title: d?.result?.title }; },
+      async () => { const d = await getJson('https://api.nexoracle.com/downloader/ytmp3?apikey=free_key@maher_apis&url=' + encodeURIComponent(full)); const u = d?.result?.download_url || d?.result?.url || d?.download_url || d?.url; return u && { url: u, title: d?.result?.title }; },
+      async () => { const d = await getJson('https://api.davidcyril.name.ng/download/ytmp3?url=' + encodeURIComponent(full)); const u = d?.result?.download_url || d?.result?.url || d?.download_url || d?.url; return u && { url: u, title: d?.result?.title }; },
+      async () => { const d = await getJson('https://api.princetechn.com/api/download/ytmp3?apikey=prince&url=' + encodeURIComponent(full)); const u = d?.result?.download_url || d?.result?.url; return u && { url: u, title: d?.result?.title }; },
     );
   } else {
     tries.push(
-      async () => { const d = await getJson(`https://api.davidcyriltech.my.id/download/ytmp4?url=${encodeURIComponent(full)}&quality=${encodeURIComponent(q)}`); const u = d?.result?.download_url || d?.result?.url || d?.download_url; return u && { url: u, title: d?.result?.title }; },
-      async () => { const d = await getJson(`https://api.giftedtech.co.ke/api/download/ytmp4?apikey=gifted&url=${encodeURIComponent(full)}&quality=${encodeURIComponent(q)}`); const u = d?.result?.download_url || d?.result?.url; return u && { url: u, title: d?.result?.title }; },
-      async () => { const d = await getJson(`https://api.dreaded.site/api/ytdl/video?url=${encodeURIComponent(full)}`); const u = d?.result?.url || d?.url; return u && { url: u }; },
-      async () => { const d = await getJson(`https://api.princetechn.com/api/download/ytmp4?apikey=prince&url=${encodeURIComponent(full)}`); const u = d?.result?.download_url || d?.result?.url; return u && { url: u, title: d?.result?.title }; },
+      async () => { const d = await getJson('https://api.nexoracle.com/downloader/ytmp4?apikey=free_key@maher_apis&url=' + encodeURIComponent(full)); const u = d?.result?.download_url || d?.result?.url || d?.download_url || d?.url; return u && { url: u, title: d?.result?.title }; },
+      async () => { const d = await getJson('https://api.davidcyril.name.ng/download/ytmp4?url=' + encodeURIComponent(full) + '&quality=' + encodeURIComponent(q)); const u = d?.result?.download_url || d?.result?.url || d?.download_url || d?.url; return u && { url: u, title: d?.result?.title }; },
+      async () => { const d = await getJson('https://api.princetechn.com/api/download/ytmp4?apikey=prince&url=' + encodeURIComponent(full)); const u = d?.result?.download_url || d?.result?.url; return u && { url: u, title: d?.result?.title }; },
     );
   }
+
+  // 3) the exact provider chain the working .play command uses, when exposed
+  try {
+    const p2 = (mode === 'video' && globalThis.__MIAS_P2_VIDEO_BUF__) || (mode === 'audio' && globalThis.__MIAS_P2_AUDIO_BUF__);
+    if (typeof p2 === 'function') {
+      tries.push(async () => {
+        const buf = await p2({ title: '', videoId: id || '', videoUrl: full }, q);
+        return buf && { url: null, buf };
+      });
+    }
+  } catch {}
+
   for (const t of tries) {
     try {
       const r = await t();
-      if (!r?.url) continue;
+      if (!r) continue;
+      if (r.buf) { if (isRealMedia(r.buf) || (mode === 'audio' && isAudioBuf(r.buf))) return { buf: r.buf, title: r.title || '' }; continue; }
+      if (!r.url) continue;
       const buf = await getBuf(r.url);
-      if (buf && isRealMedia(buf)) return { buf, title: r.title || '' };
+      if (mode === 'audio') { if (isAudioBuf(buf)) return { buf, title: r.title || '' }; }
+      else if (buf && isRealMedia(buf)) return { buf, title: r.title || '' };
     } catch {}
   }
   return null;
+}
+
+// Real audio check (mp3/m4a/ogg/opus/wav) — the old code only sniffed video,
+// so some audio providers returned HTML that was then sent as a "song".
+function isAudioBuf(buf) {
+  if (!buf || buf.length < 32 * 1024) return false;
+  const head = buf.slice(0, 40).toString('utf8').trim().toLowerCase();
+  if (/^<!doctype|^<html|^\{|^<\?xml|^not found|^forbidden|^error/.test(head)) return false;
+  if (buf.slice(0, 3).toString('ascii') === 'ID3') return true;
+  if (buf[0] === 0xFF && (buf[1] & 0xE0) === 0xE0) return true;
+  if (buf.slice(0, 4).toString('ascii') === 'OggS') return true;
+  if (buf.slice(0, 4).toString('ascii') === 'RIFF' && buf.slice(8, 12).toString('ascii') === 'WAVE') return true;
+  if (buf.slice(4, 8).toString('ascii') === 'ftyp') return true; // m4a
+  return false;
 }
 
 // ── picker store (per-chat, quoted-key aware) ─────────────────────────────
@@ -183,6 +252,11 @@ module.exports.install = function install(P) {
   // or the settings consumer keeps answering "Unknown settings option *4*".
   const _prevHasPending = globalThis.__miasHasPendingPicker;
   globalThis.__miasHasPendingPicker = function (jid) {
+    // V25-OK: play pending probe in guard
+    // The play card stores its pending state by MESSAGE id, so the old probe
+    // (which asked by CHAT jid) always answered false and a bare "4" fell
+    // through to the settings consumer → "❌ Unknown settings option *4*".
+    try { if (typeof globalThis.__miasPlayPending === 'function' && globalThis.__miasPlayPending(jid)) return true; } catch {}
     try { if (hasPendingPicker(jid)) return true; } catch {}
     try { if (typeof _prevHasPending === 'function' && _prevHasPending(jid)) return true; } catch {}
     try {
@@ -202,12 +276,31 @@ module.exports.install = function install(P) {
     try { if (typeof P.getBotPic === 'function') { const b = await P.getBotPic(); if (b) return b; } } catch {}
     return null;
   }
+  // V25-OK: hardened DP lookup
+  // profilePictureUrl was called once with a raw JID. WhatsApp can hand the
+  // same person as 234xxxxxxxxxx@s.whatsapp.net, 234xxxxxxxxxx:12@s.whatsapp.net
+  // or an @lid, so one shot often missed and the card fell back to text. We now
+  // try every identity form and both picture types before giving up.
   async function targetPic(sock, jid) {
-    try {
-      const url = await sock.profilePictureUrl(jid, 'image');
-      if (url) { const b = await getBuf(url, 15000); if (b) return b; }
-    } catch {}
-    return botPic(); // no dp → bot image card
+    const raw = String(jid || '');
+    const forms = [...new Set([
+      raw,
+      raw.replace(/:\d+(?=@)/, ''),
+      raw.split('@')[0].replace(/[^0-9]/g, '') ? raw.split('@')[0].replace(/[^0-9]/g, '') + '@s.whatsapp.net' : '',
+    ].filter(Boolean))];
+    for (const f of forms) {
+      for (const type of ['image', 'preview']) {
+        try {
+          const url = await sock.profilePictureUrl(f, type);
+          if (url) { const b = await getBuf(url, 15000); if (b) return b; }
+        } catch {}
+      }
+      try {
+        const url = await sock.profilePictureUrl(f);
+        if (url) { const b = await getBuf(url, 15000); if (b) return b; }
+      } catch {}
+    }
+    return botPic(); // genuinely no DP → bot image card (never a blank card)
   }
 
   // card sender: image + numbered caption + native buttons together
@@ -278,8 +371,22 @@ module.exports.install = function install(P) {
   // ══════════════════════════════════════════════════════════════════════
   P.cmd(['ytmate', 'ytm'], { desc: 'Download YouTube audio/video (picker)', category: 'DOWNLOAD' }, async (sock, msg, args) => {
     const jid = msg.key.remoteJid;
-    const url = args.find(a => /youtu\.?be/.test(a)) || args[0];
-    if (!url || !ytId(url)) return P.sendReply(sock, msg, `Usage: ${PFX}ytmate <YouTube URL>`);
+    // V25-OK: ytmate name-or-link
+    // The previous build rejected anything that was not a YouTube URL, so the
+    // old ".ytmate <song name>" workflow died. We now resolve a name to a
+    // videoId through yt-search (already a dependency) and carry on.
+    let url = args.find(a => /youtu\.?be|youtube\.com/.test(a))
+      || (/^https?:\/\//i.test(String(args[0] || '')) ? String(args[0]) : null);
+    if (!url) {
+      const q = (args || []).join(' ').trim();
+      if (!q) return P.sendReply(sock, msg, `Usage: ${PFX}ytmate <song name | YouTube URL>`);
+      const found = await ytFindFirst(q);
+      if (!found) {
+        await P.react(sock, msg, '❌').catch(() => {});
+        return P.sendReply(sock, msg, `❌ No YouTube result for *${q}*. Try a different name.`);
+      }
+      url = found;
+    }
     await P.react(sock, msg, '🌀').catch(() => {});
     let title = 'YouTube video', thumb = null;
     try {
@@ -292,14 +399,21 @@ module.exports.install = function install(P) {
     const caption = `🎬 *YTMATE*\n\n📌 *${title}*\n\nReply to this message with a number:\n${options.map((o, i) => `*${i + 1}.* ${o}`).join('\n')}\n\n_You can also tap the list button below._`;
     const sent = await sendPickerCard(sock, jid, msg, { image: thumb, caption, title: 'YTMATE', rows: options });
     registerPicker(jid, sent, options, async (s, m, n) => {
+      // V25-OK: ytmate audited delivery
       await P.react(s, m, '🌀').catch(() => {});
+      const label = n === 1 ? 'audio' : (n === 4 ? 'document' : 'video');
+      const r = await ytDownload(url, n === 1 ? 'audio' : 'video', n === 3 ? '720' : '360');
+      if (!r) {
+        await P.react(s, m, '❌').catch(() => {});
+        return P.sendReply(s, m, `❌ No working download source could return a valid ${label} for this video right now. Nothing invalid was sent — please try again in a moment.`);
+      }
       if (n === 1) {
-        const r = await ytDownload(url, 'audio');
-        if (!r) return P.sendReply(s, m, '❌ All download APIs failed. Try again later.');
         await sendAudioRobust(s, jid, r.buf, r.title || title, m);
+      } else if (n === 4) {
+        // Video as DOCUMENT — the exact pre-push behaviour the user asked for
+        const safe = String(r.title || title || 'video').replace(/[^\w\s.-]/g, '').trim().slice(0, 60) || 'video';
+        await s.sendMessage(jid, { document: r.buf, mimetype: 'video/mp4', fileName: safe + '.mp4', caption: `🎬 ${r.title || title}` }, { quoted: m });
       } else {
-        const r = await ytDownload(url, 'video', n === 3 ? '720' : '360');
-        if (!r) return P.sendReply(s, m, '❌ All video APIs failed or the video is unavailable. Try again later.');
         await sendVideoRobust(s, jid, r.buf, `🎬 ${r.title || title}`, m);
       }
       await P.react(s, m, '✅').catch(() => {});
@@ -383,10 +497,14 @@ module.exports.install = function install(P) {
       await P.react(sock, msg, '✅').catch(() => {});
     });
   }
-  makeMovieCmd(['movie', 'movies'], 'Movie', '🎬');
-  makeMovieCmd(['nkiri'], 'Nkiri', '🎥');
-  makeMovieCmd(['boost6'], 'Boost6', '⚡');
-  rep.moviePickers = true;
+  // V25-OK: link-only movie overrides removed.
+  // The previous v24 pack re-registered .movie / .nkiri / .boost6 HERE (after
+  // the real handlers) and its picker callback only printed "Open the link",
+  // which is why downloads turned into bare URLs. Those registrations are
+  // deliberately NOT re-added: mias/index.js .movie (MynetNaija picker) and
+  // precious-fixes-v21 .nkiri (Nkiri direct-file document) now win again and
+  // deliver the actual file as a document, exactly as before the last push.
+  rep.moviePickers = 'restored-native (v25)';
 
   // ══════════════════════════════════════════════════════════════════════
   // 6) TT DEDUPE — picker card is the ONLY route (quoted links included)
@@ -537,20 +655,18 @@ module.exports.install = function install(P) {
       return P.sendReply(sock, msg, `Usage: ${PFX}forward <number|JID>\nExample: ${PFX}forward 2348012345678`);
     }
     await P.react(sock, msg, '🌀').catch(() => {});
-    // 1) native forward (keeps forwarded tag)
+    // V25-OK: forward resend-first
+    // The old order tried {forward:{…}} first. On several Baileys builds that
+    // promise RESOLVES while nothing is actually delivered, so the command
+    // replied "✅ Forwarded" and the target got silence. We now copy the
+    // content across first (this always works), and only fall back to the
+    // native forward afterwards.
+    let _dcm = globalThis.__PRECIOUS__?.downloadContentFromMessage;
+    if (typeof _dcm !== 'function') {
+      try { const mod = await import('@whiskeysockets/baileys'); _dcm = mod.downloadContentFromMessage || (mod.default && mod.default.downloadContentFromMessage); } catch {}
+    }
     try {
-      const sent = await sock.sendMessage(target, { forward: { key: { remoteJid: jid, id: ctx.stanzaId, participant: ctx.participant }, message: quoted }, force: true });
-      if (sent) { await P.react(sock, msg, '✅').catch(() => {}); return P.sendReply(sock, msg, `✅ Forwarded to +${target.split('@')[0]}`); }
-    } catch {}
-    // 2) relay
-    try {
-      await sock.relayMessage(target, quoted, { messageId: 'fwd_' + Date.now() });
-      await P.react(sock, msg, '✅').catch(() => {});
-      return P.sendReply(sock, msg, `✅ Forwarded to +${target.split('@')[0]}`);
-    } catch {}
-    // 3) download + resend (any media type)
-    try {
-      const dcm = globalThis.__PRECIOUS__?.downloadContentFromMessage;
+      const dcm = _dcm;
       const map = { imageMessage: 'image', videoMessage: 'video', audioMessage: 'audio', stickerMessage: 'sticker', documentMessage: 'document' };
       for (const [k, t] of Object.entries(map)) {
         if (!quoted[k] || typeof dcm !== 'function') continue;
@@ -570,13 +686,22 @@ module.exports.install = function install(P) {
       // plain text
       const text = quoted.conversation || quoted.extendedTextMessage?.text;
       if (text) {
-        await sock.sendMessage(target, { text });
-        await P.react(sock, msg, '✅').catch(() => {});
-        return P.sendReply(sock, msg, `✅ Forwarded to +${target.split('@')[0]}`);
+        const t = await sock.sendMessage(target, { text });
+        if (t && t.key) { await P.react(sock, msg, '✅').catch(() => {}); return P.sendReply(sock, msg, `✅ Forwarded to +${target.split('@')[0]}`); }
       }
     } catch (e) {}
+    // Fallbacks — only trusted when they actually resolve
+    try {
+      const sent = await sock.sendMessage(target, { forward: { key: { remoteJid: jid, id: ctx.stanzaId, participant: ctx.participant }, message: quoted }, force: true });
+      if (sent && sent.key) { await P.react(sock, msg, '✅').catch(() => {}); return P.sendReply(sock, msg, `✅ Forwarded to +${target.split('@')[0]}`); }
+    } catch {}
+    try {
+      await sock.relayMessage(target, quoted, { messageId: 'fwd_' + Date.now() });
+      await P.react(sock, msg, '✅').catch(() => {});
+      return P.sendReply(sock, msg, `✅ Forwarded to +${target.split('@')[0]}`);
+    } catch {}
     await P.react(sock, msg, '❌').catch(() => {});
-    return P.sendReply(sock, msg, '❌ Could not forward that message.');
+    return P.sendReply(sock, msg, '❌ Could not forward that message — check the number and that the bot can reach it.');
   });
   rep.forward = true;
 

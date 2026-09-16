@@ -316,7 +316,11 @@ module.exports = {
           if (!info || !info.play) continue;
           const buf = await getBuf(info.hd || info.play);
           if (!buf || !isRealMedia(buf)) continue;
-          const caption = `☄️ *${cat.label} edit*\n👤 @${info.author || 'tiktok'}\n🔗 ${item.url}`;
+          // V25-OK: title-only caption
+          // Requested: the delivered edit shows JUST the title — no
+          // "☄️ *… edit*", no 👤 @author line, no 🔗 URL.
+          const caption = String(info.title || item.title || (cat.label + ' edit'))
+            .replace(/\s+/g, ' ').trim().slice(0, 120) || (cat.label + ' edit');
           await sendVideoRobust(sock, jid, buf, caption, msg);
           sent.push(item.url);
         } catch { /* next candidate */ }

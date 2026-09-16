@@ -284,6 +284,29 @@ if (process.env.LOG_DEDUP !== "0") {
     // All other unhandled rejections still surface
     console.error('[UnhandledRejection]', _errMsg.slice(0, 300));
   });
+// ── V25-OK: exit guard ──────────────────────────────────────────────────────
+// WHY THE BOT RESTARTED WITH APK WHATSAPP: the re-pair / reconnect paths call
+// process.exit(75) and process.exit(78). With a hand-installed (APK) client the
+// socket drops often, so those codes fired on nearly every hiccup and PM2 /
+// Railway restarted the whole bot. We now swallow those two codes for the first
+// three attempts inside a minute; a genuine, repeated failure still exits.
+try {
+  const _origProcessExit = process.exit.bind(process);
+  let _exitTimes = [];
+  process.exit = function (code) {
+    try {
+      const now = Date.now();
+      _exitTimes = _exitTimes.filter((t) => now - t < 60000);
+      _exitTimes.push(now);
+      if ((code === 75 || code === 78) && _exitTimes.length <= 3) {
+        console.error('[exit-guard] suppressed exit(' + code + ') — attempt ' + _exitTimes.length + '/3 in the last minute');
+        return;
+      }
+    } catch {}
+    return _origProcessExit(code);
+  };
+} catch {}
+
 // ── CRASH GUARD ──────────────────────────────────────────────────────────────
 // Any uncaught thrown error would kill the process. This catches it, logs it,
 // and keeps the bot alive. Baileys self-heals on the next message/keepalive.
@@ -8870,8 +8893,58 @@ async function fetchPlayThumb(url, timeout = 12000) {
    fragment is safe to inject into a 39k-line module.
    ══════════════════════════════════════════════════════════════════════════════ */
 
+// V25-OK: _p2HasVideoTrack helper
+function _p2HasVideoTrack(buf) {
+  try {
+    const cp = require('child_process');
+    const fsx = require('fs');
+    const osx = require('os');
+    const pathx = require('path');
+    let ff = 'ffmpeg';
+    try { ff = require('ffmpeg-static') || 'ffmpeg'; } catch {}
+    const dir = fsx.mkdtempSync(pathx.join(osx.tmpdir(), 'p2vt-'));
+    const f = pathx.join(dir, 'v.bin');
+    fsx.writeFileSync(f, buf);
+    const r = cp.spawnSync(ff, ['-hide_banner', '-i', f], { timeout: 30000 });
+    try { fsx.rmSync(dir, { recursive: true, force: true }); } catch {}
+    const err = String(r.stderr || '');
+    return /Stream #\d+:\d+.*: Video:/i.test(err) || /Video:\s/i.test(err);
+  } catch (e) {
+    // If ffmpeg is unavailable we cannot prove the absence of a video track —
+    // do not block a possibly-good download.
+    return true;
+  }
+}
+
 const _P2_TTL = 20 * 60 * 1000;
 const _P2_PENDING = new Map();
+
+// V25-OK: play pending probe exposed
+// The settings consumer used to steal a bare "4" typed after a .play card and
+// answer "❌ Unknown settings option *4*", because the play store is keyed by
+// MESSAGE id while the probe asked by CHAT jid. These globals close that gap.
+globalThis.__P2_PENDING__ = _P2_PENDING;
+const _P2_CHAT_PENDING = new Map();
+globalThis.__P2_CHAT_PENDING__ = _P2_CHAT_PENDING;
+function _p2MarkChatPending(jid, on) {
+  try {
+    const k = _p2NormJid(jid);
+    if (!k) return;
+    if (on) _P2_CHAT_PENDING.set(k, Date.now()); else _P2_CHAT_PENDING.delete(k);
+  } catch {}
+}
+globalThis.__miasPlayPending = function (jid) {
+  try {
+    const k = _p2NormJid(jid);
+    const ts = _P2_CHAT_PENDING.get(k);
+    if (ts && Date.now() - ts < _P2_TTL) return true;
+    for (const kv of _P2_PENDING) {
+      const e = kv[1];
+      if (e && Date.now() - e.ts < _P2_TTL && _p2SameChat(e.jid, jid)) return true;
+    }
+  } catch {}
+  return false;
+};
 
 // PRECIOUS FIX (silent numbered reply):
 // WhatsApp can deliver the command message with ":12@s.whatsapp.net" and the
@@ -9085,15 +9158,31 @@ async function _p2VideoBuf(meta) {
     return null;
   });
 
+  // V25-OK: video track probe
+  // WHY THE VIDEO WAS BLACK: some providers hand back an mp4 that contains an
+  // AUDIO-ONLY stream (or an HTML error page). WhatsApp then plays the sound
+  // over a black frame. Every candidate is now probed for a real video stream
+  // and rejected when it has none, so the next provider is tried instead.
   for (const t of tries) {
     try {
       const u = await t();
       if (!u) continue;
-      return await _p2Get(u, 240000);
+      const buf = await _p2Get(u, 240000);
+      if (!buf || buf.length < 32 * 1024) continue;
+      const head = buf.slice(0, 40).toString('utf8').trim().toLowerCase();
+      if (/^<!doctype|^<html|^\{|^<\?xml/.test(head)) continue;
+      if (!_p2HasVideoTrack(buf)) continue;
+      return buf;
     } catch (e) { /* next provider */ }
   }
   throw new Error('every video provider failed — try again in a moment');
 }
+
+// V25-OK: expose play providers
+// ytmate reuses the exact provider chain this (working) play pipeline uses, so
+// it stops depending on the dead mirrors the v24 pack shipped.
+try { globalThis.__MIAS_P2_VIDEO_BUF__ = _p2VideoBuf; } catch {}
+try { if (typeof _p2AudioBuf === 'function') globalThis.__MIAS_P2_AUDIO_BUF__ = _p2AudioBuf; } catch {}
 
 /* ══════════════════════════════════════════════════════════════════════════
    MIAS MEDIA FORMAT FIX v19
@@ -9360,6 +9449,7 @@ async function _p2OnMsg(sock, m) {
     return;
   }
   _P2_PENDING.delete(qid);
+  try { _p2MarkChatPending(_p2NormJid(jid), false); } catch {}
   if (typeof react === 'function') await react(sock, m, '⏳').catch(function () {});
   try {
     // PRECIOUS v20 — use the hardened deliver when it has been installed.
@@ -9509,6 +9599,7 @@ const _p2PlayCardImpl = async (sock, msg, args) => {
   }
 
   _p2Sweep();
+  try { _p2MarkChatPending(jid, true); } catch {}
   _P2_PENDING.set(sent.key.id, {
     jid: _p2NormJid(jid),
     user: (typeof getSender === 'function' ? String(getSender(msg) || '') : ''),
