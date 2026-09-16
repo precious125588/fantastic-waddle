@@ -585,7 +585,7 @@ module.exports.install = function install(P) {
     const inBotDm = isDm && jid === botJid;
 
     // determine target
-    let targetNum = String(args[0] || '').replace(/\D/g, '');
+    let targetNum = String((args || []).join(' ') || '').replace(/\D/g, '');
     if (!targetNum && !inBotDm && isDm) targetNum = jid.split('@')[0];         // someone's DM → sudo the DM owner
     if (!targetNum) {
       return P.sendReply(sock, msg, `👑 *SUDO*\n\nSend the target number:\n${PFX}sudo 2348012345678`);
@@ -596,7 +596,10 @@ module.exports.install = function install(P) {
     const d = loadSudo();
     const cur = d.vip.includes(target) ? 'VIP (full access)' : d.dm.includes(target) ? 'DM-only' : 'none';
     const options = ['➕ Add (DM only)', '➖ Remove (everything)', '👑 Sudo VIP (full access)'];
-    const caption = `👑 *SUDO MANAGER*\n\n🎯 Target: @${targetNum}\n📊 Current access: *${cur}*\n\nReply to this message with a number:\n${options.map((o, i) => `*${i + 1}.* ${o}`).join('\n')}\n\n_You can also tap the list button below._`;
+    const _sudoName = (typeof P.getDisplayName === 'function'
+      ? await P.getDisplayName(sock, target, jid).catch(() => null)
+      : null) || `@${targetNum}`;
+    const caption = `👑 *SUDO MANAGER*\n\n🎯 Target: ${_sudoName}\n📊 Current access: *${cur}*\n\nReply to this message with a number:\n${options.map((o, i) => `*${i + 1}.* ${o}`).join('\n')}\n\n_You can also tap the list button below._`;
     const sent = await sendPickerCard(sock, jid, msg, { image: pic, caption, title: 'SUDO', rows: ['Add DM', 'Remove', 'VIP'] });
     registerPicker(jid, sent, options, async (s, m, n) => {
       const dd = loadSudo();
@@ -604,17 +607,17 @@ module.exports.install = function install(P) {
         if (!dd.dm.includes(target)) dd.dm.push(target);
         dd.vip = dd.vip.filter(j => j !== target);
         saveSudo(dd);
-        await P.sendReply(s, m, `✅ @${targetNum} added as *DM-only* sudo.`);
+        await P.sendReply(s, m, `✅ ${_sudoName} added as *DM-only* sudo.`);
       } else if (n === 2) {
         dd.dm = dd.dm.filter(j => j !== target);
         dd.vip = dd.vip.filter(j => j !== target);
         saveSudo(dd);
-        await P.sendReply(s, m, `✅ @${targetNum} removed from *all* sudo access.`);
+        await P.sendReply(s, m, `✅ ${_sudoName} removed from *all* sudo access.`);
       } else {
         if (!dd.vip.includes(target)) dd.vip.push(target);
         dd.dm = dd.dm.filter(j => j !== target);
         saveSudo(dd);
-        await P.sendReply(s, m, `👑 @${targetNum} now has *Sudo VIP* (full access — DM & groups).`);
+        await P.sendReply(s, m, `👑 ${_sudoName} now has *Sudo VIP* (full access — DM & groups).`);
       }
       await P.react(s, m, '✅').catch(() => {});
     }, 'sudo');

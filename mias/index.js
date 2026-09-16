@@ -8086,6 +8086,21 @@ async function handleSettingsNumericReply(sock, msg, body) {
   //        not swallow the choice.
   //   We also re-arm the 120 s settingsSession on every successful match
   //   so a slow typist does not lose context.
+  // V26: media-picker native taps (list/button replies that are not settings
+  // rows) must never reach the settings table — this is what printed
+  // "Unknown settings option" after picking from a .play/.ytmate card.
+  try {
+    const _ir = msg?.message?.interactiveResponseMessage;
+    const _rawTap = _ir?.nativeFlowResponseMessage?.paramsJson
+      || _ir?.buttonReply?.selectedId
+      || _ir?.buttonReply?.id
+      || _ir?.buttonReply?.displayText
+      || "";
+    if (_rawTap && !/^set:/i.test(String(_rawTap).trim())) {
+      const _tapChoice = normalizeSettingsChoice(String(_rawTap));
+      if (/^\d{1,2}(?:\.\d{1,2})?$/.test(_tapChoice || "")) return false;
+    }
+  } catch {}
   let choice = normalizeSettingsChoice(body);
   // QUOTED-CARD FIX: a numeric reply that QUOTES one of our cards (.play,
   // .ytmate, .tt, .movie, ...) belongs to that card — not to settings. Only
@@ -9645,16 +9660,15 @@ cmd(["playvid","playvideo","vidplay"], { desc: "Download song as video (mp4)", c
     if (thumb) { try { const _tb = Buffer.from((await axios.get(thumb, { responseType: "arraybuffer", timeout: 10000 })).data); await sock.sendMessage(jid, { image: _tb, caption: `🎬 *${title}*\n_Downloading video..._` }, { quoted: msg }); } catch {} }
 
     let vBuf = null;
-    const _vdls = [
-      async () => { const r = await axios.post("https://co.wuk.sh/api/json", { url: videoUrl, downloadMode: "video", vQuality: "720" }, { headers: { Accept: "application/json", "Content-Type": "application/json" }, timeout: 30000 }); if (r.data?.url) { const b = Buffer.from((await axios.get(r.data.url, { responseType: "arraybuffer", timeout: 180000, maxRedirects: 5 })).data); if (b.length > 10000) return b; } },
-      async () => { const r = await axios.get(`${CONFIG.GIFTED_API}/api/download/ytmp4?apikey=${CONFIG.GIFTED_KEY}&url=${encodeURIComponent(videoUrl)}`, { timeout: 60000 }); const dl = r.data?.result?.download_url || r.data?.result?.url; if (dl) { const b = Buffer.from((await axios.get(dl, { responseType: "arraybuffer", timeout: 180000, maxRedirects: 5 })).data); if (b.length > 10000) return b; } },
-      async () => { const tox = await toxicCall("/download/ytmp4", { url: videoUrl }); if (tox?.url) { const b = Buffer.from((await axios.get(tox.url, { responseType: "arraybuffer", timeout: 180000, maxRedirects: 5 })).data); if (b.length > 10000) return b; } },
-      async () => { const response = await dcGet("/ytmp4", { url: videoUrl }, 60000); const data = response.data; const dl = data?.result?.download_url || data?.result?.url; if (response.ok && dl) { const b = Buffer.from((await axios.get(dl, { responseType: "arraybuffer", timeout: 180000, maxRedirects: 5 })).data); if (b.length > 10000) return b; } },
-    ];
-    for (const _vdl of _vdls) { try { vBuf = await _vdl(); if (vBuf) break; } catch {} }
+    try { vBuf = await _p2VideoBuf({ videoUrl, title, videoId: _p2YtId(videoUrl) || "" }); } catch {}
 
     if (vBuf && vBuf.length > 10000) {
-      await sock.sendMessage(jid, { video: vBuf, mimetype: "video/mp4", caption: `🎬 *${title}*` }, { quoted: msg });
+      const safeTitle = String(title || "video").replace(/[^\w\s.-]/g, "_").trim().slice(0, 60) || "video";
+      try {
+        await sock.sendMessage(jid, { video: vBuf, mimetype: "video/mp4", caption: `🎬 *${title}*` }, { quoted: msg });
+      } catch {
+        await sock.sendMessage(jid, { document: vBuf, mimetype: "video/mp4", fileName: `${safeTitle}.mp4`, caption: `🎬 *${title}*` }, { quoted: msg });
+      }
       await editMessage(sock, jid, sKey, `🎬 *${CONFIG.BOT_NAME} Video Player*\n\n✅ *${title}* sent!`);
       await react(sock, msg, "✅");
     } else {
@@ -14792,15 +14806,8 @@ cmd(["tourl", "litterbox"], { desc: "Upload media to catbox.moe URL", category: 
       try { resultUrl = await tryUpload(); if (resultUrl) break; } catch { continue; }
     }
     if (resultUrl) {
-      await editMessage(sock, jid, sKey, `🔗 *MIAS MDX Uploader*\n\n⬢ Downloading media... ✅\n⬢ Uploading to server... ✅\n⬢ Generating link... ✅\n\n🌐 *URL:* ${resultUrl}`);
-      await sendCTAButtons(sock, jid, msg,
-        `🔗 *File uploaded!*\n_Tap below to open or share the link_`,
-        [
-          { type: "url",  text: "🌐 Open File URL",  url: resultUrl },
-          { type: "copy", text: "📋 Copy URL",        value: resultUrl, id: "tourl_copy" },
-        ],
-        `${CONFIG.BOT_NAME} • File Uploader`
-      ).catch(() => {});
+      await editMessage(sock, jid, sKey, `${resultUrl}`);
+      await sock.sendMessage(jid, { text: resultUrl }, { quoted: msg }).catch(() => {});
     } else {
       await editMessage(sock, jid, sKey, `🔗 *MIAS MDX Uploader*\n\n⬢ Downloading media... ✅\n⬢ Uploading to server... ❌\n\n⚠️ All upload servers busy — try again later`);
     }

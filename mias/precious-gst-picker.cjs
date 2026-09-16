@@ -148,7 +148,7 @@ module.exports = {
           clearTimeout(watchdog);
           await reactOnce(res.ok ? '✅' : '❌');
           return sendReply(sock, msg, res.ok
-            ? `✅ Posted to this group's status ring (${res.delivered} recipient${res.delivered === 1 ? '' : 's'}).`
+            ? `✅ Uploaded to *${(await sock.groupMetadata(msg.key.remoteJid).then(md => md?.subject).catch(() => null)) || 'this group'}* group status (${res.delivered} recipient${res.delivered === 1 ? '' : 's'}).`
             : `❌ Group status was NOT posted — ${res.error || 'unknown error'}. Nothing was sent.`).catch(() => {});
         } catch (e) {
           clearTimeout(watchdog);

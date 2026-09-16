@@ -713,7 +713,7 @@ function install(ctx) {
           id: `${PREFIX}nkpick ${i + 1}`,
           rowId: `${PREFIX}nkpick ${i + 1}`,
         }));
-        const body = `🎬 *Nkiri — "${q}"*\n\nFound *${results.length}* result${results.length > 1 ? 's' : ''}. Tap *Open Results* and pick one.`;
+        const body = `🎬 *Nkiri — "${q}"*\n\nFound *${results.length}* result${results.length > 1 ? 's' : ''}. Reply with a number:\n${results.slice(0, 10).map((r, i2) => `*${i2 + 1}.* ${String(r.title || r.name || 'Unknown')}`).join('\n')}`;
         if (skey) await sock.sendMessage(msg.key.remoteJid, { delete: skey }).catch(() => {});
         if (typeof ctx.sendNativeFlowListMenu === 'function') {
           await ctx.sendNativeFlowListMenu(sock, msg.key.remoteJid, msg, body, [{ title: 'Search Results', rows }], [{ text: '❌ Cancel', id: `${PREFIX}nkcancel` }]);
