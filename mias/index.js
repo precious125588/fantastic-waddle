@@ -41014,3 +41014,15 @@ try {
   const _repGst = _gstP.install(globalThis.__PRECIOUS__);
   console.log('[precious-gst-picker] ✅ installed —', JSON.stringify(_repGst));
 } catch (_eg) { console.log('[precious-gst-picker] ❌ install error:', (_eg && _eg.message) || _eg); }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   PRECIOUS v24 — installs DEAD LAST so it overrides every older handler:
+   play/settings digit bug, quote-reply pickers (savetube/movie/nkiri/boost6/
+   ytmate), tt dedupe (picker card only), video integrity fix, DM gst removal,
+   rebuilt sudo card, forward fix, private-by-default, anime edits commands.
+   ══════════════════════════════════════════════════════════════════════════ */
+try {
+  const _p24 = require('./precious-fixes-v24.cjs');
+  const _rep24 = _p24.install(globalThis.__PRECIOUS__);
+  console.log('[precious-v24] ✅ installed —', JSON.stringify(_rep24));
+} catch (_e24) { console.log('[precious-v24] ❌ install error:', (_e24 && _e24.message) || _e24); }
