@@ -8216,8 +8216,14 @@ async function handleSettingsNumericReply(sock, msg, body) {
 
   const fn = SETTINGS_MAP[choice];
   if (!fn) {
-    await sendReply(sock, msg,
-      `❌ Unknown settings option *${choice}*.\n\nReply with an option shown in the menu, or *0* to close.`);
+    // PRECIOUS FIX: "❌ Unknown settings option" is removed PERMANENTLY.
+    // When a download picker (play/tt/ytmate/savetube/movie/nkiri/boost6/sudo)
+    // is pending in this chat, the number belonged to that card → tell the
+    // user the quote is invalid. Otherwise stay COMPLETELY silent — no more
+    // stray settings errors after media already arrived.
+    if (typeof __miasHasPendingPicker === "function" && __miasHasPendingPicker(jid)) {
+      await sendReply(sock, msg, `❌ Invalid quote — reply with a number shown on the card.`);
+    }
     return true;
   }
 
@@ -12178,6 +12184,10 @@ Examples:
       async () => { const tox = await toxicCall("/download/ytmp4", { url: videoUrl, q: isHD ? "1080" : "720" }); return tox?.url || tox?.download; },
       async () => { const { data } = await axios.get(`https://p.oceansaver.in/ajax/download.php?format=mp4&url=${encodeURIComponent(videoUrl)}`, { timeout: 30000 }); return data?.success ? data.download : null; },
       async () => { const r = await APIs.getEliteProTechDownloadByUrl(videoUrl); return r?.video || r?.download; },
+      // ── ytmate provider chain (proven working in precious-fixes-v24) ──
+      async () => { const { data } = await axios.get(`https://api.nexoracle.com/downloader/ytmp4?apikey=free_key@maher_apis&url=${encodeURIComponent(videoUrl)}`, { timeout: 30000 }); return data?.result?.download_url || data?.result?.url || data?.download_url; },
+      async () => { const { data } = await axios.get(`https://api.davidcyril.name.ng/download/ytmp4?url=${encodeURIComponent(videoUrl)}`, { timeout: 30000 }); return data?.result?.download_url || data?.result?.url || data?.download_url; },
+      async () => { const { data } = await axios.get(`https://api.princetechn.com/api/download/ytmp4?apikey=prince&url=${encodeURIComponent(videoUrl)}`, { timeout: 30000 }); return data?.result?.download_url || data?.result?.url; },
     ];
     for (const fn of videoDlApis) { try { dlUrl = await fn(); if (dlUrl) break; } catch {} }
     if (!dlUrl) { await editMessage(sock, jid, sKey, `📹 *MIAS MDX Video*\n\n❌ Could not find a download link.\nTry with a direct URL or different format.`); return; }
@@ -14753,7 +14763,7 @@ cmd("take", { desc: "Rename sticker — .take <name> | <author>", category: "TOO
     await sock.sendMessage(msg.key.remoteJid, { sticker: tagged });
   } catch (e) { await sendReply(sock, msg, `❌ Take failed: ${e.message}`); }
 });
-cmd(["tourl", "litterbox"], { desc: "Upload media to catbox.moe URL", category: "UTILITY" }, async (sock, msg) => {
+cmd(["tourl", "litterbox", "tour"], { desc: "Upload media to catbox.moe URL", category: "UTILITY" }, async (sock, msg) => {
   const q = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage;
   const img = msg.message?.imageMessage || q?.imageMessage;
   const vid = q?.videoMessage || msg.message?.videoMessage;
@@ -23466,7 +23476,7 @@ try {
 cmd(["aio","alldl","universaldl"], { desc: "Universal downloader — TikTok, IG, FB, Spotify, YT, Twitter, Reddit, etc.", category: "DOWNLOAD" }, async (sock, msg, args) => {
   args = __withQuotedUrl(msg, args);
   if (!args[0]) { await sendReply(sock, msg, `Usage: *${CONFIG.PREFIX}aio <social_url>*\nOr reply to a message that contains the link and send *${CONFIG.PREFIX}aio*.\nWorks with TikTok, Instagram, Twitter/X, Facebook, YouTube, Spotify, Pinterest, Threads, Reddit, SoundCloud, etc.`); return; }
-  await react(sock, msg, "📥");
+  await forceReaction(sock, msg, "🌀");
   const url = args[0];
   const jid = msg.key.remoteJid;
   let dlUrl = null, title = null, thumbUrl = null, extraInfo = "";
@@ -23491,10 +23501,10 @@ cmd(["aio","alldl","universaldl"], { desc: "Universal downloader — TikTok, IG,
     : _isSC ? "SoundCloud 🎧" : _isPinterest ? "Pinterest 📌" : _isReddit ? "Reddit 👾"
     : _isThreads ? "Threads 🧵" : _isSnapchat ? "Snapchat 👻" : _isCapcut ? "CapCut ✂️" : "Media 🌐";
 
-  const statusMsg = await sock.sendMessage(jid, { text: `📥 Catching link...` }, { quoted: msg });
+  const statusMsg = await sock.sendMessage(jid, { text: `🌀 Detecting link...` }, { quoted: msg });
   const aioKey = statusMsg.key;
   await new Promise(r => setTimeout(r, 700));
-  await editMessage(sock, jid, aioKey, `📥 ${_platformName}... snatching 🕸️`);
+  await editMessage(sock, jid, aioKey, `🌀 *${_platformName} detected* — fetching media now, then downloading...`);
 
   // ── Spotify: dedicated path (needs special API) ──
   if (_isSpotify && !dlUrl) {
@@ -28220,7 +28230,8 @@ cmd(["gst_legacy_disabled", "gstatus_legacy_disabled", "groupstatus_legacy_disab
                 }
                 if (!_imgPosted) throw new Error('All image posting attempts failed');
                 await devtrust.sendMessage(m.key.remoteJid, { react: { text: '✅', key: m.key } });
-                await reply(`✅ *Image uploaded to group status!* 🖼️`);
+                let _gnImg = ""; try { const _gmj = (typeof jid !== "undefined" && jid) || msg.key.remoteJid; const _gm = await sock.groupMetadata(_gmj); _gnImg = _gm?.subject || ""; } catch {}
+                await reply(`✅ *Image uploaded to ${_gnImg || "group status"}!* 🖼️`);
             }
 
             // VIDEO STATUS
@@ -28247,7 +28258,8 @@ cmd(["gst_legacy_disabled", "gstatus_legacy_disabled", "groupstatus_legacy_disab
                 }
                 if (!_vidPosted) throw new Error('All video posting attempts failed');
                 await devtrust.sendMessage(m.key.remoteJid, { react: { text: '✅', key: m.key } });
-                await reply(`✅ *Video uploaded to group status!* 🎬`);
+                let _gnVid = ""; try { const _gmj = (typeof jid !== "undefined" && jid) || msg.key.remoteJid; const _gm = await sock.groupMetadata(_gmj); _gnVid = _gm?.subject || ""; } catch {}
+                await reply(`✅ *Video uploaded to ${_gnVid || "group status"}!* 🎬`);
             }
 
             // AUDIO STATUS (Voice Note) — relay to group JID as groupStatusMessageV2
@@ -28275,7 +28287,8 @@ cmd(["gst_legacy_disabled", "gstatus_legacy_disabled", "groupstatus_legacy_disab
                 }
                 if (!_audPosted) throw new Error('All audio posting attempts failed');
                 await devtrust.sendMessage(m.key.remoteJid, { react: { text: '✅', key: m.key } });
-                await reply(`✅ *Audio uploaded to group status!* 🎵`);
+                let _gnAud = ""; try { const _gmj = (typeof jid !== "undefined" && jid) || msg.key.remoteJid; const _gm = await sock.groupMetadata(_gmj); _gnAud = _gm?.subject || ""; } catch {}
+                await reply(`✅ *Audio uploaded to ${_gnAud || "group status"}!* 🎵`);
             }
 
             // STICKER STATUS — relay to group JID as groupStatusMessageV2
@@ -28302,7 +28315,8 @@ cmd(["gst_legacy_disabled", "gstatus_legacy_disabled", "groupstatus_legacy_disab
                 }
                 if (!_stkPosted) throw new Error('All sticker posting attempts failed');
                 await devtrust.sendMessage(m.key.remoteJid, { react: { text: '✅', key: m.key } });
-                await reply(`✅ *Sticker uploaded to group status!* 🎴`);
+                let _gnStk = ""; try { const _gmj = (typeof jid !== "undefined" && jid) || msg.key.remoteJid; const _gm = await sock.groupMetadata(_gmj); _gnStk = _gm?.subject || ""; } catch {}
+                await reply(`✅ *Sticker uploaded to ${_gnStk || "group status"}!* 🎴`);
             }
 
             // DOCUMENT STATUS
@@ -28311,7 +28325,8 @@ cmd(["gst_legacy_disabled", "gstatus_legacy_disabled", "groupstatus_legacy_disab
                 let fileName = quotedMsg.fileName || 'document.pdf';
                 await devtrust.sendMessage(m.chat, { document: media, fileName: fileName, mimetype: mime, caption: caption, contextInfo: { isGroupStatus: true } });
                 await devtrust.sendMessage(m.key.remoteJid, { react: { text: '✅', key: m.key } });
-                await reply(`✅ *Document uploaded to group status!* 📄`);
+                let _gnDoc = ""; try { const _gmj = (typeof jid !== "undefined" && jid) || msg.key.remoteJid; const _gm = await sock.groupMetadata(_gmj); _gnDoc = _gm?.subject || ""; } catch {}
+                await reply(`✅ *Document uploaded to ${_gnDoc || "group status"}!* 📄`);
             }
 
             // QUOTED TEXT STATUS
@@ -31910,7 +31925,20 @@ cmd(["tovid", "tovideo", "stickertovid", "imgtovid", "giftomp4"], { desc: "Conve
   const media = stk || img || vid;
   if (!media) { await sendReply(sock, msg, `❌ Reply to a sticker, image, or GIF with ${CONFIG.PREFIX}tovid`); return; }
   await react(sock, msg, "🎞️");
-  const { execSync: _tovExec } = await import("child_process");
+    // ENOBUFS FIX: spawnSync/execSync dies with "spawnSync /bin/sh ENOBUFS" when
+  // ffmpeg's stderr exceeds the default 1MB pipe buffer. Async execFile with a
+  // 256MB cap + 5min timeout never hits that.
+  const { execFile: _tovidExecFile } = await import("child_process");
+  const _tovExec = (cmdline) => new Promise((resolve, reject) => {
+    const _parts = String(cmdline).match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) || [];
+    if (!_parts.length) return reject(new Error("tovid: empty command"));
+    const _bin = _parts.shift();
+    const _args = _parts.map((a) => a.replace(/^["']|["']$/g, ""));
+    _tovidExecFile(_bin, _args, { maxBuffer: 256 * 1024 * 1024, timeout: 300000 }, (err, _so, _se) => {
+      if (err) { err.message = (err.message || "") + " " + String(_se || "").slice(-400); reject(err); }
+      else resolve(_so);
+    });
+  });
   const _tmp = os.tmpdir();
   const _id = Date.now();
   const _ext = stk ? "webp" : (img ? "jpg" : "mp4");
@@ -31939,8 +31967,8 @@ cmd(["tovid", "tovideo", "stickertovid", "imgtovid", "giftomp4"], { desc: "Conve
       _fallback = `ffmpeg -y -i "${inPath}" -c:v libx264 -pix_fmt yuv420p -movflags faststart "${outPath}"`;
     }
 
-    try { _tovExec(_ffCmd, { stdio: "pipe", timeout: 45000 }); }
-    catch { _tovExec(_fallback, { stdio: "pipe", timeout: 30000 }); }
+    try { await _tovExec(_ffCmd, { stdio: "pipe", timeout: 45000 }); }
+    catch { await _tovExec(_fallback, { stdio: "pipe", timeout: 30000 }); }
 
     const vidBuf = fs.readFileSync(outPath);
     const _cap = stk ? "🎞️ Sticker → Video" : (img ? "🎞️ Image → Video" : "🎞️ Video converted");
@@ -38820,7 +38848,7 @@ try {
           let groupName = "this group";
           try { groupName = await _gstGroupName(sock, chat); } catch {}
           const _lbl = qInner ? (_GST_KIND_LABELS[qInner.kind] || { emoji: "📄", label: "File" }) : null;
-          const _what = _lbl ? `${_lbl.emoji} *${_lbl.label} uploaded to ${groupName}*` : `📝 *Text uploaded to ${groupName}*`;
+          const _what = _lbl ? `${_lbl.emoji} *${_lbl.label} uploaded to ${groupName || "group"}*` : `📝 *Text uploaded to ${groupName || "group"}*`;
           await sendReply(sock, msg, `${_what}\n✅ Sent to *${memberJids.length}* group members.`);
         }
       } catch (e) {
@@ -41124,3 +41152,6 @@ try {
   const _rep24 = _p24.install(globalThis.__PRECIOUS__);
   console.log('[precious-v24] ✅ installed —', JSON.stringify(_rep24));
 } catch (_e24) { console.log('[precious-v24] ❌ install error:', (_e24 && _e24.message) || _e24); }
+
+// VISIBILITY FIX: keep the bot's presence AVAILABLE so chats never render it invisible
+setInterval(() => { try { globalThis.__miasSock?.sendPresenceUpdate?.('available'); } catch {} }, 240000).unref?.();
