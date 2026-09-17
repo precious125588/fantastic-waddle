@@ -41065,6 +41065,7 @@ try {
 import { createRequire as __createRequireP } from "module";
 const __pRequire = __createRequire(import.meta.url);
 try { if (typeof globalThis.require !== "function") globalThis.require = __pRequire; } catch (_erq) {}
+console.log("[V26-LOADER-ACTIVE] bridge ok — typeof require now:", typeof globalThis.require);
 /* ══════════════════════════════════════════════════════════════════════════
    PRECIOUS v20 BRIDGE + INSTALLER  — appended last, so it always wins.
    Exposes this module's real handlers to precious-fixes-v20.js and installs
