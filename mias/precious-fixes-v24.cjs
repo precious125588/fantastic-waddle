@@ -230,7 +230,12 @@ function consumePicker(jid, msg, body) {
     // INVALID QUOTE GUARD: the user quoted one of our cards but typed something
     // that is not one of its numbers — answer "invalid quote" instead of letting
     // the settings table leak "Unknown settings option" (or going silent).
-    if (_qctx?.quotedMessage && arr.length) {
+    // only if the quoted message IS one of our pending picker cards — otherwise
+    // a plain quoted text (e.g. quoting a caption and typing .tovid) must NOT
+    // trigger the guard (that was eating real commands).
+    const _qId = _qctx?.stanzaId || _qctx?.id || "";
+    const _matchesCard = arr.some(p => p?.sent?.key?.id && p.sent.key.id === _qId);
+    if (_matchesCard && arr.length) {
       const _last = arr[arr.length - 1];
       return { invalid: true, total: _last?.options?.length || 0, invalidQuote: true };
     }

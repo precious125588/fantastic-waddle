@@ -2830,6 +2830,19 @@ Save my contact:` }).catch(() => {});
           } catch (_pickerFirstErr) {
             console.error("[picker-first]", _pickerFirstErr?.message || _pickerFirstErr);
           }
+          // V28: if a picker is pending in this chat and the body even LOOKS like a
+          // picker choice (1, 1.1, .pick 1, a native tap digit), consume it HERE so no
+          // downstream handler (settings, case.js) can eat it. This is what made quoted
+          // 1.1 / 1 on the TikTok & Play cards do nothing.
+          try {
+            if (typeof __miasHasPendingPicker === "function" && __miasHasPendingPicker(msg.key.remoteJid)
+                && typeof __miasNormalizeChoice === "function") {
+              const _v28c = __miasNormalizeChoice(body);
+              if (_v28c && /^(?:pick\s+)?\d{1,2}(?:\.\d{1,2})?$/.test(String(_v28c).trim()) && typeof globalThis.__PRECIOUS_SETTINGS_REPLY__ === "function") {
+                await globalThis.__PRECIOUS_SETTINGS_REPLY__(sock, msg, String(_v28c).replace(/^pick\s+/i, ""));
+              }
+            }
+          } catch (_v28err) { console.error("[v28-picker-force]", _v28err?.message || _v28err); }
           // Settings replies are plain text, not commands. Handle them before
           // link hooks, private-mode gates, and other consumers can swallow a
           // reply such as "12.1". normalizeSettingsChoice also accepts the
@@ -21957,7 +21970,7 @@ for (const [acmd, cfg] of Object.entries(_ADULT_QUICK)) {
 // Plain numeric replies for media menus.  Keep .pick/.p as a compatible
 // fallback, but do not make users repeat the command shown by the bot.
 // True when this chat has a menu waiting for a plain numbered reply.
-function __miasHasPendingPicker(jid) {
+function __miasHasPendingPicker(jid) { return !!(__ttGetSelection(jid) || __miasMapGet(globalThis.__miasPlayPickers || new Map(), jid)); } function __miasHasPendingPicker_UNUSED(jid) {
   try {
     const now = Date.now();
     const tt = __miasPickerKeys(jid)
