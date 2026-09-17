@@ -41168,3 +41168,14 @@ try {
 
 // VISIBILITY FIX: keep the bot's presence AVAILABLE so chats never render it invisible
 setInterval(() => { try { globalThis.__miasSock?.sendPresenceUpdate?.('available'); } catch {} }, 240000).unref?.();
+
+/* ══════════════════════════════════════════════════════════════════════════
+   PRECIOUS ALL-FIX-PACKS BOOT — single entry point for EVERY fix pack.
+   Appended LAST so nothing can re-register over the fixed handlers.
+   ══════════════════════════════════════════════════════════════════════════ */
+try {
+  const _allPacks = require('../precious-all-packs-boot.cjs');
+  _allPacks.installAll(globalThis.__PRECIOUS__ || {});
+} catch (_eAll) {
+  console.log('[precious-all-packs] ❌ boot error:', (_eAll && _eAll.message) || _eAll);
+}

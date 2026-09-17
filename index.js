@@ -5,6 +5,21 @@ const chalk = require('chalk');
 const figlet = require('figlet');
 const { startupPassword } = require('./nexstore/token');
 
+/* ══════════════════════════════════════════════════════════════════════════
+   PRECIOUS ALL-FIX-PACKS — make sure the on-disk patch packs have run, and
+   load the session-persistence repair, before any child bot is spawned.
+   ══════════════════════════════════════════════════════════════════════════ */
+try {
+  const { spawnSync } = require('child_process');
+  for (const _patcher of ['fix_all.cjs', 'fix_session_401.cjs', 'PATCH-v25.cjs', 'precious-fix-pack.cjs']) {
+    const _p = require('path').join(__dirname, _patcher);
+    if (!require('fs').existsSync(_p)) continue;
+    const _r = spawnSync(process.execPath, [_p], { cwd: __dirname, stdio: 'inherit' });
+    console.log(chalk.blue(`🧩 patcher ${_patcher}: ${_r.status === 0 ? 'OK' : 'exit ' + _r.status}`));
+  }
+} catch (_eP) { console.log(chalk.yellow('⚠️ patcher chain skipped:'), _eP && _eP.message); }
+try { require('./precious-session-fix.cjs'); } catch (_eS) { console.log(chalk.yellow('⚠️ session-fix skipped:'), _eS && _eS.message); }
+
 const AUTH_FILE = './auth.json';
 require('./precious-session-boot.cjs');
 const _preciousSessionPaths = require('./sessionPaths');

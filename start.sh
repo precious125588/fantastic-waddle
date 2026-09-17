@@ -50,5 +50,15 @@ if [ "${KEEP_BAD_MAC:-0}" != "1" ] && [ -d "${AUTH_DIR:-prezzy_auth}" ]; then
   echo "[MAIS] Bad-MAC repair: cleared $cleared stale app-state-sync-* snapshot(s) from ${AUTH_DIR:-prezzy_auth}"
 fi
 
+# ── Pre-boot patch packs ─────────────────────────────────────────────────────
+# These are idempotent, marker-guarded file patchers. start.sh used to skip
+# them (npm start ran them, but Railway boots through start.sh / Procfile),
+# so mias/index.js was never patched on the deployed image.
+for p in fix_all.cjs fix_session_401.cjs PATCH-v25.cjs precious-fix-pack.cjs; do
+  [ -f "$p" ] || continue
+  echo "[MAIS] running patcher $p ..."
+  node "$p" || echo "[MAIS] WARN: patcher $p failed (continuing)"
+done
+
 echo "[MAIS] Starting..."
 exec node index.js
