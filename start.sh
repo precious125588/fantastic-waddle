@@ -50,15 +50,32 @@ if [ "${KEEP_BAD_MAC:-0}" != "1" ] && [ -d "${AUTH_DIR:-prezzy_auth}" ]; then
   echo "[MAIS] Bad-MAC repair: cleared $cleared stale app-state-sync-* snapshot(s) from ${AUTH_DIR:-prezzy_auth}"
 fi
 
+# ── Dependency sanity: mias/node_modules must exist or v21/v24 crash on axios ──
+# precious-fixes-v21.cjs / precious-fixes-v24.cjs require('axios') at the top.
+# axios lives in mias/node_modules; if a previous build skipped that install the
+# whole fix-pack chain failed to load. Re-run the install if it's missing.
+if [ -d mias ] && [ ! -d mias/node_modules/axios ]; then
+  echo "[MAIS] mias/node_modules/axios missing — reinstalling MIAS deps..."
+  bash scripts/robust-install.sh mias || npm --prefix mias install --no-audit --no-fund || echo "[MAIS] WARN: mias dep install failed"
+fi
+
 # ── Pre-boot patch packs ─────────────────────────────────────────────────────
 # These are idempotent, marker-guarded file patchers. start.sh used to skip
 # them (npm start ran them, but Railway boots through start.sh / Procfile),
 # so mias/index.js was never patched on the deployed image.
-for p in fix_all.cjs fix_session_401.cjs PATCH-v25.cjs precious-fix-pack.cjs; do
-  [ -f "$p" ] || continue
-  echo "[MAIS] running patcher $p ..."
-  node "$p" || echo "[MAIS] WARN: patcher $p failed (continuing)"
-done
+# DEDUP: index.js (root) ALSO spawns them. A marker file keeps them from
+# running twice per boot (which wasted seconds and polluted the logs).
+PATCH_MARKER="${TMPDIR:-/tmp}/mais-patched.marker"
+if [ ! -f "$PATCH_MARKER" ]; then
+  for p in fix_all.cjs fix_session_401.cjs PATCH-v25.cjs precious-fix-pack.cjs; do
+    [ -f "$p" ] || continue
+    echo "[MAIS] running patcher $p ..."
+    node "$p" || echo "[MAIS] WARN: patcher $p failed (continuing)"
+  done
+  touch "$PATCH_MARKER"
+else
+  echo "[MAIS] patchers already ran this boot (marker $PATCH_MARKER) — skipping"
+fi
 
 echo "[MAIS] Starting..."
 exec node index.js

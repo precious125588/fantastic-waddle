@@ -11,11 +11,18 @@ const { startupPassword } = require('./nexstore/token');
    ══════════════════════════════════════════════════════════════════════════ */
 try {
   const { spawnSync } = require('child_process');
-  for (const _patcher of ['fix_all.cjs', 'fix_session_401.cjs', 'PATCH-v25.cjs', 'precious-fix-pack.cjs']) {
-    const _p = require('path').join(__dirname, _patcher);
-    if (!require('fs').existsSync(_p)) continue;
-    const _r = spawnSync(process.execPath, [_p], { cwd: __dirname, stdio: 'inherit' });
-    console.log(chalk.blue(`🧩 patcher ${_patcher}: ${_r.status === 0 ? 'OK' : 'exit ' + _r.status}`));
+  const _os = require('os');
+  const _marker = require('path').join(_os.tmpdir(), 'mais-patched.marker');
+  if (require('fs').existsSync(_marker)) {
+    console.log(chalk.gray('🧩 patchers already ran this boot (start.sh marker) — skipping'));
+  } else {
+    for (const _patcher of ['fix_all.cjs', 'fix_session_401.cjs', 'PATCH-v25.cjs', 'precious-fix-pack.cjs']) {
+      const _p = require('path').join(__dirname, _patcher);
+      if (!require('fs').existsSync(_p)) continue;
+      const _r = spawnSync(process.execPath, [_p], { cwd: __dirname, stdio: 'inherit' });
+      console.log(chalk.blue(`🧩 patcher ${_patcher}: ${_r.status === 0 ? 'OK' : 'exit ' + _r.status}`));
+    }
+    try { require('fs').writeFileSync(_marker, String(Date.now())); } catch (_) {}
   }
 } catch (_eP) { console.log(chalk.yellow('⚠️ patcher chain skipped:'), _eP && _eP.message); }
 try { require('./precious-session-fix.cjs'); } catch (_eS) { console.log(chalk.yellow('⚠️ session-fix skipped:'), _eS && _eS.message); }
@@ -109,7 +116,17 @@ const initializeBot = async () => {
 
     await autoLoadPairs();
 
-    if (isAuthenticated()) {
+    // HEADLESS DEPLOY FIX: on any non-interactive host (Railway, Heroku, Docker,
+    // pm2, ...) there is no TTY, so a readline password prompt can never be
+    // answered and the bot hangs forever with nothing loaded. Skip the prompt
+    // when stdin is not a TTY; the prompt is only kept for local manual runs.
+    const HEADLESS = !process.stdin.isTTY;
+
+    if (HEADLESS) {
+        console.log(chalk.green('🤖 Headless environment detected — skipping password prompt, starting bot system...'));
+        setAuthenticated(true);
+        launchBot();
+    } else if (isAuthenticated()) {
         console.log(chalk.green('✅ Welcome back! Skipping password...'));
         launchBot();
     } else {
@@ -123,8 +140,9 @@ const initializeBot = async () => {
 
         rl.question(chalk.green('Password: '), function (input) {
             if (input !== startupPassword) {
-                console.log(chalk.red('\n❌ Incorrect password. Exiting...'));
-                process.exit(1);
+                console.log(chalk.red('\n❌ Incorrect password. Please restart and try again.'));
+                rl.close();
+                return;
             }
 
             console.log(chalk.green('\n✅ Password correct. Starting bot system...'));

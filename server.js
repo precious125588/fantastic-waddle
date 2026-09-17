@@ -3,6 +3,34 @@
 require('./lib/crash-shield.cjs').install({ name: 'server' });
 // ═════════════════════════════════════════════════════════════════════════════
 
+
+// ── PRE-BOOT PATCH PACKS (dedup-guarded) ─────────────────────────────────────
+// Railway/Procfile/Docker all boot through THIS file (node server.js). The
+// patchers used to run only under `npm start` / index.js / start.sh, so on the
+// deployed image PATCH-v25.cjs and precious-fix-pack.cjs never ran at all.
+// They are idempotent and marker-guarded; the tmp marker prevents double runs
+// when start.sh or index.js also executes in the same boot.
+try {
+  const _cp = require('child_process');
+  const _fs = require('fs');
+  const _os = require('os');
+  const _path = require('path');
+  const _marker = _path.join(_os.tmpdir(), 'mais-patched.marker');
+  if (!_fs.existsSync(_marker)) {
+    for (const _patcher of ['fix_all.cjs', 'fix_session_401.cjs', 'PATCH-v25.cjs', 'precious-fix-pack.cjs']) {
+      const _p = _path.join(__dirname, _patcher);
+      if (!_fs.existsSync(_p)) continue;
+      try {
+        const _r = _cp.spawnSync(process.execPath, [_p], { cwd: __dirname, stdio: 'inherit' });
+        console.log('[server] patcher ' + _patcher + ': ' + (_r.status === 0 ? 'OK' : 'exit ' + _r.status));
+      } catch (_e1) { console.log('[server] patcher ' + _patcher + ' failed: ' + (_e1 && _e1.message)); }
+    }
+    try { _fs.writeFileSync(_marker, String(Date.now())); } catch (_) {}
+  } else {
+    console.log('[server] patchers already ran this boot (marker) - skipping');
+  }
+} catch (_eP) { console.log('[server] patcher chain skipped: ' + (_eP && _eP.message)); }
+
 require('dotenv').config();
 
 const express = require('express');

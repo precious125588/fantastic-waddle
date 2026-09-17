@@ -4,10 +4,13 @@ builder = "DOCKERFILE"
 dockerfilePath = "Dockerfile"
 
 [deploy]
-startCommand = "npm start"
+# server.js binds $PORT, serves /api/health (used by the healthcheck below),
+# spawns the bot launcher and auto-loads paired sessions. It never prompts
+# for a terminal password, so it runs unattended on Railway.
+startCommand = "node server.js"
 healthcheckPath = "/api/health"
 healthcheckTimeout = 300
-restartPolicyType  = "ON_FAILURE"
+restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 10
 
 [[volumes]]
