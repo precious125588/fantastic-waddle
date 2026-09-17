@@ -41140,6 +41140,11 @@ try {
    never "come back". Adds .nkiri (native-flow movie/series downloader) and
    re-pins .tgsticker / .shazam / .gst on the David Cyril APIs.
    ══════════════════════════════════════════════════════════════════════════ */
+/* v21 + gst-picker are now installed ONCE by precious-all-packs-boot.cjs (dead last).
+   Keeping them here too would double-register every command they expose —
+   `commands` is a Map keyed by name so the later install silently wins, and
+   "which one wins" was the whole bug. The all-packs boot marks them installed
+   via globalThis.__PRECIOUS_INSTALLED__ so this block is a no-op now.
 try {
   const _p21 = require('./precious-fixes-v21.cjs');
   const _rep21 = _p21.install(globalThis.__PRECIOUS__);
@@ -41147,12 +41152,12 @@ try {
 } catch (_e21) {
   console.log('[precious-v21] ❌ install error:', (_e21 && _e21.message) || _e21);
 }
-
 try {
   const _gstP = require('./precious-gst-picker.cjs');
   const _repGst = _gstP.install(globalThis.__PRECIOUS__);
   console.log('[precious-gst-picker] ✅ installed —', JSON.stringify(_repGst));
 } catch (_eg) { console.log('[precious-gst-picker] ❌ install error:', (_eg && _eg.message) || _eg); }
+*/
 
 /* ══════════════════════════════════════════════════════════════════════════
    PRECIOUS v24 — installs DEAD LAST so it overrides every older handler:
@@ -41160,11 +41165,16 @@ try {
    ytmate), tt dedupe (picker card only), video integrity fix, DM gst removal,
    rebuilt sudo card, forward fix, private-by-default, anime edits commands.
    ══════════════════════════════════════════════════════════════════════════ */
+/* v24 is now installed ONCE, dead-last, by precious-all-packs-boot.cjs.
+   Running it here too would re-register every fixed handler BEFORE the
+   all-packs boot got a chance to install the older packs in the right order,
+   and v24 would then be overwritten by them. See the boot file.
 try {
   const _p24 = require('./precious-fixes-v24.cjs');
   const _rep24 = _p24.install(globalThis.__PRECIOUS__);
   console.log('[precious-v24] ✅ installed —', JSON.stringify(_rep24));
 } catch (_e24) { console.log('[precious-v24] ❌ install error:', (_e24 && _e24.message) || _e24); }
+*/
 
 // VISIBILITY FIX: keep the bot's presence AVAILABLE so chats never render it invisible
 setInterval(() => { try { globalThis.__miasSock?.sendPresenceUpdate?.('available'); } catch {} }, 240000).unref?.();
