@@ -41054,6 +41054,18 @@ try {
 } catch (_e19c) {}
 
 /* ══════════════════════════════════════════════════════════════════════════
+   PRECIOUS V26 LOADER FIX — ESM-safe require bridge.
+   mias/index.js runs as an ES module, so the bare require() calls in the
+   install blocks below threw "require is not defined" inside their
+   try/catch — meaning precious-fixes-v20/v21/v24 and precious-gst-picker
+   SILENTLY FAILED TO INSTALL (only the inline index.js fixes stayed alive:
+   play video options + gst). createRequire() gives this module a real CJS
+   loader so every fix pack actually loads. Safe to run with older builds.
+   ══════════════════════════════════════════════════════════════════════════ */
+import { createRequire as __createRequireP } from "module";
+const __pRequire = __createRequire(import.meta.url);
+try { if (typeof globalThis.require !== "function") globalThis.require = __pRequire; } catch (_erq) {}
+/* ══════════════════════════════════════════════════════════════════════════
    PRECIOUS v20 BRIDGE + INSTALLER  — appended last, so it always wins.
    Exposes this module's real handlers to precious-fixes-v20.js and installs
    the fix pack in-process (no other file has to be touched).
@@ -41087,7 +41099,7 @@ try {
     setDeliver: function (fn) { globalThis.__PRECIOUS_PLAY_DELIVER__ = fn; },
     setSettingsReply: function (fn) { globalThis.__PRECIOUS_SETTINGS_REPLY__ = fn; },
   };
-  const _p20 = require('./precious-fixes-v20.cjs');
+  const _p20 = __pRequire('./precious-fixes-v20.cjs');
   const _rep20 = _p20.install(globalThis.__PRECIOUS__);
   console.log('[precious-v20] ✅ installed —', JSON.stringify(_rep20));
 } catch (_e20) {
@@ -41100,7 +41112,7 @@ try {
    re-pins .tgsticker / .shazam / .gst on the David Cyril APIs.
    ══════════════════════════════════════════════════════════════════════════ */
 try {
-  const _p21 = require('./precious-fixes-v21.cjs');
+  const _p21 = __pRequire('./precious-fixes-v21.cjs');
   const _rep21 = _p21.install(globalThis.__PRECIOUS__);
   console.log('[precious-v21] ✅ installed —', JSON.stringify(_rep21));
 } catch (_e21) {
@@ -41108,7 +41120,7 @@ try {
 }
 
 try {
-  const _gstP = require('./precious-gst-picker.cjs');
+  const _gstP = __pRequire('./precious-gst-picker.cjs');
   const _repGst = _gstP.install(globalThis.__PRECIOUS__);
   console.log('[precious-gst-picker] ✅ installed —', JSON.stringify(_repGst));
 } catch (_eg) { console.log('[precious-gst-picker] ❌ install error:', (_eg && _eg.message) || _eg); }
@@ -41120,7 +41132,7 @@ try {
    rebuilt sudo card, forward fix, private-by-default, anime edits commands.
    ══════════════════════════════════════════════════════════════════════════ */
 try {
-  const _p24 = require('./precious-fixes-v24.cjs');
+  const _p24 = __pRequire('./precious-fixes-v24.cjs');
   const _rep24 = _p24.install(globalThis.__PRECIOUS__);
   console.log('[precious-v24] ✅ installed —', JSON.stringify(_rep24));
 } catch (_e24) { console.log('[precious-v24] ❌ install error:', (_e24 && _e24.message) || _e24); }
