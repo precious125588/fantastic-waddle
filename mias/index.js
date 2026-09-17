@@ -220,7 +220,8 @@ async function __ttRestoreFromQuote(msg) {
     if (!ctx?.quotedMessage) return null;
     const quotedText = __ttQuotedText(msg);
     const looksLikePicker = /reply with the number you want/i.test(quotedText)
-      || /\b1\.3 hd video\b/i.test(quotedText);
+      || /1\.3\s+hd\s*video/i.test(quotedText)
+      || /reply with 1|reply here with a number/i.test(quotedText);
     const url = __ttFindUrl(quotedText) || (looksLikePicker ? __ttFindUrl(ctx?.quotedMessage?.extendedTextMessage?.matchedText || "") : "");
     if (!url) return null;
     const info = await fetchTikTokInfo(url);
@@ -2824,7 +2825,7 @@ Save my contact:` }).catch(() => {});
             // routed correctly by the sendNativeFlowListMenu rowIds fix a
             // few lines below (rows are no longer BTN:-prefixed, so they
             // reach __miasHandleBareNumberReply unchanged).
-            if (_pickerChoice && _pickerActive) {
+            if (_pickerChoice && (_pickerActive || /reply with the number|reply with 1|reply here with a number|PLAYER/i.test((typeof __ttQuotedText==="function"?__ttQuotedText(msg):"")||""))) {
               if (await __miasHandleBareNumberReply(sock, msg, body)) return;
             }
           } catch (_pickerFirstErr) {
@@ -2844,7 +2845,7 @@ Save my contact:` }).catch(() => {});
               // like a picker choice AND (a picker is pending OR the reply
               // quotes a picker/player card).
               const _v28Quoted = !!__ttQuotedContext(msg)?.quotedMessage;
-              if (__miasHasPendingPicker(msg.key.remoteJid) || _v28Quoted) {
+              if (__miasHasPendingPicker(msg.key.remoteJid) || (_v28Quoted && /reply with the number|reply with 1|reply here with a number|PLAYER/i.test((typeof __ttQuotedText==="function"?__ttQuotedText(msg):"")||""))) {
                 const _v28c = __miasNormalizeChoice(body);
                 if (_v28c && /^(?:pick\s+)?\d{1,2}(?:\.\d{1,2})?$/.test(String(_v28c).trim())) {
                   // Route through the bare-number dispatcher first — it owns
@@ -2905,7 +2906,7 @@ Save my contact:` }).catch(() => {});
             const _pkChoice = __miasNormalizeChoice(body);
             if (_pkChoice && body && !isCommandBody(body)) {
               const _pkQuoted = !!__ttQuotedContext(msg)?.quotedMessage;
-              if (__miasHasPendingPicker(msg.key.remoteJid) || _pkQuoted) {
+              if (__miasHasPendingPicker(msg.key.remoteJid) || (_pkQuoted && /reply with the number|reply with 1|reply here with a number|PLAYER/i.test((typeof __ttQuotedText==="function"?__ttQuotedText(msg):"")||""))) {
                 if (await __miasHandleBareNumberReply(sock, msg, body)) return;
               }
             }
@@ -2947,7 +2948,7 @@ Save my contact:` }).catch(() => {});
              const _isPickerChoice = !!(_choice && (
                parseTikTokMode(_choice) || /^\d+$/.test(_choice)
              ));
-            if ((!_numIsCmd || _isPickerChoice) && body && __miasHasPendingPicker(msg.key.remoteJid)) {
+            if ((!_numIsCmd || _isPickerChoice) && body && (__miasHasPendingPicker(msg.key.remoteJid) || (!!__ttQuotedContext(msg)?.quotedMessage && /reply with the number|reply with 1|reply here with a number|PLAYER/i.test((typeof __ttQuotedText==="function"?__ttQuotedText(msg):"")||"")))) {
               if (await __miasHandleBareNumberReply(sock, msg, body)) return;
             }
           } catch (_numErr) { console.error("[numbered-reply-early]", _numErr?.message || _numErr); }
@@ -22151,7 +22152,7 @@ async function __miasHandleBareNumberReply(sock, msg, body) {
   // below swallowed the reply and answered "4 is not on that list".
   try {
     const _plQ = (typeof __ttQuotedText === "function" ? __ttQuotedText(msg) : "") || "";
-    if (/𝑷𝑹𝑬𝑪𝑰𝑶𝑼𝑺 x PLAYER|Reply here with a number/i.test(_plQ)) return false;
+    if (/PLAYER|Reply here with a number|Reply with 1|Reply to this message with/i.test(_plQ)) return false;
   } catch {}
   const jid = msg.key.remoteJid;
   const now = Date.now();
