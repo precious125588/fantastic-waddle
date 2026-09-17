@@ -795,7 +795,7 @@ if (getSetting(m.chat, "autoRecordType", false)) {
     devtrust.sendPresenceUpdate(xeonrecordinfinal, from)
 }
 
-if (getSetting(m.sender, "autoread", false)) {
+if (getSetting(m.sender, "autoread", false) || getSetting(m.chat, "autoread", false) || getSetting("bot", "autoread", false) || getSetting("bot", "readMsgs", false)) {
    try {
       await devtrust.readMessages([m.key]) 
    } catch (e) {
