@@ -9365,7 +9365,11 @@ async function _p2Deliver(sock, entry, n, quotedKey) {
     const vbuf = await _p2VideoBuf(meta);
     const _v = await _mfPrepareVideo(vbuf);
     if (_v.ok) {
-      const thumb = await _p2ThumbBuf(meta).catch(function () { return null; });
+      const _rawThumb = await _p2ThumbBuf(meta).catch(function () { return null; });
+      // PRECIOUS FIX (black-screen video): a raw video-frame thumbnail is
+      // routinely >100 KB and WhatsApp's muxer rejects it, degrading the
+      // player to audio-only. Only attach thumbs under the safe cap.
+      const thumb = (_rawThumb && _rawThumb.length <= 100 * 1024) ? _rawThumb : null;
       const payload = {
         video: _v.buf,
         mimetype: 'video/mp4',
@@ -9373,7 +9377,16 @@ async function _p2Deliver(sock, entry, n, quotedKey) {
         caption: '🎬 *' + title + '*\n👤 ' + (meta.artists || meta.author || 'Unknown') + '  ⏱️ ' + _p2Dur(meta.duration),
       };
       if (thumb) payload.jpegThumbnail = thumb;
-      await sock.sendMessage(jid, payload, { quoted: quotedKey });
+      try {
+        await sock.sendMessage(jid, payload, { quoted: quotedKey });
+      } catch (_eVid) {
+        // If the inline-video send itself fails, fall back to document so the
+        // user still receives the file instead of a silent black audio frame.
+        await sock.sendMessage(jid, {
+          document: _v.buf, mimetype: 'video/mp4', fileName: safe + '.mp4',
+          caption: '🎬 *' + title + '* (sent as document)',
+        }, { quoted: quotedKey });
+      }
     } else {
       await sock.sendMessage(jid, {
         document: _v.buf, mimetype: _v.mime, fileName: safe + _v.ext,
@@ -12191,6 +12204,11 @@ Examples:
     let dlUrl = null;
     const isHD = fmt === "hd";
     const videoDlApis = [
+      // ── PRECIOUS: ytmate / davidcyril family (same chain .play uses) ──
+      async () => { const r = await dcGet("/download/ytmp4", { url: videoUrl }, 30000); const d = r.data?.result || r.data?.data || r.data; return d?.download_url || d?.url || d?.dl || d?.video; },
+      async () => { const { data } = await axios.get(`https://api.nexoracle.com/downloader/ytmp4?apikey=free_key@maher_apis&url=${encodeURIComponent(videoUrl)}`, { timeout: 30000 }); return data?.result?.download_url || data?.result?.url || data?.download_url; },
+      async () => { const { data } = await axios.get(`https://api.davidcyril.name.ng/download/ytmp4?url=${encodeURIComponent(videoUrl)}`, { timeout: 30000 }); return data?.result?.download_url || data?.result?.url || data?.download_url; },
+      async () => { const { data } = await axios.get(`https://api.princetechn.com/api/download/ytmp4?apikey=prince&url=${encodeURIComponent(videoUrl)}`, { timeout: 30000 }); return data?.result?.download_url || data?.result?.url; },
       async () => { const r = await prexzyGet("/download/ytmp4", { url: videoUrl, quality: isHD ? "1080" : "720" }, 30000); return r.data?.data?.url || r.data?.url || r.data?.download; },
       async () => { const { data } = await axios.post("https://co.wuk.sh/api/json", { url: videoUrl, downloadMode: "video", videoQuality: isHD ? "1080" : "720", filenameStyle: "basic" }, { headers: { Accept: "application/json", "Content-Type": "application/json" }, timeout: 30000 }); return data?.url; },
       async () => { const { data } = await axios.post("https://cobalt-api.kwiatekmiki.com/", { url: videoUrl, downloadMode: "video", videoQuality: isHD ? "1080" : "720" }, { headers: { Accept: "application/json", "Content-Type": "application/json" }, timeout: 30000 }); return data?.url; },
@@ -12203,7 +12221,7 @@ Examples:
       async () => { const { data } = await axios.get(`https://api.princetechn.com/api/download/ytmp4?apikey=prince&url=${encodeURIComponent(videoUrl)}`, { timeout: 30000 }); return data?.result?.download_url || data?.result?.url; },
     ];
     for (const fn of videoDlApis) { try { dlUrl = await fn(); if (dlUrl) break; } catch {} }
-    if (!dlUrl) { await editMessage(sock, jid, sKey, `📹 *MIAS MDX Video*\n\n❌ Could not find a download link.\nTry with a direct URL or different format.`); return; }
+    if (!dlUrl) { await editMessage(sock, jid, sKey, `📹 *MIAS MDX Video*\n\n❌ All download providers are busy or blocked for this link.\nTry again in a moment, or use *${CONFIG.PREFIX}play* → option *4* for the same video.`); return; }
     await editMessage(sock, jid, sKey, `📹 *MIAS MDX Video*\n\n✅ Found: *${title}* ✅\n⬢ Download link ready ✅\n⏳ Fetching file...`);
     const vidRes = await axios.get(dlUrl, { responseType: "arraybuffer", timeout: 120000, headers: { "User-Agent": "Mozilla/5.0" }, maxRedirects: 5 });
     const vidBuf = Buffer.from(vidRes.data || []);
@@ -18444,13 +18462,22 @@ cmd(["tiktok","tt","ttdl"], { desc: "Download TikTok video/audio — supports: .
         if (!pickerSent) {
           // Older WhatsApp clients still get the same working numbered flow —
           // with the video image attached so the options never arrive bare.
-          if (thumb) {
-            await sock.sendMessage(jid, { image: thumb, caption: menuCaption }, { quoted: msg });
-          } else {
-            await sendReply(sock, msg, menuCaption);
+          try {
+            if (thumb) {
+              await sock.sendMessage(jid, { image: thumb, caption: menuCaption }, { quoted: msg });
+            } else {
+              await sendReply(sock, msg, menuCaption);
+            }
+            pickerSent = true;
+          } catch (_fbErr) {
+            console.warn("[tiktok-picker] image fallback failed:", _fbErr?.message || _fbErr);
           }
         }
-        await react(sock, msg, "✅");
+        if (!pickerSent) {
+          // Last resort: plain-text menu so the picker is NEVER silent.
+          await sendReply(sock, msg, menuCaption + "\n\n_Reply with a number (e.g. *1.3*) or *" + CONFIG.PREFIX + "pick 1.3*_").catch(() => {});
+        }
+        await react(sock, msg, pickerSent ? "✅" : "⚠️");
         return;
       } catch (_previewErr) {
         console.error("[tiktok-preview]", _previewErr?.message || _previewErr);
@@ -38805,7 +38832,7 @@ try {
         } else {
           // ── Media status ────────────────────────────────────────────────────
           const buf = await _v23Download(qInner.raw, qInner.kind);
-          if (!buf || buf.length < 10) throw new Error("Empty media buffer — please resend the source media and try again.");
+          if (!buf || buf.length < 10) throw new Error("Could not download the media. Resend the source file (or reply to it) and try again — the file may have expired on WhatsApp servers.");
 
           const mime = qInner.raw.mimetype || "";
           // caption: use text from args ONLY; never use quoted message caption as caption
