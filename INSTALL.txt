@@ -1,0 +1,34 @@
+FANTASTIC-WADDLE REPLACEMENT FILES  (2026-09-17)
+=================================================
+3 files. Replace them at the SAME paths, then restart the bot.
+
+  index.js                 ->  mias/index.js
+  precious-fixes-v24.cjs   ->  mias/precious-fixes-v24.cjs
+  PATCH-v25.cjs            ->  ./PATCH-v25.cjs   (repo root; run `node PATCH-v25.cjs` anytime)
+
+WHAT WAS FIXED
+--------------
+1) THE 3 "FAILED ANCHORS"  (were FALSE ALARMS)
+   All three edits were ALREADY in your files; the patcher just counted
+   "already applied" as a failure, and one anchor string had a literal \n
+   that could never match. PATCH-v25.cjs now treats "replacement already
+   present" as applied (⏭️) — re-run it and you get:
+       already present: 18   failed anchors: 0
+
+2) TT CMD PICKER GOES SILENT ON QUOTED REPLY
+   The picker's in-memory store is wiped on every restart/reconnect, and all
+   four "picker-first" gates required a LIVE store entry. With an empty store
+   a quoted tap fell through to settings and died silently. Fix: when your
+   reply QUOTES a picker/player card (detected by its prompt text), the quote
+   alone is now enough — the picker is rebuilt from the quoted card
+   (__ttRestoreFromQuote) and your number runs. No more silence.
+
+3) "4 is not on that list" ON THE PLAYER CARD
+   The quote-guard that is supposed to route a bare digit to the player (and
+   away from the TikTok picker) only matched the literal text
+   '𝑷𝑹𝑬𝑪𝑰𝑶𝑼𝑺 x PLAYER' / 'Reply here with a number'. The real card is
+   '🎧 *BOTNAME — PLAYER*' (or 'JINX PLAYER') with prompt 'Reply with 1/2/3/4',
+   so the guard never fired and '4' fell through to the TikTok picker, which
+   rejected it. The guard now matches the actual card (PLAYER / 'Reply with
+   1' / 'Reply here with a number'), so quoting the player card with 1-4 goes
+   to the player and '4' = video.
