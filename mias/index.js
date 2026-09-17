@@ -2835,11 +2835,25 @@ Save my contact:` }).catch(() => {});
           // downstream handler (settings, case.js) can eat it. This is what made quoted
           // 1.1 / 1 on the TikTok & Play cards do nothing.
           try {
-            if (typeof __miasHasPendingPicker === "function" && __miasHasPendingPicker(msg.key.remoteJid)
-                && typeof __miasNormalizeChoice === "function") {
-              const _v28c = __miasNormalizeChoice(body);
-              if (_v28c && /^(?:pick\s+)?\d{1,2}(?:\.\d{1,2})?$/.test(String(_v28c).trim()) && typeof globalThis.__PRECIOUS_SETTINGS_REPLY__ === "function") {
-                await globalThis.__PRECIOUS_SETTINGS_REPLY__(sock, msg, String(_v28c).replace(/^pick\s+/i, ""));
+            if (typeof __miasHasPendingPicker === "function" && typeof __miasNormalizeChoice === "function") {
+              // PRECIOUS TT-SILENT FIX: previously this only ran when a picker
+              // was pending in THIS chat's memory. After a restart/reconnect,
+              // or when the reply quotes the picker card but the in-memory
+              // entry was evicted, the tap/reply fell through every handler
+              // and the picker looked "silent". Fire whenever the body looks
+              // like a picker choice AND (a picker is pending OR the reply
+              // quotes a picker/player card).
+              const _v28Quoted = !!__ttQuotedContext(msg)?.quotedMessage;
+              if (__miasHasPendingPicker(msg.key.remoteJid) || _v28Quoted) {
+                const _v28c = __miasNormalizeChoice(body);
+                if (_v28c && /^(?:pick\s+)?\d{1,2}(?:\.\d{1,2})?$/.test(String(_v28c).trim())) {
+                  // Route through the bare-number dispatcher first — it owns
+                  // the TikTok/movie/savetube stores and the JX player card.
+                  if (await __miasHandleBareNumberReply(sock, msg, body)) return;
+                  if (typeof globalThis.__PRECIOUS_SETTINGS_REPLY__ === "function") {
+                    await globalThis.__PRECIOUS_SETTINGS_REPLY__(sock, msg, String(_v28c).replace(/^pick\s+/i, ""));
+                  }
+                }
               }
             }
           } catch (_v28err) { console.error("[v28-picker-force]", _v28err?.message || _v28err); }
@@ -9059,16 +9073,39 @@ async function _p2ThumbBuf(meta) {
 }
 
 async function _p2Get(url, timeout) {
-  const r = await axios.get(url, {
-    responseType: 'arraybuffer', timeout: timeout || 180000, maxRedirects: 5,
-    validateStatus: function (s) { return s >= 200 && s < 400; },
-    headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': '*/*' },
-  });
-  const b = Buffer.from(r.data || []);
-  if (b.length < 8000) throw new Error('file too small (' + b.length + ' bytes)');
-  const head = b.slice(0, 5).toString('utf8').toLowerCase();
-  if (head.startsWith('<!doc') || head.startsWith('<html')) throw new Error('got an HTML page, not media');
-  return b;
+  // PRECIOUS 403 FIX: CDN links (googlevideo etc.) expire or reject plain
+  // requests with "Request failed with status code 403". Retry once with a
+  // full browser header set before giving up on the URL.
+  const attempts = [
+    { 'User-Agent': 'Mozilla/5.0', 'Accept': '*/*' },
+    {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+      'Accept': '*/*',
+      'Accept-Language': 'en-US,en;q=0.9',
+      'Referer': 'https://www.youtube.com/',
+      'Origin': 'https://www.youtube.com',
+      'Range': 'bytes=0-',
+    },
+  ];
+  let lastErr = null;
+  for (const headers of attempts) {
+    try {
+      const r = await axios.get(url, {
+        responseType: 'arraybuffer', timeout: timeout || 180000, maxRedirects: 5,
+        validateStatus: function (s) { return s >= 200 && s < 400; },
+        headers,
+      });
+      const b = Buffer.from(r.data || []);
+      if (b.length < 8000) throw new Error('file too small (' + b.length + ' bytes)');
+      const head = b.slice(0, 5).toString('utf8').toLowerCase();
+      if (head.startsWith('<!doc') || head.startsWith('<html')) throw new Error('got an HTML page, not media');
+      return b;
+    } catch (e) {
+      lastErr = e;
+      if (e?.response?.status !== 403) throw e; // only retry on 403
+    }
+  }
+  throw lastErr || new Error('download failed');
 }
 
 function _p2Sweep() {
@@ -22108,6 +22145,14 @@ function __miasNormalizeChoice(raw) {
 async function __miasHandleBareNumberReply(sock, msg, body) {
   const value = __miasNormalizeChoice(body);
   if (!value) return false;
+  // PRECIOUS PLAYER-GUARD: a bare-digit reply ("4") that quotes the
+  // 𝑷𝑹𝑬𝑪𝑰𝑶𝑼𝑺 x PLAYER card belongs to the JX player dispatch (1=audio …
+  // 4=video), NOT the TikTok picker. Without this guard the TikTok branch
+  // below swallowed the reply and answered "4 is not on that list".
+  try {
+    const _plQ = (typeof __ttQuotedText === "function" ? __ttQuotedText(msg) : "") || "";
+    if (/𝑷𝑹𝑬𝑪𝑰𝑶𝑼𝑺 x PLAYER|Reply here with a number/i.test(_plQ)) return false;
+  } catch {}
   const jid = msg.key.remoteJid;
   const now = Date.now();
 
@@ -22128,7 +22173,7 @@ async function __miasHandleBareNumberReply(sock, msg, body) {
         return true;
       }
     }
-    await sendReply(sock, msg, `❌ *${value}* is not on that list. Reply with a choice like *1.3* (HD video) or *2.1* (audio).`);
+    await sendReply(sock, msg, `❌ *${value}* is not on that list. Valid choices: *1.1–1.7* (video), *2.1–2.3* (music), *3.1–3.2* (stickers) — e.g. *1.3* (HD video) or *2.1* (audio).`);
     return true;
   }
 
@@ -31989,7 +32034,16 @@ cmd(["tovid", "tovideo", "stickertovid", "imgtovid", "giftomp4"], { desc: "Conve
     const _type = stk ? "sticker" : (img ? "image" : "video");
     const stream = await downloadContentFromMessage(media, _type);
     let buf = Buffer.from([]);
-    for await (const c of stream) buf = Buffer.concat([buf, c]);
+    // PRECIOUS FIX: a stalled WhatsApp media stream used to hang here forever,
+    // leaving the chat stuck on "Converting to video...". Abort after 60s of
+    // silence and fail cleanly instead.
+    let _stallTimer;
+    const _stallReset = () => { clearTimeout(_stallTimer); _stallTimer = setTimeout(() => { try { stream.destroy?.(new Error("media download stalled")); } catch {} }, 60000); };
+    _stallReset();
+    try {
+      for await (const c of stream) { _stallReset(); buf = Buffer.concat([buf, c]); if (buf.length > 80 * 1024 * 1024) throw new Error("file too large (>80MB)"); }
+    } finally { clearTimeout(_stallTimer); }
+    if (!buf.length) throw new Error("empty media download — re-send the sticker/image and try again");
     fs.writeFileSync(inPath, buf);
 
     // Choose ffmpeg command based on input type
@@ -31998,9 +32052,12 @@ cmd(["tovid", "tovideo", "stickertovid", "imgtovid", "giftomp4"], { desc: "Conve
       _ffCmd = `ffmpeg -y -i "${inPath}" -movflags faststart -pix_fmt yuv420p -vf "scale=trunc(iw/2)*2:trunc(ih/2)*2,fps=15" -c:v libx264 -preset veryfast -crf 23 "${outPath}"`;
       _fallback = `ffmpeg -y -loop 1 -t 3 -i "${inPath}" -movflags faststart -pix_fmt yuv420p -vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" -c:v libx264 -preset veryfast -crf 23 "${outPath}"`;
     } else if (img) {
-      // Static image → 5-second video with gentle zoom effect
-      _ffCmd = `ffmpeg -y -loop 1 -t 5 -i "${inPath}" -vf "scale=720:720:force_original_aspect_ratio=decrease,pad=720:720:(ow-iw)/2:(oh-ih)/2:color=black,zoompan=z='min(zoom+0.0015,1.5)':d=125:s=720x720,fps=25" -c:v libx264 -pix_fmt yuv420p -movflags faststart -preset veryfast -crf 23 "${outPath}"`;
-      _fallback = `ffmpeg -y -loop 1 -t 5 -i "${inPath}" -vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" -c:v libx264 -pix_fmt yuv420p -movflags faststart -preset veryfast -crf 23 "${outPath}"`;
+      // Static image → 5-second video. PRECIOUS FIX: run the simple, fast
+      // loop-encode FIRST; the zoompan filter is expensive and was the reason
+      // tovid sat on "Converting to video..." forever on some images — it is
+      // now the fallback instead of the primary.
+      _ffCmd = `ffmpeg -y -loop 1 -t 5 -i "${inPath}" -vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" -c:v libx264 -pix_fmt yuv420p -movflags faststart -preset veryfast -crf 23 "${outPath}"`;
+      _fallback = `ffmpeg -y -loop 1 -t 5 -i "${inPath}" -vf "scale=720:720:force_original_aspect_ratio=decrease,pad=720:720:(ow-iw)/2:(oh-ih)/2:color=black,zoompan=z='min(zoom+0.0015,1.5)':d=125:s=720x720,fps=25" -c:v libx264 -pix_fmt yuv420p -movflags faststart -preset veryfast -crf 23 "${outPath}"`;
     } else {
       // Video recompress (re-encode to yuv420p for compatibility)
       _ffCmd = `ffmpeg -y -i "${inPath}" -c:v libx264 -pix_fmt yuv420p -movflags faststart -preset veryfast -crf 23 -c:a aac "${outPath}"`;
