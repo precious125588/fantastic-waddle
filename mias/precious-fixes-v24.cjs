@@ -222,8 +222,20 @@ function registerPicker(jid, sent, options, onPick, label) {
 function consumePicker(jid, msg, body) {
   const arr = pickKeyOf(jid);
   if (!arr.length) return null;
-  const choice = String(body || '').trim().replace(/^[.*_~\s]+/, '');
-  if (!/^\d{1,2}$/.test(choice)) return null;
+  const choice = String(body || '').trim().replace(/^[.*_~\s>]+/, '');
+  if (!/^\d{1,2}$/.test(choice)) {
+    const _qctx = msg?.message?.extendedTextMessage?.contextInfo
+      || msg?.message?.imageMessage?.contextInfo
+      || msg?.message?.videoMessage?.contextInfo || null;
+    // INVALID QUOTE GUARD: the user quoted one of our cards but typed something
+    // that is not one of its numbers — answer "invalid quote" instead of letting
+    // the settings table leak "Unknown settings option" (or going silent).
+    if (_qctx?.quotedMessage && arr.length) {
+      const _last = arr[arr.length - 1];
+      return { invalid: true, total: _last?.options?.length || 0, invalidQuote: true };
+    }
+    return null;
+  }
   const n = parseInt(choice, 10);
   // quoted-key match first
   const ctx = msg?.message?.extendedTextMessage?.contextInfo
@@ -310,7 +322,7 @@ module.exports.install = function install(P) {
     if (rows && rows.length && typeof P.sendNativeFlowListMenu === 'function') {
       try {
         const sections = [{ title: title || 'Options', rows: rows.map((r, i) => ({ title: `${i + 1} ${r}`, rowId: `${PFX}pick ${i + 1}`, description: '' })) }];
-        sent = await P.sendNativeFlowListMenu(sock, jid, msg, caption, sections, [], undefined, image ? { hasMediaAttachment: true, image } : undefined);
+        sent = await P.sendNativeFlowListMenu(sock, jid, msg, caption, sections, [], 'MAIS MDX', image ? { hasMediaAttachment: true, image } : undefined);
       } catch {}
     }
     if (!sent) {
@@ -337,7 +349,9 @@ module.exports.install = function install(P) {
         return true;
       }
       if (hit && hit.invalid) {
-        await P.sendReply(sock, msg, `❌ Pick a number between *1* and *${hit.total}*.`).catch(() => {});
+        await P.sendReply(sock, msg, hit.invalidQuote
+          ? `❌ Invalid quote — reply with a number from the card you quoted (1–${hit.total}).`
+          : `❌ Invalid quote — pick a number between *1* and *${hit.total}*.`).catch(() => {});
         return true;
       }
       // A bare digit that is NOT for one of our pickers: return false so the
@@ -543,7 +557,10 @@ module.exports.install = function install(P) {
     await P.react(sock, msg, '✅').catch(() => {});
     // NO auto-deliver fall-through — the picker is the sole route.
   }
-  P.cmd(['tiktok', 'tt', 'ttdl'], { desc: 'TikTok downloader (picker card only)', category: 'DOWNLOAD' }, ttHandle);
+  // TIKTOK RESTORED: the v24 3-option card ("🎵 TIKTOK / Video (no watermark) / MAIS MDX • v4.9.9")
+  // is removed PERMANENTLY. The original image-card menu from mias/index.js + features/tiktok.js
+  // (Author / Duration / ➜ [1] Video 1.1–1.7, [2] Music, [3] Stickers, footer "MAIS MDX • TikTok") wins again.
+  // P.cmd(['tiktok', 'tt', 'ttdl'], { desc: 'TikTok downloader (picker card only)', category: 'DOWNLOAD' }, ttHandle);
   rep.ttDedupe = true;
 
   // ══════════════════════════════════════════════════════════════════════
@@ -586,7 +603,7 @@ module.exports.install = function install(P) {
 
     // determine target
     let targetNum = String((args || []).join(' ') || '').replace(/\D/g, '');
-    if (!targetNum && !inBotDm && isDm) targetNum = jid.split('@')[0];         // someone's DM → sudo the DM owner
+    if (!targetNum && isDm) targetNum = jid.split('@')[0]; // .sudo in a target DM with no number → sudo that DM (DP image card: target DP, else bot DP)         // someone's DM → sudo the DM owner
     if (!targetNum) {
       return P.sendReply(sock, msg, `👑 *SUDO*\n\nSend the target number:\n${PFX}sudo 2348012345678`);
     }
