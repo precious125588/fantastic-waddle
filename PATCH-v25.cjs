@@ -79,7 +79,7 @@ function patch(rel, edits) {
   const orig = src;
   let dirty = false;
   for (const e of edits) {
-    if (src.includes(e.marker)) { skipped++; continue; }
+    if (src.includes(e.marker) || src.includes(e.replace)) { skipped++; console.log('  ⏭️  already applied in ' + rel + ': ' + e.name); continue; }
     if (!src.includes(e.find)) {
       console.log('  ❌ anchor not found in ' + rel + ': ' + e.name);
       failed++;
@@ -636,8 +636,11 @@ patch('mias/index.js', [{
 patch('mias/index.js', [{
   name: 'index: clear chat pending when the choice is consumed',
   marker: 'V25-OK: clear play pending on consume',
-  find: `  _P2_PENDING.delete(qid);\n  if (typeof react === 'function') await react(sock, m, '⏳').catch(function () {});`,
-  replace: `  _P2_PENDING.delete(qid);\n  try { _p2MarkChatPending(_p2NormJid(jid), false); } catch {}\n  if (typeof react === 'function') await react(sock, m, '⏳').catch(function () {});`,
+  find: `  _P2_PENDING.delete(qid);
+  if (typeof react === 'function') await react(sock, m, '⏳').catch(function () {});`,
+  replace: `  _P2_PENDING.delete(qid);
+  try { _p2MarkChatPending(_p2NormJid(jid), false); } catch {}
+  if (typeof react === 'function') await react(sock, m, '⏳').catch(function () {});`,
 }]);
 
 patch('mias/index.js', [{
