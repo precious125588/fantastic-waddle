@@ -13,7 +13,7 @@ const QRCode  = require('qrcode');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'Ajanaku';
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
 const ADMIN_USERNAME = process.env.ADMIN_USERNAME || 'admin';
 
 function configuredTelegramToken() {

@@ -1,2 +1,0 @@
-# The JSON file is the authoritative source list.
-# Keep this file empty so stale lines cannot override the JSON page pool.

@@ -1,9 +1,0 @@
-node_modules
-mias/node_modules
-artifacts/*/node_modules
-**/package-lock.json
-nexstore
-.git
-.env
-*.log
-npm-debug.log*
