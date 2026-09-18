@@ -131,6 +131,15 @@ function sideEffect(rel, label, key) {
 
 function installAll(ctx) {
   ctx = ctx || globalThis.__PRECIOUS__ || {};
+  /* v31 FIX: this file auto-runs at require-time when globalThis.__PRECIOUS__
+     already exists AND mias/index.js also calls installAll() explicitly, so the
+     whole chain used to run twice per boot — doubling the log noise and every
+     "already installed (skipped)" line. One pass per process is enough. */
+  if (globalThis.__ALL_PACKS_BOOTED__) {
+    log('already booted this process — skipping the second pass');
+    return globalThis.__ALL_PACKS_RESULT__ || {};
+  }
+  globalThis.__ALL_PACKS_BOOTED__ = true;
   const result = {};
   const t0 = Date.now();
   log('════════ ALL FIX PACKS BOOT ════════');
@@ -189,9 +198,25 @@ function installAll(ctx) {
       } catch (e) { bad('precious-fixes-v29 install error: ' + (e && e.message)); return false; }
     };
     const first = runOnce();
-    // Deferred retries: the live commands map is sometimes exposed a tick later.
+    /* v31 FIX: the retries used to test isInstalled('v29-final'), a key nothing
+       ever sets, so v29 re-installed 3 extra times on every boot and re-wrapped
+       handlers that were already wrapped. Retry ONLY while the commands map is
+       still not reachable, and stop for good once it is. */
+    const commandsVisible = () => {
+      try {
+        const c = (globalThis.__PRECIOUS__ && globalThis.__PRECIOUS__.commands) || globalThis.__MIAS_COMMANDS;
+        return !!(c && typeof c.get === 'function' && c.size);
+      } catch (_) { return false; }
+    };
     for (const ms of [15000, 45000, 90000]) {
-      try { const t = setTimeout(() => { if (!isInstalled('v29-final')) runOnce(); }, ms); if (t && t.unref) t.unref(); } catch (_) {}
+      try {
+        const t = setTimeout(() => {
+          if (globalThis.__V29_FINAL__) return;
+          if (commandsVisible()) { globalThis.__V29_FINAL__ = true; }
+          runOnce();
+        }, ms);
+        if (t && t.unref) t.unref();
+      } catch (_) {}
     }
     return first;
   })();
@@ -200,6 +225,7 @@ function installAll(ctx) {
   const good  = Object.values(result).filter(Boolean).length;
   const dt    = Date.now() - t0;
   log('════════ DONE — loaded ' + good + '/' + slots + ' pack slots in ' + dt + 'ms ════════');
+  globalThis.__ALL_PACKS_RESULT__ = result;
   return result;
 }
 

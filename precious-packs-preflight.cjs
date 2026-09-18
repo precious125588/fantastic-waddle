@@ -52,6 +52,7 @@ const PACKS = [
   'mias/precious-fixes-v24.cjs',
   'mias/precious-gst-picker.cjs',
   'patches/precious-fixes-v23-rc.cjs',
+  'precious-packs-verify.cjs',
 ];
 
 function log(m) { try { console.log(TAG + ' ' + m); } catch (_) {} }
@@ -68,17 +69,34 @@ function checkSyntax(rel) {
   }
 }
 
-/* Count usable paired sessions the same way precious-session-boot does. */
-function pairedSessionCount() {
+/* Count usable paired sessions the SAME WAY the rest of the app resolves them.
+   v31 FIX: this used to hardcode nexstoreRoot()+'/pairing', which ignores the
+   SESSION_DIR / SESSION_ROOT / SESSIONS_DIR overrides that sessionPaths honours
+   — on a deployment that sets SESSION_DIR it always reported "0 paired
+   sessions" even with a live, paired number. */
+function sessionRoot() {
+  try { return require('./sessionPaths').resolveSessionRoot(); }
+  catch (_) { return null; }
+}
+
+function pairedSessions() {
+  const root = sessionRoot();
+  if (!root) return { root: null, list: null };
   try {
-    const sessionPaths = require('./sessionPaths');
-    const root = sessionPaths.nexstoreRoot();
-    const pairing = path.join(root, 'pairing');
-    if (!fs.existsSync(pairing)) return 0;
-    return fs.readdirSync(pairing).filter((d) => {
-      try { return fs.existsSync(path.join(pairing, d, 'creds.json')); } catch (_) { return false; }
-    }).length;
-  } catch (_) { return -1; }
+    if (!fs.existsSync(root)) return { root, list: [] };
+    const list = fs.readdirSync(root).filter((d) => {
+      try { return fs.existsSync(path.join(root, d, 'creds.json')); } catch (_) { return false; }
+    });
+    return { root, list };
+  } catch (e) { return { root, list: null, err: e && e.message }; }
+}
+
+/* Did PATCH-v29.cjs actually rewrite mias/index.js on this container? */
+function v29FilePatched() {
+  try {
+    const head = fs.readFileSync(path.join(ROOT, 'mias', 'index.js'), 'utf8').slice(0, 4000);
+    return head.includes('__V29_PATCHED__');
+  } catch (_) { return null; }
 }
 
 function run() {
@@ -96,18 +114,26 @@ function run() {
     }
     log(ok + '/' + PACKS.length + ' pack files healthy' + (problems.length ? ', ' + problems.length + ' problem(s)' : ''));
 
-    const sessions = pairedSessionCount();
-    if (sessions === 0) {
+    const patched = v29FilePatched();
+    log('mias/index.js file patch (__V29_PATCHED__): ' +
+      (patched === true ? '✅ applied' : patched === false ? '❌ NOT applied — PATCH-v29.cjs did not run before this point' : '? unreadable'));
+
+    const { root, list } = pairedSessions();
+    log('session root in use: ' + (root || 'unknown') +
+      (process.env.SESSION_DIR ? ' (SESSION_DIR override)' : ''));
+    if (list === null) {
+      log('could not read the session root — skipping the paired-session check.');
+    } else if (list.length === 0) {
       log('⚠️ 0 paired sessions on the volume → NO bot child is running.');
       log('⚠️ THIS is why you do not see: "[packs] ... installed", "[precious-v28] ✅ installed", "[v29] ✅ install pass complete".');
       log('→ Those lines are printed by mias/index.js inside the bot child (prefixed "[MAIS:<number>]"). Pair a number, then re-read the logs.');
-    } else if (sessions > 0) {
-      log(sessions + ' paired session(s) found → bot child(ren) should boot; look for "[MAIS:<number>] [packs] ..." lines below.');
     } else {
-      log('could not count paired sessions (sessionPaths unavailable) — skipping that check.');
+      log(list.length + ' paired session(s): ' + list.map((d) => d.split('@')[0]).join(', '));
+      log('→ each one spawns a bot child; look for "[MAIS:<number>] [packs] ..." and the "[packs-verify] RESULT:" line below.');
     }
+
     log('════════ PREFLIGHT DONE ════════');
-    return { ok, total: PACKS.length, problems, sessions };
+    return { ok, total: PACKS.length, problems, sessions: (list ? list.length : -1), sessionRoot: root, v29FilePatched: patched };
   } catch (e) {
     log('preflight error: ' + (e && e.message));
     return null;

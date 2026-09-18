@@ -15,7 +15,7 @@ try {
   const _marker = require('path').join(_os.tmpdir(), 'mais-patched.marker');
   // v29-hotfix: never skip on a stale tmp marker; also run the FULL list incl. PATCH-v27/v29.
   {
-    for (const _patcher of ['fix_all.cjs', 'fix_session_401.cjs', 'PATCH-v25.cjs', 'PATCH-v27.cjs', 'precious-fix-pack.cjs', 'PATCH-v29.cjs']) {
+    for (const _patcher of ['fix_all.cjs', 'fix_session_401.cjs', 'PATCH-v25.cjs', 'PATCH-v27.cjs', 'precious-fix-pack.cjs', 'PATCH-v29.cjs', 'PATCH-v30.cjs', 'PATCH-v31.cjs']) {
       const _p = require('path').join(__dirname, _patcher);
       if (!require('fs').existsSync(_p)) continue;
       const _r = spawnSync(process.execPath, [_p], { cwd: __dirname, stdio: 'inherit' });
