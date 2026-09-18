@@ -51,6 +51,10 @@ export async function getBaileys() {
 // a raw Baileys fallback below.
 export const GKTW_CANDIDATES = [
   process.env.GKTW_PACKAGE,
+  // Local drop-in shim at <repo>/cox (wired as "cox": "file:../cox" in
+  // mias/package.json). It is gktw-compatible and always installable, so it
+  // is preferred over the 404 upstream packages below.
+  "cox",
   "@itsreimau/gktw",
   "@mengkodingan/ckptw",
 ].filter(Boolean);
