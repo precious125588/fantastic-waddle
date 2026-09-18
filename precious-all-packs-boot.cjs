@@ -225,3 +225,11 @@ if (globalThis.__PRECIOUS__) {
   try { installAll(globalThis.__PRECIOUS__); }
   catch (e) { bad('auto-run: ' + (e && e.message)); }
 }
+
+// ═══ PRECIOUS v28 — movie/nkiri reply-quote logic (installs dead last) ═══
+try {
+  const _v28 = require('./precious-fixes-v28.cjs');
+  _v28.install(globalThis.__PRECIOUS__ || {});
+} catch (_e28) {
+  console.log('[precious-v28] ❌ boot error:', (_e28 && _e28.message) || _e28);
+}

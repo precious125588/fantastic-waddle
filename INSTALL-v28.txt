@@ -1,0 +1,28 @@
+PRECIOUS v28 — REPLACEMENT FILES
+================================
+What this fixes:
+ 1) TikTok (.tt) goes silent on number replies / native button taps
+    -> the pending-picker guard (mias/index.js, __miasHasPendingPicker)
+       was a stub that only knew the TikTok + one play store. Restored the
+       full sweep: tt, play, savetube, movie/nkiri, adult, menu, P2, JX.
+       Settings no longer steals "1.3" and the picker answers again.
+ 2) .pin / .pintext said "pinned" but nothing pinned
+    -> pinInChat envelope is silently ignored by current WhatsApp. All three
+       pin paths now try payloads in the order that actually pins
+       ({pin,key,type,time} first, pinInChat as last fallback). Same texts.
+ 3) "Files not loading" / large downloads broken
+    -> mias/lib/download-worker.cjs was missing (only existed at repo root).
+       Copied into place; playv2-deliver.cjs requires it.
+ 4) Reply-quote logic for .movie and .nkiri
+    -> new pack precious-fixes-v28.cjs: reply to any message containing a
+       title and run ".movie" / ".nkiri" with no args -> quoted text becomes
+       the query. Also registers a REAL .nkiri command (only .dcnkiri existed),
+       reusing the DC Nkiri search handler.
+    -> hooked DEAD LAST in precious-all-packs-boot.cjs so nothing overrides it.
+
+Install (overwrite in place, keep your session/):
+  cp mias/index.js                 <yourbot>/mias/index.js
+  cp mias/lib/download-worker.cjs  <yourbot>/mias/lib/download-worker.cjs
+  cp precious-fixes-v28.cjs        <yourbot>/precious-fixes-v28.cjs
+  cp precious-all-packs-boot.cjs   <yourbot>/precious-all-packs-boot.cjs
+Then restart the bot. No config/session changes needed.
