@@ -1,28 +1,25 @@
 /* ══════════════════════════════════════════════════════════════════════════
-   precious-all-packs-boot.cjs  ·  v2 (2026-09-17)
+   precious-all-packs-boot.cjs  ·  v3 (2026-09-18)
    ONE entry point that loads + installs EVERY fix pack in this repo, in the
    correct order. Each pack is isolated so a single broken pack can never take
    the bot down, and every pack prints a [packs] line so you can SEE it load.
 
-   WHAT CHANGED IN v2
-   ------------------
-   * Multi-path require: some packs (v21, v24) live under mias/ and `require`
-     from THIS file (which sits at repo root) would resolve their deps from
-     the root node_modules first — where a peer of mias/node_modules such as
-     axios may not exist. We now try require from (a) the pack's own folder
-     via createRequire, (b) mias/, (c) root — in that order — so `axios`
-     always resolves from wherever npm actually installed it.
-   * Double-install guard: mias/index.js used to install v21, gst-picker and
-     v24 itself BEFORE calling this boot; we detect that via a shared marker
-     on globalThis.__PRECIOUS_INSTALLED__ and skip so nothing double-registers.
-   * The root-level precious-fixes-v21.cjs is a byte-identical duplicate of
-     the mias copy — installing it twice would double-register the same
-     commands, so it is loaded ONLY as a fallback if the mias copy failed.
-   * Clean, honest summary: the final line reports how many packs were newly
-     installed vs. skipped-as-already-installed vs. failed.
+   WHAT CHANGED IN v3 (THE REAL FIX FOR "v28/v29 never show in logs")
+   -----------------------------------------------------------------
+   * v28 + v29 were placed AFTER `installAll()`'s closing brace and AFTER
+     `module.exports`. Because `installAll()` ends with `return result`, every
+     statement below it was DEAD CODE — it parsed fine but NEVER ran. That is
+     why you saw PATCH-v29 (the file patcher) but never:
+        [v29] ✅ install pass complete
+        [precious-v28] ✅ installed
+   * v28 + v29 are now installed INSIDE installAll(), dead-last, so they
+     actually execute and can never be overwritten by an older pack.
+   * The v27 entry block was also dead code (same reason) — it is now a live
+     step inside installAll() too.
 
    Order matters (later installs win because `commands` is keyed by name):
-     session-boot → v20 → v21 → gst-picker → v23-rc → playv2 shims → v24 (last)
+     session-boot → v20 → v21 → gst-picker → v23-rc → playv2 shims →
+     watermark → v24 → v27 → v28 → v29 (dead last)
    ══════════════════════════════════════════════════════════════════════════ */
 'use strict';
 
@@ -52,13 +49,10 @@ function markInstalled(key, value) { marker()[key] = value || true; }
    can resolve axios / node-fetch etc. from mias/node_modules even when this
    file is loaded from repo root). Returns { mod, from, err }. */
 function multiRequire(rel) {
-  // Absolute path of the target file (rel is like './mias/precious-fixes-v21.cjs')
   const abs = path.resolve(ROOT, rel);
-
   const attempts = [];
 
-  // 1. createRequire scoped to the target file's own folder — deps resolve
-  //    starting from THAT folder (best chance of finding node_modules).
+  // 1. createRequire scoped to the target file's own folder.
   try {
     if (fs.existsSync(abs)) {
       const scoped = Module.createRequire(abs);
@@ -77,16 +71,11 @@ function multiRequire(rel) {
 
   let lastErr = null;
   for (const a of attempts) {
-    try {
-      const mod = a.fn();
-      return { mod, from: a.from, err: null };
-    } catch (e) { lastErr = e; }
+    try { return { mod: a.fn(), from: a.from, err: null }; }
+    catch (e) { lastErr = e; }
   }
 
-  // LAST RESORT: pack-local deps (axios, node-fetch, ...) can fail to resolve
-  // if the require chain started from the wrong folder. Add every workspace
-  // node_modules to NODE_PATH and retry the primary attempt once. This makes
-  // the loader bulletproof even if a deploy didn't run the mias npm install.
+  // LAST RESORT: add every workspace node_modules to NODE_PATH and retry once.
   try {
     const extra = [path.join(ROOT, 'node_modules'), path.join(MIAS, 'node_modules')]
       .filter((d) => { try { return fs.existsSync(d); } catch (_) { return false; } });
@@ -98,8 +87,7 @@ function multiRequire(rel) {
       try {
         if (fs.existsSync(abs)) {
           const scoped = Module.createRequire(abs);
-          const mod = scoped(abs);
-          return { mod, from: 'self+NODE_PATH', err: null };
+          return { mod: scoped(abs), from: 'self+NODE_PATH', err: null };
         }
       } catch (e) { lastErr = e; }
     }
@@ -112,16 +100,13 @@ function multiRequire(rel) {
 function run(loaded, ctx, label, key, opts) {
   opts = opts || {};
   const requireFn = !!opts.requireFn;
-
   if (isInstalled(key)) { skip(label + ' — already installed earlier this process (skipped)'); return true; }
-
   if (!loaded || !loaded.mod) {
     const why = loaded && loaded.err ? loaded.err.message : 'module missing';
     bad(label + ' — ' + why);
     return false;
   }
   const mod = loaded.mod;
-
   try {
     if (typeof mod === 'function')          { mod(ctx);                     markInstalled(key); ok(label + ' — installed (function) [' + loaded.from + ']'); return true; }
     if (typeof mod.install === 'function')  { const r = mod.install(ctx);   markInstalled(key, r || true); ok(label + ' — installed (.install) [' + loaded.from + ']' + (r ? ' → ' + safeJson(r) : '')); return true; }
@@ -154,44 +139,62 @@ function installAll(ctx) {
   result.sessionBoot = sideEffect('./precious-session-boot.cjs',
     'session-boot (volume-aware AUTH_DIR + migration)', 'sessionBoot');
 
-  /* 2. v20 — exposes real handlers, gst/play/settings/rows/categories */
-  result.v20 = run(multiRequire('./mias/precious-fixes-v20.cjs'), ctx,
-    'precious-fixes-v20', 'v20');
+  /* 2. v20 */
+  result.v20 = run(multiRequire('./mias/precious-fixes-v20.cjs'), ctx, 'precious-fixes-v20', 'v20');
 
-  /* 3. v21 — nkiri, tgsticker, shazam, gst re-pin (mias copy) */
-  result.v21 = run(multiRequire('./mias/precious-fixes-v21.cjs'), ctx,
-    'precious-fixes-v21 (mias)', 'v21');
-
-  /* 3b. root v21 is a byte-identical duplicate of the mias copy. Installing
-         it twice would double-register the same commands, so it is loaded
-         ONLY as a fallback if the mias copy failed. */
+  /* 3. v21 (mias copy) */
+  result.v21 = run(multiRequire('./mias/precious-fixes-v21.cjs'), ctx, 'precious-fixes-v21 (mias)', 'v21');
   if (!result.v21) {
-    result.v21root = run(multiRequire('./precious-fixes-v21.cjs'), ctx,
-      'precious-fixes-v21 (root fallback)', 'v21');
+    result.v21root = run(multiRequire('./precious-fixes-v21.cjs'), ctx, 'precious-fixes-v21 (root fallback)', 'v21');
   } else {
-    log('precious-fixes-v21 (root) — skipped (mias copy already installed; duplicate would double-register)');
+    log('precious-fixes-v21 (root) — skipped (mias copy already installed)');
   }
 
   /* 4. gst picker */
-  result.gstPicker = run(multiRequire('./mias/precious-gst-picker.cjs'), ctx,
-    'precious-gst-picker', 'gstPicker');
+  result.gstPicker = run(multiRequire('./mias/precious-gst-picker.cjs'), ctx, 'precious-gst-picker', 'gstPicker');
 
-  /* 5. v23-rc — picker registry / universal buttons / videoFix / shazamFix */
-  result.v23rc = run(multiRequire('./patches/precious-fixes-v23-rc.cjs'), ctx,
-    'precious-fixes-v23-rc', 'v23rc');
+  /* 5. v23-rc */
+  result.v23rc = run(multiRequire('./patches/precious-fixes-v23-rc.cjs'), ctx, 'precious-fixes-v23-rc', 'v23rc');
 
-  /* 6. play-v2 delivery shims (only if they expose something callable) */
+  /* 6. play-v2 shims */
   result.playV2         = run(multiRequire('./precious-play-v2.js'),  ctx, 'precious-play-v2', 'playV2', { requireFn: true });
   result.playv2Deliver  = run(multiRequire('./playv2-deliver.cjs'),   ctx, 'playv2-deliver',   'playv2Deliver', { requireFn: true });
   result.downloadWorker = run(multiRequire('./download-worker.cjs'),  ctx, 'download-worker',  'downloadWorker', { requireFn: true });
 
   /* 7. video watermark helper */
-  result.watermark = run(multiRequire('./_addVideoWatermark.cjs'), ctx,
-    '_addVideoWatermark', 'watermark', { requireFn: true });
+  result.watermark = run(multiRequire('./_addVideoWatermark.cjs'), ctx, '_addVideoWatermark', 'watermark', { requireFn: true });
 
-  /* 8. v24 LAST — overrides every older handler (includes anime-edits) */
-  result.v24 = run(multiRequire('./mias/precious-fixes-v24.cjs'), ctx,
-    'precious-fixes-v24 (final override)', 'v24');
+  /* 8. v24 — final override for the older handlers */
+  result.v24 = run(multiRequire('./mias/precious-fixes-v24.cjs'), ctx, 'precious-fixes-v24 (final override)', 'v24');
+
+  /* 9. v27 master fix pack (now a LIVE step — was dead code before) */
+  result.v27 = run(multiRequire('./precious-fixes-v27.cjs'), ctx, 'precious-fixes-v27', 'v27');
+
+  /* 10. v28 — movie/nkiri reply-quote logic (now LIVE, dead-last-ish) */
+  result.v28 = run(multiRequire('./precious-fixes-v28.cjs'), ctx, 'precious-fixes-v28', 'v28');
+
+  /* 11. v29 — master fix pack, DEAD LAST, with deferred retry so it survives
+         the commands map not being exposed yet at require-time. */
+  result.v29 = (function installV29() {
+    const key = 'v29';
+    if (isInstalled(key)) { skip('precious-fixes-v29 already installed'); return true; }
+    const loaded = multiRequire('./precious-fixes-v29.cjs');
+    if (!loaded.mod) { bad('precious-fixes-v29 failed to load: ' + (loaded.err && loaded.err.message)); return false; }
+    const runOnce = () => {
+      try {
+        const rep = (typeof loaded.mod.install === 'function') ? loaded.mod.install(globalThis.__PRECIOUS__ || ctx) : null;
+        markInstalled(key, true);
+        ok('precious-fixes-v29 installed (from ' + loaded.from + ') ' + safeJson(rep));
+        return true;
+      } catch (e) { bad('precious-fixes-v29 install error: ' + (e && e.message)); return false; }
+    };
+    const first = runOnce();
+    // Deferred retries: the live commands map is sometimes exposed a tick later.
+    for (const ms of [15000, 45000, 90000]) {
+      try { const t = setTimeout(() => { if (!isInstalled('v29-final')) runOnce(); }, ms); if (t && t.unref) t.unref(); } catch (_) {}
+    }
+    return first;
+  })();
 
   const slots = Object.keys(result).length;
   const good  = Object.values(result).filter(Boolean).length;
@@ -200,24 +203,6 @@ function installAll(ctx) {
   return result;
 }
 
-
-  /* __V27_PACK_ENTRY__ — the master fix pack installs LAST so nothing overwrites it. */
-  {
-    const key = 'v27';
-    if (isInstalled(key)) { skip('precious-fixes-v27 already installed'); }
-    else {
-      const { mod, from, err } = multiRequire('./precious-fixes-v27.cjs');
-      if (err) { bad('precious-fixes-v27 failed to load: ' + (err && err.message)); markInstalled(key, 'failed'); }
-      else {
-        try {
-          const rep = (mod && typeof mod.install === 'function') ? mod.install(globalThis.__PRECIOUS__ || {}) : null;
-          markInstalled(key, true);
-          ok('precious-fixes-v27 installed (from ' + from + ') ' + JSON.stringify(rep));
-        } catch (e) { bad('precious-fixes-v27 install error: ' + (e && e.message)); markInstalled(key, 'failed'); }
-      }
-    }
-  }
-
 module.exports = { installAll };
 
 /* Auto-run when required with a live context already on the global. */
@@ -225,19 +210,3 @@ if (globalThis.__PRECIOUS__) {
   try { installAll(globalThis.__PRECIOUS__); }
   catch (e) { bad('auto-run: ' + (e && e.message)); }
 }
-
-// ═══ PRECIOUS v28 — movie/nkiri reply-quote logic (installs dead last) ═══
-try {
-  const _v28 = require('./precious-fixes-v28.cjs');
-  _v28.install(globalThis.__PRECIOUS__ || {});
-} catch (_e28) {
-  console.log('[precious-v28] ❌ boot error:', (_e28 && _e28.message) || _e28);
-}
-
-// ═══ PRECIOUS v29 — master fix pack, installs dead last with deferred retry ═══
-try {
-  const _v29 = require('./precious-fixes-v29.cjs');
-  const _run29 = () => { try { _v29.install(globalThis.__PRECIOUS__ || {}); } catch (_e) { console.log('[v29] install error:', (_e && _e.message) || _e); } };
-  _run29();
-  for (const _ms of [15000, 45000, 90000]) { const _t = setTimeout(_run29, _ms); if (_t && _t.unref) _t.unref(); }
-} catch (_e29) { console.log('[v29] ❌ boot error:', (_e29 && _e29.message) || _e29); }
