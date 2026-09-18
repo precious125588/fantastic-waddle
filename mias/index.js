@@ -2826,7 +2826,7 @@ Save my contact:` }).catch(() => {});
             // few lines below (rows are no longer BTN:-prefixed, so they
             // reach __miasHandleBareNumberReply unchanged).
             if (_pickerChoice && (_pickerActive || /reply with the number|reply with 1|reply here with a number|PLAYER/i.test((typeof __ttQuotedText==="function"?__ttQuotedText(msg):"")||""))) {
-              if (await __miasHandleBareNumberReply(sock, msg, body)) return;
+              if (await (globalThis.__miasHandleBareNumberReply || __miasHandleBareNumberReply)(sock, msg, body)) return;
             }
           } catch (_pickerFirstErr) {
             console.error("[picker-first]", _pickerFirstErr?.message || _pickerFirstErr);
@@ -2850,7 +2850,7 @@ Save my contact:` }).catch(() => {});
                 if (_v28c && /^(?:pick\s+)?\d{1,2}(?:\.\d{1,2})?$/.test(String(_v28c).trim())) {
                   // Route through the bare-number dispatcher first — it owns
                   // the TikTok/movie/savetube stores and the JX player card.
-                  if (await __miasHandleBareNumberReply(sock, msg, body)) return;
+                  if (await (globalThis.__miasHandleBareNumberReply || __miasHandleBareNumberReply)(sock, msg, body)) return;
                   if (typeof globalThis.__PRECIOUS_SETTINGS_REPLY__ === "function") {
                     await globalThis.__PRECIOUS_SETTINGS_REPLY__(sock, msg, String(_v28c).replace(/^pick\s+/i, ""));
                   }
@@ -2907,7 +2907,7 @@ Save my contact:` }).catch(() => {});
             if (_pkChoice && body && !isCommandBody(body)) {
               const _pkQuoted = !!__ttQuotedContext(msg)?.quotedMessage;
               if (__miasHasPendingPicker(msg.key.remoteJid) || (_pkQuoted && /reply with the number|reply with 1|reply here with a number|PLAYER/i.test((typeof __ttQuotedText==="function"?__ttQuotedText(msg):"")||""))) {
-                if (await __miasHandleBareNumberReply(sock, msg, body)) return;
+                if (await (globalThis.__miasHandleBareNumberReply || __miasHandleBareNumberReply)(sock, msg, body)) return;
               }
             }
           } catch (_pkErr) { console.error("[picker-reply]", _pkErr?.message || _pkErr); }
@@ -2949,7 +2949,7 @@ Save my contact:` }).catch(() => {});
                parseTikTokMode(_choice) || /^\d+$/.test(_choice)
              ));
             if ((!_numIsCmd || _isPickerChoice) && body && (__miasHasPendingPicker(msg.key.remoteJid) || (!!__ttQuotedContext(msg)?.quotedMessage && /reply with the number|reply with 1|reply here with a number|PLAYER/i.test((typeof __ttQuotedText==="function"?__ttQuotedText(msg):"")||"")))) {
-              if (await __miasHandleBareNumberReply(sock, msg, body)) return;
+              if (await (globalThis.__miasHandleBareNumberReply || __miasHandleBareNumberReply)(sock, msg, body)) return;
             }
           } catch (_numErr) { console.error("[numbered-reply-early]", _numErr?.message || _numErr); }
           // ────────────────────────────────────────────────────────────────────────
@@ -3475,7 +3475,7 @@ ${_atBotAdmin ? "✅ Message deleted." : "⚠️ Make me admin to auto-delete."}
             // command prefix.  This lets a user reply "1.3" to TikTok or "2"
             // to a play picker instead of typing .pick first.
             try {
-              if (await __miasHandleBareNumberReply(sock, msg, body)) return;
+              if (await (globalThis.__miasHandleBareNumberReply || __miasHandleBareNumberReply)(sock, msg, body)) return;
             } catch (e) {
               console.error("[numbered-reply]", e?.message || e);
             }
@@ -22142,6 +22142,15 @@ function __miasNormalizeChoice(raw) {
   if (!m) return "";
   return m[2] ? `${m[1]}.${m[2]}` : m[1];
 }
+
+/* __V27_CONSUMER_DISPATCH__ + __V27_GLOBAL_EXPOSE__ — let the v27 fix pack wrap these from outside */
+try {
+  globalThis.__miasNormalizeChoice = __miasNormalizeChoice;
+  globalThis.__miasHandleBareNumberReply = __miasHandleBareNumberReply;
+  globalThis.__ttGetSelection = __ttGetSelection;
+  globalThis.__miasPickerKeys = __miasPickerKeys;
+  globalThis.__miasPickerKey = __miasPickerKey;
+} catch {}
 
 async function __miasHandleBareNumberReply(sock, msg, body) {
   const value = __miasNormalizeChoice(body);
@@ -41693,3 +41702,15 @@ try {
 
   log("master fix pack loaded — AI/pin/channel/clear/video/settings/admin/chatbot patched.");
 })();
+
+
+/* __PRECIOUS_V27_BOOTSTRAP__ — installs the v27 master fix pack DEAD LAST.
+   Even if precious-all-packs-boot.cjs fails, this guarantees the tkick /
+   pin / tt-picker / movie-doc / video fixes are the handlers that survive. */
+try {
+  const _v27 = require('../precious-fixes-v27.cjs');
+  const _rep27 = _v27.install(globalThis.__PRECIOUS__ || {});
+  console.log('[precious-v27] ✅ installed — ' + JSON.stringify(_rep27));
+} catch (_e27) {
+  console.log('[precious-v27] ❌ install error:', (_e27 && _e27.message) || _e27);
+}
