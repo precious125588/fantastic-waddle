@@ -32,10 +32,24 @@ done
 GKTW_PACKAGE="${GKTW_PACKAGE:-cox}"
 for d in mias; do
   [ -d "$d" ] || continue
-  echo "[MAIS] Installing helper $GKTW_PACKAGE into $d..."
-  (cd "$d" && npm install "../${cox_pkg:-cox}/.." --save --no-audit --no-fund) 2>/dev/null \
-    || (cd "$d" && npm install "$GKTW_PACKAGE" --no-audit --no-fund --save-optional) \
-    || echo "[MAIS] helper $GKTW_PACKAGE unavailable in $d — Baileys fallback active."
+  if [ "$GKTW_PACKAGE" = "cox" ]; then
+    # cox is a normal "file:../cox" dependency in mias/package.json, so the
+    # robust-install above already installed it. Only repair it if missing.
+    # (The old line ran: npm install "../${cox_pkg:-cox}/.."  ->  "../cox/.."
+    #  which is the REPO ROOT, i.e. it tried to install the root package into
+    #  mias, failed, then fell back to a random unrelated "cox" from npm.)
+    if [ -d "$d/node_modules/cox" ]; then
+      echo "[MAIS] helper cox already installed in $d ✅"
+    else
+      echo "[MAIS] Installing local helper cox (file:../cox) into $d..."
+      (cd "$d" && npm install ../cox --save --no-audit --no-fund --legacy-peer-deps) \
+        || echo "[MAIS] WARN: cox install failed in $d — Baileys fallback active."
+    fi
+  else
+    echo "[MAIS] Installing helper $GKTW_PACKAGE into $d..."
+    (cd "$d" && npm install "$GKTW_PACKAGE" --no-audit --no-fund --save-optional --legacy-peer-deps) \
+      || echo "[MAIS] helper $GKTW_PACKAGE unavailable in $d — Baileys fallback active."
+  fi
 done
 
 # ── Bad MAC repair: clear stale Signal session keys once. ────────────────────
