@@ -200,6 +200,24 @@ function installAll(ctx) {
   return result;
 }
 
+
+  /* __V27_PACK_ENTRY__ — the master fix pack installs LAST so nothing overwrites it. */
+  {
+    const key = 'v27';
+    if (isInstalled(key)) { skip('precious-fixes-v27 already installed'); }
+    else {
+      const { mod, from, err } = multiRequire('./precious-fixes-v27.cjs');
+      if (err) { bad('precious-fixes-v27 failed to load: ' + (err && err.message)); markInstalled(key, 'failed'); }
+      else {
+        try {
+          const rep = (mod && typeof mod.install === 'function') ? mod.install(globalThis.__PRECIOUS__ || {}) : null;
+          markInstalled(key, true);
+          ok('precious-fixes-v27 installed (from ' + from + ') ' + JSON.stringify(rep));
+        } catch (e) { bad('precious-fixes-v27 install error: ' + (e && e.message)); markInstalled(key, 'failed'); }
+      }
+    }
+  }
+
 module.exports = { installAll };
 
 /* Auto-run when required with a live context already on the global. */

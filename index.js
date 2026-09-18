@@ -16,7 +16,7 @@ try {
   if (require('fs').existsSync(_marker)) {
     console.log(chalk.gray('🧩 patchers already ran this boot (start.sh marker) — skipping'));
   } else {
-    for (const _patcher of ['fix_all.cjs', 'fix_session_401.cjs', 'PATCH-v25.cjs', 'precious-fix-pack.cjs']) {
+    for (const _patcher of ['fix_all.cjs', 'fix_session_401.cjs', 'PATCH-v25.cjs', 'PATCH-v27.cjs', 'precious-fix-pack.cjs']) {
       const _p = require('path').join(__dirname, _patcher);
       if (!require('fs').existsSync(_p)) continue;
       const _r = spawnSync(process.execPath, [_p], { cwd: __dirname, stdio: 'inherit' });

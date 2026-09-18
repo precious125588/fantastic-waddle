@@ -1,6 +1,36 @@
 'use strict';
 // ══ CRASH SHIELD — registered first so nothing can kill the web server ══════
 require('./lib/crash-shield.cjs').install({ name: 'server' });
+
+/* __V27_MANIFEST__ — boot-time file load report.
+   Prints exactly which critical files loaded and which failed, so the
+   Railway logs show it immediately (e.g. "22 files loaded, 0 failed"). */
+try {
+  const _v27Files = [
+    'server.js', 'index.js', 'mais_launcher.js', 'pair.js', 'bot.js', 'autoload.js',
+    'precious-all-packs-boot.cjs', 'precious-fixes-v27.cjs',
+    'precious-session-boot.cjs', 'precious-session-fix.cjs',
+    'fix_all.cjs', 'fix_session_401.cjs', 'PATCH-v25.cjs', 'PATCH-v27.cjs', 'precious-fix-pack.cjs',
+    'sessionPaths.js', 'sessionOwnership.js', 'notify.js', 'cleanup.cjs',
+    'mias/index.js', 'mias/precious-fixes-v20.cjs', 'mias/precious-fixes-v21.cjs',
+    'mias/precious-fixes-v24.cjs', 'mias/precious-gst-picker.cjs',
+    'patches/precious-fixes-v23-rc.cjs',
+    'lib/pickerRegistry.js', 'lib/universalButtons.js', 'lib/videoFix.js', 'lib/crash-shield.cjs',
+    'mias/lib/playv2-deliver.cjs', 'mias/lib/portableVideo.cjs',
+  ];
+  const _v27Path = require('path');
+  const _v27fs = require('fs');
+  let _loaded = 0, _failed = [];
+  for (const _rel of _v27Files) {
+    const _abs = _v27Path.join(__dirname, _rel);
+    if (!_v27fs.existsSync(_abs)) { _failed.push(_rel + ' (missing)'); continue; }
+    try { require('module').createRequire(_abs); _loaded++; }
+    catch (_e) { _failed.push(_rel + ' (' + (_e && _e.message) + ')'); }
+  }
+  console.log('[manifest] ' + _loaded + ' files loaded, ' + _failed.length + ' failed');
+  if (_failed.length) console.log('[manifest] ❌ not loading: ' + _failed.join(' | '));
+} catch (_eM) { console.log('[manifest] report error:', _eM && _eM.message); }
+
 // ═════════════════════════════════════════════════════════════════════════════
 
 
@@ -17,7 +47,7 @@ try {
   const _path = require('path');
   const _marker = _path.join(_os.tmpdir(), 'mais-patched.marker');
   if (!_fs.existsSync(_marker)) {
-    for (const _patcher of ['fix_all.cjs', 'fix_session_401.cjs', 'PATCH-v25.cjs', 'precious-fix-pack.cjs']) {
+    for (const _patcher of ['fix_all.cjs', 'fix_session_401.cjs', 'PATCH-v25.cjs', 'PATCH-v27.cjs', 'precious-fix-pack.cjs']) {
       const _p = _path.join(__dirname, _patcher);
       if (!_fs.existsSync(_p)) continue;
       try {
