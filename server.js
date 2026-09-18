@@ -46,8 +46,10 @@ try {
   const _fs = require('fs');
   const _os = require('os');
   const _path = require('path');
+  // v29-hotfix: no tmp marker. Old containers could hold a stale marker from a
+  // previous boot and skip the patch chain forever -> 'fixes not applied'. Chain is idempotent.
   const _marker = _path.join(_os.tmpdir(), 'mais-patched.marker');
-  if (!_fs.existsSync(_marker)) {
+  if (true) {
     for (const _patcher of ['fix_all.cjs', 'fix_session_401.cjs', 'PATCH-v25.cjs', 'PATCH-v27.cjs', 'precious-fix-pack.cjs', 'PATCH-v29.cjs']) {
       const _p = _path.join(__dirname, _patcher);
       if (!_fs.existsSync(_p)) continue;

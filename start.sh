@@ -79,8 +79,9 @@ fi
 # so mias/index.js was never patched on the deployed image.
 # DEDUP: index.js (root) ALSO spawns them. A marker file keeps them from
 # running twice per boot (which wasted seconds and polluted the logs).
+# v29-hotfix: ignore stale tmp marker from previous boots (was silently skipping patchers)
 PATCH_MARKER="${TMPDIR:-/tmp}/mais-patched.marker"
-if [ ! -f "$PATCH_MARKER" ]; then
+if true; then
   for p in fix_all.cjs fix_session_401.cjs PATCH-v25.cjs precious-fix-pack.cjs PATCH-v29.cjs; do
     [ -f "$p" ] || continue
     echo "[MAIS] running patcher $p ..."
