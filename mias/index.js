@@ -22035,7 +22035,43 @@ for (const [acmd, cfg] of Object.entries(_ADULT_QUICK)) {
 // Plain numeric replies for media menus.  Keep .pick/.p as a compatible
 // fallback, but do not make users repeat the command shown by the bot.
 // True when this chat has a menu waiting for a plain numbered reply.
-function __miasHasPendingPicker(jid) { return !!(__ttGetSelection(jid) || __miasMapGet(globalThis.__miasPlayPickers || new Map(), jid)); } function __miasHasPendingPicker_UNUSED(jid) {
+function __miasHasPendingPicker(jid) {
+  // PRECIOUS v28 FIX: the previous one-line stub only knew about the TikTok
+  // store and one play store, so while a movie/nkiri/savetube/menu/adult
+  // picker was waiting, this returned false — the settings handler then stole
+  // the bare digit ("Unknown settings option") or the reply went silent.
+  // Restore the full store sweep (tt/play/savetube/movie/adult/menu/P2/JX).
+  try {
+    const now = Date.now();
+    if (__ttGetSelection(jid)) return true;
+    const pl = __miasMapGet(_playPickStore, jid);
+    if (pl && now - pl.ts <= 10 * 60 * 1000) return true;
+    const saveTube = __miasMapGet(_saveTubePickStore, jid);
+    if (saveTube && now - saveTube.ts <= 10 * 60 * 1000) return true;
+    const movie = __miasMapGet(_mynetMoviePicks, jid);
+    if (movie && now - movie.ts <= 10 * 60 * 1000) return true;
+    if (_lastAdultResults.get(__miasPickerKey(jid)) || _lastAdultResults.get(jid)) return true;
+    if (_menuPickStore.get(__miasPickerKey(jid)) || _menuPickStore.get(jid)) return true;
+    const _num = (j) => String(j || "").replace(/:\d+(?=@)/, "").replace(/[^0-9]/g, "");
+    const _n1 = _num(jid);
+    if (_n1 && typeof _P2_PENDING !== "undefined" && _P2_PENDING && _P2_PENDING.size) {
+      for (const kv of _P2_PENDING) {
+        const e = kv && kv[1];
+        if (e && _num(e.jid) === _n1 && now - (e.ts || 0) <= 10 * 60 * 1000) return true;
+      }
+    }
+    const _jx = globalThis.__JX_PENDING__;
+    if (_n1 && _jx && _jx.size) {
+      for (const kv of _jx) {
+        const e = kv && kv[1];
+        if (e && _num(e.jid) === _n1 && now - (e.ts || 0) <= 20 * 60 * 1000) return true;
+      }
+    }
+    if (__miasMapGet(globalThis.__miasPlayPickers || new Map(), jid)) return true;
+  } catch {}
+  return false;
+}
+function __miasHasPendingPicker_UNUSED(jid) {
   try {
     const now = Date.now();
     const tt = __miasPickerKeys(jid)
@@ -32846,12 +32882,21 @@ if (typeof __miasApplyDynamicOwnerName === "function") {
              || msg.message?.documentMessage?.contextInfo;
     if (ctx?.stanzaId && jid.endsWith("@g.us")) {
       const pinKey = { remoteJid: jid, fromMe: ctx.fromMe || false, id: ctx.stanzaId, participant: ctx.participant || undefined };
-      try {
-        await sock.sendMessage(jid, { pinInChat: { key: pinKey, type: 1, senderTimestampMs: Date.now() } });
-        await sendReply(sock, msg, "📌 *Message pinned!*");
-      } catch (e) {
-        await sendReply(sock, msg, `❌ Pin failed: ${e?.message || e}`);
+      // PRECIOUS v28 FIX: the bare pinInChat envelope is silently ignored by
+      // WhatsApp on current protocol versions (never errors, never pins — the
+      // bot said "📌 Message pinned!" but nothing pinned). Try the payloads in
+      // the order that actually pins, keep the same success text.
+      let _pinned = false, _pinErr = null;
+      for (const _p of [
+        { pin: pinKey, type: 1, time: 604800 },
+        { pinInChat: { key: pinKey, type: 1, senderTimestampMs: Date.now(), time: 604800 } },
+        { pinInChat: { key: pinKey, type: 1, senderTimestampMs: Date.now(), duration: 604800 } },
+        { pinInChat: { key: pinKey, type: 1, senderTimestampMs: Date.now() } },
+      ]) {
+        try { await sock.sendMessage(jid, _p); _pinned = true; break; } catch (e) { _pinErr = e; }
       }
+      if (_pinned) await sendReply(sock, msg, "📌 *Message pinned!*");
+      else await sendReply(sock, msg, `❌ Pin failed: ${_pinErr?.message || _pinErr}`);
       return;
     }
     await react(sock, msg, "⏳");
@@ -32950,15 +32995,23 @@ if (typeof __miasApplyDynamicOwnerName === "function") {
         participant: _ctx.participant || undefined,
       };
       await react(sock, msg, "📌");
-      try {
-        await sock.sendMessage(jid, {
-          pinInChat: { key: pinKey, type: 1, senderTimestampMs: Date.now(), duration }
-        });
+      // PRECIOUS v28 FIX: try the payload order WhatsApp actually honours
+      // before falling back to the legacy pinInChat envelope. Same reply text.
+      let _pinnedR = false, _pinErrR = null;
+      for (const _p of [
+        { pin: pinKey, type: 1, time: duration },
+        { pinInChat: { key: pinKey, type: 1, senderTimestampMs: Date.now(), time: duration } },
+        { pinInChat: { key: pinKey, type: 1, senderTimestampMs: Date.now(), duration } },
+        { pinInChat: { key: pinKey, type: 1, senderTimestampMs: Date.now() } },
+      ]) {
+        try { await sock.sendMessage(jid, _p); _pinnedR = true; break; } catch (e) { _pinErrR = e; }
+      }
+      if (_pinnedR) {
         await react(sock, msg, "✅");
         await sendReply(sock, msg, `📌 *Message pinned for ${_label}!*`);
-      } catch (e) {
+      } else {
         await react(sock, msg, "❌");
-        await sendReply(sock, msg, `❌ Pin failed: ${e?.message || e}\n\n_In groups the bot must be admin._`);
+        await sendReply(sock, msg, `❌ Pin failed: ${_pinErrR?.message || _pinErrR}\n\n_In groups the bot must be admin._`);
       }
       return;
     }
@@ -32986,9 +33039,17 @@ if (typeof __miasApplyDynamicOwnerName === "function") {
         await sendReply(sock, msg, "❌ Message sent but key missing — cannot pin.");
         return;
       }
-      await sock.sendMessage(jid, {
-        pinInChat: { key: sentMsg.key, type: 1, senderTimestampMs: Date.now(), duration }
-      });
+      // PRECIOUS v28 FIX: same payload reorder for the send+pin path.
+      let _pinnedS = false, _pinErrS = null;
+      for (const _p of [
+        { pin: sentMsg.key, type: 1, time: duration },
+        { pinInChat: { key: sentMsg.key, type: 1, senderTimestampMs: Date.now(), time: duration } },
+        { pinInChat: { key: sentMsg.key, type: 1, senderTimestampMs: Date.now(), duration } },
+        { pinInChat: { key: sentMsg.key, type: 1, senderTimestampMs: Date.now() } },
+      ]) {
+        try { await sock.sendMessage(jid, _p); _pinnedS = true; break; } catch (e) { _pinErrS = e; }
+      }
+      if (!_pinnedS) throw (_pinErrS || new Error("pin rejected"));
       await react(sock, msg, "✅");
       await sendReply(sock, msg, `📌 *Message pinned for ${_label}!*`);
     } catch (e) {
