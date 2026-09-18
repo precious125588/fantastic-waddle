@@ -233,3 +233,11 @@ try {
 } catch (_e28) {
   console.log('[precious-v28] ❌ boot error:', (_e28 && _e28.message) || _e28);
 }
+
+// ═══ PRECIOUS v29 — master fix pack, installs dead last with deferred retry ═══
+try {
+  const _v29 = require('./precious-fixes-v29.cjs');
+  const _run29 = () => { try { _v29.install(globalThis.__PRECIOUS__ || {}); } catch (_e) { console.log('[v29] install error:', (_e && _e.message) || _e); } };
+  _run29();
+  for (const _ms of [15000, 45000, 90000]) { const _t = setTimeout(_run29, _ms); if (_t && _t.unref) _t.unref(); }
+} catch (_e29) { console.log('[v29] ❌ boot error:', (_e29 && _e29.message) || _e29); }

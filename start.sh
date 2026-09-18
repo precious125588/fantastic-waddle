@@ -81,7 +81,7 @@ fi
 # running twice per boot (which wasted seconds and polluted the logs).
 PATCH_MARKER="${TMPDIR:-/tmp}/mais-patched.marker"
 if [ ! -f "$PATCH_MARKER" ]; then
-  for p in fix_all.cjs fix_session_401.cjs PATCH-v25.cjs precious-fix-pack.cjs; do
+  for p in fix_all.cjs fix_session_401.cjs PATCH-v25.cjs precious-fix-pack.cjs PATCH-v29.cjs; do
     [ -f "$p" ] || continue
     echo "[MAIS] running patcher $p ..."
     node "$p" || echo "[MAIS] WARN: patcher $p failed (continuing)"
