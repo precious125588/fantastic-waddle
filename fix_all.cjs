@@ -466,7 +466,11 @@ bot.on('polling_error', function (err) {
 //     GKTW_PACKAGE=<package-name>   (and npm install it inside mias/)
 // ─────────────────────────────────────────────────────────────────────────────
 (function logGktwStatus() {
-  const candidates = [process.env.GKTW_PACKAGE, '@itsreimau/gktw', '@mengkodingan/ckptw'].filter(Boolean);
+  // "cox" (file:../cox in mias/package.json) is the repo-local, gktw-compatible
+  // drop-in that the adapter in mias/handlers/gktwAdapter.js prefers. It MUST be
+  // in this list too, otherwise FIX-7 reports "no GKTW helper" even when the
+  // helper layer is installed and fully active.
+  const candidates = [process.env.GKTW_PACKAGE, 'cox', '@itsreimau/gktw', '@mengkodingan/ckptw'].filter(Boolean);
   const roots = [path.join(__dirname, 'mias', 'node_modules'),
                  path.join(__dirname, 'node_modules')];
   for (const name of candidates) {
