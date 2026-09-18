@@ -2,6 +2,11 @@
 // ══ CRASH SHIELD — must be first so a bad handler can't kill the bot ════════
 import { install as installCrashShield } from '../lib/crash-shield.mjs';
 installCrashShield({ name: process.env.SHIELD_NAME || 'mias' });
+// ── FIX-PACK CHILD RUNTIME (v32) — this file IS the WhatsApp child process.
+// Any fix that only ran in the parent (server.js/index.js) never reached this
+// socket. Load the child-side runtime here, inside the process that owns it.
+try { require('./fix_pack_child.cjs') && require('../fix_pack_runtime.cjs').installChild(); }
+catch (_eFPC) { console.log('[FIX] fix_pack_runtime child: FAILED (' + (_eFPC && _eFPC.message) + ')'); }
 // ════════════════════════════════════════════════════════════════════════════
 import "dotenv/config";
 import { Boom } from "@hapi/boom";
@@ -4452,7 +4457,10 @@ function __withQuotedUrl(msg, args = [], pattern = null) {
   if (list.some((a) => /^https?:\/\//i.test(String(a)))) return list;
   const urls = String(__quotedTextOf(msg)).match(/https?:\/\/[^\s<>"']+/gi) || [];
   const found = pattern ? urls.find((u) => pattern.test(u)) : urls[0];
-  return found ? [found, ...list] : list;
+  /* FIX-TT-QUOTE: when there is no URL in the args OR the quoted message,
+     return [] so the command prints its Usage line instead of silently
+     doing nothing (was: returned the empty list unchanged). */
+  return found ? [found, ...list] : [];
 }
 
 function getMessageParticipant(msg) {
@@ -22219,6 +22227,16 @@ async function __miasHandleBareNumberReply(sock, msg, body) {
         return true;
       }
     }
+    /* FIX-TT-PICKER: never go silent on a bad/expired choice — re-show the
+       picker card so the user can simply tap again. */
+    try {
+      const _re = await fetchTikTokInfo(ttPick.url).catch(() => null);
+      if (_re) {
+        await sendReply(sock, msg, formatTikTokMenu(_re, CONFIG.PREFIX) +
+          "\n\n_Reply with a number (e.g. *1.3*) or *" + CONFIG.PREFIX + "pick 1.3*_");
+        return true;
+      }
+    } catch {}
     await sendReply(sock, msg, `❌ *${value}* is not on that list. Valid choices: *1.1–1.7* (video), *2.1–2.3* (music), *3.1–3.2* (stickers) — e.g. *1.3* (HD video) or *2.1* (audio).`);
     return true;
   }
@@ -41775,3 +41793,11 @@ try {
 } catch (_e27) {
   console.log('[precious-v27] ❌ install error:', (_e27 && _e27.message) || _e27);
 }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   FIX-PACK CHILD INSTALL (v32) — dead last, inside the WhatsApp child process.
+   This is the ONE place that guarantees the runtime fixes land on the live
+   socket: it runs after every command is registered and __PRECIOUS__ exists.
+   ══════════════════════════════════════════════════════════════════════════ */
+try { require('./fix_pack_child.cjs').installAll(); }
+catch (_eChild) { console.log('[FIX] fix_pack_child.installAll: FAILED (' + (_eChild && _eChild.message) + ')'); }
