@@ -10,7 +10,8 @@ try {
     'server.js', 'index.js', 'mais_launcher.js', 'pair.js', 'bot.js', 'autoload.js',
     'precious-all-packs-boot.cjs', 'precious-fixes-v27.cjs',
     'precious-session-boot.cjs', 'precious-session-fix.cjs',
-    'fix_all.cjs', 'fix_session_401.cjs', 'PATCH-v25.cjs', 'PATCH-v27.cjs', 'precious-fix-pack.cjs',
+    'fix_all.cjs', 'fix_session_401.cjs', 'PATCH-v25.cjs', 'PATCH-v27.cjs', 'PATCH-v29.cjs', 'precious-fix-pack.cjs',
+    'precious-fixes-v28.cjs', 'precious-fixes-v29.cjs',
     'sessionPaths.js', 'sessionOwnership.js', 'notify.js', 'cleanup.cjs',
     'mias/index.js', 'mias/precious-fixes-v20.cjs', 'mias/precious-fixes-v21.cjs',
     'mias/precious-fixes-v24.cjs', 'mias/precious-gst-picker.cjs',
@@ -47,7 +48,7 @@ try {
   const _path = require('path');
   const _marker = _path.join(_os.tmpdir(), 'mais-patched.marker');
   if (!_fs.existsSync(_marker)) {
-    for (const _patcher of ['fix_all.cjs', 'fix_session_401.cjs', 'PATCH-v25.cjs', 'PATCH-v27.cjs', 'precious-fix-pack.cjs']) {
+    for (const _patcher of ['fix_all.cjs', 'fix_session_401.cjs', 'PATCH-v25.cjs', 'PATCH-v27.cjs', 'precious-fix-pack.cjs', 'PATCH-v29.cjs']) {
       const _p = _path.join(__dirname, _patcher);
       if (!_fs.existsSync(_p)) continue;
       try {
