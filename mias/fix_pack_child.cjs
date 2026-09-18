@@ -43,6 +43,18 @@ function installAll() {
     log('[FIX] all-packs fallback: FAILED (' + (e && e.message) + ')');
   }
 
+  /* Final TT quote-reply routing fix. Must run after all existing packs so
+     it wraps the final bare-number consumer rather than being overwritten. */
+  try {
+    const ttQuote = require('./precious-tt-quote-fix.cjs');
+    if (ttQuote && typeof ttQuote.install === 'function') {
+      const ok = ttQuote.install();
+      log('[RUNTIME-FIX] TT quote-reply fix: ' + (ok ? 'INSTALLED' : 'WAITING'));
+    }
+  } catch (e) {
+    log('[FIX] TT quote-reply fix: FAILED (' + (e && e.message) + ')');
+  }
+
   try {
     require('../precious-packs-verify.cjs').schedule();
     log('[RUNTIME-FIX] packs-verify: REGISTERED');
