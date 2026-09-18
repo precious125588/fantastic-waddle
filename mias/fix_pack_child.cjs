@@ -21,35 +21,48 @@ function registry() {
 
 function installAll() {
   const P = globalThis.__PRECIOUS__ || {};
-  log('[RUNTIME-FIX] child install starting (pid=' + process.pid + ', commands=' + (P.commands && typeof P.commands.size === 'number' ? P.commands.size : '?') + ')');
+  const commandCount = P.commands && typeof P.commands.size === 'number' ? P.commands.size : '?';
+  log('[RUNTIME-FIX] child verification starting (pid=' + process.pid + ', commands=' + commandCount + ')');
+
+  /* The actual installation is owned by the FINAL all-packs boot in
+     mias/index.js. Never call it from the top of mias/index.js, because at
+     that point __PRECIOUS__ does not exist yet. Also never re-run it after
+     __ALL_PACKS_BOOTED__ has been set: the old implementation permanently
+     locked the loader with an empty context and made every later install a
+     no-op. */
+  try {
+    if (!globalThis.__ALL_PACKS_BOOTED__) {
+      const allPacks = require('../precious-all-packs-boot.cjs');
+      const result = allPacks.installAll(P);
+      globalThis.__ALL_PACKS_FINAL_RESULT__ = result;
+      log('[RUNTIME-FIX] all-packs fallback install: REGISTERED');
+    } else {
+      log('[RUNTIME-FIX] all-packs already booted by final mias/index.js — no duplicate install');
+    }
+  } catch (e) {
+    log('[FIX] all-packs fallback: FAILED (' + (e && e.message) + ')');
+  }
 
   try {
-    const allPacks = require('../precious-all-packs-boot.cjs');
-    allPacks.installAll(P);
-    log('[RUNTIME-FIX] precious-all-packs-boot: REGISTERED');
+    require('../precious-packs-verify.cjs').schedule();
+    log('[RUNTIME-FIX] packs-verify: REGISTERED');
   } catch (e) {
-    log('[FIX] precious-all-packs-boot: FAILED (' + (e && e.message) + ')');
+    log('[FIX] packs-verify: FAILED (' + (e && e.message) + ')');
   }
 
-  try { require('../precious-packs-verify.cjs').schedule(); log('[RUNTIME-FIX] packs-verify: REGISTERED'); }
-  catch (e) { log('[FIX] packs-verify: FAILED (' + (e && e.message) + ')'); }
-
-  /* Deferred re-install: some packs probe the commands map at require-time and
-     silently no-op if it is not populated yet. Re-assert after the socket is
-     up so "movie/nkiri/savetube not applied" cannot recur. */
-  const again = () => {
-    try {
-      const reg = registry();
-      if (reg.__deferred) return; reg.__deferred = true;
-      require('../precious-all-packs-boot.cjs').installAll(globalThis.__PRECIOUS__ || {});
-      log('[RUNTIME-FIX] deferred pack re-assert: REGISTERED');
-    } catch (e) { log('[FIX] deferred re-assert: FAILED (' + (e && e.message) + ')'); }
-  };
+  /* Keep a short verification retry. This is verification only; it does not
+     mutate handlers or re-run the pack loader. */
   for (const ms of [15000, 45000, 90000]) {
-    try { const t = setTimeout(again, ms); if (t && t.unref) t.unref(); } catch (_) {}
+    try {
+      const t = setTimeout(() => {
+        try { require('../precious-packs-verify.cjs').run(); }
+        catch (e) { log('[FIX] delayed packs-verify: FAILED (' + (e && e.message) + ')'); }
+      }, ms);
+      if (t && t.unref) t.unref();
+    } catch (_) {}
   }
 
-  log('[RUNTIME-FIX] child install complete');
+  log('[RUNTIME-FIX] child verification complete');
 }
 
 module.exports = { installAll };

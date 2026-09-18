@@ -2,11 +2,13 @@
 // ══ CRASH SHIELD — must be first so a bad handler can't kill the bot ════════
 import { install as installCrashShield } from '../lib/crash-shield.mjs';
 installCrashShield({ name: process.env.SHIELD_NAME || 'mias' });
-// ── FIX-PACK CHILD RUNTIME (v32) — this file IS the WhatsApp child process.
-// Any fix that only ran in the parent (server.js/index.js) never reached this
-// socket. Load the child-side runtime here, inside the process that owns it.
-try { require('./fix_pack_child.cjs') && require('../fix_pack_runtime.cjs').installChild(); }
-catch (_eFPC) { console.log('[FIX] fix_pack_runtime child: FAILED (' + (_eFPC && _eFPC.message) + ')'); }
+// FIX-PACK CHILD RUNTIME NOTE:
+// This file is the actual WhatsApp child process. Runtime fix packs are loaded
+// only AFTER __PRECIOUS__ and the complete commands map exist (see the final
+// all-packs boot near the end of this file). Loading the pack system here would
+// be too early and could permanently mark the pack booted with an empty context.
+try { require('../fix_pack_runtime.cjs').installChild(); }
+catch (_eFPC) { console.log('[FIX] fix_pack_runtime child shield: FAILED (' + (_eFPC && _eFPC.message) + ')'); }
 // ════════════════════════════════════════════════════════════════════════════
 import "dotenv/config";
 import { Boom } from "@hapi/boom";
@@ -41352,16 +41354,11 @@ try {
 // VISIBILITY FIX: keep the bot's presence AVAILABLE so chats never render it invisible
 setInterval(() => { try { globalThis.__miasSock?.sendPresenceUpdate?.('available'); } catch {} }, 240000).unref?.();
 
-/* ══════════════════════════════════════════════════════════════════════════
-   PRECIOUS ALL-FIX-PACKS BOOT — single entry point for EVERY fix pack.
-   Appended LAST so nothing can re-register over the fixed handlers.
-   ══════════════════════════════════════════════════════════════════════════ */
-try {
-  const _allPacks = require('../precious-all-packs-boot.cjs');
-  _allPacks.installAll(globalThis.__PRECIOUS__ || {});
-} catch (_eAll) {
-  console.log('[precious-all-packs] ❌ boot error:', (_eAll && _eAll.message) || _eAll);
-}
+/*
+   ALL-FIX-PACKS BOOT MOVED TO THE TRUE END OF THE RUNTIME SETUP.
+   Do not call it here: v26/v27 handlers below this point would otherwise
+   overwrite v28/v29 handlers installed by the pack loader.
+*/
 
 // ════════════════════════════════════════════════════════════════════════════
 // LATE-PATCH v26 — MASTER FIX PACK (PRECIOUS)
@@ -41783,9 +41780,9 @@ try {
 })();
 
 
-/* __PRECIOUS_V27_BOOTSTRAP__ — installs the v27 master fix pack DEAD LAST.
-   Even if precious-all-packs-boot.cjs fails, this guarantees the tkick /
-   pin / tt-picker / movie-doc / video fixes are the handlers that survive. */
+/* __PRECIOUS_V27_BOOTSTRAP__ — legacy direct v27 fallback.
+   The unified all-packs loader runs AFTER this block so v28/v29 remain the
+   final command-handler layer instead of being overwritten by v27. */
 try {
   const _v27 = require('../precious-fixes-v27.cjs');
   const _rep27 = _v27.install(globalThis.__PRECIOUS__ || {});
@@ -41795,9 +41792,20 @@ try {
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
-   FIX-PACK CHILD INSTALL (v32) — dead last, inside the WhatsApp child process.
-   This is the ONE place that guarantees the runtime fixes land on the live
-   socket: it runs after every command is registered and __PRECIOUS__ exists.
+   FINAL ALL-FIX-PACKS BOOT — THIS is the only pack installation point.
+   It runs inside the WhatsApp child, after __PRECIOUS__ and commands exist,
+   and after the legacy v27 fallback above. Therefore v29 is genuinely last.
    ══════════════════════════════════════════════════════════════════════════ */
+try {
+  const _allPacks = require('../precious-all-packs-boot.cjs');
+  const _packResult = _allPacks.installAll(globalThis.__PRECIOUS__ || {});
+  globalThis.__ALL_PACKS_FINAL_RESULT__ = _packResult;
+  console.log('[precious-all-packs] FINAL child install complete');
+} catch (_eAllFinal) {
+  console.log('[precious-all-packs] ❌ final child boot error:', (_eAllFinal && _eAllFinal.message) || _eAllFinal);
+}
+
+/* Child-side verification/shield. It MUST NOT invoke the pack loader again:
+   the final all-packs boot above already owns installation and ordering. */
 try { require('./fix_pack_child.cjs').installAll(); }
-catch (_eChild) { console.log('[FIX] fix_pack_child.installAll: FAILED (' + (_eChild && _eChild.message) + ')'); }
+catch (_eChild) { console.log('[FIX] fix_pack_child verification: FAILED (' + (_eChild && _eChild.message) + ')'); }
