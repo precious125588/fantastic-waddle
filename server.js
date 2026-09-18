@@ -2,6 +2,18 @@
 // ══ CRASH SHIELD — registered first so nothing can kill the web server ══════
 require('./lib/crash-shield.cjs').install({ name: 'server' });
 
+/* ── FIX-PACK ORCHESTRATOR (v32) — version-controlled, runs on the REAL boot ──
+   Railway boots `node server.js` (railway.toml) and the Procfile runs only
+   v30+v31, so the npm-start chain (fix_all, fix_session_401, …) never ran on
+   the deployed container. This call is IN the repo, so it runs on every boot
+   regardless of which entry point was used. Idempotent + absolute-pathed. */
+try { require('./fix_pack_runtime.cjs').installParent(); }
+catch (_eFPR) { console.log('[FIX] fix_pack_runtime: FAILED (' + (_eFPR && _eFPR.message) + ')'); }
+
+/* ── FIX-PACK PREFLIGHT (v30, now baked in — survives the fresh git clone) ── */
+try { require('./precious-packs-preflight.cjs').run(); }
+catch (_ePF) { console.log('[packs-preflight] skipped: ' + (_ePF && _ePF.message)); }
+
 /* __V27_MANIFEST__ — boot-time file load report.
    Prints exactly which critical files loaded and which failed, so the
    Railway logs show it immediately (e.g. "22 files loaded, 0 failed"). */

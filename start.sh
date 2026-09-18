@@ -93,4 +93,7 @@ else
 fi
 
 echo "[MAIS] Starting..."
+# FIX-PACK ORCHESTRATOR: belt-and-suspenders — even if a stale entry point is
+# used, the shell entry still runs the full deterministic patch chain first.
+node fix_pack_runtime.cjs || echo "[MAIS] WARN: fix_pack_runtime failed (continuing)"
 exec node index.js

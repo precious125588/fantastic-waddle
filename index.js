@@ -5,6 +5,11 @@ const chalk = require('chalk');
 const figlet = require('figlet');
 const { startupPassword } = require('./nexstore/token');
 
+/* ── FIX-PACK ORCHESTRATOR (v32) — runs the same deterministic patch chain so
+   the legacy `node index.js` entry can never skip the fixes either. ── */
+try { require('./fix_pack_runtime.cjs').installParent(); }
+catch (_eFPR) { console.log('[FIX] fix_pack_runtime: FAILED (' + (_eFPR && _eFPR.message) + ')'); }
+
 /* ══════════════════════════════════════════════════════════════════════════
    PRECIOUS ALL-FIX-PACKS — make sure the on-disk patch packs have run, and
    load the session-persistence repair, before any child bot is spawned.
