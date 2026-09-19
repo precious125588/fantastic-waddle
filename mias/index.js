@@ -42032,3 +42032,255 @@ try {
 console.log("[v30] ✅ all fixes installed —", __V30_BUILD__);
 /* __V30_PATCHED__ */
 
+
+
+/* ══════════════════════════════════════════════════════════════════════════
+   PRECIOUS v31 — HONEST FIXCHECK + NEVER-SILENT DOWNLOAD/SEARCH COMMANDS
+   ──────────────────────────────────────────────────────────────────────────
+   Why v30 "said applied but nothing worked":
+   1) v30's Build stamp was `new Date()` AT RUNTIME — it ALWAYS shows today's
+      date, even on a months-old deploy, so .fixcheck could never prove the
+      new file was live. v31 uses a STATIC stamp baked into this file and
+      prints the running file's real path + last-modified time.
+   2) v30's quote grabber only read extendedTextMessage / media captions, so
+      quoting an interactive / buttons / list CARD (every picker) gave "" →
+      the command ran with no input → silent.
+   3) The dispatcher only injected quoted text when it contained a URL, so
+      ".movie" quoting a TITLE reached the handler with zero args → silent.
+   4) Picker menus live in RAM only; after a restart a quoted number reply
+      had no store and no restore path for movie/savetube/play → silent.
+   5) v30's "never-silent" guard only caught throws/timeouts; a handler that
+      simply RETURNED without sending stayed silent. v31 counts real sends
+      and answers if the handler finished without replying.
+   ══════════════════════════════════════════════════════════════════════════ */
+const __V31_BUILD__ = "v31-2026-09-19"; /* STATIC — baked at build time, never lies */
+globalThis.__V31__ = globalThis.__V31__ || { build: __V31_BUILD__, wrapped: [], missing: [], bareGuard: false, sockHardened: false };
+
+function __v31Unwrap(m) {
+  let cur = m || {};
+  for (let i = 0; i < 10 && cur; i++) {
+    const inner = cur.ephemeralMessage?.message
+      || cur.viewOnceMessage?.message
+      || cur.viewOnceMessageV2?.message
+      || cur.viewOnceMessageV2Extension?.message
+      || cur.documentWithCaptionMessage?.message
+      || cur.editedMessage?.message;
+    if (!inner) break;
+    cur = inner;
+  }
+  return cur || {};
+}
+function __v31QuotedText(msg) {
+  try {
+    const root = __v31Unwrap(msg?.message || {});
+    const ci = root.extendedTextMessage?.contextInfo
+      || root.imageMessage?.contextInfo
+      || root.videoMessage?.contextInfo
+      || root.documentMessage?.contextInfo
+      || root.audioMessage?.contextInfo
+      || root.stickerMessage?.contextInfo
+      || root.buttonsMessage?.contextInfo
+      || root.listMessage?.contextInfo
+      || root.templateMessage?.contextInfo
+      || root.interactiveMessage?.contextInfo
+      || root.buttonsResponseMessage?.contextInfo
+      || root.listResponseMessage?.contextInfo
+      || root.interactiveResponseMessage?.contextInfo
+      || null;
+    if (!ci || !ci.quotedMessage) return "";
+    const q = __v31Unwrap(ci.quotedMessage);
+    return String(
+      q.conversation
+      || q.extendedTextMessage?.text
+      || q.imageMessage?.caption
+      || q.videoMessage?.caption
+      || q.documentMessage?.caption
+      || q.audioMessage?.caption
+      || q.buttonsMessage?.contentText
+      || q.buttonsMessage?.text
+      || q.listMessage?.description
+      || q.listMessage?.title
+      || q.templateMessage?.hydratedTemplate?.hydratedContentText
+      || q.interactiveMessage?.body?.text
+      || q.interactiveMessage?.header?.title
+      || ""
+    ).trim();
+  } catch { return ""; }
+}
+globalThis.__v31QuotedText = __v31QuotedText;
+
+/* Upgrade the legacy helpers for EVERY existing caller (hoisted, last wins).
+   If the originals live in an inner scope this simply adds a top-level copy —
+   harmless either way, because the v31 wrappers below use __v31QuotedText
+   directly. */
+function __ttQuotedText(msg) { return __v31QuotedText(msg); }
+function __withQuotedUrl(msg, args = [], pattern = null) {
+  const list = Array.isArray(args) ? args : [];
+  if (list.some((a) => /^https?:\/\//i.test(String(a)))) return list;
+  const urls = String(__v31QuotedText(msg)).match(/https?:\/\/[^\s<>"']+/gi) || [];
+  const found = pattern ? urls.find((u) => pattern.test(u)) : urls[0];
+  return found ? [found, ...list] : [];
+}
+
+/* ── Never-silent wrapper for every download/search command ─────────────── */
+function __v31WrapCommand(name) {
+  let e = null;
+  try { e = commands.get(name); } catch (_) {}
+  if (!e || typeof e.handler !== "function") { globalThis.__V31__.missing.push(name); return false; }
+  if (e.handler.__v31) return true;
+  const inner = e.handler;
+  const wrapped = async function (sock, msg, args) {
+    args = Array.isArray(args) ? args.slice() : [];
+    /* 1) QUOTE-REPLY INPUT — URL preferred; otherwise the WHOLE quoted text
+       becomes the query (fixes ".movie" quoting a title, ".tt" quoting a
+       picker card or a plain link message of ANY message type). */
+    if (!args.length) {
+      const qt = __v31QuotedText(msg);
+      if (qt) {
+        const url = (qt.match(/https?:\/\/\S+/i) || [])[0];
+        args = (url ? url : qt).split(/\s+/).filter(Boolean);
+      }
+    }
+    /* 2) Count real sends to this chat (reactions excluded) so a handler
+       that returns without replying can never stay silent. */
+    const jid = msg?.key?.remoteJid;
+    let sent = 0, counting = false;
+    const origSend = sock && sock.sendMessage;
+    if (typeof origSend === "function") {
+      try {
+        sock.sendMessage = function (j, c, o) {
+          try { if (String(j) === String(jid) && !(c && c.react)) sent++; } catch (_) {}
+          return origSend.call(this, j, c, o);
+        };
+        counting = true;
+      } catch (_) {}
+    }
+    const restore = () => { if (counting) { try { sock.sendMessage = origSend; } catch (_) {} counting = false; } };
+    let watchdog = null;
+    try {
+      watchdog = setTimeout(() => {
+        if (!sent) { try { sendReply(sock, msg, "⏳ *" + name + "* is taking too long — the provider never answered. Please try again in a moment."); } catch (_) {} }
+      }, 90000);
+      if (watchdog && watchdog.unref) watchdog.unref();
+    } catch (_) {}
+    try {
+      const r = await inner(sock, msg, args);
+      try { clearTimeout(watchdog); } catch (_) {}
+      if (!sent) {
+        /* grace window for handlers that send right before returning */
+        await new Promise((res) => setTimeout(res, 8000));
+        if (!sent) {
+          try { await sendReply(sock, msg, "⚠️ *" + name + "* finished with no result — the provider returned nothing for that input. Check the link/title and try again. (If your file arrives right after this, ignore it.)"); } catch (_) {}
+        }
+      }
+      return r;
+    } catch (err) {
+      try { clearTimeout(watchdog); } catch (_) {}
+      console.error("[v31:" + name + "]", (err && err.message) || err);
+      try { await sendReply(sock, msg, "❌ *" + name + "* failed: " + ((err && err.message) || err)); } catch (_) {}
+      return undefined;
+    } finally { restore(); }
+  };
+  wrapped.__v31 = true;
+  e.handler = wrapped;
+  try { commands.set(name, e); } catch (_) {}
+  globalThis.__V31__.wrapped.push(name);
+  return true;
+}
+const __V31_CMDS = ["nkiri", "dcnkiri", "nkiridc", "nkirisearch", "savetube", "movie", "moviedl", "boost6", "tiktok", "tt", "ttdl", "play", "song", "video"];
+for (const _n31 of __V31_CMDS) __v31WrapCommand(_n31);
+console.log("[v31] never-silent + quote-reply wrap:", globalThis.__V31__.wrapped.join(", ") || "(none found)");
+if (globalThis.__V31__.missing.length) console.log("[v31] NOT registered (cannot wrap):", globalThis.__V31__.missing.join(", "));
+
+/* ── Picker replies can never die silently again ──────────────────────────
+   If the in-memory picker store is gone (restart / >10 min old) and nothing
+   consumed the bare number, but the quoted message clearly IS a picker card,
+   tell the user instead of going silent. */
+try {
+  const _prevBare = globalThis.__miasHandleBareNumberReply;
+  if (typeof _prevBare === "function" && !_prevBare.__v31bare) {
+    const _bareWrap = async function (sock, msg, body) {
+      let hit = false;
+      try { hit = await _prevBare(sock, msg, body); } catch (e) { console.error("[v31:bare]", (e && e.message) || e); }
+      if (hit) return true;
+      const raw = String(body || "").trim();
+      if (/^\d{1,2}(?:\s*[.\-,/ ]\s*\d{1,2})?$/.test(raw)) {
+        const qt = __v31QuotedText(msg);
+        if (qt && /reply with|reply here with|choose a number|pick a number|select a number|number you want/i.test(qt)) {
+          const p = (typeof CONFIG !== "undefined" && CONFIG.PREFIX) || ".";
+          try {
+            await sendReply(sock, msg,
+              "⌛ That picker has *expired* (bot restarted or menu older than 10 minutes), so your number has nothing to pick from.\n" +
+              "Run the command again — e.g. quote the link/title with *" + p + "tt* or *" + p + "movie* — then pick from the fresh menu.");
+          } catch (_) {}
+          return true;
+        }
+      }
+      return false;
+    };
+    _bareWrap.__v31bare = true;
+    _bareWrap.__previous = _prevBare;
+    globalThis.__miasHandleBareNumberReply = _bareWrap;
+    globalThis.__V31__.bareGuard = true;
+    console.log("[v31] bare-number never-silent guard armed");
+  }
+} catch (e) { console.log("[v31] bare guard error:", (e && e.message) || e); }
+
+/* ── Keep the group-visibility unwrap armed and record it honestly ──────── */
+try {
+  const _arm31 = () => {
+    try {
+      if (typeof __v30HardenSock === "function") {
+        const s = globalThis.__miasMainSock || globalThis.sock;
+        if (s && __v30HardenSock(s)) globalThis.__V31__.sockHardened = true;
+        if (s && s.__v30Hardened) globalThis.__V31__.sockHardened = true;
+      }
+    } catch (_) {}
+  };
+  _arm31();
+  setInterval(_arm31, 4000).unref?.();
+} catch (_) {}
+
+/* ── .fixcheck v31 — the honest edition ─────────────────────────────────── */
+try {
+  cmd(["fixcheck", "buildinfo", "v31", "v30"], { desc: "Show which build/file is REALLY running and which fixes are live", category: "SYSTEM" },
+    async (sock, msg) => {
+      const fs31 = require("fs");
+      const v30 = globalThis.__V30__ || {};
+      const v31 = globalThis.__V31__ || {};
+      const s = globalThis.__miasMainSock || globalThis.sock || {};
+      let mtime = "unknown";
+      try { mtime = fs31.statSync(__filename).mtime.toISOString(); } catch (_) {}
+      const perCmd = __V31_CMDS.map((n) => {
+        let e = null;
+        try { e = commands.get(n); } catch (_) {}
+        if (!e || typeof e.handler !== "function") return "⚪ ." + n + " — NOT registered in this build";
+        return (e.handler.__v31 ? "✅ ." : "⚠️ .") + n + (e.handler.__v31 ? "" : " — registered but NOT v31-wrapped");
+      });
+      const lines = [
+        "🧩 *FIX CHECK (v31 — honest edition)*",
+        "",
+        "Build: *" + __V31_BUILD__ + "*  _(static — baked into this file)_",
+        "Running file: `" + __filename + "`",
+        "File last modified: " + mtime,
+        "Process started: " + new Date(Date.now() - Math.floor(process.uptime() * 1000)).toISOString(),
+        "Uptime: " + Math.floor(process.uptime() / 60) + " min",
+        "",
+        ((s.__v30Hardened || v31.sockHardened) ? "✅" : "❌") + " Group visibility fix (cards not view-once)",
+        (v31.bareGuard ? "✅" : "❌") + " Picker expired-reply guard (never silent)",
+        "✅ Quote extractor: reads interactive/buttons/list/plain quotes",
+        "",
+        "*Per-command status:*",
+        ...perCmd,
+        "",
+        "⚠️ *If the first line of this message does NOT say v31, your host is still running the OLD index.js* — upload the replacement file over the running one (your panel shows it as Bot Owner/index.js; on Railway redeploy the repo), then restart and pair again.",
+      ];
+      await sendReply(sock, msg, lines.join("\n"));
+    });
+  console.log("[v31] .fixcheck (honest edition) registered");
+} catch (e) {
+  console.log("[v31] fixcheck register error:", (e && e.message) || e);
+}
+
+console.log("[v31] ✅ all v31 fixes installed —", __V31_BUILD__);
+/* __V31_PATCHED__ */
