@@ -41813,23 +41813,21 @@ try {
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
-   FINAL ALL-FIX-PACKS BOOT — THIS is the only pack installation point.
-   It runs inside the WhatsApp child, after __PRECIOUS__ and commands exist,
-   and after the legacy v27 fallback above. Therefore v29 is genuinely last.
+   MERGED MASTER FIX BOOT (v33) — the ONLY child pack-installation point.
+   Runs the child crash shield + EVERY runtime fix pack (session-boot → v20 →
+   v21 → gst-picker → v23-rc → playv2 → watermark → v24 → v27 → v28 → v29 →
+   TT quote fix) in winning order via precious-all-packs-boot, then arms the
+   verify hook so the logs PROVE the fixes took effect.
+   See MUST-READ-NO-NEW-FIX-PACKS.md — never create another fix pack; add new
+   fixes inside precious-all-packs-boot.cjs → installAll() only.
    ══════════════════════════════════════════════════════════════════════════ */
 try {
-  const _allPacks = require('../precious-all-packs-boot.cjs');
-  const _packResult = _allPacks.installAll(globalThis.__PRECIOUS__ || {});
-  globalThis.__ALL_PACKS_FINAL_RESULT__ = _packResult;
-  console.log('[precious-all-packs] FINAL child install complete');
-} catch (_eAllFinal) {
-  console.log('[precious-all-packs] ❌ final child boot error:', (_eAllFinal && _eAllFinal.message) || _eAllFinal);
+  require('../precious-master-fix-boot.cjs').bootChild(globalThis.__PRECIOUS__ || {});
+  globalThis.__ALL_PACKS_FINAL_RESULT__ = globalThis.__PRECIOUS_MASTER_CHILD__;
+  console.log('[precious-master-fix] FINAL child install complete');
+} catch (_eMasterChild) {
+  console.log('[precious-master-fix] ❌ final child boot error:', (_eMasterChild && _eMasterChild.message) || _eMasterChild);
 }
-
-/* Child-side verification/shield. It MUST NOT invoke the pack loader again:
-   the final all-packs boot above already owns installation and ordering. */
-try { require('./fix_pack_child.cjs').installAll(); }
-catch (_eChild) { console.log('[FIX] fix_pack_child verification: FAILED (' + (_eChild && _eChild.message) + ')'); }
 
 /* ══════════════════════════════════════════════════════════════════════════
    PRECIOUS v30 — FINAL BLOCK. Appended dead last so nothing can override it.

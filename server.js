@@ -7,12 +7,13 @@ require('./lib/crash-shield.cjs').install({ name: 'server' });
    v30+v31, so the npm-start chain (fix_all, fix_session_401, …) never ran on
    the deployed container. This call is IN the repo, so it runs on every boot
    regardless of which entry point was used. Idempotent + absolute-pathed. */
-try { require('./fix_pack_runtime.cjs').installParent(); }
-catch (_eFPR) { console.log('[FIX] fix_pack_runtime: FAILED (' + (_eFPR && _eFPR.message) + ')'); }
+/* v33: the whole fix chain (on-disk patches + session boot/fix + preflight)
+   now lives in ONE file so no entry point can ever skip a pack again. */
+try { require('./precious-master-fix-boot.cjs').bootParent(); }
+catch (_eMFB) { console.log('[MASTER-FIX] parent boot FAILED (' + (_eMFB && _eMFB.message) + ')'); }
 
-/* ── FIX-PACK PREFLIGHT (v30, now baked in — survives the fresh git clone) ── */
-try { require('./precious-packs-preflight.cjs').run(); }
-catch (_ePF) { console.log('[packs-preflight] skipped: ' + (_ePF && _ePF.message)); }
+/* v33: preflight now runs inside precious-master-fix-boot.cjs bootParent()
+   (called above) — removed here so it can never run twice or be skipped. */
 
 /* __V27_MANIFEST__ — boot-time file load report.
    Prints exactly which critical files loaded and which failed, so the
@@ -53,7 +54,9 @@ try {
 // deployed image PATCH-v25.cjs and precious-fix-pack.cjs never ran at all.
 // They are idempotent and marker-guarded; the tmp marker prevents double runs
 // when start.sh or index.js also executes in the same boot.
-try {
+/* v33: SUPERSEDED — precious-master-fix-boot.cjs bootParent() above runs this
+   exact chain already. Disabled so patches can never double-run. */
+if (false) try {
   const _cp = require('child_process');
   const _fs = require('fs');
   const _os = require('os');

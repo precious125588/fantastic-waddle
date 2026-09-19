@@ -5,34 +5,14 @@ const chalk = require('chalk');
 const figlet = require('figlet');
 const { startupPassword } = require('./nexstore/token');
 
-/* ── FIX-PACK ORCHESTRATOR (v32) — runs the same deterministic patch chain so
-   the legacy `node index.js` entry can never skip the fixes either. ── */
-try { require('./fix_pack_runtime.cjs').installParent(); }
-catch (_eFPR) { console.log('[FIX] fix_pack_runtime: FAILED (' + (_eFPR && _eFPR.message) + ')'); }
-
-/* ══════════════════════════════════════════════════════════════════════════
-   PRECIOUS ALL-FIX-PACKS — make sure the on-disk patch packs have run, and
-   load the session-persistence repair, before any child bot is spawned.
-   ══════════════════════════════════════════════════════════════════════════ */
-try {
-  const { spawnSync } = require('child_process');
-  const _os = require('os');
-  const _marker = require('path').join(_os.tmpdir(), 'mais-patched.marker');
-  // v29-hotfix: never skip on a stale tmp marker; also run the FULL list incl. PATCH-v27/v29.
-  {
-    for (const _patcher of ['fix_all.cjs', 'fix_session_401.cjs', 'PATCH-v25.cjs', 'PATCH-v27.cjs', 'precious-fix-pack.cjs', 'PATCH-v29.cjs', 'PATCH-v30.cjs', 'PATCH-v31.cjs']) {
-      const _p = require('path').join(__dirname, _patcher);
-      if (!require('fs').existsSync(_p)) continue;
-      const _r = spawnSync(process.execPath, [_p], { cwd: __dirname, stdio: 'inherit' });
-      console.log(chalk.blue(`🧩 patcher ${_patcher}: ${_r.status === 0 ? 'OK' : 'exit ' + _r.status}`));
-    }
-    try { require('fs').writeFileSync(_marker, String(Date.now())); } catch (_) {}
-  }
-} catch (_eP) { console.log(chalk.yellow('⚠️ patcher chain skipped:'), _eP && _eP.message); }
-try { require('./precious-session-fix.cjs'); } catch (_eS) { console.log(chalk.yellow('⚠️ session-fix skipped:'), _eS && _eS.message); }
-
-const AUTH_FILE = './auth.json';
-require('./precious-session-boot.cjs');
+/* ── MERGED MASTER FIX BOOT (v33) — ALL fix packs now load from ONE file.
+   See MUST-READ-NO-NEW-FIX-PACKS.md. Never add fix logic here; new fixes go
+   into precious-master-fix-boot.cjs (PATCH_CHAIN) or the installAll() of
+   precious-all-packs-boot.cjs. The inline patcher chain, the session-fix
+   require and the session-boot require that used to live in this spot all
+   moved into bootParent(), so `node index.js` can never skip a fix again. ── */
+try { require('./precious-master-fix-boot.cjs').bootParent(); }
+catch (_eMFB) { console.log('[MASTER-FIX] parent boot FAILED (' + (_eMFB && _eMFB.message) + ')'); }
 const _preciousSessionPaths = require('./sessionPaths');
 const PAIRING_DIR = _preciousSessionPaths.ensureSessionRoot() + '/';
 const pairModule = require('./pair');
