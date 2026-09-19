@@ -21,16 +21,14 @@ catch (_eMFB) { console.log('[MASTER-FIX] parent boot FAILED (' + (_eMFB && _eMF
 try {
   const _v27Files = [
     'server.js', 'index.js', 'mais_launcher.js', 'pair.js', 'bot.js', 'autoload.js',
-    'precious-all-packs-boot.cjs', 'precious-fixes-v27.cjs',
-    'precious-session-boot.cjs', 'precious-session-fix.cjs',
-    'fix_all.cjs', 'fix_session_401.cjs', 'PATCH-v25.cjs', 'PATCH-v27.cjs', 'PATCH-v29.cjs', 'precious-fix-pack.cjs',
-    'precious-fixes-v28.cjs', 'precious-fixes-v29.cjs',
-    'sessionPaths.js', 'sessionOwnership.js', 'notify.js', 'cleanup.cjs',
+    'precious-master-fix-boot.cjs', 'sessionPaths.js', 'sessionOwnership.js',
+    'notify.js', 'cleanup.cjs',
+    'precious-fixes-v27.cjs', 'precious-fixes-v28.cjs', 'precious-fixes-v29.cjs',
     'mias/index.js', 'mias/precious-fixes-v20.cjs', 'mias/precious-fixes-v21.cjs',
     'mias/precious-fixes-v24.cjs', 'mias/precious-gst-picker.cjs',
+    'mias/precious-tt-quote-fix.cjs', 'mias/precious-anime-edits.cjs',
     'patches/precious-fixes-v23-rc.cjs',
-    'lib/pickerRegistry.js', 'lib/universalButtons.js', 'lib/videoFix.js', 'lib/crash-shield.cjs',
-    'mias/lib/playv2-deliver.cjs', 'mias/lib/portableVideo.cjs',
+    'lib/crash-shield.cjs', 'mias/lib/playv2-deliver.cjs', 'mias/lib/portableVideo.cjs',
   ];
   const _v27Path = require('path');
   const _v27fs = require('fs');
@@ -54,30 +52,7 @@ try {
 // deployed image PATCH-v25.cjs and precious-fix-pack.cjs never ran at all.
 // They are idempotent and marker-guarded; the tmp marker prevents double runs
 // when start.sh or index.js also executes in the same boot.
-/* v33: SUPERSEDED — precious-master-fix-boot.cjs bootParent() above runs this
-   exact chain already. Disabled so patches can never double-run. */
-if (false) try {
-  const _cp = require('child_process');
-  const _fs = require('fs');
-  const _os = require('os');
-  const _path = require('path');
-  // v29-hotfix: no tmp marker. Old containers could hold a stale marker from a
-  // previous boot and skip the patch chain forever -> 'fixes not applied'. Chain is idempotent.
-  const _marker = _path.join(_os.tmpdir(), 'mais-patched.marker');
-  if (true) {
-    for (const _patcher of ['fix_all.cjs', 'fix_session_401.cjs', 'PATCH-v25.cjs', 'PATCH-v27.cjs', 'precious-fix-pack.cjs', 'PATCH-v29.cjs', 'PATCH-v30.cjs', 'PATCH-v31.cjs']) {
-      const _p = _path.join(__dirname, _patcher);
-      if (!_fs.existsSync(_p)) continue;
-      try {
-        const _r = _cp.spawnSync(process.execPath, [_p], { cwd: __dirname, stdio: 'inherit' });
-        console.log('[server] patcher ' + _patcher + ': ' + (_r.status === 0 ? 'OK' : 'exit ' + _r.status));
-      } catch (_e1) { console.log('[server] patcher ' + _patcher + ' failed: ' + (_e1 && _e1.message)); }
-    }
-    try { _fs.writeFileSync(_marker, String(Date.now())); } catch (_) {}
-  } else {
-    console.log('[server] patchers already ran this boot (marker) - skipping');
-  }
-} catch (_eP) { console.log('[server] patcher chain skipped: ' + (_eP && _eP.message)); }
+
 
 require('dotenv').config();
 
@@ -109,7 +84,8 @@ function safeErrorMessage(err) {
     return redactSecrets(raw);
 }
 
-require('./precious-session-boot.cjs');
+// v34: precious-session-boot is merged into precious-master-fix-boot.cjs
+// (bootParent). ensureSessionRoot() below keeps this module self-sufficient.
 const _sessionPaths = require('./sessionPaths');
 const NEXSTORE    = _sessionPaths.nexstoreRoot();
 const PAIRING_DIR = path.join(NEXSTORE, 'pairing');

@@ -129,7 +129,7 @@ async function _p2Deliver(sock, entry, n, quotedKey) {
   // Lazy-load the streaming worker so this module stays cheap to import.
   let worker = null;
   try {
-    worker = require('./download-worker.cjs');
+    worker = require('./download-worker.cjs'); /* sibling worker, exists ✓ */
   } catch (_e) {
     worker = null;
   }

@@ -1,75 +1,36 @@
-# ⚠️ MUST READ — FIX PACK POLICY (v33, 2026-09-19)
+# ⚠️ MUST READ — FIX POLICY (v34, 2026-09-19)
 
-> **To every developer and every AI agent working on this repo:**
-> **NEVER create a new fix pack file. EVER.**
-> No new `PATCH-vXX.cjs`, no new `precious-fixes-vXX.cjs`, no new
-> `*-boot.cjs`, no new `fix_*.cjs`, no new "hotfix" script, no new
-> install README. The era of scattered fix packs is **over**.
+> **NEVER create a new fix pack file. EVER.** The era of scattered fix packs
+> and runtime file-patchers is **over**.
 
----
+## The architecture now
 
-## The one and only entry point
+- **ONE entry command everywhere**: `node server.js`
+  (railway.toml, railway.json, Procfile, Dockerfile, package.json, start.sh).
+- **ONE boot file**: `precious-master-fix-boot.cjs`
+  - `bootParent()` (top of server.js / index.js): volume cleanup, baked-tree
+    verification, session volume detection + legacy migration, session
+    delete→quarantine audit, pack preflight report.
+  - `bootChild()` (end of mias/index.js): crash shield, then every runtime
+    command-fix module in winning order — v20 → v21 → gst-picker → v23-rc →
+    v24 → v27 → v28 → v29 → tt-quote — then a verify hook that prints what is
+    live 20s and 120s after boot.
+- **NO runtime patching**: every old PATCH-vXX / fix_*.cjs edit is baked into
+  the version-controlled files. A fresh git clone boots already-fixed.
+- The `mias/precious-fixes-*.cjs` / `precious-fixes-v2*.cjs` modules are the
+  command implementations. To change a fix, **edit the owning module in
+  place** — never add a new pack, never add fix logic to the entry files.
 
-**`precious-master-fix-boot.cjs`** is the SINGLE merged fix-pack loader.
-It is wired into the main entries already:
+## How to verify a deploy picked up the fixes
 
-| Process | File | Call |
-|---|---|---|
-| Parent (web + pairing) | `index.js` (top) | `require('./precious-master-fix-boot.cjs').bootParent()` |
-| Parent (web + pairing) | `server.js` (top) | same `bootParent()` call |
-| Child (WhatsApp bot) | `mias/index.js` (very end) | `require('../precious-master-fix-boot.cjs').bootChild(globalThis.__PRECIOUS__)` |
-
-`bootParent()` runs, in order:
-1. The full on-disk patch chain — `fix_all.cjs`, `fix_session_401.cjs`,
-   `PATCH-v25.cjs`, `PATCH-v27.cjs`, `precious-fix-pack.cjs`, `PATCH-v29.cjs`,
-   `PATCH-v30.cjs`, `PATCH-v31.cjs` (idempotent, marker-guarded).
-2. `precious-session-boot.cjs` — session volume detection + legacy migration.
-3. `precious-session-fix.cjs` — rewrites hard session deletes → quarantine.
-4. `precious-packs-preflight.cjs` — boot-time pack health report.
-
-`bootChild()` runs, in order:
-1. Child crash shield (`fix_pack_runtime.cjs → installChild()`).
-2. `precious-all-packs-boot.cjs → installAll()` — **every** runtime
-   command-fix pack in winning order:
-   session-boot → v20 → v21 → gst-picker → v23-rc → playv2 shims →
-   watermark → v24 → v27 → v28 → v29 (dead last, so it always wins).
-3. `precious-packs-verify.cjs → schedule()` — the v31 verify hook, now
-   version-controlled (a fresh git clone can no longer wipe it).
-
-## If you need to fix something
-
-1. **Find which existing pack owns that command/subsystem** (grep the
-   command name in `precious-fixes-*.cjs`, `mias/precious-fixes-*.cjs`,
-   `patches/`, `PATCH-v*.cjs`).
-2. **Edit that existing pack in place.** Bump nothing, rename nothing.
-3. If the fix truly belongs to no existing pack, add it as a new step
-   **inside `precious-all-packs-boot.cjs → installAll()`** (runtime fix) or
-   inside **`precious-master-fix-boot.cjs → PATCH_CHAIN`** (on-disk patch).
-   That is the ONLY two places new fix logic may live.
-4. Keep it idempotent and marker-guarded, and never let it throw — every
-   step is isolated so one failure can't take down the bot.
-
-## Hard rules
-
-- ❌ Do NOT create new patch/fix/boot files.
-- ❌ Do NOT add fix logic to `index.js`, `server.js`, `mias/index.js`,
-  `start.sh`, `Procfile`, or `railway.toml` beyond the one master-boot call.
-- ❌ Do NOT rely on runtime-injected edits (a fresh deploy = fresh clone =
-  they vanish). All fixes must live in version control.
-- ✅ DO keep every fix idempotent (safe to run on every boot).
-- ✅ DO check the boot log for `[MASTER-FIX]` and `[packs]` lines — they
-  prove every pack loaded, in order.
-
-## How to verify a fix actually loaded
-
-Watch the boot logs for, in order:
+Boot log must show, in order:
 ```
-[MASTER-FIX] ════════ PARENT BOOT — merging ALL fix packs into main entry ════════
-[FIX-PACK] chain done — applied=… failed=0 …
-[MASTER-FIX] ════════ PARENT BOOT DONE … ════════
-[MASTER-FIX] ════════ CHILD BOOT — installing ALL runtime fix packs ════════
-[packs] ════════ DONE — loaded N/N pack slots … ════════
-[MASTER-FIX] ════════ CHILD BOOT DONE … verify=true ════════
+[MASTER-FIX] ════════ PARENT BOOT (v34-merged-...) — merged fix boot ════════
+[MASTER-FIX] ════════ PARENT BOOT DONE ... ════════
+[MASTER-FIX] ════════ CHILD BOOT ... installing ALL runtime fix packs ════════
+[packs] ════════ DONE — loaded N/N pack slots ... ════════
+[packs-verify:20s] installed: v20, v21, ... | v30 build=...
 ```
-If any line is missing, the fix did NOT load — fix the master boot, do not
-add another pack.
+And in WhatsApp, send **.fixcheck** — the bot replies with the live build and
+which v30 fixes are armed. If the build date predates your deploy, the deploy
+did not pick up the new files.

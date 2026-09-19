@@ -2,13 +2,8 @@
 // ══ CRASH SHIELD — must be first so a bad handler can't kill the bot ════════
 import { install as installCrashShield } from '../lib/crash-shield.mjs';
 installCrashShield({ name: process.env.SHIELD_NAME || 'mias' });
-// FIX-PACK CHILD RUNTIME NOTE:
-// This file is the actual WhatsApp child process. Runtime fix packs are loaded
-// only AFTER __PRECIOUS__ and the complete commands map exist (see the final
-// all-packs boot near the end of this file). Loading the pack system here would
-// be too early and could permanently mark the pack booted with an empty context.
-try { require('../fix_pack_runtime.cjs').installChild(); }
-catch (_eFPC) { console.log('[FIX] fix_pack_runtime child shield: FAILED (' + (_eFPC && _eFPC.message) + ')'); }
+// v34: the child crash shield + all runtime packs load via
+// precious-master-fix-boot.cjs bootChild() at the END of this file.
 // ════════════════════════════════════════════════════════════════════════════
 import "dotenv/config";
 import { Boom } from "@hapi/boom";
@@ -41327,6 +41322,7 @@ try {
   const _p20 = require('./precious-fixes-v20.cjs');
   const _rep20 = _p20.install(globalThis.__PRECIOUS__);
   console.log('[precious-v20] ✅ installed —', JSON.stringify(_rep20));
+  try { (globalThis.__PRECIOUS_INSTALLED__ = globalThis.__PRECIOUS_INSTALLED__ || Object.create(null)).v20 = true; } catch {}
 } catch (_e20) {
   console.log('[precious-v20] ❌ install error:', (_e20 && _e20.message) || _e20);
 }
@@ -41801,16 +41797,10 @@ setInterval(() => { try { globalThis.__miasSock?.sendPresenceUpdate?.('available
 })();
 
 
-/* __PRECIOUS_V27_BOOTSTRAP__ — legacy direct v27 fallback.
-   The unified all-packs loader runs AFTER this block so v28/v29 remain the
-   final command-handler layer instead of being overwritten by v27. */
-try {
-  const _v27 = require('../precious-fixes-v27.cjs');
-  const _rep27 = _v27.install(globalThis.__PRECIOUS__ || {});
-  console.log('[precious-v27] ✅ installed — ' + JSON.stringify(_rep27));
-} catch (_e27) {
-  console.log('[precious-v27] ❌ install error:', (_e27 && _e27.message) || _e27);
-}
+/* v34: v27 is installed ONCE, in its correct slot (after v24, before
+   v28/v29), by precious-master-fix-boot.cjs installAll(). The direct
+   bootstrap that used to live here installed v27 early AND twice, and
+   later packs overwrote it — that was 'fixes not applied'. Removed. */
 
 /* ══════════════════════════════════════════════════════════════════════════
    MERGED MASTER FIX BOOT (v33) — the ONLY child pack-installation point.
@@ -42041,3 +42031,4 @@ try {
 
 console.log("[v30] ✅ all fixes installed —", __V30_BUILD__);
 /* __V30_PATCHED__ */
+

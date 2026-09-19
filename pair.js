@@ -48,7 +48,8 @@ const ownership = require('./sessionOwnership')
 // Define sleep function directly here to avoid import issues
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 // PRECIOUS: always the Railway volume (falls back to <repo>/nexstore/pairing).
-require('./precious-session-boot.cjs');
+// v34: precious-session-boot is merged into precious-master-fix-boot.cjs
+// (bootParent). ensureSessionRoot() below keeps this module self-sufficient.
 const _sessionPaths = require('./sessionPaths');
 const PAIRING_ROOT = _sessionPaths.ensureSessionRoot();
 const LEGACY_PAIRING_FILE = path.join(PAIRING_ROOT, 'pairing.json');

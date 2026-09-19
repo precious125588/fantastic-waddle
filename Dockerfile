@@ -98,5 +98,5 @@ RUN for d in . mias; do \
 
 EXPOSE 3000
 
-# npm start runs: node fix_all.cjs && node fix_session_401.cjs && node server.js
-CMD ["npm", "start"]
+# v34: every fix is baked into the tree; the merged master boot runs from server.js
+CMD ["node", "server.js"]

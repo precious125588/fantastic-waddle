@@ -73,27 +73,8 @@ if [ -d mias ] && [ ! -d mias/node_modules/axios ]; then
   bash scripts/robust-install.sh mias || npm --prefix mias install --no-audit --no-fund || echo "[MAIS] WARN: mias dep install failed"
 fi
 
-# ── Pre-boot patch packs ─────────────────────────────────────────────────────
-# These are idempotent, marker-guarded file patchers. start.sh used to skip
-# them (npm start ran them, but Railway boots through start.sh / Procfile),
-# so mias/index.js was never patched on the deployed image.
-# DEDUP: index.js (root) ALSO spawns them. A marker file keeps them from
-# running twice per boot (which wasted seconds and polluted the logs).
-# v29-hotfix: ignore stale tmp marker from previous boots (was silently skipping patchers)
-PATCH_MARKER="${TMPDIR:-/tmp}/mais-patched.marker"
-if true; then
-  for p in fix_all.cjs fix_session_401.cjs PATCH-v25.cjs PATCH-v27.cjs precious-fix-pack.cjs PATCH-v29.cjs PATCH-v30.cjs PATCH-v31.cjs; do
-    [ -f "$p" ] || continue
-    echo "[MAIS] running patcher $p ..."
-    node "$p" || echo "[MAIS] WARN: patcher $p failed (continuing)"
-  done
-  touch "$PATCH_MARKER"
-else
-  echo "[MAIS] patchers already ran this boot (marker $PATCH_MARKER) — skipping"
-fi
+
 
 echo "[MAIS] Starting..."
-# FIX-PACK ORCHESTRATOR: belt-and-suspenders — even if a stale entry point is
-# used, the shell entry still runs the full deterministic patch chain first.
-node fix_pack_runtime.cjs || echo "[MAIS] WARN: fix_pack_runtime failed (continuing)"
-exec node index.js
+# v34: all fixes are baked into the tree; server.js boots the merged master fix boot.
+exec node server.js
