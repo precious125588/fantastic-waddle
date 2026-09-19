@@ -42113,14 +42113,16 @@ globalThis.__v31QuotedText = __v31QuotedText;
    If the originals live in an inner scope this simply adds a top-level copy —
    harmless either way, because the v31 wrappers below use __v31QuotedText
    directly. */
-function __ttQuotedText(msg) { return __v31QuotedText(msg); }
-function __withQuotedUrl(msg, args = [], pattern = null) {
-  const list = Array.isArray(args) ? args : [];
-  if (list.some((a) => /^https?:\/\//i.test(String(a)))) return list;
-  const urls = String(__v31QuotedText(msg)).match(/https?:\/\/[^\s<>"']+/gi) || [];
-  const found = pattern ? urls.find((u) => pattern.test(u)) : urls[0];
-  return found ? [found, ...list] : [];
-}
+try { __ttQuotedText = function (msg) { return __v31QuotedText(msg); }; } catch (_) {}
+try {
+  __withQuotedUrl = function (msg, args = [], pattern = null) {
+    const list = Array.isArray(args) ? args : [];
+    if (list.some((a) => /^https?:\/\//i.test(String(a)))) return list;
+    const urls = String(__v31QuotedText(msg)).match(/https?:\/\/[^\s<>"']+/gi) || [];
+    const found = pattern ? urls.find((u) => pattern.test(u)) : urls[0];
+    return found ? [found, ...list] : [];
+  };
+} catch (_) {}
 
 /* ── Never-silent wrapper for every download/search command ─────────────── */
 function __v31WrapCommand(name) {
