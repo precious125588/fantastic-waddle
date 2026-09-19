@@ -4847,6 +4847,23 @@ async function _sendTextMenuPick(sock, jid, quoted, headerText, _items, _footer)
   return sock.sendMessage(jid, { text: _out + _options }, { quoted });
 }
 
+// WhatsApp account ids can include a device suffix (12345:7@s.whatsapp.net).
+// generateWAMessageFromContent needs the bot's account JID, not that device
+// address. Passing the raw value is accepted by some clients but produces
+// native-flow messages whose taps are ignored by regular WhatsApp.
+function _nativeFlowUserJid(sock) {
+  const raw = String(sock?.user?.id || "");
+  const number = raw.split("@")[0].split(":")[0].replace(/\D/g, "");
+  return number ? `${number}@s.whatsapp.net` : "";
+}
+
+function _nativeFlowOrder() {
+  const mode = String(process.env.BUTTON_MODE || "auto").toLowerCase();
+  if (mode === "direct") return ["direct", "viewonce"];
+  if (mode === "viewonce") return ["viewonce", "direct"];
+  return ["viewonce", "direct"];
+}
+
 async function sendNativeFlowButtons(sock, jid, quoted, bodyText, buttons, footer = `${CONFIG.BOT_NAME} • v${CONFIG.VERSION}`) {
   // ── text-menu gate: when buttonsMode is OFF, show numbered list instead ──
   if (typeof getSettings === "function" && typeof getOwnerJid === "function" && !getSettings(getOwnerJid())?.buttonsMode) {
@@ -4864,22 +4881,23 @@ async function sendNativeFlowButtons(sock, jid, quoted, bodyText, buttons, foote
     })
   };
   let wam = null;
-  try {
-    // NORMAL-WHATSAPP FIX: native-flow interactive messages render natively on
-    // WhatsApp Business but are DROPPED (dead, unclickable) by normal
-    // (non-Business) WhatsApp unless wrapped in a viewOnceMessage envelope —
-    // the known Baileys compatibility trick. Wrapped here so BOTH clients
-    // render and fire the buttons.
-    wam = await generateWAMessageFromContent(jid, { viewOnceMessage: { message: content } }, { quoted, userJid: sock.user?.id });
-    await sock.relayMessage(jid, wam.message, { messageId: wam.key.id });
-  } catch (_btnErr) {
-    // Fallback for normal (non-Business) WhatsApp — send plain numbered text
+  let _btnErr = null;
+  for (const _mode of _nativeFlowOrder()) {
     try {
-      const _plain = String(bodyText || "").replace(/\n?_Reply to the [^\n]*_/g, "").trim();
-      if (_plain) await sock.sendMessage(jid, { text: _plain }, { quoted });
-    } catch {}
+      const _payload = _mode === "viewonce" ? { viewOnceMessage: { message: content } } : content;
+      const _userJid = _nativeFlowUserJid(sock);
+      wam = await generateWAMessageFromContent(jid, _payload, { quoted, userJid: _userJid || undefined });
+      await sock.relayMessage(jid, wam.message, { messageId: wam.key.id });
+      return wam;
+    } catch (e) {
+      _btnErr = e;
+    }
   }
-  return wam; // may be null if interactive failed — callers handle null safely
+  {
+    // Never report success after silently sending only the body. Store the
+    // choices so a numbered reply remains actionable on unsupported clients.
+    return _sendTextMenuPick(sock, jid, quoted, bodyText, buttons, footer);
+  }
 }
 async function sendNativeFlowListMenu(sock, jid, quoted, bodyText, sections, quickButtons = [], footer = `${CONFIG.BOT_NAME} • v${CONFIG.VERSION}`, opts = {}) {
   if (!generateWAMessageFromContent || !proto) throw new Error("native flow unavailable");
@@ -4951,26 +4969,26 @@ async function sendNativeFlowListMenu(sock, jid, quoted, bodyText, sections, qui
       nativeFlowMessage: proto.Message.InteractiveMessage.NativeFlowMessage.create({ buttons: nativeButtons, messageParamsJson: JSON.stringify({}), messageVersion: 1 })
     })
   };
-  try {
-    // NORMAL-WHATSAPP FIX: viewOnceMessage envelope (see sendNativeFlowButtons)
-    // so the list menu renders on normal WhatsApp too, not just Business.
-    const wam = await generateWAMessageFromContent(jid, { viewOnceMessage: { message: content } }, { quoted, userJid: sock.user?.id });
-    await sock.relayMessage(jid, wam.message, { messageId: wam.key.id });
-    return wam;
-  } catch (_listErr) {
-    // Fallback for clients that cannot render native flow — a numbered text
-    // list whose replies are understood by __miasHandleBareNumberReply.
+  let _listErr = null;
+  for (const _mode of _nativeFlowOrder()) {
     try {
-      const _lines = [];
-      for (const sec of (Array.isArray(sections) ? sections : [])) {
-        if (sec?.title) _lines.push(`*${sec.title}*`);
-        (Array.isArray(sec?.rows) ? sec.rows : []).forEach((r, i) => _lines.push(`${i + 1}. ${r?.title || r?.rowId || "Option"}`));
-      }
-      for (const b of (Array.isArray(quickButtons) ? quickButtons : [])) _lines.push(`- ${b?.text || "Option"}`);
-      const _plain = `${String(bodyText || "").trim()}${_lines.length ? "\n\n" + _lines.join("\n") : ""}`;
-      if (_plain) await sock.sendMessage(jid, { text: _plain }, { quoted });
-    } catch {}
-    return null;
+      const _payload = _mode === "viewonce" ? { viewOnceMessage: { message: content } } : content;
+      const _userJid = _nativeFlowUserJid(sock);
+      const wam = await generateWAMessageFromContent(jid, _payload, { quoted, userJid: _userJid || undefined });
+      await sock.relayMessage(jid, wam.message, { messageId: wam.key.id });
+      return wam;
+    } catch (e) {
+      _listErr = e;
+    }
+  }
+  {
+    // Fallback for clients that cannot render native flow. Keep the same
+    // per-chat choice store used by button mode, so the text fallback works.
+    const _items = [
+      ...(Array.isArray(sections) ? sections.flatMap(sec => sec?.rows || []) : []),
+      ...(Array.isArray(quickButtons) ? quickButtons : []),
+    ];
+    return _sendTextMenuPick(sock, jid, quoted, bodyText, _items, footer);
   }
 }
 
@@ -5010,22 +5028,25 @@ async function sendCTAButtons(sock, jid, quoted, bodyText, ctaButtons = [], foot
     if (b.type === "call") return { name: "cta_call", buttonParamsJson: JSON.stringify({ display_text: b.text, phone_number: b.phone }) };
     return { name: "quick_reply", buttonParamsJson: JSON.stringify({ display_text: b.text, id: b.id || `BTN:${b.text}` }) };
   }).filter(Boolean);
-  try {
-    const content = {
-      messageContextInfo: { deviceListMetadata: {}, deviceListMetadataVersion: 2 },
-      interactiveMessage: proto.Message.InteractiveMessage.create({
-        body:   proto.Message.InteractiveMessage.Body.create({ text: bodyText }),
-        footer: proto.Message.InteractiveMessage.Footer.create({ text: footer }),
-        header: proto.Message.InteractiveMessage.Header.create({ hasMediaAttachment: false }),
-        nativeFlowMessage: proto.Message.InteractiveMessage.NativeFlowMessage.create({ buttons: nativeButtons, messageParamsJson: JSON.stringify({}), messageVersion: 1 })
-      })
-    };
-    const wam = await generateWAMessageFromContent(jid, { viewOnceMessage: { message: content } }, { quoted, userJid: sock.user?.id });
-    await sock.relayMessage(jid, wam.message, { messageId: wam.key.id });
-    return wam;
-  } catch {
-    return sock.sendMessage(jid, { text: bodyText }, { quoted });
+  const content = {
+    messageContextInfo: { deviceListMetadata: {}, deviceListMetadataVersion: 2 },
+    interactiveMessage: proto.Message.InteractiveMessage.create({
+      body:   proto.Message.InteractiveMessage.Body.create({ text: bodyText }),
+      footer: proto.Message.InteractiveMessage.Footer.create({ text: footer }),
+      header: proto.Message.InteractiveMessage.Header.create({ hasMediaAttachment: false }),
+      nativeFlowMessage: proto.Message.InteractiveMessage.NativeFlowMessage.create({ buttons: nativeButtons, messageParamsJson: JSON.stringify({}), messageVersion: 1 })
+    })
+  };
+  for (const _mode of _nativeFlowOrder()) {
+    try {
+      const _payload = _mode === "viewonce" ? { viewOnceMessage: { message: content } } : content;
+      const _userJid = _nativeFlowUserJid(sock);
+      const wam = await generateWAMessageFromContent(jid, _payload, { quoted, userJid: _userJid || undefined });
+      await sock.relayMessage(jid, wam.message, { messageId: wam.key.id });
+      return wam;
+    } catch {}
   }
+  return _sendTextMenuPick(sock, jid, quoted, bodyText, ctaButtons, footer);
 }
 
 async function sendInteractiveListMenu(sock, msg, menuText, coverBuf) {

@@ -34,7 +34,21 @@ let applied = 0;
 const failures = [];
 
 function replaceOnce(name, anchor, replacement) {
-  if (!src.includes(anchor)) { failures.push(name + ' (anchor not found)'); return; }
+  if (!src.includes(anchor)) {
+    // The replacement drop moves the Android button strategy into the shared
+    // _nativeFlowUserJid/send path. Do not report the old B/C patch anchors as
+    // failed when that corrected implementation is already present.
+    const nativeFlowAlreadyFixed =
+      (name.startsWith('B)') || name.startsWith('C)')) &&
+      src.includes('function _nativeFlowUserJid') &&
+      src.includes('viewOnceMessage: { message: content }');
+    if (nativeFlowAlreadyFixed) {
+      skip(name + ' — native-flow replacement already present');
+      return;
+    }
+    failures.push(name + ' (anchor not found)');
+    return;
+  }
   src = src.replace(anchor, replacement);
   applied++;
   ok(name);
@@ -59,13 +73,12 @@ replaceOnce(
 
 /* ── B) sendNativeFlowButtons strategy chain ── */
 replaceOnce(
-  'B) sendNativeFlowButtons direct→viewOnce chain',
+  'B) sendNativeFlowButtons viewOnce→direct chain',
   '    wam = await generateWAMessageFromContent(jid, { viewOnceMessage: { message: content } }, { quoted, userJid: sock.user?.id });\n    await sock.relayMessage(jid, wam.message, { messageId: wam.key.id });',
-  '    /* __V29_BTN_STRATEGY__ normal WhatsApp on older Android renders native-flow\n' +
-  '       buttons best UNWRAPPED; WhatsApp Business needs the viewOnce envelope.\n' +
-  '       Try direct first, fall back to viewOnce. Force one with BUTTON_MODE. */\n' +
+  '    /* __V29_BTN_STRATEGY__ regular WhatsApp needs the viewOnce envelope for\n' +
+  '       taps to register. Try it first; keep direct as a real fallback. */\n' +
   '    const _bseq = String(process.env.BUTTON_MODE || "auto").toLowerCase() === "direct" ? ["direct"]\n' +
-  '      : String(process.env.BUTTON_MODE || "").toLowerCase() === "viewonce" ? ["viewonce"] : ["direct", "viewonce"];\n' +
+  '      : String(process.env.BUTTON_MODE || "").toLowerCase() === "viewonce" ? ["viewonce"] : ["viewonce", "direct"];\n' +
   '    let _bSent = false, _bErr = null;\n' +
   '    for (const _bm of _bseq) {\n' +
   '      try {\n' +
@@ -80,12 +93,12 @@ replaceOnce(
 
 /* ── C) sendNativeFlowListMenu strategy chain ── */
 replaceOnce(
-  'C) sendNativeFlowListMenu direct→viewOnce chain',
+  'C) sendNativeFlowListMenu viewOnce→direct chain',
   '    const wam = await generateWAMessageFromContent(jid, { viewOnceMessage: { message: content } }, { quoted, userJid: sock.user?.id });\n    await sock.relayMessage(jid, wam.message, { messageId: wam.key.id });\n    return wam;',
   '    /* __V29_LIST_STRATEGY__ */\n' +
   '    let wam = null;\n' +
   '    const _lseq = String(process.env.BUTTON_MODE || "auto").toLowerCase() === "direct" ? ["direct"]\n' +
-  '      : String(process.env.BUTTON_MODE || "").toLowerCase() === "viewonce" ? ["viewonce"] : ["direct", "viewonce"];\n' +
+  '      : String(process.env.BUTTON_MODE || "").toLowerCase() === "viewonce" ? ["viewonce"] : ["viewonce", "direct"];\n' +
   '    let _lErr = null;\n' +
   '    for (const _lm of _lseq) {\n' +
   '      try {\n' +

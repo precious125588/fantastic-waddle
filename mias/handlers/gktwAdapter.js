@@ -412,26 +412,45 @@ function _textFallbackInteractive(header, body, buttons, footer) {
 //   render but every tap is a no-op — the "dead button" symptom. We send the
 //   viewOnce-wrapped form FIRST (works on both regular WA and WA Business)
 //   and fall back to the bare form if a client/server rejects the wrapper.
+//
+//   BUTTON_MODE=direct can be used for an old client that rejects the wrapper.
+//   It is deliberately opt-in: the previous auto strategy sent the bare form
+//   first, which made Android 11 look successful while producing dead taps.
+function _nativeFlowUserJid(sock) {
+  const raw = String(sock?.user?.id || "");
+  const number = raw.split("@")[0].split(":")[0].replace(/\D/g, "");
+  return number ? `${number}@s.whatsapp.net` : "";
+}
+
+function _nativeFlowOrder() {
+  const mode = String(process.env.BUTTON_MODE || "auto").toLowerCase();
+  if (mode === "direct") return ["direct", "viewonce"];
+  if (mode === "viewonce") return ["viewonce", "direct"];
+  return ["viewonce", "direct"];
+}
+
 async function _relayNativeFlow(sock, jid, interactiveMsg, quoted) {
   const B       = await getBaileys();
   const proto   = B.proto;
-  const userJid = (sock?.user?.id || "").split(":")[0] + "@s.whatsapp.net";
-  const genOpts = { userJid };
+  const userJid = _nativeFlowUserJid(sock);
+  const genOpts = {};
+  if (userJid) genOpts.userJid = userJid;
   if (quoted) genOpts.quoted = quoted;
 
   const _mci = { deviceListMetadata: {}, deviceListMetadataVersion: 2 };
-  const variants = [
-    // 1) viewOnce-wrapped — REQUIRED for buttons to be tappable on regular WA
-    { viewOnceMessage: { message: { messageContextInfo: _mci, interactiveMessage: interactiveMsg } } },
-    // 2) bare interactiveMessage + messageContextInfo (legacy fallback)
-    { messageContextInfo: _mci, interactiveMessage: interactiveMsg },
-  ];
+  const variants = {
+    viewonce: { viewOnceMessage: { message: { messageContextInfo: _mci, interactiveMessage: interactiveMsg } } },
+    direct: { messageContextInfo: _mci, interactiveMessage: interactiveMsg },
+  };
   let lastErr = null;
-  for (const content of variants) {
+  for (const mode of _nativeFlowOrder()) {
     try {
+      const content = variants[mode];
       const full = proto.Message.create(content);
       const gen  = await B.generateWAMessageFromContent(jid, full, genOpts);
-      return await sock.relayMessage(jid, gen.message, { messageId: gen.key.id });
+      const result = await sock.relayMessage(jid, gen.message, { messageId: gen.key.id });
+      console.log(`[native-flow] relayed ${mode} payload to ${jid}`);
+      return result;
     } catch (e) { lastErr = e; }
   }
   throw lastErr || new Error("native-flow relay failed");

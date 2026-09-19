@@ -40,7 +40,13 @@ async function _loadBaileys() {
     try {
       // dynamic import works for CJS modules too in Node 22
       const mod = await import(/* @vite-ignore */ name);
-      _baileys = mod?.default || mod;
+      // ESM imports of the @itsliaaa/baileys CommonJS bridge expose an empty
+      // `default` alongside the real named exports. Choosing that empty object
+      // made cox skip native flow and silently send plain text.
+      const candidate = mod?.default;
+      _baileys = candidate?.proto || candidate?.generateWAMessageFromContent
+        ? candidate
+        : mod;
       return _baileys;
     } catch (e) {
       _baileysErr = e;
@@ -110,9 +116,45 @@ const sendPoll = async (...args) => {
  *   style: "buttons" | "hero" | "carousel" | "list"
  * }
  */
-async function sendRichInteractive(spec) {
-  const { sock, jid } = spec || {};
-  if (!sock || !jid) throw new Error("cox.sendRichInteractive: sock & jid required");
+function _normaliseSpec(first, jid, params) {
+  // cox is used both as a standalone helper (sendList(spec)) and through the
+  // adapter (sendList(sock, jid, spec)). Accept both contracts so a helper
+  // mismatch cannot silently downgrade a working native message to nothing.
+  if (first && typeof first === "object" && typeof first.sendMessage === "function") {
+    const p = params || {};
+    return {
+      ...p,
+      sock: first,
+      jid,
+      text: p.text ?? p.body ?? "",
+      listSections: p.listSections ?? p.sections,
+    };
+  }
+  const p = first || {};
+  return {
+    ...p,
+    text: p.text ?? p.body ?? "",
+    listSections: p.listSections ?? p.sections,
+  };
+}
+
+function _nativeFlowUserJid(sock) {
+  const raw = String(sock?.user?.id || "");
+  const number = raw.split("@")[0].split(":")[0].replace(/\D/g, "");
+  return number ? `${number}@s.whatsapp.net` : "";
+}
+
+function _nativeFlowOrder() {
+  const mode = String(process.env.BUTTON_MODE || "auto").toLowerCase();
+  if (mode === "direct") return ["direct", "viewonce"];
+  if (mode === "viewonce") return ["viewonce", "direct"];
+  return ["viewonce", "direct"];
+}
+
+async function sendRichInteractive(first, jid, params) {
+  const spec = _normaliseSpec(first, jid, params);
+  const { sock, jid: targetJid } = spec;
+  if (!sock || !targetJid) throw new Error("cox.sendRichInteractive: sock & jid required");
 
   // Normalise the buttons into native-flow wire shape ({name, buttonParamsJson}).
   // Callers may already hand us wire-shaped buttons or simple {text,id,url,...}
@@ -177,7 +219,7 @@ async function sendRichInteractive(spec) {
   const proto = B && B.proto;
   const NF = proto?.Message?.InteractiveMessage?.NativeFlowMessage?.NativeFlowButton;
   const _mci = { deviceListMetadata: {}, deviceListMetadataVersion: 2 };
-  const userJid = (sock?.user?.id || "").split(":")[0] + "@s.whatsapp.net";
+  const userJid = _nativeFlowUserJid(sock);
 
   if (proto && typeof B.generateWAMessageFromContent === "function" && typeof sock.relayMessage === "function") {
     let interactiveMsg = null;
@@ -200,19 +242,21 @@ async function sendRichInteractive(spec) {
       interactiveMsg = null;
     }
     if (interactiveMsg) {
-      const genOpts = { userJid };
+      const genOpts = {};
+      if (userJid) genOpts.userJid = userJid;
       if (spec.quoted) genOpts.quoted = spec.quoted;
-      const variants = [
-        // 1) viewOnce-wrapped — REQUIRED for taps to register on regular WA
-        { viewOnceMessage: { message: { messageContextInfo: _mci, interactiveMessage: interactiveMsg } } },
-        // 2) bare interactiveMessage + messageContextInfo (legacy fallback)
-        { messageContextInfo: _mci, interactiveMessage: interactiveMsg },
-      ];
-      for (const content of variants) {
+      const variants = {
+        viewonce: { viewOnceMessage: { message: { messageContextInfo: _mci, interactiveMessage: interactiveMsg } } },
+        direct: { messageContextInfo: _mci, interactiveMessage: interactiveMsg },
+      };
+      for (const mode of _nativeFlowOrder()) {
         try {
+          const content = variants[mode];
           const full = proto.Message.create(content);
-          const gen  = await B.generateWAMessageFromContent(jid, full, genOpts);
-          return await sock.relayMessage(jid, gen.message, { messageId: gen.key.id });
+          const gen  = await B.generateWAMessageFromContent(targetJid, full, genOpts);
+          const result = await sock.relayMessage(targetJid, gen.message, { messageId: gen.key.id });
+          console.log(`[native-flow] cox relayed ${mode} payload to ${targetJid}`);
+          return result;
         } catch (e) { /* try next variant */ }
       }
     }
@@ -227,13 +271,19 @@ async function sendRichInteractive(spec) {
     : "";
   const text = [spec.text || "", btnLines || listLines, spec.footer ? `_${spec.footer}_` : ""]
     .filter(Boolean).join("\n\n");
-  return sock.sendMessage(jid, { text }, spec.quoted ? { quoted: spec.quoted } : {});
+  return sock.sendMessage(targetJid, { text }, spec.quoted ? { quoted: spec.quoted } : {});
 }
 
-const sendHeroCard    = (spec) => sendRichInteractive({ ...spec, style: "hero"    });
-const sendCarousel    = (spec) => sendRichInteractive({ ...spec, style: "carousel" });
-const sendList        = (spec) => sendRichInteractive({ ...spec, style: "list"     });
-const createInteractiveMessage = sendRichInteractive;
+function _styled(style, args) {
+  if (args.length === 1) return sendRichInteractive({ ...(args[0] || {}), style });
+  return sendRichInteractive(args[0], args[1], { ...(args[2] || {}), style });
+}
+
+const sendInteractive = (...args) => _styled("buttons", args);
+const sendHeroCard    = (...args) => _styled("hero", args);
+const sendCarousel    = (...args) => _styled("carousel", args);
+const sendList        = (...args) => _styled("list", args);
+const createInteractiveMessage = (...args) => _styled("buttons", args);
 
 module.exports = {
   prepareWAMessageMedia,
@@ -241,6 +291,7 @@ module.exports = {
   jidNormalizedUser,
   getContentType,
   sendPoll,
+  sendInteractive,
   sendRichInteractive,
   sendHeroCard,
   sendCarousel,
