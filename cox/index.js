@@ -148,7 +148,11 @@ function _nativeFlowOrder() {
   const mode = String(process.env.BUTTON_MODE || "auto").toLowerCase();
   if (mode === "direct") return ["direct", "viewonce"];
   if (mode === "viewonce") return ["viewonce", "direct"];
-  return ["viewonce", "direct"];
+  // v30: "auto" now sends the DIRECT payload first. The viewonce envelope
+  // rendered only for the command sender, so other members of the group saw
+  // nothing at all. viewonce stays as the fallback for clients that reject
+  // the bare interactive payload.
+  return ["direct", "viewonce"];
 }
 
 async function sendRichInteractive(first, jid, params) {

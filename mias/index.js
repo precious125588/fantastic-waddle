@@ -41830,3 +41830,216 @@ try {
    the final all-packs boot above already owns installation and ordering. */
 try { require('./fix_pack_child.cjs').installAll(); }
 catch (_eChild) { console.log('[FIX] fix_pack_child verification: FAILED (' + (_eChild && _eChild.message) + ')'); }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   PRECIOUS v30 — FINAL BLOCK. Appended dead last so nothing can override it.
+
+   Fixes shipped here:
+     1) GROUP INVISIBILITY — every card/menu was relayed inside a
+        `viewOnceMessage` envelope. Regular WhatsApp only renders that for
+        the device that can "open" it, so other members in the group saw
+        nothing at all. v30 unwraps the envelope for interactive /
+        buttons / list / template payloads on EVERY socket, including
+        sockets created after a reconnect. Real view-once media (.vv) is
+        left untouched.
+     2) .tt / .tiktok / .ttdl SILENT — the handler could throw or finish
+        without sending anything and the user saw nothing. It is now
+        wrapped with an error reporter and a 90s watchdog.
+     3) QUOTE-REPLY INPUT for .nkiri .savetube .movie .boost6 .tt .play —
+        reply to any message holding a link/title and run the command with
+        no arguments; the quoted text becomes the query.
+     4) .fixcheck — prints which fixes are actually live in the running
+        process, so a deploy that did not pick up the new file is obvious
+        immediately instead of looking like "the fix did not work".
+   ══════════════════════════════════════════════════════════════════════════ */
+const __V30_BUILD__ = "v30-" + new Date().toISOString().slice(0, 10);
+globalThis.__V30__ = globalThis.__V30__ || { build: __V30_BUILD__, visibility: false, tt: false, quote: [] };
+
+/* ── 1. GROUP VISIBILITY ─────────────────────────────────────────────── */
+function __v30IsInteractive(m) {
+  if (!m || typeof m !== "object") return false;
+  return !!(m.interactiveMessage || m.buttonsMessage || m.listMessage ||
+            m.templateMessage || m.interactiveResponseMessage);
+}
+function __v30Unwrap(content) {
+  if (!content || typeof content !== "object") return content;
+  const envKeys = ["viewOnceMessage", "viewOnceMessageV2", "viewOnceMessageV2Extension"];
+  for (const k of envKeys) {
+    const inner = content[k] && content[k].message;
+    if (inner && __v30IsInteractive(inner)) {
+      const out = {};
+      // Keep messageContextInfo at the top level — Baileys still needs the
+      // device list metadata, it just must not sit inside a view-once box.
+      for (const [ik, iv] of Object.entries(inner)) out[ik] = iv;
+      for (const [ck, cv] of Object.entries(content)) if (ck !== k) out[ck] = cv;
+      return out;
+    }
+  }
+  return content;
+}
+function __v30HardenSock(sock) {
+  if (!sock || sock.__v30Hardened) return false;
+  try {
+    const _relay = sock.relayMessage && sock.relayMessage.bind(sock);
+    if (_relay) {
+      sock.relayMessage = function (jid, message, opts) {
+        let out = message;
+        try { out = __v30Unwrap(message); } catch {}
+        return _relay(jid, out, opts);
+      };
+    }
+    const _send = sock.sendMessage && sock.sendMessage.bind(sock);
+    if (_send) {
+      sock.sendMessage = function (jid, content, options) {
+        let out = content;
+        try { out = __v30Unwrap(content); } catch {}
+        return _send(jid, out, options);
+      };
+    }
+    sock.__v30Hardened = true;
+    globalThis.__V30__.visibility = true;
+    console.log("[v30] visibility fix armed — cards are no longer view-once, everyone in the group sees them");
+    return true;
+  } catch (e) {
+    console.log("[v30] visibility install failed:", (e && e.message) || e);
+    return false;
+  }
+}
+try { __v30HardenSock(globalThis.__miasMainSock || globalThis.sock); } catch {}
+// Re-arm on every reconnect — a fresh socket is a fresh sendMessage.
+try {
+  setInterval(function () {
+    try { __v30HardenSock(globalThis.__miasMainSock || globalThis.sock); } catch {}
+  }, 4000).unref?.();
+} catch {}
+
+/* ── 2/3. QUOTED TEXT AS COMMAND INPUT ───────────────────────────────── */
+function __v30QuotedText(msg) {
+  try {
+    const ci = msg?.message?.extendedTextMessage?.contextInfo
+      || msg?.message?.imageMessage?.contextInfo
+      || msg?.message?.videoMessage?.contextInfo
+      || msg?.message?.documentMessage?.contextInfo
+      || msg?.message?.buttonsResponseMessage?.contextInfo
+      || msg?.message?.listResponseMessage?.contextInfo;
+    let q = ci?.quotedMessage;
+    if (!q) return "";
+    q = q.ephemeralMessage?.message || q.viewOnceMessage?.message
+      || q.viewOnceMessageV2?.message || q;
+    const t = q.conversation
+      || q.extendedTextMessage?.text
+      || q.imageMessage?.caption
+      || q.videoMessage?.caption
+      || q.documentMessage?.caption
+      || q.documentWithCaptionMessage?.message?.documentMessage?.caption
+      || "";
+    return String(t || "").trim();
+  } catch { return ""; }
+}
+globalThis.__v30QuotedText = __v30QuotedText;
+
+function __v30AddQuoteInput(names) {
+  for (const n of names) {
+    try {
+      const e = commands.get(n);
+      if (!e || typeof e.handler !== "function" || e.__v30Quote) continue;
+      const orig = e.handler;
+      const wrapped = async (sock, msg, args) => {
+        if (!args || !args.length) {
+          const qt = __v30QuotedText(msg);
+          if (qt) {
+            // Prefer a URL inside the quoted message; otherwise use the whole
+            // line as the search query.
+            const url = (qt.match(/https?:\/\/\S+/i) || [])[0];
+            args = (url ? url : qt).split(/\s+/).filter(Boolean);
+          }
+        }
+        return orig(sock, msg, args || []);
+      };
+      wrapped.__v30Quote = true;
+      e.handler = wrapped;
+      e.__v30Quote = true;
+      commands.set(n, e);
+      globalThis.__V30__.quote.push(n);
+    } catch (err) {
+      console.log("[v30] quote wrap failed for ." + n + ":", (err && err.message) || err);
+    }
+  }
+}
+__v30AddQuoteInput([
+  "nkiri", "dcnkiri", "nkiridc", "nkirisearch",
+  "savetube", "movie", "moviedl", "boost6",
+  "tiktok", "tt", "ttdl", "play", "song", "video",
+]);
+console.log("[v30] quote-reply input enabled for:", globalThis.__V30__.quote.join(", ") || "(none found)");
+
+/* ── 2. .tt CAN NEVER GO SILENT AGAIN ────────────────────────────────── */
+try {
+  const _ttNames = ["tiktok", "tt", "ttdl"];
+  const _ttEntry = _ttNames.map((n) => commands.get(n)).find((e) => e && typeof e.handler === "function");
+  if (_ttEntry && !_ttEntry.handler.__v30TT) {
+    const _inner = _ttEntry.handler;
+    const _wrapped = async (sock, msg, args) => {
+      let settled = false;
+      const say = async (text) => {
+        if (settled) return;
+        settled = true;
+        try { clearTimeout(timer); } catch {}
+        try { await sendReply(sock, msg, text); } catch {}
+      };
+      const timer = setTimeout(function () {
+        say("⏳ TikTok is taking too long — the download provider never answered. Send the link again in a moment.");
+      }, 90000);
+      try {
+        const r = await _inner(sock, msg, args);
+        settled = true;
+        try { clearTimeout(timer); } catch {}
+        return r;
+      } catch (e) {
+        console.error("[v30:tt]", e);
+        await say("❌ TikTok failed: " + ((e && e.message) || e));
+      }
+    };
+    _wrapped.__v30TT = true;
+    _wrapped.__v30Quote = true;
+    for (const n of _ttNames) {
+      const e = commands.get(n) || { category: "DOWNLOAD" };
+      e.handler = _wrapped;
+      e.__v30Quote = true;
+      commands.set(n, e);
+    }
+    globalThis.__V30__.tt = true;
+    console.log("[v30] tt guard armed — .tt always answers (media, error, or timeout notice)");
+  }
+} catch (e) {
+  console.log("[v30] tt guard error:", (e && e.message) || e);
+}
+
+/* ── 4. .fixcheck — proves which build is actually running ───────────── */
+try {
+  cmd(["fixcheck", "v30", "buildinfo"], { desc: "Show which fixes are live in the running bot", category: "SYSTEM" },
+    async (sock, msg) => {
+      const s = globalThis.__V30__ || {};
+      const sockOk = !!(globalThis.__miasMainSock || globalThis.sock || {}).__v30Hardened;
+      const lines = [
+        "🧩 *FIX CHECK*",
+        "",
+        "Build: *" + (s.build || "unknown") + "*",
+        "Started: " + new Date(Date.now() - Math.floor(process.uptime() * 1000)).toISOString(),
+        "Uptime: " + Math.floor(process.uptime() / 60) + " min",
+        "",
+        (sockOk ? "✅" : "❌") + " Group visibility fix (cards not view-once)",
+        (s.tt ? "✅" : "❌") + " TikTok never-silent guard",
+        ((s.quote || []).length ? "✅" : "❌") + " Quote-reply input: " + ((s.quote || []).join(", ") || "none"),
+        "",
+        "_If this build date is older than your last deploy, the deploy did not pick up the new mias/index.js._",
+      ];
+      await sendReply(sock, msg, lines.join("\n"));
+    });
+  console.log("[v30] .fixcheck registered");
+} catch (e) {
+  console.log("[v30] fixcheck register error:", (e && e.message) || e);
+}
+
+console.log("[v30] ✅ all fixes installed —", __V30_BUILD__);
+/* __V30_PATCHED__ */

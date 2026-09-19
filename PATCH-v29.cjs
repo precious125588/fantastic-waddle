@@ -28,6 +28,15 @@ const bad = (m) => console.log('[PATCH-v29] ❌ ' + m);
 if (!fs.existsSync(TARGET)) { bad('mias/index.js not found at ' + TARGET); process.exit(1); }
 
 let src = fs.readFileSync(TARGET, 'utf8');
+// v30: mias/index.js now carries the fixes directly in the file. Rewriting it
+// at boot was the reason "the fixes are not applied after deploy" — the patcher
+// appended a late boot hook that re-installed older handlers on top of the new
+// ones, and it mutated the deployed file so every deploy started from a
+// different baseline. When the v30 marker is present, do nothing at all.
+if (src.includes('__V30_PATCHED__')) {
+  skip('mias/index.js already ships the v30 fixes — boot patching disabled');
+  process.exit(0);
+}
 if (src.includes(MARKER)) { skip('already patched — nothing to do'); process.exit(0); }
 
 let applied = 0;
