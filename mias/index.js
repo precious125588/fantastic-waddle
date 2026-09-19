@@ -71,7 +71,8 @@ import { normalizeInviteCode, approvalPrompt, adminNumberList, parseAdminChoice 
 import { ensureDiskSpace, getMediaLimitBytes, isNoSpaceError } from "./lib/diskGuard.js";
 // ─────────────────────────────────────────────────────────────────────────────
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 const require = createRequire(import.meta.url);
 // Legacy panel/button settings are retained only for backwards-compatible
 // settings reads. The button handler modules were intentionally removed from
@@ -41840,7 +41841,10 @@ try {
         process, so a deploy that did not pick up the new file is obvious
         immediately instead of looking like "the fix did not work".
    ══════════════════════════════════════════════════════════════════════════ */
-const __V30_BUILD__ = "v30-" + new Date().toISOString().slice(0, 10);
+/* v31.1: STATIC stamp — the old runtime `new Date()` always showed today's
+   date even on a stale deploy, so the log could never prove which build was
+   live. This string only changes when the file is actually replaced. */
+const __V30_BUILD__ = "v30-inline (superseded by v31.1) — baked 2026-09-19";
 globalThis.__V30__ = globalThis.__V30__ || { build: __V30_BUILD__, visibility: false, tt: false, quote: [] };
 
 /* ── 1. GROUP VISIBILITY ─────────────────────────────────────────────── */
@@ -42029,7 +42033,7 @@ try {
   console.log("[v30] fixcheck register error:", (e && e.message) || e);
 }
 
-console.log("[v30] ✅ all fixes installed —", __V30_BUILD__);
+console.log("[v30->v31.1] ✅ inline fixes installed (build stamp:", __V30_BUILD__ + ")");
 /* __V30_PATCHED__ */
 
 
@@ -42053,7 +42057,7 @@ console.log("[v30] ✅ all fixes installed —", __V30_BUILD__);
       simply RETURNED without sending stayed silent. v31 counts real sends
       and answers if the handler finished without replying.
    ══════════════════════════════════════════════════════════════════════════ */
-const __V31_BUILD__ = "v31-2026-09-19"; /* STATIC — baked at build time, never lies */
+const __V31_BUILD__ = "v31.1-2026-09-19"; /* STATIC — baked at build time, never lies. Bump this string on every replacement so .fixcheck proves the deploy. */
 globalThis.__V31__ = globalThis.__V31__ || { build: __V31_BUILD__, wrapped: [], missing: [], bareGuard: false, sockHardened: false };
 
 function __v31Unwrap(m) {
@@ -42148,6 +42152,7 @@ function __v31WrapCommand(name) {
     const jid = msg?.key?.remoteJid;
     let sent = 0, counting = false;
     const origSend = sock && sock.sendMessage;
+    const origRelay = sock && sock.relayMessage;
     if (typeof origSend === "function") {
       try {
         sock.sendMessage = function (j, c, o) {
@@ -42157,7 +42162,19 @@ function __v31WrapCommand(name) {
         counting = true;
       } catch (_) {}
     }
-    const restore = () => { if (counting) { try { sock.sendMessage = origSend; } catch (_) {} counting = false; } };
+    /* v31.1: interactive picker cards (native flow/list menus, e.g. the .tt
+       format picker) go out through sock.relayMessage, NOT sock.sendMessage —
+       count those too, otherwise a perfectly-sent card always triggers the
+       false "finished with no result" notice. */
+    if (typeof origRelay === "function") {
+      try {
+        sock.relayMessage = function (j, c, o) {
+          try { if (String(j) === String(jid)) sent++; } catch (_) {}
+          return origRelay.call(this, j, c, o);
+        };
+      } catch (_) {}
+    }
+    const restore = () => { if (counting) { try { sock.sendMessage = origSend; } catch (_) {} try { if (origRelay) sock.relayMessage = origRelay; } catch (_) {} counting = false; } };
     let watchdog = null;
     try {
       watchdog = setTimeout(() => {
