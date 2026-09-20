@@ -209,13 +209,32 @@ module.exports.install = function install(ctx) {
      ════════════════════════════════════════════════════════════════════════ */
   try {
     const PIN_DUR = { '24h': 86400, '1d': 86400, '7d': 604800, '30d': 2592000 };
+    const unwrap = (value) => {
+      let current = value || {};
+      for (let i = 0; i < 10 && current; i += 1) {
+        const next = current.ephemeralMessage?.message
+          || current.viewOnceMessage?.message
+          || current.viewOnceMessageV2?.message
+          || current.viewOnceMessageV2Extension?.message
+          || current.documentWithCaptionMessage?.message
+          || current.editedMessage?.message;
+        if (!next || next === current) break;
+        current = next;
+      }
+      return current || {};
+    };
     const pinKey = (msg) => {
-      const ctx = msg.message?.extendedTextMessage?.contextInfo
-               || msg.message?.imageMessage?.contextInfo
-               || msg.message?.videoMessage?.contextInfo
-               || msg.message?.audioMessage?.contextInfo
-               || msg.message?.documentMessage?.contextInfo
-               || msg.message?.stickerMessage?.contextInfo;
+      const root = unwrap(msg?.message);
+      const ctx = root.extendedTextMessage?.contextInfo
+               || root.imageMessage?.contextInfo
+               || root.videoMessage?.contextInfo
+               || root.audioMessage?.contextInfo
+               || root.documentMessage?.contextInfo
+               || root.stickerMessage?.contextInfo
+               || root.buttonsMessage?.contextInfo
+               || root.listMessage?.contextInfo
+               || root.templateMessage?.contextInfo
+               || root.interactiveMessage?.contextInfo;
       if (!ctx?.stanzaId) return null;
       return { remoteJid: msg.key.remoteJid, fromMe: !!ctx.fromMe, id: ctx.stanzaId, participant: ctx.participant || undefined };
     };
@@ -227,13 +246,13 @@ module.exports.install = function install(ctx) {
       const label = dur === 86400 ? '24 hours' : dur === 604800 ? '7 days' : '30 days';
       if (key) {
         let done = false, lastErr = '';
-        // CORRECT ORDER: real pinInChat envelope first. The bare {pin:...}
-        // payload is accepted silently by Baileys but ignored by WhatsApp —
-        // that was the "says pinned, nothing pinned" bug.
+        // Baileys' supported message action is { pin: key, type, time }.
+        // Some forks accept pinInChat locally but never emit the WhatsApp
+        // pin action, so keep it only as a fallback after the real payload.
         for (const payload of [
+          { pin: key, type: 1, time: dur },
           { pinInChat: { key, type: 1, senderTimestampMs: Date.now(), messageContextInfo: { messageAddOnDurationInSecs: dur } } },
           { pinInChat: { key, type: 1, senderTimestampMs: Date.now() } },
-          { pin: key, type: 1, time: dur }, // legacy fallback, may be ignored
         ]) {
           try { await sock.sendMessage(jid, payload); done = true; break; }
           catch (e) { lastErr = e?.message || String(e); }

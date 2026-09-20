@@ -37,23 +37,32 @@ function unwrapMessage(m) {
 }
 
 function contextInfo(msg) {
-  const root = unwrapMessage(msg?.message || msg || {});
-  const candidates = [
-    root.extendedTextMessage?.contextInfo,
-    root.imageMessage?.contextInfo,
-    root.videoMessage?.contextInfo,
-    root.documentMessage?.contextInfo,
-    root.audioMessage?.contextInfo,
-    root.stickerMessage?.contextInfo,
-    root.buttonsMessage?.contextInfo,
-    root.listMessage?.contextInfo,
-    root.templateMessage?.contextInfo,
-    root.interactiveMessage?.contextInfo,
-    root.viewOnceMessage?.message?.extendedTextMessage?.contextInfo,
-    root.viewOnceMessage?.message?.imageMessage?.contextInfo,
-    root.viewOnceMessage?.message?.interactiveMessage?.contextInfo,
-  ];
-  return candidates.find(Boolean) || null;
+  let current = msg?.message || msg || {};
+  for (let i = 0; i < 10 && current; i += 1) {
+    const found = [
+      current.extendedTextMessage?.contextInfo,
+      current.imageMessage?.contextInfo,
+      current.videoMessage?.contextInfo,
+      current.documentMessage?.contextInfo,
+      current.audioMessage?.contextInfo,
+      current.stickerMessage?.contextInfo,
+      current.buttonsMessage?.contextInfo,
+      current.listMessage?.contextInfo,
+      current.templateMessage?.contextInfo,
+      current.interactiveMessage?.contextInfo,
+      current.interactiveResponseMessage?.contextInfo,
+    ].find(Boolean);
+    if (found) return found;
+    const next = current.ephemeralMessage?.message
+      || current.viewOnceMessage?.message
+      || current.viewOnceMessageV2?.message
+      || current.viewOnceMessageV2Extension?.message
+      || current.documentWithCaptionMessage?.message
+      || current.editedMessage?.message;
+    if (!next || next === current) break;
+    current = next;
+  }
+  return null;
 }
 
 function quotedText(q) {
@@ -77,16 +86,18 @@ function quotedText(q) {
 }
 
 function isCompoundChoice(body) {
-  return /^\d{1,2}\s*[.\-/ ,]\s*\d{1,2}$/.test(String(body || '').trim());
+  return /^[.!]?\s*\d{1,2}\s*[.\-/ ,]\s*\d{1,2}$/.test(String(body || '').trim());
 }
 
 function isTikTokPickerQuote(ctx) {
   if (!ctx?.quotedMessage) return false;
   const t = quotedText(ctx.quotedMessage);
   if (!t) return false;
-  // Match the actual MIAS TikTok card, not arbitrary quoted messages.
-  return /TIKTOK/i.test(t)
-    && /(?:1\.1|1\.2|1\.3|1\.4|1\.5|1\.6|1\.7|2\.1|2\.2|2\.3|3\.1|3\.2)/.test(t);
+  // Native-flow cards put their title in interactiveMessage.body/header,
+  // while image/text fallbacks put it in a caption. Accept both shapes.
+  // The compound-choice requirement prevents this wrapper from touching
+  // ordinary quoted messages.
+  return /TIKTOK|TIKTOK\s*DOWNLOADER|reply\s+(?:to this message\s+)?with (?:the )?number|(?:1\.[1-7]|2\.[1-3]|3\.[1-2])/i.test(t);
 }
 
 function withExtendedQuoteContext(msg, ctx) {

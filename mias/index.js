@@ -176,15 +176,31 @@ function __ttGetSelection(jid) {
 // work even when the in-memory menu was lost, so the original TikTok link is
 // recovered from the quoted message when possible.
 function __ttQuotedContext(msg) {
-  const message = msg?.message || {};
-  return message.extendedTextMessage?.contextInfo
-    || message.imageMessage?.contextInfo
-    || message.videoMessage?.contextInfo
-    || message.documentMessage?.contextInfo
-    || message.buttonsResponseMessage?.contextInfo
-    || message.listResponseMessage?.contextInfo
-    || message.interactiveResponseMessage?.contextInfo
-    || null;
+  let current = msg?.message || msg || {};
+  for (let i = 0; i < 10 && current; i += 1) {
+    const context =
+      current.extendedTextMessage?.contextInfo
+      || current.imageMessage?.contextInfo
+      || current.videoMessage?.contextInfo
+      || current.documentMessage?.contextInfo
+      || current.audioMessage?.contextInfo
+      || current.stickerMessage?.contextInfo
+      || current.buttonsMessage?.contextInfo
+      || current.listMessage?.contextInfo
+      || current.templateMessage?.contextInfo
+      || current.interactiveMessage?.contextInfo
+      || current.interactiveResponseMessage?.contextInfo;
+    if (context) return context;
+    const next = current.ephemeralMessage?.message
+      || current.viewOnceMessage?.message
+      || current.viewOnceMessageV2?.message
+      || current.viewOnceMessageV2Extension?.message
+      || current.documentWithCaptionMessage?.message
+      || current.editedMessage?.message;
+    if (!next || next === current) break;
+    current = next;
+  }
+  return null;
 }
 function __ttQuotedText(msg) {
   const ctx = __ttQuotedContext(msg);
@@ -204,6 +220,14 @@ function __ttQuotedText(msg) {
       || quoted.imageMessage?.caption
       || quoted.videoMessage?.caption
       || quoted.documentMessage?.caption
+      || quoted.audioMessage?.caption
+      || quoted.buttonsMessage?.contentText
+      || quoted.buttonsMessage?.text
+      || quoted.listMessage?.description
+      || quoted.listMessage?.title
+      || quoted.templateMessage?.hydratedTemplate?.hydratedContentText
+      || quoted.interactiveMessage?.body?.text
+      || quoted.interactiveMessage?.header?.title
       || "",
   );
 }
@@ -18492,7 +18516,10 @@ cmd(["tiktok","tt","ttdl"], { desc: "Download TikTok video/audio — supports: .
       try {
         const info = await fetchTikTokInfo(url);
         __ttRememberSelection(jid, { info, url, ts: Date.now(), sourceMessage: msg });
-        const menuCaption = formatTikTokMenu(info, CONFIG.PREFIX);
+        // Keep the source URL inside the quoted card. The picker is also
+        // persisted by chat, but this makes a reply recoverable after a
+        // reconnect or process restart when only the quoted card remains.
+        const menuCaption = `${formatTikTokMenu(info, CONFIG.PREFIX)}\n\n🔗 ${url}`;
         // Prefer a native WhatsApp single-select ("radio") picker. Its row
         // ids are 1.1–2.3, so a tap and a typed reply use the same path.
         let thumb = null;
@@ -33145,21 +33172,37 @@ if (typeof __miasApplyDynamicOwnerName === "function") {
   { const ex = commands.get("unpinmsg") || { desc: "Reply to a message then run to unpin it", category: "WHATSAPP", ownerOnly: true }; ex.handler = __miasUnpinMsg; commands.set("unpinmsg", ex); }
 
   // ── ARCHIVE / UNARCHIVE ─────────────────────────────────────────────────
-  const __miasArchive = async (sock, msg) => {
+  // Resolve an archive target from the command, without confusing the
+  // current group chat with the requested DM. WhatsApp splits
+  // ".archive 234 906 855 1855" into multiple args, so parse the leading
+  // numeric span as one phone number.
+  const __miasArchiveTarget = (msg, args = []) => {
+    const input = Array.isArray(args) ? args.join(" ").trim() : String(args || "").trim();
+    const match = input.match(/^\+?[\d][\d\s().-]*/);
+    const digits = String(match?.[0] || "").replace(/\D/g, "");
+    if (digits.length >= 7) return `${digits}@s.whatsapp.net`;
+    return msg?.key?.remoteJid || "";
+  };
+  const __miasArchive = async (sock, msg, args = []) => {
+    const targetJid = __miasArchiveTarget(msg, args);
     await react(sock, msg, "⏳");
-    // Pass msg so the helper can use the REAL message key as lastMessages (fake IDs = silent WA reject)
-    const res = await __miasResilientChatModify(sock, { archive: true }, msg.key.remoteJid, {}, msg);
-    if (res.ok) { await react(sock, msg, "📦"); await sendReply(sock, msg, "📦 *Chat archived!*"); }
+    // Only pass the current message as lastMessages when it belongs to the
+    // target chat. A key from the command chat is invalid for a DM target.
+    const contextMsg = targetJid === msg.key.remoteJid ? msg : null;
+    const res = await __miasResilientChatModify(sock, { archive: true }, targetJid, {}, contextMsg);
+    if (res.ok) { await react(sock, msg, "📦"); await sendReply(sock, msg, targetJid === msg.key.remoteJid ? "📦 *Chat archived!*" : `📦 *Archived ${targetJid.split("@")[0]}!*`); }
     else        { await react(sock, msg, "❌"); await sendReply(sock, msg, `❌ Archive failed.\n_${res.err}_\n\n💡 Open WhatsApp on your phone once, then retry.`); }
   };
-  const __miasUnarchive = async (sock, msg) => {
+  const __miasUnarchive = async (sock, msg, args = []) => {
+    const targetJid = __miasArchiveTarget(msg, args);
     await react(sock, msg, "⏳");
-    const res = await __miasResilientChatModify(sock, { archive: false }, msg.key.remoteJid, {}, msg);
-    if (res.ok) { await react(sock, msg, "📦"); await sendReply(sock, msg, "📦 *Chat unarchived!*"); }
+    const contextMsg = targetJid === msg.key.remoteJid ? msg : null;
+    const res = await __miasResilientChatModify(sock, { archive: false }, targetJid, {}, contextMsg);
+    if (res.ok) { await react(sock, msg, "📦"); await sendReply(sock, msg, targetJid === msg.key.remoteJid ? "📦 *Chat unarchived!*" : `📦 *Unarchived ${targetJid.split("@")[0]}!*`); }
     else        { await react(sock, msg, "❌"); await sendReply(sock, msg, `❌ Unarchive failed.\n_${res.err}_\n\n💡 Open WhatsApp on your phone once, then retry.`); }
   };
-  { const ex = commands.get("archive")   || { desc: "Archive chat",   category: "WHATSAPP", ownerOnly: true }; ex.handler = __miasArchive;   commands.set("archive", ex); }
-  { const ex = commands.get("unarchive") || { desc: "Unarchive chat", category: "WHATSAPP", ownerOnly: true }; ex.handler = __miasUnarchive; commands.set("unarchive", ex); }
+  { const ex = commands.get("archive")   || { desc: "Archive this chat or a DM — .archive <number>",   category: "WHATSAPP", ownerOnly: true }; ex.desc = "Archive this chat or a DM — .archive <number>"; ex.handler = __miasArchive;   commands.set("archive", ex); }
+  { const ex = commands.get("unarchive") || { desc: "Unarchive this chat or a DM — .unarchive <number>", category: "WHATSAPP", ownerOnly: true }; ex.desc = "Unarchive this chat or a DM — .unarchive <number>"; ex.handler = __miasUnarchive; commands.set("unarchive", ex); }
 
   // ── BLOCK / UNBLOCK — app-state-INDEPENDENT (privacy IQ) ────────────────
   // Tries every jid form: standard, lid, with/without device suffix.

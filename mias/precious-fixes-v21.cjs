@@ -1934,6 +1934,98 @@ function install(ctx) {
      .tgsticker — Telegram sticker pack → WhatsApp stickers
      ══════════════════════════════════════════════════════════════════════ */
   try {
+    const normaliseTelegramPack = (payload, fallbackName) => {
+      const root = payload?.result || payload?.data || payload;
+      const raw = Array.isArray(root?.sticker)
+        ? root.sticker
+        : Array.isArray(root?.stickers)
+          ? root.stickers
+          : [];
+      const sticker = raw.map((item) => {
+        if (typeof item === 'string') return { url: item };
+        return {
+          url: item?.url || item?.download_url || item?.file_url || "",
+          is_animated: !!item?.is_animated,
+          is_video: !!item?.is_video,
+        };
+      }).filter((item) => /^https?:\/\//i.test(item.url));
+      return {
+        status: sticker.length > 0,
+        result: {
+          title: root?.title || root?.name || fallbackName,
+          sticker,
+        },
+      };
+    };
+
+    // The old DavidCyril endpoint is currently returning a hard 503
+    // (service suspended). Retry transient failures, then use the official
+    // Telegram Bot API when TELEGRAM_BOT_TOKEN is configured. This keeps the
+    // command working without baking a third-party service into the bot.
+    const fetchTelegramPack = async (shortName) => {
+      let lastError = null;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        try {
+          const response = await dcGet('/telegram-sticker', {
+            url: `https://t.me/addstickers/${shortName}`,
+          }, 30000);
+          const normalized = normaliseTelegramPack(response?.data, shortName);
+          if (response?.ok && normalized.result.sticker.length) return normalized;
+          lastError = new Error(
+            response?.status
+              ? `Telegram sticker provider returned HTTP ${response.status}`
+              : (response?.error || 'Telegram sticker provider returned no stickers'),
+          );
+          if (![408, 425, 429, 500, 502, 503, 504].includes(Number(response?.status))) break;
+        } catch (error) {
+          lastError = error;
+        }
+        if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 1000 * (attempt + 1)));
+      }
+
+      const token = String(process.env.TELEGRAM_BOT_TOKEN || process.env.TG_BOT_TOKEN || '').trim();
+      if (token) {
+        // Telegram bot tokens contain a colon; keep it in the path because
+        // the Bot API expects the literal bot<id>:<secret> form.
+        const api = `https://api.telegram.org/bot${token}`;
+        const setResponse = await axios.get(`${api}/getStickerSet`, {
+          params: { name: shortName },
+          timeout: 30000,
+        });
+        if (!setResponse.data?.ok || !setResponse.data?.result) {
+          throw new Error(setResponse.data?.description || 'Telegram getStickerSet failed');
+        }
+        const set = setResponse.data.result;
+        const sticker = [];
+        for (const item of (set.stickers || []).slice(0, 30)) {
+          const fileResponse = await axios.get(`${api}/getFile`, {
+            params: { file_id: item.file_id },
+            timeout: 30000,
+          });
+          const filePath = fileResponse.data?.result?.file_path;
+          if (filePath) {
+            sticker.push({
+              url: `https://api.telegram.org/file/bot${token}/${filePath}`,
+              is_animated: !!item.is_animated,
+              is_video: !!item.is_video,
+            });
+          }
+        }
+        if (sticker.length) {
+          return {
+            status: true,
+            result: { title: set.title || shortName, sticker },
+          };
+        }
+        throw new Error('Telegram returned an empty sticker set');
+      }
+
+      const status = lastError?.message || 'provider unavailable';
+      throw new Error(
+        `${status}. The old sticker provider is unavailable; configure TELEGRAM_BOT_TOKEN for the official Telegram fallback.`,
+      );
+    };
+
     const tgHandler = async (sock, msg, args) => {
       const input = (args || []).join(' ').trim();
       const m = input.match(/(?:https?:\/\/)?t\.me\/addstickers\/([A-Za-z0-9_]+)/i) || input.match(/^([A-Za-z0-9_]{3,})$/);
@@ -1944,7 +2036,7 @@ function install(ctx) {
       const statusMsg = await sock.sendMessage(chat, { text: `🎭 *TG Sticker*\n\n⏳ Fetching pack *${m[1]}* ...` }, { quoted: msg }).catch(() => null);
       const skey = statusMsg?.key;
       try {
-        const d = await dcGet('/telegram-sticker', { url: packUrl }, 30000);
+        const d = await fetchTelegramPack(m[1]);
         if (!d?.status || !d?.result?.sticker?.length) throw new Error(d?.message || 'pack not found or empty');
         const packName = d.result.title || d.result.name || m[1];
         const stickers = d.result.sticker.slice(0, 30); // cap to keep it fast
