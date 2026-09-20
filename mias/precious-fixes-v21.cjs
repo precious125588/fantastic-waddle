@@ -2065,6 +2065,69 @@ function install(ctx) {
       }
     };
     cmd(['tgsticker', 'tgstickers', 'tgs'], { desc: 'Telegram sticker pack → WhatsApp stickers', category: 'STICKER' }, tgHandler);
+
+    // .tgpack — download full Telegram sticker pack as a zip bundle
+    const tgPackHandler = async (sock, msg, args) => {
+      const input = (args || []).join(' ').trim();
+      const m = input.match(/(?:https?:\/\/)?t\.me\/addstickers\/([A-Za-z0-9_]+)/i) || input.match(/^([A-Za-z0-9_]{3,})$/);
+      if (!m) return sendReply(sock, msg, `📦 *Telegram Sticker Pack Downloader*\n\nUsage: *${PREFIX}tgpack <pack link or name>*\nExample: *${PREFIX}tgpack https://t.me/addstickers/HotCherry*`);
+      await safeReact(sock, msg, '📦');
+      const chat = msg.key.remoteJid;
+      const statusMsg = await sock.sendMessage(chat, { text: `📦 *TG Sticker Pack*\n\n⏳ Fetching pack *${m[1]}* ...` }, { quoted: msg }).catch(() => null);
+      const skey = statusMsg?.key;
+      try {
+        const d = await fetchTelegramPack(m[1]);
+        if (!d?.status || !d?.result?.sticker?.length) throw new Error(d?.message || 'pack not found or empty');
+        const packName = d.result.title || d.result.name || m[1];
+        const stickers = d.result.sticker.slice(0, 50);
+        if (skey) await ctx.editMessage?.(sock, chat, skey, `📦 *${packName}*\n\n⬇️ Downloading and bundling ${stickers.length} stickers ...`).catch(() => {});
+
+        const archiver = require('archiver');
+        const { PassThrough } = require('stream');
+        const pass = new PassThrough();
+        const archive = archiver('zip', { zlib: { level: 6 } });
+        const chunks = [];
+        pass.on('data', c => chunks.push(c));
+
+        archive.pipe(pass);
+        let count = 0;
+        for (let i = 0; i < stickers.length; i++) {
+          try {
+            const st = stickers[i];
+            const resp = await race(axios.get(st.url, { responseType: 'arraybuffer', timeout: 25000 }), 30000, 'sticker fetch');
+            const buf = Buffer.from(resp.data);
+            const webp = await tgToWebp(buf, st.url);
+            const num = String(i + 1).padStart(3, '0');
+            archive.append(webp, { name: `${num}.webp` });
+            count++;
+          } catch (e) {
+            console.log('[tgpack] item failed:', e && e.message);
+          }
+        }
+        await archive.finalize();
+        await new Promise((resolve, reject) => {
+          pass.on('end', resolve);
+          pass.on('error', reject);
+        });
+
+        const zipBuffer = Buffer.concat(chunks);
+        if (skey) await sock.sendMessage(chat, { delete: skey }).catch(() => {});
+        const safeFilename = `${packName.replace(/[^a-zA-Z0-9_-]/g, '_')}_stickers.zip`;
+        await sock.sendMessage(chat, {
+          document: zipBuffer,
+          mimetype: 'application/zip',
+          fileName: safeFilename,
+          caption: `🎭 *${packName}*\n\n📦 Bundled *${count}* stickers into a single zip pack!\nSave and extract to view or import directly.`,
+        }, { quoted: msg });
+        return safeReact(sock, msg, '✅');
+      } catch (e) {
+        if (skey) await ctx.editMessage?.(sock, chat, skey, `❌ TG Pack error: ${e.message}`).catch(() => {});
+        else await sendReply(sock, msg, `❌ TG Pack error: ${e.message}`);
+        return safeReact(sock, msg, '❌');
+      }
+    };
+    cmd(['tgpack', 'tgstickerpack', 'tgp', 'tgszip'], { desc: 'Download entire Telegram sticker pack as a single ZIP file', category: 'STICKER' }, tgPackHandler);
+
     report.tgsticker = true;
   } catch (e) { console.log('[precious-v21] tgsticker error:', e && e.message); }
 

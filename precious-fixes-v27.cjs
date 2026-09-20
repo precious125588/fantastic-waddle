@@ -250,10 +250,17 @@ module.exports.install = function install(ctx) {
         // Some forks accept pinInChat locally but never emit the WhatsApp
         // pin action, so keep it only as a fallback after the real payload.
         for (const payload of [
-          { pin: key, type: 1, time: dur },
           { pinInChat: { key, type: 1, senderTimestampMs: Date.now(), messageContextInfo: { messageAddOnDurationInSecs: dur } } },
           { pinInChat: { key, type: 1, senderTimestampMs: Date.now() } },
+          { pin: key, type: 1, time: dur },
         ]) {
+          try {
+            if (typeof sock.relayMessage === 'function') {
+              await sock.relayMessage(jid, { pinInChatMessage: { key, type: 1, senderTimestampMs: Date.now() } }, {});
+              done = true;
+              break;
+            }
+          } catch (_) {}
           try { await sock.sendMessage(jid, payload); done = true; break; }
           catch (e) { lastErr = e?.message || String(e); }
         }

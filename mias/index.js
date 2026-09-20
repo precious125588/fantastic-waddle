@@ -22251,7 +22251,7 @@ async function __miasHandleBareNumberReply(sock, msg, body) {
   // below swallowed the reply and answered "4 is not on that list".
   try {
     const _plQ = (typeof __ttQuotedText === "function" ? __ttQuotedText(msg) : "") || "";
-    if (/PLAYER|Reply here with a number|Reply with 1|Reply to this message with/i.test(_plQ)) return false;
+    if (/(?:𝑷𝑹𝑬𝑪𝑰𝑶𝑼𝑺\s*x\s*PLAYER|JX\s*PLAYER)/i.test(_plQ) && !/TIKTOK/i.test(_plQ)) return false;
   } catch {}
   const jid = msg.key.remoteJid;
   const now = Date.now();
@@ -33186,19 +33186,31 @@ if (typeof __miasApplyDynamicOwnerName === "function") {
   const __miasArchive = async (sock, msg, args = []) => {
     const targetJid = __miasArchiveTarget(msg, args);
     await react(sock, msg, "⏳");
-    // Only pass the current message as lastMessages when it belongs to the
-    // target chat. A key from the command chat is invalid for a DM target.
+    let targetName = targetJid.split("@")[0];
+    try {
+      if (typeof getDisplayName === "function") {
+        const dName = await getDisplayName(sock, targetJid);
+        if (dName && dName !== "Unknown") targetName = `${dName} (${targetJid.split("@")[0]})`;
+      }
+    } catch {}
     const contextMsg = targetJid === msg.key.remoteJid ? msg : null;
     const res = await __miasResilientChatModify(sock, { archive: true }, targetJid, {}, contextMsg);
-    if (res.ok) { await react(sock, msg, "📦"); await sendReply(sock, msg, targetJid === msg.key.remoteJid ? "📦 *Chat archived!*" : `📦 *Archived ${targetJid.split("@")[0]}!*`); }
+    if (res.ok) { await react(sock, msg, "📦"); await sendReply(sock, msg, targetJid === msg.key.remoteJid ? "📦 *Chat archived!*" : `📦 *Archived ${targetName}!*`); }
     else        { await react(sock, msg, "❌"); await sendReply(sock, msg, `❌ Archive failed.\n_${res.err}_\n\n💡 Open WhatsApp on your phone once, then retry.`); }
   };
   const __miasUnarchive = async (sock, msg, args = []) => {
     const targetJid = __miasArchiveTarget(msg, args);
     await react(sock, msg, "⏳");
+    let targetName = targetJid.split("@")[0];
+    try {
+      if (typeof getDisplayName === "function") {
+        const dName = await getDisplayName(sock, targetJid);
+        if (dName && dName !== "Unknown") targetName = `${dName} (${targetJid.split("@")[0]})`;
+      }
+    } catch {}
     const contextMsg = targetJid === msg.key.remoteJid ? msg : null;
     const res = await __miasResilientChatModify(sock, { archive: false }, targetJid, {}, contextMsg);
-    if (res.ok) { await react(sock, msg, "📦"); await sendReply(sock, msg, targetJid === msg.key.remoteJid ? "📦 *Chat unarchived!*" : `📦 *Unarchived ${targetJid.split("@")[0]}!*`); }
+    if (res.ok) { await react(sock, msg, "📦"); await sendReply(sock, msg, targetJid === msg.key.remoteJid ? "📦 *Chat unarchived!*" : `📦 *Unarchived ${targetName}!*`); }
     else        { await react(sock, msg, "❌"); await sendReply(sock, msg, `❌ Unarchive failed.\n_${res.err}_\n\n💡 Open WhatsApp on your phone once, then retry.`); }
   };
   { const ex = commands.get("archive")   || { desc: "Archive this chat or a DM — .archive <number>",   category: "WHATSAPP", ownerOnly: true }; ex.desc = "Archive this chat or a DM — .archive <number>"; ex.handler = __miasArchive;   commands.set("archive", ex); }
