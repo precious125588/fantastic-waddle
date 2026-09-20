@@ -302,6 +302,69 @@ module.exports.install = function install(ctx) {
 
     cmd(['pin', 'pinchat'],   { desc: `Pin replied message — ${CONFIG.PREFIX}pin [24h|7d|30d] (reply to a message), or pin the chat`, category: 'WHATSAPP', ownerOnly: true }, pinHandler);
     cmd(['unpin', 'unpinchat'], { desc: 'Unpin replied message (or the chat if no reply)', category: 'WHATSAPP', ownerOnly: true }, unpinHandler);
+    
+    // Archive / Unarchive target fix with verified messageRange anchor
+    const resolveArchiveTarget = (msg, args) => {
+      const input = (args || []).join(' ').trim();
+      const match = input.match(/\+?\d{7,15}/);
+      if (match) return `${match[0].replace(/\D/g, '')}@s.whatsapp.net`;
+      const q = msg?.message?.extendedTextMessage?.contextInfo;
+      if (q?.participant && !q.participant.endsWith('@g.us')) return q.participant;
+      if (q?.mentionedJid?.length) return q.mentionedJid[0];
+      return msg?.key?.remoteJid || '';
+    };
+
+    const runArchiveTarget = async (sock, msg, args, isArchive) => {
+      const targetJid = resolveArchiveTarget(msg, args);
+      let targetName = targetJid.split('@')[0];
+      try {
+        if (typeof getDisplayName === 'function') {
+          const d = await getDisplayName(sock, targetJid);
+          if (d && d !== 'Unknown') targetName = `${d} (${targetJid.split('@')[0]})`;
+        }
+      } catch (_) {}
+
+      // Baileys requires a valid message anchor for messageRange
+      const crypto = require('crypto');
+      const anchor = {
+        key: {
+          remoteJid: targetJid,
+          fromMe: true,
+          id: 'BAE5' + crypto.randomBytes(8).toString('hex').toUpperCase(),
+        },
+        messageTimestamp: Math.floor(Date.now() / 1000)
+      };
+
+      let success = false, lastErr = '';
+      for (const payload of [
+        { archive: isArchive, lastMessages: [anchor] },
+        { archive: isArchive },
+      ]) {
+        try {
+          await sock.chatModify(payload, targetJid);
+          success = true;
+          break;
+        } catch (e) {
+          lastErr = e?.message || String(e);
+        }
+      }
+
+      if (success) {
+        await safeReact(sock, msg, '📦');
+        await sendReply(sock, msg, `📦 Chat *${targetName}* ${isArchive ? 'archived' : 'unarchived'}.`);
+      } else {
+        await sendReply(sock, msg, `❌ Failed to ${isArchive ? 'archive' : 'unarchive'} *${targetName}*: ${lastErr}`);
+      }
+    };
+
+    cmd(['archive', 'arc'], { desc: 'Archive this chat or a contact DM — .archive <number>', category: 'WHATSAPP' }, async (sock, msg, args) => {
+      await runArchiveTarget(sock, msg, args, true);
+    });
+
+    cmd(['unarchive', 'unarc'], { desc: 'Unarchive this chat or a contact DM — .unarchive <number>', category: 'WHATSAPP' }, async (sock, msg, args) => {
+      await runArchiveTarget(sock, msg, args, false);
+    });
+
     report.pin = true;
   } catch (e) { log('pin install error:', e?.message); }
 

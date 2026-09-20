@@ -2079,46 +2079,74 @@ function install(ctx) {
         const d = await fetchTelegramPack(m[1]);
         if (!d?.status || !d?.result?.sticker?.length) throw new Error(d?.message || 'pack not found or empty');
         const packName = d.result.title || d.result.name || m[1];
-        const stickers = d.result.sticker.slice(0, 50);
-        if (skey) await ctx.editMessage?.(sock, chat, skey, `📦 *${packName}*\n\n⬇️ Downloading and bundling ${stickers.length} stickers ...`).catch(() => {});
+        // Native WhatsApp sticker packs support up to 60 stickers
+        const stickers = d.result.sticker.slice(0, 60);
+        if (skey) await ctx.editMessage?.(sock, chat, skey, `📦 *${packName}*\n\n⬇️ Downloading and converting ${stickers.length} stickers ...`).catch(() => {});
 
-        const archiver = require('archiver');
-        const { PassThrough } = require('stream');
-        const pass = new PassThrough();
-        const archive = archiver('zip', { zlib: { level: 6 } });
-        const chunks = [];
-        pass.on('data', c => chunks.push(c));
-
-        archive.pipe(pass);
-        let count = 0;
+        const webpBuffers = [];
         for (let i = 0; i < stickers.length; i++) {
           try {
             const st = stickers[i];
             const resp = await race(axios.get(st.url, { responseType: 'arraybuffer', timeout: 25000 }), 30000, 'sticker fetch');
             const buf = Buffer.from(resp.data);
             const webp = await tgToWebp(buf, st.url);
-            const num = String(i + 1).padStart(3, '0');
-            archive.append(webp, { name: `${num}.webp` });
-            count++;
+            if (webp && webp.length) webpBuffers.push(webp);
           } catch (e) {
             console.log('[tgpack] item failed:', e && e.message);
           }
         }
-        await archive.finalize();
-        await new Promise((resolve, reject) => {
-          pass.on('end', resolve);
-          pass.on('error', reject);
-        });
 
-        const zipBuffer = Buffer.concat(chunks);
+        if (!webpBuffers.length) throw new Error('no stickers could be converted');
+
+        // 1. Try NATIVE stickerPackMessage (renders native 4-sticker grid preview, Signed: †sir Demont, View sticker pack button)
+        let sentNative = false;
+        try {
+          const coverBuf = webpBuffers[0];
+          const stickerItems = webpBuffers.map((b) => ({ data: b }));
+          await sock.sendMessage(chat, {
+            stickerPack: {
+              name: packName,
+              publisher: 'Signed : †sir Demont',
+              cover: coverBuf,
+              stickers: stickerItems,
+              description: `Telegram pack: ${packName}`,
+            }
+          }, { quoted: msg });
+          sentNative = true;
+          console.log(`[tgpack] sent native stickerPack with ${webpBuffers.length} stickers`);
+        } catch (nativeErr) {
+          console.log('[tgpack] native stickerPack delivery failed, falling back to zip document:', nativeErr && nativeErr.message);
+        }
+
+        // 2. Fallback to ZIP document if native sticker pack fails
+        if (!sentNative) {
+          const archiver = require('archiver');
+          const { PassThrough } = require('stream');
+          const pass = new PassThrough();
+          const archive = archiver('zip', { zlib: { level: 6 } });
+          const chunks = [];
+          pass.on('data', c => chunks.push(c));
+          archive.pipe(pass);
+          for (let i = 0; i < webpBuffers.length; i++) {
+            const num = String(i + 1).padStart(3, '0');
+            archive.append(webpBuffers[i], { name: `${num}.webp` });
+          }
+          await archive.finalize();
+          await new Promise((resolve, reject) => {
+            pass.on('end', resolve);
+            pass.on('error', reject);
+          });
+          const zipBuffer = Buffer.concat(chunks);
+          const safeFilename = `${packName.replace(/[^a-zA-Z0-9_-]/g, '_')}_stickers.zip`;
+          await sock.sendMessage(chat, {
+            document: zipBuffer,
+            mimetype: 'application/zip',
+            fileName: safeFilename,
+            caption: `🎭 *${packName}*\n\n📦 Bundled *${webpBuffers.length}* stickers!\nSigned : †sir Demont`,
+          }, { quoted: msg });
+        }
+
         if (skey) await sock.sendMessage(chat, { delete: skey }).catch(() => {});
-        const safeFilename = `${packName.replace(/[^a-zA-Z0-9_-]/g, '_')}_stickers.zip`;
-        await sock.sendMessage(chat, {
-          document: zipBuffer,
-          mimetype: 'application/zip',
-          fileName: safeFilename,
-          caption: `🎭 *${packName}*\n\n📦 Bundled *${count}* stickers into a single zip pack!\nSave and extract to view or import directly.`,
-        }, { quoted: msg });
         return safeReact(sock, msg, '✅');
       } catch (e) {
         if (skey) await ctx.editMessage?.(sock, chat, skey, `❌ TG Pack error: ${e.message}`).catch(() => {});

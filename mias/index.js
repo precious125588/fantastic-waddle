@@ -32894,9 +32894,7 @@ if (typeof __miasApplyDynamicOwnerName === "function") {
   // Retry helper for chatModify-based commands.
   // msgObj (optional): the incoming WhatsApp message — used to build REAL lastMessages.
   // WA silently drops chatModify calls with synthetic/fake message IDs; always pass real keys.
-  async function __miasResilientChatModify(sock, payload, jid, { tries = 5, baseDelay = 600 } = {}, msgObj = null) {
-    // Build lastMessages from the REAL message key when available.
-    // Fall back to trying without lastMessages at all (better than fake "AAAAA").
+    async function __miasResilientChatModify(sock, payload, jid, { tries = 5, baseDelay = 600 } = {}, msgObj = null) {
     let realLastMsgs = null;
     if (msgObj?.key) {
       try {
@@ -32912,8 +32910,18 @@ if (typeof __miasApplyDynamicOwnerName === "function") {
         realLastMsgs = [{ key: msgObj.key, messageTimestamp: ts }];
       } catch {}
     }
-    // Try: with real lastMessages (if available), then without lastMessages entirely.
-    const variants = realLastMsgs
+    if (!realLastMsgs) {
+      const crypto = require("crypto");
+      realLastMsgs = [{
+        key: {
+          remoteJid: jid,
+          fromMe: true,
+          id: "BAE5" + crypto.randomBytes(8).toString("hex").toUpperCase(),
+        },
+        messageTimestamp: Math.floor(Date.now() / 1000)
+      }];
+    }
+const variants = realLastMsgs
       ? [{ ...payload, lastMessages: realLastMsgs }, { ...payload, lastMessages: undefined }]
       : [{ ...payload, lastMessages: undefined }, { ...payload }];
     let lastErr = "";
