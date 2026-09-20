@@ -41662,21 +41662,24 @@ setInterval(() => { try { globalThis.__miasSock?.sendPresenceUpdate?.('available
   });
 
   // ══ 7. MOVIE / NKIRI — accept quoted text as the query ════════════════
-  for (const n of ["movie", "nkiri"]) {
-    const ex = commands.get(n);
-    if (ex?.handler && !ex.__v26Quote) {
-      const orig = ex.handler;
-      ex.handler = async (sock, msg, args) => {
-        if (!args || !args.length) {
-          const qt = __v26QuotedText(msg);
-          if (qt) args = qt.split(/\s+/);
-        }
-        return orig(sock, msg, args || []);
-      };
-      ex.__v26Quote = true;
-      commands.set(n, ex);
+  globalThis.__v26WrapMovieNkiri = function () {
+    for (const n of ["movie", "nkiri"]) {
+      const ex = commands.get(n);
+      if (ex?.handler && !ex.__v26Quote) {
+        const orig = ex.handler;
+        ex.handler = async (sock, msg, args) => {
+          if (!args || !args.length) {
+            const qt = __v26QuotedText(msg);
+            if (qt) args = qt.split(/\s+/);
+          }
+          return orig(sock, msg, args || []);
+        };
+        ex.__v26Quote = true;
+        commands.set(n, ex);
+      }
     }
-  }
+  };
+  globalThis.__v26WrapMovieNkiri();
 
   // ══ 8. ADMIN DETECTION — hardened (LID/PN/device-suffix aware) ════════
   const __v26IdsOf = (p) => [p?.id, p?.lid, p?.pn, p?.phoneNumber].filter(Boolean).map(v => String(v).toLowerCase());
@@ -42057,7 +42060,7 @@ console.log("[v30->v31.1] ✅ inline fixes installed (build stamp:", __V30_BUILD
       simply RETURNED without sending stayed silent. v31 counts real sends
       and answers if the handler finished without replying.
    ══════════════════════════════════════════════════════════════════════════ */
-const __V31_BUILD__ = "v31.1-2026-09-19"; /* STATIC — baked at build time, never lies. Bump this string on every replacement so .fixcheck proves the deploy. */
+const __V31_BUILD__ = "v31.2-2026-09-20"; /* STATIC — baked at build time, never lies. Bump this string on every replacement so .fixcheck proves the deploy. */
 globalThis.__V31__ = globalThis.__V31__ || { build: __V31_BUILD__, wrapped: [], missing: [], bareGuard: false, sockHardened: false };
 
 function __v31Unwrap(m) {
@@ -42301,5 +42304,16 @@ try {
   console.log("[v31] fixcheck register error:", (e && e.message) || e);
 }
 
+
+/* ── v31.2: catch commands the all-packs boot registered AFTER the first
+   v31 wrap pass (notably .nkiri). Re-wrap movie/nkiri quote-args AND re-run
+   the v31 never-silent wrap so .fixcheck shows ✅ for every command. ── */
+try { if (typeof globalThis.__v26WrapMovieNkiri === "function") globalThis.__v26WrapMovieNkiri(); } catch (_) {}
+try {
+  for (const _n of __V31_CMDS) {
+    try { const _e = commands.get(_n); if (_e && _e.handler && !_e.handler.__v31) __v31WrapCommand(_n); } catch (_) {}
+  }
+  console.log("[v31.2] post-boot re-wrap done —", globalThis.__V31__.wrapped.join(", "));
+} catch (_) {}
 console.log("[v31] ✅ all v31 fixes installed —", __V31_BUILD__);
 /* __V31_PATCHED__ */
