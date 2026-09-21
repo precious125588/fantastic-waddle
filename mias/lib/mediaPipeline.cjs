@@ -239,25 +239,7 @@ const MEDIA_KEYS = ['image', 'video', 'audio', 'document', 'sticker'];
 function wrapSocket(sock) {
   try {
     if (!sock || typeof sock.sendMessage !== 'function' || sock.__miasPipelineWrapped) return false;
-    const orig = sock.sendMessage.bind(sock);
-    sock.sendMessage = async function (jid, content, opts) {
-      const spills = [];
-      try {
-        if (content && typeof content === 'object') {
-          for (const k of MEDIA_KEYS) {
-            const v = content[k];
-            if (Buffer.isBuffer(v) && v.length > BUF_TO_DISK) {
-              const sp = bufferToStreamPayload(v, k === 'video' ? '.mp4' : k === 'audio' ? '.mp3' : k === 'image' ? '.jpg' : '.bin');
-              content[k] = sp.payload;
-              spills.push(sp);
-            }
-          }
-        }
-        return await orig(jid, content, opts);
-      } finally {
-        for (const sp of spills) sp.cleanup();
-      }
-    };
+    // Mark wrapped; Baileys handles Buffer payloads natively without stream corruption
     sock.__miasPipelineWrapped = true;
     return true;
   } catch { return false; }
