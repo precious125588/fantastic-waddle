@@ -2852,7 +2852,8 @@ Save my contact:` }).catch(() => {});
             // routed correctly by the sendNativeFlowListMenu rowIds fix a
             // few lines below (rows are no longer BTN:-prefixed, so they
             // reach __miasHandleBareNumberReply unchanged).
-            if (_pickerChoice && (_pickerActive || /reply with the number|reply with 1|reply here with a number|PLAYER/i.test((typeof __ttQuotedText==="function"?__ttQuotedText(msg):"")||""))) {
+            const _v32HasQuote = !!(typeof __ttQuotedContext==="function" && __ttQuotedContext(msg)?.quotedMessage);
+            if (_pickerChoice && (_pickerActive || _v32HasQuote || /reply with the number|reply with 1|reply here with a number|PLAYER/i.test((typeof __ttQuotedText==="function"?__ttQuotedText(msg):"")||""))) {
               if (await (globalThis.__miasHandleBareNumberReply || __miasHandleBareNumberReply)(sock, msg, body)) return;
             }
           } catch (_pickerFirstErr) {
@@ -42380,3 +42381,151 @@ try {
 } catch (_) {}
 console.log("[v31] ✅ all v31 fixes installed —", __V31_BUILD__);
 /* __V31_PATCHED__ */
+
+/* ══════════════════════════════════════════════════════════════════════════
+   V32 — DISK MEDIA PIPELINE + NATIVE TT PICKER / QUOTE ENGINE (in index.js)
+   ──────────────────────────────────────────────────────────────────────────
+   Replaces mias/precious-tt-quote-fix.cjs (delete that file — it is no
+   longer needed and is never loaded).
+
+   WHY THE OLD PICKER WENT SILENT: the picker card text is rendered in
+   stylized Unicode (𝙏𝙄𝙆𝙏𝙊𝙆 …), so the ASCII-only regexes
+   (/reply with the number/i …) never matched the quoted card, every gate
+   upstream evaluated false, and a quoted "1.1" fell through with no reply.
+   V32 folds the quoted text through NFKD (𝙏→T, １→1, fullwidth→ASCII)
+   before matching, restores lost picker state from the quote, and re-shows
+   the picker as an IMAGE CARD built by the disk pipeline.
+
+   THE PIPELINE: mias/lib/mediaPipeline.cjs — every download streams to disk
+   and every large upload streams FROM disk (sock.sendMessage is wrapped), so
+   media never sits in the bot's RAM and nothing ever slows the bot down.
+   ══════════════════════════════════════════════════════════════════════════ */
+try {
+  const { createRequire: __v32CreateRequire } = await import("node:module");
+  const __v32Require = __v32CreateRequire(import.meta.url);
+  const PIPE = __v32Require("./lib/mediaPipeline.cjs");
+  globalThis.__miasPipeline = PIPE;
+
+  /* Wrap the live socket now; retry briefly in case it connects after boot. */
+  let __v32WrapTries = 0;
+  const __v32TryWrap = () => {
+    try {
+      const s = globalThis.__miasMainSock || globalThis.sock;
+      if (s && PIPE.wrapSocket(s)) { console.log("[v32] media pipeline: sock.sendMessage routed through disk"); return true; }
+    } catch {}
+    return false;
+  };
+  if (!__v32TryWrap()) {
+    const __v32WrapTimer = setInterval(() => {
+      if (__v32TryWrap() || ++__v32WrapTries > 24) { try { clearInterval(__v32WrapTimer); } catch {} }
+    }, 5000);
+    if (typeof __v32WrapTimer.unref === "function") __v32WrapTimer.unref();
+  }
+
+  /* ── Picker card renderer (image card via the pipeline engine chain) ── */
+  async function __v32SendPickerCard(sock, msg, info) {
+    const p = (typeof CONFIG !== "undefined" && CONFIG.PREFIX) || ".";
+    const text = formatTikTokMenu(info, p) + "\n\n_Reply with a number (e.g. *1.3*) or *" + p + "pick 1.3*_";
+    const jid = msg.key.remoteJid;
+    try {
+      const img = await PIPE.makePickerCard({
+        title: "TIKTOK DOWNLOADER",
+        subtitle: String(info?.title || info?.desc || "").slice(0, 90),
+        lines: ["1.1 SD Video   1.3 HD Video", "2.1 Audio      2.3 Voice Note", "3.1 Sticker    3.2 HD Sticker", "Reply with the number you want"],
+      });
+      if (img) { await sock.sendMessage(jid, { image: img, caption: text }, { quoted: msg }); return; }
+    } catch (e) { try { console.warn("[v32] picker image card failed:", e?.message || e); } catch {} }
+    await sendReply(sock, msg, text);
+  }
+
+  /* ── Native picker + quote consumer (hardened, never silent) ────────── */
+  async function __v32PickerReply(sock, msg, body) {
+    const norm = (typeof __miasNormalizeChoice === "function") ? __miasNormalizeChoice(body) : "";
+    if (!norm) return false;
+    const jid = msg.key.remoteJid;
+    const quoteRaw = (() => {
+      try { return String((globalThis.__v31QuotedText || __ttQuotedText)(msg) || ""); } catch { return ""; }
+    })();
+    // NFKD folds stylized Unicode (𝙏𝙄𝙆𝙏𝙊𝙆 → TIKTOK, fullwidth digits) to ASCII.
+    const quote = quoteRaw.normalize("NFKD").replace(/[\u200B-\u200D\uFE0F]/g, "");
+    const hasQuote = !!(typeof __ttQuotedContext === "function" && __ttQuotedContext(msg)?.quotedMessage);
+    const isPickerCard = /tiktok|ttdl|reply with|pick a number|choose a number|select a number|number you want|player|savetube|movie|1\s*[.,]\s*[1-7]/i.test(quote);
+
+    // TikTok picker — live store first, then rebuild from the quoted card.
+    let ttPick = (typeof __ttGetSelection === "function") ? __ttGetSelection(jid) : null;
+    if (!ttPick && hasQuote && /tiktok/i.test(quote) && typeof __ttRestoreFromQuote === "function") {
+      ttPick = await __ttRestoreFromQuote(msg).catch(() => null);
+    }
+    if (ttPick) {
+      let v = norm;
+      if (/^\d+$/.test(v)) v = v + ".1";
+      if (typeof parseTikTokMode === "function" && parseTikTokMode(v)) {
+        const entry = commands.get("pick");
+        if (entry?.handler) { await entry.handler(sock, msg, [v]); return true; }
+      }
+      // Bad/out-of-range choice → re-show the picker as an image card (never silent).
+      try {
+        const info = await fetchTikTokInfo(ttPick.url).catch(() => null);
+        if (info) { await __v32SendPickerCard(sock, msg, info); return true; }
+      } catch {}
+      await sendReply(sock, msg, `❌ *${norm}* is not on that list. Valid: *1.1–1.7* (video), *2.1–2.3* (music), *3.1–3.2* (stickers).`);
+      return true;
+    }
+
+    // A picker card is quoted but the store is gone → honest notice + recovery hint.
+    if (hasQuote && isPickerCard && !(typeof __miasHasPendingPicker === "function" && __miasHasPendingPicker(jid))) {
+      const p = (typeof CONFIG !== "undefined" && CONFIG.PREFIX) || ".";
+      await sendReply(sock, msg,
+        "⌛ That picker has *expired* (bot restarted or the menu aged out), so your number has nothing to pick from.\n" +
+        "Quote the link/title again with *" + p + "tt* (or *" + p + "movie* / *" + p + "play*), then pick from the fresh menu.");
+      return true;
+    }
+    return false; // movie/play/savetube/settings replies continue down the chain
+  }
+
+  /* Install as the global bare-number consumer, delegating to the previous
+     chain (v31 guard → original consumer) for every non-TT store. This file
+     is the last code to run, so this assignment is final — no late patch
+     can clobber it. */
+  const __v32PrevConsumer = globalThis.__miasHandleBareNumberReply;
+  const __v32Consumer = async function (sock, msg, body) {
+    try { if (await __v32PickerReply(sock, msg, body)) return true; } catch (e) { try { console.error("[v32:picker]", e?.message || e); } catch {} }
+    if (typeof __v32PrevConsumer === "function" && __v32PrevConsumer !== __v32Consumer) {
+      try { return await __v32PrevConsumer(sock, msg, body); } catch (e) { try { console.error("[v32:prev]", e?.message || e); } catch {} }
+    }
+    return false;
+  };
+  __v32Consumer.__v32bare = true;
+  globalThis.__miasHandleBareNumberReply = __v32Consumer;
+  globalThis.__miasSendPickerCard = __v32SendPickerCard;
+
+  /* ── .pipeline — pipeline status / diagnostic command ──────────────── */
+  cmd(["pipeline", "pipestatus", "pipeinfo"], { desc: "Show media pipeline engines + disk workspace status", category: "UTILITY" }, async (sock, msg) => {
+    try {
+      PIPE.sweep();
+      const e = PIPE.engineReport();
+      const s = PIPE.stats();
+      const wrapped = !!(globalThis.__miasMainSock || globalThis.sock)?.__miasPipelineWrapped;
+      await sendReply(sock, msg, [
+        "🛠️ *MIAS MEDIA PIPELINE (v32)*",
+        "",
+        "Socket routed through disk: " + (wrapped ? "✅" : "⏳ waiting for socket"),
+        "Canvas engine: " + (e.canvas ? "✅ " + e.canvas : "❌ not installed"),
+        "Sharp engine: " + (e.sharp ? "✅" : "❌"),
+        "Jimp engine: " + (e.jimp ? "✅" : "❌"),
+        "FFmpeg: " + e.ffmpeg,
+        "",
+        "Workspace: `" + e.root + "`",
+        "Files on disk: " + s.files + " (" + s.mb + " MB)",
+        "Per-file cap: " + e.maxFileMB + " MB · spill-to-disk above " + e.bufSpillMB + " MB · TTL " + e.ttlMin + " min",
+      ].join("\n"));
+    } catch (err) {
+      await sendReply(sock, msg, "❌ pipeline status failed: " + ((err && err.message) || err));
+    }
+  });
+
+  console.log("[v32] ✅ disk media pipeline + native TT picker/quote engine installed —", JSON.stringify(PIPE.engineReport()));
+} catch (__v32Err) {
+  console.log("[v32] install error:", (__v32Err && __v32Err.message) || __v32Err);
+}
+/* __V32_PATCHED__ */

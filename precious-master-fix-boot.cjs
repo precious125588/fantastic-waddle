@@ -247,7 +247,7 @@ function preflightInline() {
     'precious-fixes-v27.cjs',
     'precious-fixes-v28.cjs',
     'precious-fixes-v29.cjs',
-    'mias/precious-tt-quote-fix.cjs',
+    // 'mias/precious-tt-quote-fix.cjs' (deleted in v32 - built natively into mias/index.js)
     'mias/precious-anime-edits.cjs',
     'sessionPaths.js',
     'cleanup.cjs',
