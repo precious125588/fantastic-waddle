@@ -564,10 +564,10 @@ Examples:
 
         const isHD = fmt === 'hd';
         const videoDlApis = [
-          async () => { const { data } = await axios.get(`https://apis.davidcyril.name.ng/download/ytmp4`, { params: { url: videoUrl }, timeout: 30000 }); const d = data?.result || data?.data || data; return d?.download_url || d?.url || d?.dl || d?.video; },
-          async () => { const { data } = await axios.get(`https://api.nexoracle.com/downloader/ytmp4`, { params: { apikey: 'free_key@maher_apis', url: videoUrl }, timeout: 30000 }); return data?.result?.download_url || data?.result?.url || data?.download_url; },
+          async () => { const { data } = await axios.get(`https://api.giftedtech.co.ke/api/download/ytmp4?apikey=gifted&url=${encodeURIComponent(videoUrl)}`, { timeout: 30000 }); return data?.result?.download_url || data?.result?.url || data?.download_url; },
           async () => { const { data } = await axios.get(`https://api.davidcyril.name.ng/download/ytmp4`, { params: { url: videoUrl }, timeout: 30000 }); return data?.result?.download_url || data?.result?.url || data?.download_url; },
           async () => { const { data } = await axios.get(`https://api.princetechn.com/api/download/ytmp4`, { params: { apikey: 'prince', url: videoUrl }, timeout: 30000 }); return data?.result?.download_url || data?.result?.url; },
+          async () => { const { data } = await axios.get(`https://api.savetube.me/download?url=${encodeURIComponent(videoUrl)}&format=mp4`, { timeout: 30000, validateStatus: () => true }); return data?.data?.downloadUrl || data?.download || data?.url; },
           async () => { if (typeof prexzyGet !== 'function') return null; const r = await prexzyGet('/download/ytmp4', { url: videoUrl, quality: isHD ? '1080' : '720' }, 30000); return r.data?.data?.url || r.data?.url || r.data?.download; },
         ];
         let dlUrl = null;
