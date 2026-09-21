@@ -18520,7 +18520,7 @@ cmd(["tiktok","tt","ttdl"], { desc: "Download TikTok video/audio — supports: .
         // Keep the source URL inside the quoted card. The picker is also
         // persisted by chat, but this makes a reply recoverable after a
         // reconnect or process restart when only the quoted card remains.
-        const menuCaption = `${formatTikTokMenu(info, CONFIG.PREFIX)}\n\n🔗 ${url}`;
+        const menuCaption = formatTikTokMenu(info, CONFIG.PREFIX);
         // Prefer a native WhatsApp single-select ("radio") picker. Its row
         // ids are 1.1–2.3, so a tap and a typed reply use the same path.
         let thumb = null;
@@ -42380,33 +42380,23 @@ try {
   console.log("[v31.2] post-boot re-wrap done —", globalThis.__V31__.wrapped.join(", "));
 } catch (_) {}
 console.log("[v31] ✅ all v31 fixes installed —", __V31_BUILD__);
-/* __V31_PATCHED__ */
-
 /* ══════════════════════════════════════════════════════════════════════════
-   V32 — DISK MEDIA PIPELINE + NATIVE TT PICKER / QUOTE ENGINE (in index.js)
+   V32.1 — DISK MEDIA PIPELINE + NATIVE TT PICKER (PIPELINE POWERED, NEVER BLOCKS PLAY)
    ──────────────────────────────────────────────────────────────────────────
-   Replaces mias/precious-tt-quote-fix.cjs (delete that file — it is no
-   longer needed and is never loaded).
-
-   WHY THE OLD PICKER WENT SILENT: the picker card text is rendered in
-   stylized Unicode (𝙏𝙄𝙆𝙏𝙊𝙆 …), so the ASCII-only regexes
-   (/reply with the number/i …) never matched the quoted card, every gate
-   upstream evaluated false, and a quoted "1.1" fell through with no reply.
-   V32 folds the quoted text through NFKD (𝙏→T, １→1, fullwidth→ASCII)
-   before matching, restores lost picker state from the quote, and re-shows
-   the picker as an IMAGE CARD built by the disk pipeline.
-
-   THE PIPELINE: mias/lib/mediaPipeline.cjs — every download streams to disk
-   and every large upload streams FROM disk (sock.sendMessage is wrapped), so
-   media never sits in the bot's RAM and nothing ever slows the bot down.
+   1. Fixes TT picker silence: downloads and streams TikTok media directly via
+      mediaPipeline (PIPE) without dropping choices or depending on dead links.
+   2. Fixes .play command: never intercepts non-TikTok quote replies or sends
+      false "picker expired" messages for play/movie/youtube selections.
+   3. Removes the link below the TikTok menu card.
    ══════════════════════════════════════════════════════════════════════════ */
 try {
   const { createRequire: __v32CreateRequire } = await import("node:module");
   const __v32Require = __v32CreateRequire(import.meta.url);
   const PIPE = __v32Require("./lib/mediaPipeline.cjs");
   globalThis.__miasPipeline = PIPE;
+  globalThis.__ttPromptStore = globalThis.__ttPromptStore || new Map();
 
-  /* Wrap the live socket now; retry briefly in case it connects after boot. */
+  /* Wrap the live socket; media uploads & downloads stream through disk */
   let __v32WrapTries = 0;
   const __v32TryWrap = () => {
     try {
@@ -42422,74 +42412,173 @@ try {
     if (typeof __v32WrapTimer.unref === "function") __v32WrapTimer.unref();
   }
 
-  /* ── Picker card renderer (image card via the pipeline engine chain) ── */
-  async function __v32SendPickerCard(sock, msg, info) {
-    const p = (typeof CONFIG !== "undefined" && CONFIG.PREFIX) || ".";
-    const text = formatTikTokMenu(info, p) + "\n\n_Reply with a number (e.g. *1.3*) or *" + p + "pick 1.3*_";
+  /* ── Direct TikTok Pipeline Downloader ────────────────────────────── */
+  async function __v32ExecuteTikTokDownload(sock, msg, ttPick, ttMode) {
     const jid = msg.key.remoteJid;
+    let mediaUrl = selectTikTokUrl(ttPick.info, ttMode)
+      || (ttMode.kind === "audio" ? ttPick.info.audio : (ttPick.info.videoHd || ttPick.info.videoSd || ttPick.info.videoWatermark));
+
+    // Refresh if URL expired
+    if (!mediaUrl && ttPick.url) {
+      try {
+        const refreshedInfo = await fetchTikTokInfo(ttPick.url);
+        if (refreshedInfo) {
+          ttPick.info = refreshedInfo;
+          mediaUrl = selectTikTokUrl(refreshedInfo, ttMode)
+            || (ttMode.kind === "audio" ? refreshedInfo.audio : (refreshedInfo.videoHd || refreshedInfo.videoSd || refreshedInfo.videoWatermark));
+          if (mediaUrl) __ttRememberSelection(jid, ttPick);
+        }
+      } catch {}
+    }
+
+    if (!mediaUrl) {
+      await sendReply(sock, msg, "❌ That format is unavailable for this TikTok. Try *2.1* for audio or *1.1* for SD video.");
+      return true;
+    }
+
+    await forceReaction(sock, msg, "⬇️");
+    const ttChoiceLabel = ttMode.kind === "audio"
+      ? (ttMode.voiceNote ? "voice note" : ttMode.document ? "audio document" : "audio")
+      : ttMode.kind === "sticker"
+        ? `${ttMode.quality === "hd" ? "HD" : "SD"} animated sticker`
+        : `${ttMode.quality === "hd" ? "HD" : "SD"} video${ttMode.document ? " document" : ""}`;
+
+    const statusMsg = await sendReply(sock, msg, `📥 *Downloading ${ttChoiceLabel}* (${ttMode.id})...
+Please wait.`);
+
+    let downloaded = null;
     try {
-      const img = await PIPE.makePickerCard({
-        title: "TIKTOK DOWNLOADER",
-        subtitle: String(info?.title || info?.desc || "").slice(0, 90),
-        lines: ["1.1 SD Video   1.3 HD Video", "2.1 Audio      2.3 Voice Note", "3.1 Sticker    3.2 HD Sticker", "Reply with the number you want"],
-      });
-      if (img) { await sock.sendMessage(jid, { image: img, caption: text }, { quoted: msg }); return; }
-    } catch (e) { try { console.warn("[v32] picker image card failed:", e?.message || e); } catch {} }
-    await sendReply(sock, msg, text);
+      // Stream straight to disk via mediaPipeline
+      downloaded = await PIPE.fetchToDisk(mediaUrl, { timeout: 90000 });
+      const fs = require('fs');
+      const buf = fs.readFileSync(downloaded.path);
+
+      if (statusMsg?.key) {
+        await editMessage(sock, jid, statusMsg.key, `📤 *Uploading ${ttChoiceLabel}* (${ttMode.id})...`).catch(() => {});
+      }
+
+      const ttCaption = `🎵 *${ttPick.info.title || "TikTok"}*\n👤 ${ttPick.info.author || "TikTok Creator"}`;
+
+      if (ttMode.kind === "audio") {
+        if (ttMode.voiceNote) {
+          const vno = (typeof _mfToOggOpus === "function") ? await _mfToOggOpus(buf) : buf;
+          await sock.sendMessage(jid, { audio: vno, mimetype: "audio/ogg; codecs=opus", ptt: true }, { quoted: msg });
+        } else if (ttMode.document) {
+          await sock.sendMessage(jid, { document: buf, mimetype: "audio/mpeg", fileName: "tiktok_audio.mp3", caption: ttCaption }, { quoted: msg });
+        } else {
+          await sock.sendMessage(jid, { audio: buf, mimetype: "audio/mpeg", ptt: false, fileName: "tiktok_audio.mp3" }, { quoted: msg });
+        }
+      } else if (ttMode.kind === "sticker") {
+        if (typeof createStickerFromBuffer === "function") {
+          const sticker = await createStickerFromBuffer(buf, {
+            mediaType: "video/mp4",
+            pack: (typeof CONFIG !== "undefined" && CONFIG.BOT_NAME) || "MIAS",
+            author: (typeof CONFIG !== "undefined" && CONFIG.OWNER_NAME) || "MIAS Bot",
+          });
+          await sock.sendMessage(jid, { sticker, isAnimated: true }, { quoted: msg });
+        } else {
+          await sock.sendMessage(jid, { video: buf, mimetype: "video/mp4", caption: ttCaption }, { quoted: msg });
+        }
+      } else if (ttMode.document) {
+        await sock.sendMessage(jid, { document: buf, mimetype: "video/mp4", fileName: "tiktok_video.mp4", caption: ttCaption }, { quoted: msg });
+      } else {
+        await sock.sendMessage(jid, { video: buf, mimetype: "video/mp4", caption: ttCaption }, { quoted: msg });
+      }
+
+      if (statusMsg?.key) {
+        await sock.sendMessage(jid, { delete: statusMsg.key }).catch(() => {});
+      }
+      await forceReaction(sock, msg, "✅");
+      return true;
+    } catch (err) {
+      console.error("[v32:tt-download]", err?.message || err);
+      await sendReply(sock, msg, `❌ Download failed: ${err?.message || err}`);
+      return true;
+    } finally {
+      if (downloaded && typeof downloaded.cleanup === "function") downloaded.cleanup();
+    }
   }
 
-  /* ── Native picker + quote consumer (hardened, never silent) ────────── */
+  /* ── Native picker + quote consumer (hardened, never silent, never touches play) ── */
   async function __v32PickerReply(sock, msg, body) {
-    const norm = (typeof __miasNormalizeChoice === "function") ? __miasNormalizeChoice(body) : "";
+    const norm = (typeof __miasNormalizeChoice === "function") ? __miasNormalizeChoice(body) : String(body || "").trim();
     if (!norm) return false;
     const jid = msg.key.remoteJid;
+
+    // Check if the reply quotes any message
+    const ctx = (typeof __ttQuotedContext === "function") ? __ttQuotedContext(msg) : null;
+    const stanzaId = ctx?.stanzaId || "";
+
+    // 1. Resolve TikTok picker session
+    let ttPick = null;
+
+    // From promptId if quoted
+    if (stanzaId && globalThis.__ttPromptStore && globalThis.__ttPromptStore.has(stanzaId)) {
+      ttPick = globalThis.__ttPromptStore.get(stanzaId);
+    }
+
+    // From chat store
+    if (!ttPick && typeof __ttGetSelection === "function") {
+      ttPick = __ttGetSelection(jid);
+    }
+
+    // From normalized JID keys
+    if (!ttPick && typeof __miasPickerKeys === "function" && typeof __ttSelections !== "undefined") {
+      for (const k of __miasPickerKeys(jid)) {
+        if (__ttSelections.has(k)) { ttPick = __ttSelections.get(k); break; }
+      }
+    }
+
+    // Only process as TikTok if we have a live TikTok pick or explicit TikTok quote
     const quoteRaw = (() => {
       try { return String((globalThis.__v31QuotedText || __ttQuotedText)(msg) || ""); } catch { return ""; }
     })();
-    // NFKD folds stylized Unicode (𝙏𝙄𝙆𝙏𝙊𝙆 → TIKTOK, fullwidth digits) to ASCII.
     const quote = quoteRaw.normalize("NFKD").replace(/[\u200B-\u200D\uFE0F]/g, "");
-    const hasQuote = !!(typeof __ttQuotedContext === "function" && __ttQuotedContext(msg)?.quotedMessage);
-    const isPickerCard = /tiktok|ttdl|reply with|pick a number|choose a number|select a number|number you want|player|savetube|movie|1\s*[.,]\s*[1-7]/i.test(quote);
+    const isExplicitTikTokQuote = /tiktok|ttdl|vt\.tiktok/i.test(quote);
 
-    // TikTok picker — live store first, then rebuild from the quoted card.
-    let ttPick = (typeof __ttGetSelection === "function") ? __ttGetSelection(jid) : null;
-    if (!ttPick && hasQuote && /tiktok/i.test(quote) && typeof __ttRestoreFromQuote === "function") {
+    if (!ttPick && isExplicitTikTokQuote && typeof __ttRestoreFromQuote === "function") {
       ttPick = await __ttRestoreFromQuote(msg).catch(() => null);
     }
-    if (ttPick) {
-      let v = norm;
-      if (/^\d+$/.test(v)) v = v + ".1";
-      if (typeof parseTikTokMode === "function" && parseTikTokMode(v)) {
-        const entry = commands.get("pick");
-        if (entry?.handler) { await entry.handler(sock, msg, [v]); return true; }
-      }
-      // Bad/out-of-range choice → re-show the picker as an image card (never silent).
-      try {
-        const info = await fetchTikTokInfo(ttPick.url).catch(() => null);
-        if (info) { await __v32SendPickerCard(sock, msg, info); return true; }
-      } catch {}
+
+    // If NO TikTok picker is involved, IMMEDIATELY RETURN FALSE so play/music/movie works!
+    if (!ttPick && !isExplicitTikTokQuote) {
+      return false;
+    }
+
+    // Normalize input (e.g. 1 -> 1.1)
+    let v = norm;
+    if (/^\d+$/.test(v) && Number(v) <= 3) v = v + ".1";
+
+    const ttMode = (typeof parseTikTokMode === "function") ? parseTikTokMode(v) : null;
+
+    if (ttPick && ttMode) {
+      return await __v32ExecuteTikTokDownload(sock, msg, ttPick, ttMode);
+    }
+
+    if (ttPick && !ttMode) {
       await sendReply(sock, msg, `❌ *${norm}* is not on that list. Valid: *1.1–1.7* (video), *2.1–2.3* (music), *3.1–3.2* (stickers).`);
       return true;
     }
 
-    // A picker card is quoted but the store is gone → honest notice + recovery hint.
-    if (hasQuote && isPickerCard && !(typeof __miasHasPendingPicker === "function" && __miasHasPendingPicker(jid))) {
+    if (!ttPick && isExplicitTikTokQuote) {
       const p = (typeof CONFIG !== "undefined" && CONFIG.PREFIX) || ".";
       await sendReply(sock, msg,
-        "⌛ That picker has *expired* (bot restarted or the menu aged out), so your number has nothing to pick from.\n" +
-        "Quote the link/title again with *" + p + "tt* (or *" + p + "movie* / *" + p + "play*), then pick from the fresh menu.");
+        `⌛ That TikTok picker has *expired*.\nQuote the link again with *${p}tt*, then pick your format.`);
       return true;
     }
-    return false; // movie/play/savetube/settings replies continue down the chain
+
+    return false;
   }
 
-  /* Install as the global bare-number consumer, delegating to the previous
-     chain (v31 guard → original consumer) for every non-TT store. This file
-     is the last code to run, so this assignment is final — no late patch
-     can clobber it. */
+  /* Install as global bare-number consumer, falling back to previous handlers (play, movie, etc.) */
   const __v32PrevConsumer = globalThis.__miasHandleBareNumberReply;
   const __v32Consumer = async function (sock, msg, body) {
-    try { if (await __v32PickerReply(sock, msg, body)) return true; } catch (e) { try { console.error("[v32:picker]", e?.message || e); } catch {} }
+    try {
+      const handled = await __v32PickerReply(sock, msg, body);
+      if (handled) return true;
+    } catch (e) {
+      try { console.error("[v32:picker]", e?.message || e); } catch {}
+    }
     if (typeof __v32PrevConsumer === "function" && __v32PrevConsumer !== __v32Consumer) {
       try { return await __v32PrevConsumer(sock, msg, body); } catch (e) { try { console.error("[v32:prev]", e?.message || e); } catch {} }
     }
@@ -42497,9 +42586,8 @@ try {
   };
   __v32Consumer.__v32bare = true;
   globalThis.__miasHandleBareNumberReply = __v32Consumer;
-  globalThis.__miasSendPickerCard = __v32SendPickerCard;
 
-  /* ── .pipeline — pipeline status / diagnostic command ──────────────── */
+  /* ── .pipeline command ── */
   cmd(["pipeline", "pipestatus", "pipeinfo"], { desc: "Show media pipeline engines + disk workspace status", category: "UTILITY" }, async (sock, msg) => {
     try {
       PIPE.sweep();
@@ -42524,8 +42612,8 @@ try {
     }
   });
 
-  console.log("[v32] ✅ disk media pipeline + native TT picker/quote engine installed —", JSON.stringify(PIPE.engineReport()));
+  console.log("[v32.1] ✅ disk media pipeline + hardened TT picker installed");
 } catch (__v32Err) {
-  console.log("[v32] install error:", (__v32Err && __v32Err.message) || __v32Err);
+  console.log("[v32.1] install error:", (__v32Err && __v32Err.message) || __v32Err);
 }
 /* __V32_PATCHED__ */
