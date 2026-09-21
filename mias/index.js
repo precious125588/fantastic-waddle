@@ -27,7 +27,8 @@ import { loadAllData, saveAllData, startAutoSave } from "./database.js";
 // Expose getSetting/setSetting helpers globally for kevdraPatches
 (function _exposeSettingHelpers() {
   try {
-    const _S = require("../setting/Settings.js");
+    const _req = createRequire(import.meta.url);
+    const _S = _req("../setting/Settings.js");
     if (typeof _S.getSetting === 'function') globalThis.__GET_SETTING__ = _S.getSetting.bind(_S);
     if (typeof _S.setSetting === 'function') globalThis.__SET_SETTING__ = _S.setSetting.bind(_S);
   } catch {}
@@ -760,7 +761,11 @@ function __miasApplyDynamicOwnerName(sock) {
       try { global.ownername = real; global.OWNER_NAME = real; } catch {}
     }
     const n = String(u.id || "").replace(/[^0-9]/g, "").split(":")[0];
-    if (n) CONFIG.OWNER_NUMBER = n;
+    if (n) {
+  CONFIG.OWNER_NUMBER = n;
+  globalThis.__BOT_OWNER_NUMBER = n;
+  globalThis.__BOT_OWNER_JID = n.replace(/[^0-9]/g, "") + "@s.whatsapp.net";
+}
   } catch {}
 }
 
@@ -6026,7 +6031,9 @@ const forceReaction = (sock, msg, emoji) => {
     id: msg.key.id,
   };
   if (msg.key.participant) key.participant = msg.key.participant;
-  return sock.sendMessage(msg.key.remoteJid, { react: { text: emoji, key } }).catch(() => {});
+  return sock.sendMessage(msg.key.remoteJid, { react: { text: emoji, key } })
+    .catch(() => sock.sendMessage(msg.key.remoteJid, { react: { text: emoji, key: msg.key } }))
+    .catch(() => {});
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -18438,6 +18445,8 @@ async function _addVideoWatermark(videoBuf, label) {
 // ────────────────────────────────────────────────────────────────────────────
 
 cmd(["tiktok","tt","ttdl"], { desc: "Download TikTok video/audio — supports: .tiktok link1,link2,link3", category: "DOWNLOAD" }, async (sock, msg, args) => {
+    // Immediate progress reaction so user knows bot is processing .tt
+    await forceReaction(sock, msg, "⏳");
     args = __withQuotedUrl(msg, args, /tiktok\.com|vm\.tik/i);
     const _ttOptionIndex = args.findIndex((value) =>
       /^(audio|sticker|stickerize|stik)$/i.test(String(value))
@@ -18570,7 +18579,7 @@ cmd(["tiktok","tt","ttdl"], { desc: "Download TikTok video/audio — supports: .
           // Last resort: plain-text menu so the picker is NEVER silent.
           await sendReply(sock, msg, menuCaption + "\n\n_Reply with a number (e.g. *1.3*) or *" + CONFIG.PREFIX + "pick 1.3*_").catch(() => {});
         }
-        await react(sock, msg, pickerSent ? "✅" : "⚠️");
+        await forceReaction(sock, msg, pickerSent ? "✅" : "⚠️");
         return;
       } catch (_previewErr) {
         console.error("[tiktok-preview]", _previewErr?.message || _previewErr);

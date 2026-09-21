@@ -50,6 +50,10 @@ const UA = "Mozilla/5.0 (Linux; Android 13; SM-G998B) AppleWebKit/537.36 (KHTML,
 // Remove leftovers from a killed ffmpeg/download process. Only touch files
 // created by this bot and only after they are old enough that no active
 // request should still be using them.
+function getPipelineWorkDir() {
+  const p = path.join(process.cwd(), 'pipeline-work', 'tmp');
+  try { fs.mkdirSync(p, { recursive: true }); return p; } catch { return os.tmpdir(); }
+}
 function cleanupStaleTempFiles() {
   const prefixes = [
     "mais_dl_", "mv23_", "_wm_in_", "_wm_out_",
@@ -1148,7 +1152,7 @@ async function downloadToTemp(url, requestedType = "video") {
   if (buf.length > MAX_FILE_SIZE_BYTES) throw new Error(`File too large (${Math.round(buf.length / 1024 / 1024)}MB > ${Math.round(MAX_FILE_SIZE_BYTES / 1024 / 1024)}MB)`);
   const detected = detectBufferType(buf, response.headers?.["content-type"], requestedType);
   if (detected.type === "bad") throw new Error("Downloader returned an error page instead of media");
-  const tmpPath = path.join(os.tmpdir(), `mais_dl_${Date.now()}_${Math.random().toString(36).slice(2)}.${detected.ext}`);
+  const tmpPath = path.join(getPipelineWorkDir(), `mais_dl_${Date.now()}_${Math.random().toString(36).slice(2)}.${ext}`);
   fs.writeFileSync(tmpPath, buf);
   return { tmpPath, ...detected, size: buf.length };
 }
@@ -1162,6 +1166,20 @@ async function resolvePlatformMedia(url, platform) {
   if (platform === "tiktok") {
     const tik = await fromTikwm(expanded, platform).catch(() => null);
     if (tik?.url) return tik;
+    try {
+      const r = await prexzyGet("/download/tiktok", { url: expanded });
+      const d = r?.data?.data || r?.data?.result || r?.data;
+      const u = d?.hdplay || d?.play || d?.video || d?.url;
+      if (u) return { url: u, type: "video", title: d?.title || "TikTok", thumb: d?.cover || d?.thumbnail, _via: "prexzy-tt" };
+    } catch {}
+    for (const ep of ["/download/tiktok", "/download/tiktokv2"]) {
+      try {
+        const r = await dcGet(ep, { url: expanded });
+        const d = r?.data?.result || r?.data?.data || r?.data;
+        const u = d?.video || d?.play || d?.url;
+        if (u) return { url: u, type: "video", title: d?.title || "TikTok", _via: "dc-tt" };
+      } catch {}
+    }
     const cobalt = await fromCobalt(expanded, platform).catch(() => null);
     if (cobalt?.url) return cobalt;
     const aio = await aioFallback(expanded, platform);
@@ -1403,11 +1421,8 @@ export async function handleAutoDownload(sock, msg, body, mode, isOwner) {
   const platform = detectPlatform(url);
   if (!platform) return false;
 
-  // TikTok is intentionally excluded from the auto-downloader. The `.tt` /
-  // `.tiktok` command owns TikTok links and answers with the video card +
-  // format options. Leaving TikTok here made every link produce TWO replies:
-  // an instant video from this path plus the option card from the command.
-  if (platform === "tiktok") return false;
+  // Plain TikTok links are auto-downloaded when mode is active;
+  // commands like .tt or .tiktok are bypassed below by command prefix check.
 
   // A message that already invokes a bot command must not be auto-downloaded
   // as well — the command itself decides what to send.

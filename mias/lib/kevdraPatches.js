@@ -113,10 +113,12 @@ function _getOwnerJid() {
 function _resolveOwnerJid() {
   try {
     if (globalThis.__BOT_OWNER_JID) return globalThis.__BOT_OWNER_JID;
-    const n = (process.env.OWNER_NUMBER || "").replace(/[^0-9]/g, "");
-    if (n) return n + "@s.whatsapp.net";
+    const gn = (globalThis.__PRECIOUS__?.CONFIG?.OWNER_NUMBER || "").replace(/[^0-9]/g, "");
+    if (gn) return gn + "@s.whatsapp.net";
     const cn = (globalThis.__BOT_OWNER_NUMBER || "").replace(/[^0-9]/g, "");
     if (cn) return cn + "@s.whatsapp.net";
+    const n = (process.env.OWNER_NUMBER || "").replace(/[^0-9]/g, "");
+    if (n) return n + "@s.whatsapp.net";
   } catch {}
   return null;
 }
@@ -395,7 +397,7 @@ export async function kevdraMessageHook(sock, msg, body, isOwner) {
   }
 
   // ── Auto-download ───────────────────────────────────────────────────────────
-  const autoDownloadMode = getAutoDownloadMode();
+  const autoDownloadMode = getAutoDownloadMode(remoteJid);
   if (autoDownloadMode !== "off") {
     let _dlBody = body;
     if (!extractUrl(_dlBody || "")) {
@@ -446,19 +448,24 @@ export function setAutoDownloadMode(mode) {
   return true;
 }
 
-export function getAutoDownloadMode() {
+export function getAutoDownloadMode(jid = null) {
   try {
+    if (jid && typeof globalThis.__MIAS_GET_SETTINGS__ === "function") {
+      const cs = globalThis.__MIAS_GET_SETTINGS__(jid);
+      if (cs && cs.autoDownload && cs.autoDownload !== "off") return cs.autoDownload;
+    }
     const oj = _resolveOwnerJid();
     if (oj && typeof globalThis.__MIAS_GET_SETTINGS__ === "function") {
       const os = globalThis.__MIAS_GET_SETTINGS__(oj);
-      if (os && os.autoDownload) return os.autoDownload;
+      if (os && os.autoDownload && os.autoDownload !== "off") return os.autoDownload;
     }
     if (typeof globalThis.__MIAS_GET_SETTINGS__ === "function") {
       const bs = globalThis.__MIAS_GET_SETTINGS__("bot");
-      if (bs && bs.autoDownload) return bs.autoDownload;
+      if (bs && bs.autoDownload && bs.autoDownload !== "off") return bs.autoDownload;
     }
     if (typeof globalThis.__GET_SETTING__ === "function") {
-      return globalThis.__GET_SETTING__("bot", "setting_19_2_autoDownload", "off");
+      const gs = globalThis.__GET_SETTING__("bot", "setting_19_2_autoDownload", "off");
+      if (gs && gs !== "off") return gs;
     }
   } catch {}
   return "off";
