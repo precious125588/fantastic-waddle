@@ -1216,6 +1216,14 @@ function install(ctx) {
         const { data } = await axios.get(`${CONFIG.GIFTED_API}/api/download/ytmp3?apikey=${CONFIG.GIFTED_KEY}&url=${encodeURIComponent(ytUrl)}`, { timeout: 60000 });
         return data?.result?.download_url || data?.result?.url || data?.result?.audio || data?.result?.mp3 || null;
       });
+      // SaveTube audio fallback
+      if (ytUrl) tries.push(async () => {
+        try {
+          const { data } = await axios.get(`https://api.savetube.me/download?url=${encodeURIComponent(ytUrl)}&format=mp3`, { timeout: 30000, validateStatus: () => true });
+          const u = data?.data?.downloadUrl || data?.download || data?.url;
+          return /^https?:\/\//i.test(String(u || '')) ? u : null;
+        } catch { return null; }
+      });
       for (const fn of tries) {
         try {
           const candidate = await fn();
