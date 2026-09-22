@@ -3363,9 +3363,11 @@ ${_atBotAdmin ? "✅ Message deleted." : "⚠️ Make me admin to auto-delete."}
               const _cbOwnerS = getSettings(getOwnerJid());
               // Chatbot active if enabled in this chat, or globally by owner
               const _cbOn = !!(_cbChatS?.autoReply || _cbChatS?.chatBotMode || _cbOwnerS?.chatBotMode || _cbOwnerS?.autoReply);
+              const _cbSelf = !!msg.key?.fromMe;
               if (_cbOn) {
                 // Scope gate: dm | group | all (default all)
                 const _cbScope = String(_cbOwnerS?.chatbotScope || "all").toLowerCase();
+              const _cbScopeOk = _cbSelf ? true : (_cbScope === "all" || (_cbScope === "dm" && !String(msg.key?.remoteJid || "").endsWith("@g.us")) || (_cbScope === "group" && String(msg.key?.remoteJid || "").endsWith("@g.us")));
                 const _cbInDM    = !isGroup(msg);
                 const _cbInGroup = isGroup(msg);
                 const _cbAllowed =
@@ -7270,7 +7272,7 @@ const MENU_CATEGORIES = [
     "antidelete","antidel","nodelete","antidstatus","antiedit","antied","noedit","antivonce","antiviewonce",
     "uptime","alive","runtime","owner","echo","report","feedback","request","repo"] },
   { name: "PANEL",     emoji: "🖥️", cmds: ["panel","panelinfo","buypanel","panelprice","panelfeatures","panelorder"] },
-  { name: "NSFW",      emoji: "🔞", cmds: ["r34","r34info","rule34home","rule34detail"], adult: true },
+  { name: "NSFW",      emoji: "🔞", adult: true, cmds: ["anal","ass","bdsm","blacknsfw","boobs","bottomless","collared18","cum","cumsluts","dick","domination","dp18","easter18","extreme18","feet18","finger18","fuck","futa","gay18","hentaigif","group18","hanime","hentaisfm","kiss18","lick18","pegged","phgif","puffies","pussy","real18","sixtynine","suck18","tattoo18","tiny18","toys18","xmas18","xvideossearch","xnxxsearch","xvideosdl","xnxxdl","adult","pornmaster","pornmasterv6","pornmasterv7"] },
   { name: "OWNER",     emoji: "🔐", cmds: [
     "autobio","autoreact","autoview","autolike","antivo","antiviewoncetoggle","stealthvo",
     "bcheck","bancheck","setcmd","removecmd","listsetcmd",
@@ -7961,7 +7963,7 @@ function buildSettingsMenu(jid) {
 ┃ 22.2 ᴅɪsᴀʙʟᴇ  ${!s.ownerReact ? "✅" : ""}
 ╰━━━━━━━━━━━╯
 ╭━━❮ *𝗔𝗱𝘂𝗹𝘁 𝗠𝗼𝗱𝗲* ❯━━╮
-┃ 23.1 ᴇɴᴀʙʟᴇ  ${s.adultMode ? "✅" : ""}
+┃ 23.1 ᴇɴᴀʙʟᴇ  ${s.adultMode ? "✅" : ""}   🔞 18+ ONLY
 ┃ 23.2 ᴅɪsᴀʙʟᴇ  ${!s.adultMode ? "✅" : ""}
 ╰━━━━━━━━━━━╯
 ╭━━❮ *𝗠𝗼𝘃𝗶𝗲 𝗗𝗟* ❯━━╮
@@ -8072,8 +8074,12 @@ const SETTINGS_MAP = {
   "21.2": s => { s.chatBotMode = false; s.autoReply = false; return "❌ Chat Bot Mode: OFF\n\n_Auto-chatbot has been disabled for this chat._"; },
   "22.1": s => { s.ownerReact = true; return "✅ Owner React: ON"; },
   "22.2": s => { s.ownerReact = false; return "❌ Owner React: OFF"; },
-  "23.1": s => { s.adultDl = true; s.adultMode = true; return "✅ Adult Mode: ON"; },
-  "23.2": s => { s.adultDl = false; s.adultMode = false; return "❌ Adult Mode: OFF"; },
+  "23.1": s => { s.adultDl = true; s.adultMode = true; return "✅ Adult Mode: ON\n\n" +
+    "🔞 *18+ WARNING*\n" +
+    "This feature is strictly for adults (18 years and older).\n\n" +
+    "If you are *not 18 or older*, you are NOT allowed to use this feature — turn it back OFF now (*23.2*).\n\n" +
+    "_By keeping this enabled you confirm you are 18+. Adult commands are now available._"; },
+  "23.2": s => { s.adultDl = false; s.adultMode = false; return "❌ Adult Mode: OFF\n\n_All adult commands are now disabled and hidden from the menu._"; },
   "24.1": s => { s.movieDl = "only_me"; return "✅ Movie DL: ONLY ME"; },
   "24.2": s => { s.movieDl = "only_owners"; return "✅ Movie DL: ONLY OWNERS"; },
   "24.3": s => { s.movieDl = "all"; return "✅ Movie DL: ALL"; },
@@ -42748,3 +42754,26 @@ Please wait.`);
   console.log("[v32.1] install error:", (__v32Err && __v32Err.message) || __v32Err);
 }
 /* __V32_PATCHED__ */
+
+/* ══════════════════════════════════════════════════════════════════════════
+   NSFW / ADULT PACK — Prexzy APIs + David Cyril APIs
+   ONE module (mias/lib/nsfwAdultPack.js) + ONE data module
+   (mias/lib/nsfwPrexzy.js). This is NOT a new fix pack: it registers through
+   the same cmd() the bot already uses, purges the legacy adult commands, and
+   re-registers .play / .ai / .aio with handlers that can never go silent.
+   ══════════════════════════════════════════════════════════════════════════ */
+try {
+  require('./lib/nsfwAdultPack.js').boot({
+    commands: commands,
+    cmd: cmd,
+    sendReply: (typeof sendReply === 'function' ? sendReply : null),
+    react: (typeof react === 'function' ? react : null),
+    getSettings: (typeof getSettings === 'function' ? getSettings : null),
+    getOwnerJid: (typeof getOwnerJid === 'function' ? getOwnerJid : null),
+    CONFIG: (typeof CONFIG !== 'undefined' ? CONFIG : { PREFIX: '.' }),
+    MENU_CATEGORIES: (typeof MENU_CATEGORIES !== 'undefined' ? MENU_CATEGORIES : null),
+  });
+} catch (__nsfwErr) {
+  console.log('[nsfw-pack] boot error:', (__nsfwErr && __nsfwErr.message) || __nsfwErr);
+}
+/* __NSFW_ADULT_PACK__ */
