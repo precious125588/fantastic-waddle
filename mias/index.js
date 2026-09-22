@@ -42762,8 +42762,9 @@ Please wait.`);
    the same cmd() the bot already uses, purges the legacy adult commands, and
    re-registers .play / .ai / .aio with handlers that can never go silent.
    ══════════════════════════════════════════════════════════════════════════ */
+console.log('[nsfw-pack] loading mias/lib/nsfwAdultPack.cjs ...');
 try {
-  require('./lib/nsfwAdultPack.js').boot({
+  require('./lib/nsfwAdultPack.cjs').boot({
     commands: commands,
     cmd: cmd,
     sendReply: (typeof sendReply === 'function' ? sendReply : null),
