@@ -12301,6 +12301,14 @@ Examples:
     let dlUrl = null;
     const isHD = fmt === "hd";
     const videoDlApis = [
+      // ── SaveTube direct resolver (fast and reliable) ──
+      async () => {
+        if (typeof __saveTubeResolve === "function") {
+          const res = await __saveTubeResolve(videoUrl, "video", isHD ? "720" : "480", "mp4");
+          return res?.downloadUrl || null;
+        }
+        return null;
+      },
       // ── PRECIOUS: ytmate / davidcyril family (same chain .play uses) ──
       async () => { const r = await dcGet("/download/ytmp4", { url: videoUrl }, 30000); const d = r.data?.result || r.data?.data || r.data; return d?.download_url || d?.url || d?.dl || d?.video; },
       async () => { const { data } = await axios.get(`https://api.nexoracle.com/downloader/ytmp4?apikey=free_key@maher_apis&url=${encodeURIComponent(videoUrl)}`, { timeout: 30000 }); return data?.result?.download_url || data?.result?.url || data?.download_url; },
@@ -18546,8 +18554,9 @@ cmd(["tiktok","tt","ttdl"], { desc: "Download TikTok video/audio — supports: .
           } catch {}
         }
         let pickerSent = false;
+        let sentPickerMsg = null;
         try {
-          await sendNativeFlowListMenu(
+          sentPickerMsg = await sendNativeFlowListMenu(
             sock,
             jid,
             msg,
@@ -18558,6 +18567,10 @@ cmd(["tiktok","tt","ttdl"], { desc: "Download TikTok video/audio — supports: .
             { headerImage: thumb, headerText: info.title ? String(info.title).slice(0, 60) : "TikTok", headerSubtitle: "🎬 pick a format below" },
           );
           pickerSent = true;
+          if (sentPickerMsg?.key?.id) {
+            if (globalThis.__ttPromptStore) globalThis.__ttPromptStore.set(sentPickerMsg.key.id, { ...info, url: resolvedUrl, ts: Date.now(), jid });
+            if (typeof __ttRememberSelection === "function") __ttRememberSelection(jid, { ...info, url: resolvedUrl, promptKey: sentPickerMsg.key, promptKeys: [sentPickerMsg.key] });
+          }
         } catch (_pickerErr) {
           console.warn("[tiktok-picker] native radio menu unavailable:", _pickerErr?.message || _pickerErr);
         }
@@ -18566,11 +18579,15 @@ cmd(["tiktok","tt","ttdl"], { desc: "Download TikTok video/audio — supports: .
           // with the video image attached so the options never arrive bare.
           try {
             if (thumb) {
-              await sock.sendMessage(jid, { image: thumb, caption: menuCaption }, { quoted: msg });
+              sentPickerMsg = await sock.sendMessage(jid, { image: thumb, caption: menuCaption }, { quoted: msg });
             } else {
-              await sendReply(sock, msg, menuCaption);
+              sentPickerMsg = await sendReply(sock, msg, menuCaption);
             }
             pickerSent = true;
+            if (sentPickerMsg?.key?.id) {
+              if (globalThis.__ttPromptStore) globalThis.__ttPromptStore.set(sentPickerMsg.key.id, { ...info, url: resolvedUrl, ts: Date.now(), jid });
+              if (typeof __ttRememberSelection === "function") __ttRememberSelection(jid, { ...info, url: resolvedUrl, promptKey: sentPickerMsg.key, promptKeys: [sentPickerMsg.key] });
+            }
           } catch (_fbErr) {
             console.warn("[tiktok-picker] image fallback failed:", _fbErr?.message || _fbErr);
           }
@@ -42533,8 +42550,9 @@ Please wait.`);
     })();
     const quote = quoteRaw.normalize("NFKD").replace(/[\u200B-\u200D\uFE0F]/g, "");
 
-    // STRICT GUARD: If user is quoting PLAYER, MOVIE, SONG, or other menus, NEVER intercept!
-    if (hasQuote && /player|mias mdx · player|reply here with a number|voice note|open categories|audio document|video \(\.mp4\)|movie|song/i.test(quote)) {
+    // STRICT GUARD: If user is quoting PLAYER, MOVIE, or SONG, NEVER intercept!
+    const isTtMenu = /tiktok|ttdl|tikwm|vt\.tiktok|open categories/i.test(quote);
+    if (!isTtMenu && hasQuote && /player|mias mdx · player|reply here with a number|movie|song\b/i.test(quote)) {
       return false;
     }
 

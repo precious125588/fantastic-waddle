@@ -1913,6 +1913,21 @@ function install(ctx) {
                 if (_nkEntry?.handler) return await _nkEntry.handler(sock, msg, [_choice]);
               }
             }
+            // tiktok: 1.1-3.2 or 1-3 while tiktok picker is pending or quoting tiktok
+            if (/^(1\.[1-7]|2\.[1-3]|3\.[1-2]|[1-3])$/.test(_choice)) {
+              let _isTt = false;
+              try {
+                if (typeof globalThis.__ttGetSelection === "function" && globalThis.__ttGetSelection(_chat)) _isTt = true;
+                const _qm = msg?.message?.extendedTextMessage?.contextInfo?.quotedMessage;
+                const _txt = JSON.stringify(_qm || "");
+                if (/tiktok|tikwm|vt\.tiktok|📂 open categories/i.test(_txt)) _isTt = true;
+              } catch {}
+              if (_isTt) {
+                const _pk = ctx.commands && ctx.commands.get("pick");
+                if (_pk?.handler) return await _pk.handler(sock, msg, [_choice]);
+              }
+            }
+
             // play (v21 native picker): 1-4 output choice via playFind
             if (/^\d+$/.test(_choice) && typeof playFind === 'function') {
               const _entry = playFind(msg);

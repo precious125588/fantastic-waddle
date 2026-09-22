@@ -592,6 +592,15 @@ function install(ctx) {
 
     const fn = ctx.SETTINGS_MAP[code];
     if (!fn) {
+      // If the user did not explicitly quote settings or tap a button, do not hijack!
+      const _isSettingsTap = /^set:/i.test(code);
+      let _isQuotingSettings = false;
+      try {
+        const _qm = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage;
+        const _txt = JSON.stringify(_qm || "");
+        _isQuotingSettings = /settings|⚙️|section/i.test(_txt);
+      } catch {}
+      if (!_isSettingsTap && !_isQuotingSettings) return false;
       const major = String(code).split('.')[0];
       const subs = Object.keys(ctx.SETTINGS_MAP).filter(k => k.split('.')[0] === major).sort();
       if (subs.length) {
