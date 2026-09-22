@@ -1551,7 +1551,7 @@ export async function handleAutoDownload(sock, msg, body, mode, isOwner) {
    generic provider that returned "an error page instead of media".
    ══════════════════════════════════════════════════════════════════════════ */
 try {
-  const __nsfw = require('./nsfwPrexzy.js');
+  const __nsfw = createRequire(import.meta.url)('./nsfwPrexzy.cjs');
   if (typeof resolvePlatformMedia === 'function' && !globalThis.__NSFW_AUTODL_PATCHED__) {
     globalThis.__NSFW_AUTODL_PATCHED__ = true;
     const __origResolve = resolvePlatformMedia;
