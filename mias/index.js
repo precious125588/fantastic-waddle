@@ -3361,8 +3361,8 @@ ${_atBotAdmin ? "✅ Message deleted." : "⚠️ Make me admin to auto-delete."}
             ) {
               const _cbChatS  = getSettings(msg.key.remoteJid);
               const _cbOwnerS = getSettings(getOwnerJid());
-              // Per-chat toggle: .autochat on/off in any chat
-              const _cbOn = !!_cbChatS?.autoReply;
+              // Chatbot active if enabled in this chat, or globally by owner
+              const _cbOn = !!(_cbChatS?.autoReply || _cbChatS?.chatBotMode || _cbOwnerS?.chatBotMode || _cbOwnerS?.autoReply);
               if (_cbOn) {
                 // Scope gate: dm | group | all (default all)
                 const _cbScope = String(_cbOwnerS?.chatbotScope || "all").toLowerCase();
@@ -3374,16 +3374,23 @@ ${_atBotAdmin ? "✅ Message deleted." : "⚠️ Make me admin to auto-delete."}
                   (_cbScope === "group" && _cbInGroup);
                 if (_cbAllowed) {
                   try {
-                    // v4.9.7 FIX: Try prexzyvilla /ai/aichat first (fast, reliable), then freeAI fallback
+                    // Try Nexray and Prexzy AI APIs first
                     let _cbReply = null;
                     try {
-                      const _cbr = await prexzyGet("/ai/aichat", { prompt: body }, 20000);
-                      if (_cbr.ok) {
-                        const _cbd = _cbr.data?.data || _cbr.data;
-                        _cbReply = _cbd?.text || _cbd?.message || _cbd?.result || _cbd?.response || _cbd?.answer ||
-                                   (typeof _cbd === "string" ? _cbd : null);
-                      }
-                    } catch (_cbe) { /* prexzyvilla aichat failed, try fallback */ }
+                      const { data } = await axios.get(`https://api.nexray.eu.cc/ai/gpt?prompt=${encodeURIComponent(body)}`, { timeout: 15000 }).catch(() => ({}));
+                      const d = data?.result || data?.data || data;
+                      _cbReply = d?.text || d?.message || d?.response || d?.answer || (typeof d === "string" ? d : null);
+                    } catch {}
+                    if (!_cbReply) {
+                      try {
+                        const _cbr = await prexzyGet("/ai/aichat", { prompt: body }, 20000);
+                        if (_cbr.ok) {
+                          const _cbd = _cbr.data?.data || _cbr.data;
+                          _cbReply = _cbd?.text || _cbd?.message || _cbd?.result || _cbd?.response || _cbd?.answer ||
+                                     (typeof _cbd === "string" ? _cbd : null);
+                        }
+                      } catch {}
+                    }
                     // 2) Nexoracle GPT
                     if (!_cbReply) {
                       try {
@@ -22283,8 +22290,10 @@ async function __miasHandleBareNumberReply(sock, msg, body) {
   const jid = msg.key.remoteJid;
   const now = Date.now();
 
-  let ttPick = __ttGetSelection(jid);
-  if (!ttPick && /^\d+(?:\.\d+)?$/.test(value)) {
+  // Skip ttPick if this is a settings command or reply
+  const isSettingsCode = /^set:/i.test(value) || /^(28|29|30|15|21)\.\d+$/.test(value);
+  let ttPick = isSettingsCode ? null : __ttGetSelection(jid);
+  if (!ttPick && !isSettingsCode && /^\d+(?:\.\d+)?$/.test(value)) {
     // No live menu: try to rebuild it from the quoted picker message.
     ttPick = await __ttRestoreFromQuote(msg);
   }
@@ -22300,18 +22309,9 @@ async function __miasHandleBareNumberReply(sock, msg, body) {
         return true;
       }
     }
-    /* FIX-TT-PICKER: never go silent on a bad/expired choice — re-show the
-       picker card so the user can simply tap again. */
-    try {
-      const _re = await fetchTikTokInfo(ttPick.url).catch(() => null);
-      if (_re) {
-        await sendReply(sock, msg, formatTikTokMenu(_re, CONFIG.PREFIX) +
-          "\n\n_Reply with a number (e.g. *1.3*) or *" + CONFIG.PREFIX + "pick 1.3*_");
-        return true;
-      }
-    } catch {}
-    await sendReply(sock, msg, `❌ *${value}* is not on that list. Valid choices: *1.1–1.7* (video), *2.1–2.3* (music), *3.1–3.2* (stickers) — e.g. *1.3* (HD video) or *2.1* (audio).`);
-    return true;
+    // If the input is NOT a valid TikTok choice (e.g. settings 29.2 or movie/play),
+    // NEVER re-show the TikTok menu or hijack the chat! Let it fall through!
+    return false;
   }
 
   const moviePick = __miasMapGet(_mynetMoviePicks, jid);
@@ -22582,7 +22582,7 @@ cmd(["pick", "p"], { desc: "Pick randomly from options (A|B|C) OR download adult
           let _ptvOk = false;
           try {
             await sock.sendMessage(jid, {
-              video: (await _mfPrepareVideo(media)).buf, ptv: true, mimetype: "video/mp4", caption: ttCaption, gifPlayback: false,
+              video: (await _mfPrepareVideo(media)).buf, ptv: true, mimetype: "video/mp4",
             }, { quoted: msg });
             _ptvOk = true;
           } catch (_ptvErr) {
@@ -23944,6 +23944,18 @@ cmd(["aio","alldl","universaldl"], { desc: "Universal downloader — TikTok, IG,
       const rrd = await prexzyGet("/download/reddit", { url }, 25000);
       const _drd = rrd.data?.data || rrd.data;
       if (rrd.ok && _drd) dlUrl = _drd?.video || _drd?.url || _drd?.download_url;
+    } catch {}
+  }
+
+  // ── Nexray universal downloader API ──
+  if (!dlUrl) {
+    try {
+      const { data: _nxd } = await axios.get(`https://api.nexray.eu.cc/downloader/aio?url=${encodeURIComponent(url)}`, { timeout: 25000 });
+      const _nd = _nxd?.result || _nxd?.data || _nxd;
+      if (_nd) {
+        dlUrl = _nd?.url || _nd?.video || _nd?.audio || _nd?.download_url;
+        title = title || _nd?.title;
+      }
     } catch {}
   }
 
@@ -41732,10 +41744,25 @@ setInterval(() => { try { globalThis.__miasSock?.sendPresenceUpdate?.('available
       }
       let dl = null;
       const providers = [
-        async () => { const { data } = await axios.get(`${DC}/download/ytmp4`, { params: { url }, timeout: 45000 }); const d = data?.result || data?.data || data; return d?.download_url || d?.url || d?.dl || d?.video; },
-        async () => { const { data } = await axios.get(`https://api.davidcyril.name.ng/download/ytmp4`, { params: { url }, timeout: 45000 }); const d = data?.result || data?.data || data; return d?.download_url || d?.url; },
+        async () => {
+          if (typeof __saveTubeResolve === "function") {
+            const res = await __saveTubeResolve(url, "video", "720", "mp4").catch(() => null);
+            if (res?.downloadUrl) return res.downloadUrl;
+          }
+          return null;
+        },
+        async () => {
+          const { data } = await axios.get(`https://api.nexray.eu.cc/downloader/youtube?url=${encodeURIComponent(url)}`, { timeout: 35000 }).catch(() => ({}));
+          const d = data?.result || data?.data || data;
+          return d?.video || d?.download_url || d?.url;
+        },
+        async () => {
+          const r = await prexzyGet("/download/ytmp4", { url }, 35000).catch(() => ({}));
+          const d = r?.data?.data || r?.data?.result || r?.data;
+          return d?.download_url || d?.url || d?.video;
+        },
         async () => { const { data } = await axios.get(`https://api.nexoracle.com/downloader/ytmp4`, { params: { apikey: "free_key@maher_apis", url }, timeout: 45000 }); return data?.result?.download_url || data?.result?.url || data?.download_url; },
-        async () => { const r = await prexzyGet("/download/ytmp4", { url }, 45000); return r.data?.data?.url || r.data?.url || r.data?.download; },
+        async () => { const { data } = await axios.get(`https://api.davidcyril.name.ng/download/ytmp4`, { params: { url }, timeout: 45000 }); const d = data?.result || data?.data || data; return d?.download_url || d?.url; },
       ];
       for (const p of providers) { try { dl = await p(); if (dl) break; } catch {} }
       if (!dl) { await sendReply(sock, msg, `❌ All video providers are busy for *${title}*. Try again shortly.`); return; }

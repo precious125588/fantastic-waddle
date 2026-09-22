@@ -1105,13 +1105,23 @@ function install(ctx) {
       const quoted = playQuotedId(msg);
       if (quoted) {
         const entry = _jxPlayPending.get(String(quoted));
-        if (entry && playSameChat(entry.jid, jid) && (!entry.user || !user || entry.user === user)) return entry;
+        if (entry && playSameChat(entry.jid, jid)) return entry;
       }
+      try {
+        const _qm = msg?.message?.extendedTextMessage?.contextInfo?.quotedMessage;
+        const _qStr = JSON.stringify(_qm || '');
+        if (/player|reply here with a number|duration/i.test(_qStr)) {
+          const latestKey = _jxPlayLatestByChat.get(playNormChat(jid));
+          if (latestKey) {
+            const entry = _jxPlayPending.get(String(latestKey));
+            if (entry && playSameChat(entry.jid, jid)) return entry;
+          }
+        }
+      } catch {}
       const latestKey = _jxPlayLatestByChat.get(playNormChat(jid));
       if (!latestKey) return null;
       const latest = _jxPlayPending.get(String(latestKey));
       if (!latest || !playSameChat(latest.jid, jid)) return null;
-      if (latest.user && user && latest.user !== user) return null;
       return latest;
     };
     const playDur = (v) => typeof ctx._p2Dur === 'function' ? ctx._p2Dur(v) : String(v || '0:00');
@@ -1216,9 +1226,31 @@ function install(ctx) {
         const { data } = await axios.get(`${CONFIG.GIFTED_API}/api/download/ytmp3?apikey=${CONFIG.GIFTED_KEY}&url=${encodeURIComponent(ytUrl)}`, { timeout: 60000 });
         return data?.result?.download_url || data?.result?.url || data?.result?.audio || data?.result?.mp3 || null;
       });
+      // Nexray YouTube Downloader API
+      if (ytUrl) tries.push(async () => {
+        try {
+          const { data } = await axios.get(`https://api.nexray.eu.cc/downloader/youtube?url=${encodeURIComponent(ytUrl)}`, { timeout: 30000 });
+          const d = data?.result || data?.data || data;
+          const u = d?.audio || d?.mp3 || d?.download_url || d?.url;
+          return /^https?:\/\//i.test(String(u || '')) ? u : null;
+        } catch { return null; }
+      });
+      // Prexzy YouTube Downloader API
+      if (ytUrl) tries.push(async () => {
+        try {
+          const { data } = await axios.get(`https://apis.prexzyvilla.site/download/ytmp3?url=${encodeURIComponent(ytUrl)}`, { timeout: 30000 });
+          const d = data?.result || data?.data || data;
+          const u = d?.download_url || d?.url || d?.audio;
+          return /^https?:\/\//i.test(String(u || '')) ? u : null;
+        } catch { return null; }
+      });
       // SaveTube audio fallback
       if (ytUrl) tries.push(async () => {
         try {
+          if (typeof globalThis.__saveTubeResolve === 'function') {
+            const res = await globalThis.__saveTubeResolve(ytUrl, 'audio', '128', 'mp3').catch(() => null);
+            if (res?.downloadUrl) return res.downloadUrl;
+          }
           const { data } = await axios.get(`https://api.savetube.me/download?url=${encodeURIComponent(ytUrl)}&format=mp3`, { timeout: 30000, validateStatus: () => true });
           const u = data?.data?.downloadUrl || data?.download || data?.url;
           return /^https?:\/\//i.test(String(u || '')) ? u : null;
