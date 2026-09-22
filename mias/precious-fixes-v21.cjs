@@ -2092,15 +2092,23 @@ function install(ctx) {
         if (skey) await ctx.editMessage?.(sock, chat, skey, `📦 *${packName}*\n\n⬇️ Downloading and converting ${stickers.length} stickers ...`).catch(() => {});
 
         const webpBuffers = [];
-        for (let i = 0; i < stickers.length; i++) {
-          try {
-            const st = stickers[i];
-            const resp = await race(axios.get(st.url, { responseType: 'arraybuffer', timeout: 25000 }), 30000, 'sticker fetch');
-            const buf = Buffer.from(resp.data);
-            const webp = await tgToWebp(buf, st.url);
-            if (webp && webp.length) webpBuffers.push(webp);
-          } catch (e) {
-            console.log('[tgpack] item failed:', e && e.message);
+        const batchSize = 6;
+        for (let i = 0; i < stickers.length; i += batchSize) {
+          const slice = stickers.slice(i, i + batchSize);
+          const batchResults = await Promise.all(slice.map(async (st) => {
+            try {
+              const resp = await race(axios.get(st.url, { responseType: 'arraybuffer', timeout: 15000 }), 18000, 'sticker fetch');
+              const buf = Buffer.from(resp.data);
+              return await tgToWebp(buf, st.url);
+            } catch (_) { return null; }
+          }));
+          for (const b of batchResults) {
+            if (b && b.length) webpBuffers.push(b);
+          }
+          if (skey && (i + batchSize) % 12 === 0) {
+            await ctx.editMessage?.(sock, chat, skey, `📦 *${packName}*
+
+⬇️ Processed ${webpBuffers.length}/${stickers.length} stickers...`).catch(() => {});
           }
         }
 

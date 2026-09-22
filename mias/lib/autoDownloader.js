@@ -1152,7 +1152,7 @@ async function downloadToTemp(url, requestedType = "video") {
   if (buf.length > MAX_FILE_SIZE_BYTES) throw new Error(`File too large (${Math.round(buf.length / 1024 / 1024)}MB > ${Math.round(MAX_FILE_SIZE_BYTES / 1024 / 1024)}MB)`);
   const detected = detectBufferType(buf, response.headers?.["content-type"], requestedType);
   if (detected.type === "bad") throw new Error("Downloader returned an error page instead of media");
-  const tmpPath = path.join(getPipelineWorkDir(), `mais_dl_${Date.now()}_${Math.random().toString(36).slice(2)}.${ext}`);
+  const tmpPath = path.join(getPipelineWorkDir(), `mais_dl_${Date.now()}_${Math.random().toString(36).slice(2)}.${detected.ext || "mp4"}`);
   fs.writeFileSync(tmpPath, buf);
   return { tmpPath, ...detected, size: buf.length };
 }

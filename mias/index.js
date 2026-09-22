@@ -42301,6 +42301,15 @@ try {
       const raw = String(body || "").trim();
       if (/^\d{1,2}(?:\s*[.\-,/ ]\s*\d{1,2})?$/.test(raw)) {
         const qt = __v31QuotedText(msg);
+        if (qt && /(?:𝑷𝑹𝑬𝑪𝑰𝑶𝑼𝑺\s*x\s*PLAYER|JX\s*PLAYER|JINX\s*[·•\-]\s*Player|PLAYER|1\s*-\s*Audio|4\s*-\s*Video)/i.test(qt)) {
+          try {
+            if (typeof _JXOnMsg === "function") {
+              await _JXOnMsg(sock, msg);
+              return true;
+            }
+          } catch (_) {}
+          return false;
+        }
         if (qt && /reply with|reply here with|choose a number|pick a number|select a number|number you want/i.test(qt)) {
           const p = (typeof CONFIG !== "undefined" && CONFIG.PREFIX) || ".";
           try {
@@ -42543,10 +42552,10 @@ Please wait.`);
       ttPick = await __ttRestoreFromQuote(msg).catch(() => null);
     }
 
-    // 3. Fallback to chat session ONLY when NOT quoting another message and within 5 minutes
-    if (!ttPick && !hasQuote && typeof __ttGetSelection === "function") {
+    // 3. Fallback to chat session within 10 minutes (even with quote, as quotes often truncate)
+    if (!ttPick && typeof __ttGetSelection === "function") {
       const candidate = __ttGetSelection(jid);
-      if (candidate && candidate.ts && (Date.now() - candidate.ts < 300000)) {
+      if (candidate && candidate.ts && (Date.now() - candidate.ts < 600000)) {
         ttPick = candidate;
       }
     }

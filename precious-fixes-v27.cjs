@@ -564,11 +564,13 @@ Examples:
 
         const isHD = fmt === 'hd';
         const videoDlApis = [
-          async () => { const { data } = await axios.get(`https://api.giftedtech.co.ke/api/download/ytmp4?apikey=gifted&url=${encodeURIComponent(videoUrl)}`, { timeout: 30000 }); return data?.result?.download_url || data?.result?.url || data?.download_url; },
+          async () => { if (typeof prexzyGet === 'function') { const r = await prexzyGet('/download/ytmp4', { url: videoUrl, quality: isHD ? '1080' : '720' }, 30000); const u = r.data?.data?.url || r.data?.url || r.data?.download; if (u) return u; } return null; },
+          async () => { const { data } = await axios.get(`https://api.siputzx.my.id/api/d/ytmp4?url=${encodeURIComponent(videoUrl)}`, { timeout: 30000, validateStatus: () => true }); return data?.data?.dl || data?.data?.url || data?.url; },
+          async () => { const { data } = await axios.get(`https://api.ryzendesu.vip/api/downloader/ytmp4?url=${encodeURIComponent(videoUrl)}`, { timeout: 30000, validateStatus: () => true }); return data?.url || data?.result?.url || data?.data?.url; },
+          async () => { const { data } = await axios.get(`https://api.davidcyriltech.my.id/download/ytmp4?url=${encodeURIComponent(videoUrl)}`, { timeout: 30000, validateStatus: () => true }); return data?.result?.download_url || data?.result?.url || data?.download_url; },
+          async () => { const { data } = await axios.get(`https://api.nexoracle.com/downloader/ytmp4?apikey=free_key@maher_apis&url=${encodeURIComponent(videoUrl)}`, { timeout: 30000 }); return data?.result?.download_url || data?.result?.url || data?.download_url; },
           async () => { const { data } = await axios.get(`https://api.davidcyril.name.ng/download/ytmp4`, { params: { url: videoUrl }, timeout: 30000 }); return data?.result?.download_url || data?.result?.url || data?.download_url; },
           async () => { const { data } = await axios.get(`https://api.princetechn.com/api/download/ytmp4`, { params: { apikey: 'prince', url: videoUrl }, timeout: 30000 }); return data?.result?.download_url || data?.result?.url; },
-          async () => { const { data } = await axios.get(`https://api.savetube.me/download?url=${encodeURIComponent(videoUrl)}&format=mp4`, { timeout: 30000, validateStatus: () => true }); return data?.data?.downloadUrl || data?.download || data?.url; },
-          async () => { if (typeof prexzyGet !== 'function') return null; const r = await prexzyGet('/download/ytmp4', { url: videoUrl, quality: isHD ? '1080' : '720' }, 30000); return r.data?.data?.url || r.data?.url || r.data?.download; },
         ];
         let dlUrl = null;
         for (const fn of videoDlApis) { try { dlUrl = await fn(); if (dlUrl) break; } catch {} }
