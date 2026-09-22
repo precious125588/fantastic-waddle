@@ -1,26 +1,18 @@
 // =============================================================================
-//  mias/lib/nsfwPrexzy.js
-//  NSFW / 18+ command pack — Prexzy APIs  +  David Cyril APIs
-//  ---------------------------------------------------------------------------
-//  This is NOT a "fix pack". It is a single feature module that index.js
-//  requires once, at the bottom, and calls install() on. Every command below
-//  is registered through the SAME cmd() the rest of the bot uses, so it shows
-//  up in the normal .menu / categories like any native command.
-//
-//  VERIFIED ENDPOINTS (probed live on 2026-09-22, see NSFW_DELIVERABLE notes):
-//    GET  /nsfw/anal           -> 200 image/jpeg   (real JPEG bytes)
-//    GET  /nsfw/sixtynine      -> 200 image/gif    (real GIF bytes)
-//    GET  /nsfw/xvideos-dl?url= -> 200 application/json  {status:true,title,...}
-//    GET  /nsfw/xnxx-search?query= -> 200 application/json {videos:[...]}
-//  Full NSFW path list taken verbatim from https://prexzyapis.com/endpoints
-//
-//  David Cyril: base https://apis.davidcyril.name.ng
-//    auth: header  X-API-Key  OR  query  ?apikey=
-//    confirmed error shape: {"creator":"David Cyril","success":false,"message":"API key required..."}
-//    confirmed success shape: {"success":true,"result":...,"timestamp":"..."}
-//    NOTE: the individual /xxx/* sub-paths are NOT published in their public
-//    docs page, so they are probed as a fallback list and logged. Anything
-//    unproven is marked UNVERIFIED below — never claimed as working.
+//  mias/lib/nsfwPrexzy.js   (v2 — 429-safe)
+//  NSFW / 18+ command pack — Prexzy APIs + David Cyril APIs
+//  v2 fixes vs v1 (all driven by live probes + the user's screenshots):
+//    • Prexzy returns HTTP 429 + JSON under load. v1 did not retry, so a
+//      rate-limit JSON body could reach the sender. v2 retries once with
+//      backoff and treats JSON/HTML bodies as failures, NEVER media.
+//    • DL/search probe results (2026-09-22):
+//        /nsfw/<cat>        -> 200 image/jpeg|image/gif  (20/37 during hammering,
+//                             rest were 429 = rate limit, not missing endpoints)
+//        /nsfw/xvideos-dl   -> 200 JSON {status:true,title,...}
+//        /nsfw/xnxx-dl      -> 200 JSON {status:true,...}
+//        /nsfw/*-search     -> 200 JSON {videos:[...]}
+//        /download/aio +fb  -> 404 "Failed to download video"  (aio CANNOT do FB)
+//        /download/facebook -> 500 / facebookv2 -> 500 (both broken upstream)
 // =============================================================================
 
 'use strict';
@@ -34,17 +26,17 @@ const PREXZY_BASE = process.env.PREXZY_BASE || 'https://prexzyapis.com';
 const DC_BASE = process.env.DC_BASE || 'https://apis.davidcyril.name.ng';
 const DC_KEY =
   process.env.DC_API_KEY || process.env.DAVID_CYRIL_KEY || process.env.DC_KEY || '';
+const NEXRAY_AIO = 'https://api.nexray.eu.cc/downloader/aio';
+const GIFTED_API = process.env.GIFTED_API || 'https://api.giftedtech.co.ke/api';
+const GIFTED_KEY = process.env.GIFTED_KEY || 'gifted';
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
 
-const REQ_TIMEOUT   = 25000;          // JSON metadata calls
-const DL_TIMEOUT    = 10 * 60 * 1000; // 10 minutes hard cap per download
-const DOC_OVER_BYTES = 100 * 1024 * 1024; // >100MB => send as document
+const REQ_TIMEOUT   = 25000;
+const DL_TIMEOUT    = 10 * 60 * 1000;   // 10-minute hard cap per download
+const DOC_OVER_BYTES = 100 * 1024 * 1024;
 const MIN_BYTES      = 1024;
 
-// -----------------------------------------------------------------------------
-// 1. Prexzy NSFW random image/GIF categories  (path list verbatim from /endpoints)
-// -----------------------------------------------------------------------------
 const RANDOM_CATS = {
   anal:        { ep: '/nsfw/anal',       label: 'Anal 🔞' },
   ass:         { ep: '/nsfw/ass',        label: 'Ass 🔞' },
@@ -84,13 +76,10 @@ const RANDOM_CATS = {
   xmas18:      { ep: '/nsfw/xmas',       label: 'Xmas 🔞' },
 };
 
-// -----------------------------------------------------------------------------
-// 2. Prexzy NSFW search + download endpoints  (VERIFIED names)
-// -----------------------------------------------------------------------------
 const SEARCH_EPS = {
-  xvideossearch: { ep: '/nsfw/xvideos-search', q: 'query', label: 'XVideos Search 🔞', host: 'xvideos.com' },
-  xvsearch:      { ep: '/nsfw/xvideos-search', q: 'query', label: 'XVideos Search 🔞', host: 'xvideos.com' },
-  xnxxsearch:    { ep: '/nsfw/xnxx-search',    q: 'query', label: 'XNXX Search 🔞',   host: 'xnxx.com' },
+  xvideossearch: { ep: '/nsfw/xvideos-search', q: 'query', label: 'XVideos Search 🔞' },
+  xvsearch:      { ep: '/nsfw/xvideos-search', q: 'query', label: 'XVideos Search 🔞' },
+  xnxxsearch:    { ep: '/nsfw/xnxx-search',    q: 'query', label: 'XNXX Search 🔞' },
 };
 
 const DL_EPS = {
@@ -99,29 +88,17 @@ const DL_EPS = {
   xnxxdl:    { ep: '/nsfw/xnxx-dl',    label: 'XNXX Downloader 🔞',    match: /xnxx\./i },
 };
 
-// Prexzy image generators (adult) — documented paths
 const IMG_GEN = {
   pornmaster:   { ep: '/imagecreator/pornmaster',    label: 'PornMaster 🔞' },
   pornmasterv6: { ep: '/imagecreator/pornmaster-v6', label: 'PornMaster V6 🔞' },
   pornmasterv7: { ep: '/imagecreator/pornmaster-v7', label: 'PornMaster V7 🔞' },
 };
 
-// -----------------------------------------------------------------------------
-// 3. David Cyril fallback paths — UNVERIFIED (public docs do not list /xxx/*)
-//    Probed in order; the first that returns usable media wins and is logged.
-// -----------------------------------------------------------------------------
-const DC_ADULT_PATHS = [
-  '/xxx/xvideos',
-  '/xxx/xnxx',
-  '/xxx/xvideos-dl',
-  '/xxx/xnxx-dl',
-  '/download/xvideos',
-  '/download/xnxx',
-];
+// David Cyril adult candidates — UNVERIFIED (not in their public docs).
+const DC_ADULT_PATHS = ['/xxx/xvideos', '/xxx/xnxx', '/xxx/xvideos-dl', '/xxx/xnxx-dl', '/download/xvideos', '/download/xnxx'];
 
-// -----------------------------------------------------------------------------
-// helpers
-// -----------------------------------------------------------------------------
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
 function _tmpFile(ext) {
   const dir = path.join(os.tmpdir(), 'mias-nsfw');
   try { fs.mkdirSync(dir, { recursive: true }); } catch {}
@@ -134,48 +111,77 @@ function _sniff(buf) {
   if (h[0] === 0xff && h[1] === 0xd8 && h[2] === 0xff) return { kind: 'image', ext: 'jpg', mime: 'image/jpeg' };
   if (h[0] === 0x89 && h[1] === 0x50 && h[2] === 0x4e && h[3] === 0x47) return { kind: 'image', ext: 'png', mime: 'image/png' };
   if (h[0] === 0x47 && h[1] === 0x49 && h[2] === 0x46) return { kind: 'gif', ext: 'gif', mime: 'image/gif' };
-  if (h[0] === 0x52 && h[1] === 0x49 && h[2] === 0x46 && h[3] === 0x46) return { kind: 'video', ext: 'webp', mime: 'image/webp' };
+  if (h[0] === 0x52 && h[1] === 0x49 && h[2] === 0x46 && h[3] === 0x46 && buf.subarray(8, 12).toString('ascii') === 'WEBP')
+    return { kind: 'image', ext: 'webp', mime: 'image/webp' };
   if (h[0] === 0x1a && h[1] === 0x45 && h[2] === 0xdf && h[3] === 0xa3) return { kind: 'video', ext: 'webm', mime: 'video/webm' };
-  if (h[4] === 0x66 && h[5] === 0x74 && h[6] === 0x79 && h[7] === 0x70) return { kind: 'video', ext: 'mp4', mime: 'video/mp4' };
+  if (h[4] === 0x66 && h[5] === 0x74 && h[6] === 0x79 && h[7] === 0x70) {
+    const b = h.subarray(8, 12).toString('ascii').trim();
+    if (b === 'M4A ' || b === 'M4B ') return { kind: 'audio', ext: 'm4a', mime: 'audio/mp4' };
+    return { kind: 'video', ext: 'mp4', mime: 'video/mp4' };
+  }
+  if (h[0] === 0x49 && h[1] === 0x44 && h[2] === 0x33) return { kind: 'audio', ext: 'mp3', mime: 'audio/mpeg' };
+  if (h[0] === 0xff && (h[1] & 0xe0) === 0xe0) return { kind: 'audio', ext: 'mp3', mime: 'audio/mpeg' };
   const s = buf.subarray(0, 200).toString('utf8').trim().toLowerCase();
-  if (s.startsWith('<!doc') || s.startsWith('<html') || s.startsWith('{')) return { kind: 'bad', ext: 'html', mime: 'text/html' };
+  if (s.startsWith('<!doc') || s.startsWith('<html') || s.startsWith('<?xml') || s.startsWith('{'))
+    return { kind: 'bad', ext: 'html', mime: 'text/html' };
   return { kind: 'unknown', ext: 'bin', mime: 'application/octet-stream' };
 }
 
+/** GET JSON with one 429-retry. Never returns JSON error bodies as success. */
 async function prexzyJson(ep, params = {}, timeout = REQ_TIMEOUT) {
-  try {
-    const res = await axios.get(`${PREXZY_BASE}${ep}`, {
-      params, timeout, headers: { 'User-Agent': UA, Accept: 'application/json' },
-      validateStatus: () => true,
-    });
-    const d = res.data;
-    if (res.status >= 400) return { ok: false, error: d?.error || `HTTP ${res.status}`, data: d };
-    return { ok: true, data: d };
-  } catch (e) {
-    return { ok: false, error: e.message };
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const res = await axios.get(`${PREXZY_BASE}${ep}`, {
+        params, timeout, headers: { 'User-Agent': UA, Accept: 'application/json' },
+        validateStatus: () => true,
+      });
+      if (res.status === 429) {
+        if (attempt === 0) { await sleep(3000); continue; }
+        return { ok: false, error: 'Prexzy rate limit (429) — wait ~30 seconds', rateLimited: true };
+      }
+      const d = res.data;
+      if (res.status >= 400) return { ok: false, error: d?.error || d?.message || `HTTP ${res.status}` };
+      if (d && d.status === false) return { ok: false, error: d.error || d.message || 'provider failed' };
+      return { ok: true, data: d };
+    } catch (e) {
+      if (attempt === 0 && /timeout|ECONN|network/i.test(e.message)) { await sleep(1500); continue; }
+      return { ok: false, error: e.message };
+    }
   }
+  return { ok: false, error: 'unreachable' };
 }
 
+/** GET binary media with one 429-retry. A JSON/HTML body is ALWAYS a failure. */
 async function prexzyBin(ep, params = {}, timeout = REQ_TIMEOUT) {
-  try {
-    const res = await axios.get(`${PREXZY_BASE}${ep}`, {
-      params, timeout, responseType: 'arraybuffer',
-      headers: { 'User-Agent': UA, Accept: '*/*' }, maxRedirects: 6,
-      validateStatus: () => true, maxContentLength: 200 * 1024 * 1024,
-    });
-    const buf = Buffer.from(res.data || []);
-    const ct = String(res.headers?.['content-type'] || '');
-    if (res.status >= 400) return { ok: false, error: `HTTP ${res.status}` };
-    if (buf.length < MIN_BYTES) return { ok: false, error: `too small (${buf.length}B)` };
-    const sniff = _sniff(buf);
-    if (sniff.kind === 'bad') return { ok: false, error: 'provider returned a web page instead of media' };
-    return { ok: true, buf, contentType: ct, ...sniff };
-  } catch (e) {
-    return { ok: false, error: e.message };
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const res = await axios.get(`${PREXZY_BASE}${ep}`, {
+        params, timeout, responseType: 'arraybuffer',
+        headers: { 'User-Agent': UA, Accept: '*/*' }, maxRedirects: 6,
+        validateStatus: () => true, maxContentLength: 200 * 1024 * 1024,
+      });
+      const ct = String(res.headers?.['content-type'] || '');
+      if (res.status === 429) {
+        if (attempt === 0) { await sleep(3000); continue; }
+        return { ok: false, error: 'Prexzy rate limit (429) — wait ~30 seconds', rateLimited: true };
+      }
+      if (res.status >= 400) return { ok: false, error: `HTTP ${res.status}` };
+      // An application/json body here is an error payload, never media.
+      if (/json|html|text/i.test(ct)) return { ok: false, error: 'provider returned JSON/HTML instead of media' };
+      const buf = Buffer.from(res.data || []);
+      if (buf.length < MIN_BYTES) return { ok: false, error: `too small (${buf.length}B)` };
+      const sniff = _sniff(buf);
+      if (sniff.kind === 'bad') return { ok: false, error: 'provider returned a web page instead of media' };
+      if (sniff.kind === 'unknown') sniff.kind = 'image'; // endpoint class is image/gif; trust content-type
+      return { ok: true, buf, contentType: ct, ...sniff };
+    } catch (e) {
+      if (attempt === 0 && /timeout|ECONN|network/i.test(e.message)) { await sleep(1500); continue; }
+      return { ok: false, error: e.message };
+    }
   }
+  return { ok: false, error: 'unreachable' };
 }
 
-/** David Cyril GET. Auth via X-API-Key header AND ?apikey= (docs accept either). */
 async function dcGet(ep, params = {}, timeout = REQ_TIMEOUT) {
   try {
     const p = { ...params };
@@ -195,7 +201,38 @@ async function dcGet(ep, params = {}, timeout = REQ_TIMEOUT) {
   }
 }
 
-/** Walk an arbitrary JSON blob and return the first http(s) media URL. */
+/** Nexray AIO — generic social fallback (Facebook etc.). */
+async function nexrayAio(url, timeout = 40000) {
+  try {
+    const res = await axios.get(`${NEXRAY_AIO}?url=${encodeURIComponent(url)}`, {
+      timeout, headers: { 'User-Agent': UA }, validateStatus: () => true,
+    });
+    if (res.status >= 400) return { ok: false, error: `nexray HTTP ${res.status}` };
+    const d = res.data?.result || res.data?.data || res.data;
+    const u = d?.url || d?.video || d?.hd || d?.sd || d?.audio || d?.download_url || d?.dl ||
+      (typeof d === 'string' && /^https?:\/\//i.test(d) ? d : null);
+    if (!u) return { ok: false, error: 'nexray: no media url' };
+    return { ok: true, url: u, title: d?.title || null, thumb: d?.thumbnail || d?.cover || null };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+}
+
+/** GiftedTech Facebook fallback. */
+async function giftedFb(url, timeout = 40000) {
+  try {
+    const res = await axios.get(`${GIFTED_API}/download/facebook?apikey=${GIFTED_KEY}&url=${encodeURIComponent(url)}`, {
+      timeout, headers: { 'User-Agent': UA }, validateStatus: () => true,
+    });
+    const d = res.data?.result || res.data;
+    const u = d?.hd || d?.sd || d?.download_url || d?.url || d?.video || null;
+    if (!u) return { ok: false, error: 'gifted: no media url' };
+    return { ok: true, url: u, title: d?.title || null };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+}
+
 function pickUrl(obj, depth = 0) {
   if (!obj || depth > 6) return null;
   if (typeof obj === 'string') return /^https?:\/\//i.test(obj) ? obj : null;
@@ -218,15 +255,17 @@ function pickUrl(obj, depth = 0) {
   return null;
 }
 
-/** Stream a URL to disk (10-min cap) — avoids buffering huge adult videos in RAM. */
+/** Stream URL → disk (10-min cap). Junk/JSON/HTML responses are rejected. */
 async function streamToFile(url, headers = {}) {
   const tmp = _tmpFile('mp4');
   const res = await axios.get(url, {
     responseType: 'stream', timeout: DL_TIMEOUT, maxRedirects: 8,
     maxContentLength: 2 * 1024 * 1024 * 1024, validateStatus: () => true,
-    headers: { 'User-Agent': UA, ...headers },
+    headers: { 'User-Agent': UA, 'Accept-Encoding': 'identity', ...headers },
   });
   if (res.status >= 400) { try { res.data.destroy(); } catch {} throw new Error(`media HTTP ${res.status}`); }
+  const ct = String(res.headers?.['content-type'] || '');
+  if (/json|text\/html/i.test(ct)) { try { res.data.destroy(); } catch {} throw new Error('provider returned an error page instead of media'); }
   await new Promise((resolve, reject) => {
     const ws = fs.createWriteStream(tmp);
     res.data.pipe(ws);
@@ -242,10 +281,10 @@ async function streamToFile(url, headers = {}) {
     try { fs.unlinkSync(tmp); } catch {}
     throw new Error(`provider returned an error page instead of media (${size}B)`);
   }
+  if (sniff.kind === 'unknown') { sniff.kind = 'video'; sniff.ext = 'mp4'; sniff.mime = 'video/mp4'; }
   return { tmp, size, ...sniff };
 }
 
-/** Send media respecting WA limits: inline video when small, document when big/slow. */
 async function sendMedia(sock, msg, file, title, label) {
   const jid = msg.key.remoteJid;
   const cap = `🔞 *${title || label || 'NSFW'}*`;
@@ -254,20 +293,21 @@ async function sendMedia(sock, msg, file, title, label) {
     return;
   }
   if (file.kind === 'gif') {
-    await sock.sendMessage(jid, { video: fs.readFileSync(file.tmp), gifPlayback: true, mimetype: 'image/gif', caption: cap }, { quoted: msg });
+    await sock.sendMessage(jid, { video: file.buf || fs.readFileSync(file.tmp), gifPlayback: true, mimetype: 'image/gif', caption: cap }, { quoted: msg });
     return;
   }
   const size = file.size ?? (file.buf ? file.buf.length : 0);
   const asDoc = size > DOC_OVER_BYTES;
+  const data = file.buf || fs.readFileSync(file.tmp);
   try {
     if (asDoc) throw new Error('over inline cap');
     await sock.sendMessage(jid, {
-      video: fs.readFileSync(file.tmp), mimetype: file.mime || 'video/mp4',
+      video: data, mimetype: file.mime || 'video/mp4',
       fileName: `${(title || 'video').slice(0, 50)}.${file.ext || 'mp4'}`, caption: cap,
     }, { quoted: msg });
-  } catch (e) {
+  } catch {
     await sock.sendMessage(jid, {
-      document: fs.readFileSync(file.tmp), mimetype: file.mime || 'video/mp4',
+      document: data, mimetype: file.mime || 'video/mp4',
       fileName: `${(title || 'video').slice(0, 50)}.${file.ext || 'mp4'}`,
       caption: `${cap}\n📎 _sent as document — ${(size / 1048576).toFixed(1)}MB${asDoc ? ' (over 100MB inline cap)' : ''}_`,
     }, { quoted: msg });
@@ -276,9 +316,7 @@ async function sendMedia(sock, msg, file, title, label) {
 
 function cleanTmp(file) { try { if (file && file.tmp) fs.unlinkSync(file.tmp); } catch {} }
 
-// -----------------------------------------------------------------------------
-// install
-// -----------------------------------------------------------------------------
+// ── command registration ─────────────────────────────────────────────────────
 function install(deps) {
   const { cmd, sendReply, react, getSettings, getOwnerJid, CONFIG } = deps || {};
   if (typeof cmd !== 'function') throw new Error('nsfwPrexzy.install: cmd() missing');
@@ -289,15 +327,12 @@ function install(deps) {
     : sock.sendMessage(msg.key.remoteJid, { text: t }, { quoted: msg }));
   const _react = (sock, msg, e) => { try { if (typeof react === 'function') react(sock, msg, e); } catch {} };
 
-  /** 18+ gate — same settings the rest of the bot reads. */
   function adultOn(msg) {
     try {
       const jid = msg.key.remoteJid;
       const s = (typeof getSettings === 'function' ? getSettings(jid) : null) || {};
       let o = {};
-      if (typeof getOwnerJid === 'function' && typeof getSettings === 'function') {
-        o = getSettings(getOwnerJid()) || {};
-      }
+      if (typeof getOwnerJid === 'function' && typeof getSettings === 'function') o = getSettings(getOwnerJid()) || {};
       if (s.safeMode || o.safeMode) return false;
       return !!(s.adultMode || s.adultDl || o.adultMode || o.adultDl);
     } catch { return false; }
@@ -306,24 +341,23 @@ function install(deps) {
   async function gate(sock, msg) {
     if (adultOn(msg)) return true;
     await _reply(sock, msg,
-      `🔞 *Adult Mode is OFF*\n\n` +
-      `This command is 18+ only and is disabled.\n\n` +
-      `Enable it with *${P}setting* → option *23.1*\n` +
-      `_(Safe Mode overrides this and keeps everything off.)_`);
+      `🔞 *Adult Mode is OFF*\n\nThis command is 18+ only and is disabled.\n\n` +
+      `Enable it with *${P}setting* → option *23.1*\n_(Safe Mode overrides this and keeps everything off.)_`);
     return false;
   }
 
-  // ── 36 random image/GIF categories ─────────────────────────────────────────
+  // 36 random image/GIF categories (429-safe)
   for (const [name, info] of Object.entries(RANDOM_CATS)) {
     cmd([name], { desc: `${info.label} — random media (18+)`, category: 'NSFW', adult: true },
       async (sock, msg) => {
         if (!(await gate(sock, msg))) return;
         await _react(sock, msg, '🔞');
         const jid = msg.key.remoteJid;
-        const wait = await sock.sendMessage(jid, { text: `🔞 *${info.label}*\n\n⬡ Fetching random media...` }, { quoted: msg });
         const r = await prexzyBin(info.ep);
         if (!r.ok) {
-          await sock.sendMessage(jid, { text: `❌ *${info.label}* failed.\n_${r.error}_\n\nTry again in a moment.`, edit: wait.key }, { quoted: msg });
+          await _reply(sock, msg, r.rateLimited
+            ? `⏳ *${info.label}* — provider is rate-limiting right now (HTTP 429).\n_Wait ~30 seconds and send the command again._`
+            : `❌ *${info.label}* failed.\n_${r.error}_\n\nTry again in a moment.`);
           return;
         }
         try {
@@ -338,14 +372,13 @@ function install(deps) {
           } else {
             await sock.sendMessage(jid, { image: r.buf, caption: `🔞 *${info.label}*` }, { quoted: msg });
           }
-          try { await sock.sendMessage(jid, { delete: wait.key }); } catch {}
         } catch (e) {
-          await sock.sendMessage(jid, { text: `❌ *${info.label}* could not be delivered.\n_${e.message}_`, edit: wait.key }, { quoted: msg });
+          await _reply(sock, msg, `❌ *${info.label}* could not be delivered.\n_${e.message}_`);
         }
       });
   }
 
-  // ── search ─────────────────────────────────────────────────────────────────
+  // search
   for (const [name, info] of Object.entries(SEARCH_EPS)) {
     cmd([name], { desc: `${info.label} — ${P}${name} <query>`, category: 'NSFW', adult: true },
       async (sock, msg, args) => {
@@ -354,7 +387,7 @@ function install(deps) {
         if (!q) { await _reply(sock, msg, `Usage: *${P}${name} <query>*`); return; }
         await _react(sock, msg, '🔍');
         const r = await prexzyJson(info.ep, { [info.q]: q });
-        if (!r.ok) { await _reply(sock, msg, `❌ Search failed.\n_${r.error}_`); return; }
+        if (!r.ok) { await _reply(sock, msg, r.rateLimited ? '⏳ Rate limited — wait ~30s and retry.' : `❌ Search failed.\n_${r.error}_`); return; }
         const list = r.data?.videos || r.data?.results || r.data?.data || [];
         if (!Array.isArray(list) || !list.length) { await _reply(sock, msg, `❌ No results for *${q}*.`); return; }
         const lines = list.slice(0, 10).map((v, i) => {
@@ -364,12 +397,11 @@ function install(deps) {
           return `${i + 1}. ${String(t).slice(0, 80)}${dur}\n   ${u}`;
         });
         await _reply(sock, msg,
-          `🔞 *${info.label}*\n🔍 _${q}_\n\n${lines.join('\n\n')}\n\n` +
-          `_Download one with *${P}xvdl <url>* or *${P}xnxxdl <url>*_`);
+          `🔞 *${info.label}*\n🔍 _${q}_\n\n${lines.join('\n\n')}\n\n_Download with *${P}xvdl <url>* or *${P}xnxxdl <url>*_`);
       });
   }
 
-  // ── direct downloaders (xvideos / xnxx) ────────────────────────────────────
+  // downloaders (xvideos / xnxx) — Prexzy first, then DC probes
   for (const [name, info] of Object.entries(DL_EPS)) {
     cmd([name], { desc: `${info.label} — ${P}${name} <video url>`, category: 'NSFW', adult: true },
       async (sock, msg, args) => {
@@ -386,29 +418,16 @@ function install(deps) {
         await _react(sock, msg, '🔞');
         const jid = msg.key.remoteJid;
         const wait = await sock.sendMessage(jid, { text: `🔞 *${info.label}*\n\n⬡ Resolving media...\n_URL:_ ${url.slice(0, 90)}` }, { quoted: msg });
+        const edit = (t) => sock.sendMessage(jid, { text: t, edit: wait.key }).catch(() => {});
 
-        const chain = [];
-        // 1) the matching Prexzy NSFW downloader
         const ep = info.match.test(url) ? info.ep : (/xnxx\./i.test(url) ? '/nsfw/xnxx-dl' : '/nsfw/xvideos-dl');
-        chain.push({ via: 'prexzy-nsfw', fn: async () => {
-          const r = await prexzyJson(ep, { url }, 40000);
-          if (!r.ok) throw new Error(r.error);
-          return pickUrl(r.data);
-        }});
-        // 2) generic Prexzy aio
-        chain.push({ via: 'prexzy-aio', fn: async () => {
-          const r = await prexzyJson('/download/aio', { url }, 40000);
-          if (!r.ok) throw new Error(r.error);
-          return pickUrl(r.data);
-        }});
-        // 3) David Cyril (UNVERIFIED paths, probed)
+        const chain = [
+          { via: `prexzy ${ep}`, fn: async () => { const r = await prexzyJson(ep, { url }, 45000); if (!r.ok) throw new Error(r.error); return pickUrl(r.data); } },
+        ];
         for (const p of DC_ADULT_PATHS) {
-          chain.push({ via: `davidcyril${p}`, fn: async () => {
-            const r = await dcGet(p, { url }, 30000);
-            if (!r.ok) throw new Error(r.error);
-            return pickUrl(r.data);
-          }});
+          chain.push({ via: `davidcyril ${p}`, fn: async () => { const r = await dcGet(p, { url }, 30000); if (!r.ok) throw new Error(r.error); return pickUrl(r.data); } });
         }
+        chain.push({ via: 'nexray aio', fn: async () => { const r = await nexrayAio(url); if (!r.ok) throw new Error(r.error); return r.url; } });
 
         const errs = [];
         for (const step of chain) {
@@ -421,18 +440,13 @@ function install(deps) {
             cleanTmp(f);
             try { await sock.sendMessage(jid, { delete: wait.key }); } catch {}
             return;
-          } catch (e) {
-            errs.push(`${step.via}: ${e.message}`);
-          }
+          } catch (e) { errs.push(`${step.via}: ${e.message}`); }
         }
-        await sock.sendMessage(jid, {
-          text: `❌ *${info.label} failed*\n\nAll providers were tried:\n${errs.slice(0, 6).map(x => `• ${x}`).join('\n')}\n\n_Try again shortly._`,
-          edit: wait.key,
-        }, { quoted: msg });
+        await edit(`❌ *${info.label} failed*\n\nProviders tried:\n${errs.slice(0, 6).map(x => `• ${x}`).join('\n')}\n\n_Try again shortly._`);
       });
   }
 
-  // ── unified adult downloader: .adult / .adultdl / .xdl / .nsfwdl ───────────
+  // unified adult downloader
   cmd(['adult', 'adultdl', 'xdl', 'nsfwdl'],
     { desc: `Adult downloader (auto-routes xvideos/xnxx) — ${P}adult <url>`, category: 'NSFW', adult: true },
     async (sock, msg, args) => {
@@ -446,26 +460,22 @@ function install(deps) {
         } catch {}
       }
       if (!/^https?:/i.test(url)) { await _reply(sock, msg, `Usage: *${P}adult <video url>*`); return; }
-      const target = /xnxx\./i.test(url) ? 'xnxxdl' : 'xvideosdl';
-      const h = deps._dispatch ? deps._dispatch(target) : null;
-      // fall back to running the matching downloader inline
-      const info = DL_EPS[target];
       const jid = msg.key.remoteJid;
       await _react(sock, msg, '🔞');
-      const wait = await sock.sendMessage(jid, { text: `🔞 *Adult Downloader*\n\n⬡ Resolving ${target === 'xnxxdl' ? 'XNXX' : 'XVideos'} media...` }, { quoted: msg });
-      let media = null;
-      try {
-        const r = await prexzyJson(info.ep, { url }, 40000);
-        if (r.ok) media = pickUrl(r.data);
-      } catch {}
-      if (!media) {
-        try {
-          const r = await prexzyJson('/download/aio', { url }, 40000);
-          if (r.ok) media = pickUrl(r.data);
-        } catch {}
+      const wait = await sock.sendMessage(jid, { text: `🔞 *Adult Downloader*\n\n⬡ Resolving...` }, { quoted: msg });
+      const edit = (t) => sock.sendMessage(jid, { text: t, edit: wait.key }).catch(() => {});
+      const eps = /xnxx\./i.test(url) ? ['/nsfw/xnxx-dl', '/nsfw/xvideos-dl'] : ['/nsfw/xvideos-dl', '/nsfw/xnxx-dl'];
+      let media = null, lastErr = '';
+      for (const ep of eps) {
+        const r = await prexzyJson(ep, { url }, 45000);
+        if (r.ok) { media = pickUrl(r.data); if (media) break; } else lastErr = r.error;
       }
       if (!media) {
-        await sock.sendMessage(jid, { text: `❌ *Adult Downloader failed*\n\nNo provider returned media for that link.\n_Use *${P}xvdl* / *${P}xnxxdl* explicitly, or try again._`, edit: wait.key }, { quoted: msg });
+        const nx = await nexrayAio(url);
+        if (nx.ok) media = nx.url; else lastErr = nx.error;
+      }
+      if (!media) {
+        await edit(`❌ *Adult Downloader failed*\n\n_${lastErr || 'No provider returned media.'}_\n_Use *${P}xvdl* / *${P}xnxxdl* explicitly, or try again._`);
         return;
       }
       try {
@@ -474,11 +484,11 @@ function install(deps) {
         cleanTmp(f);
         try { await sock.sendMessage(jid, { delete: wait.key }); } catch {}
       } catch (e) {
-        await sock.sendMessage(jid, { text: `❌ Download failed.\n_${e.message}_`, edit: wait.key }, { quoted: msg });
+        await edit(`❌ Download failed.\n_${e.message}_`);
       }
     });
 
-  // ── Prexzy adult image generators ──────────────────────────────────────────
+  // image generators
   for (const [name, info] of Object.entries(IMG_GEN)) {
     cmd([name], { desc: `${info.label} — ${P}${name} <prompt>`, category: 'NSFW', adult: true },
       async (sock, msg, args) => {
@@ -488,7 +498,7 @@ function install(deps) {
         await _react(sock, msg, '🎨');
         const r = await prexzyBin(info.ep, { prompt }, 60000);
         if (!r.ok || r.kind !== 'image') {
-          await _reply(sock, msg, `❌ *${info.label}* failed.\n_${r.error || 'no image returned'}_`);
+          await _reply(sock, msg, r.rateLimited ? '⏳ Rate limited — wait ~30s and retry.' : `❌ *${info.label}* failed.\n_${r.error || 'no image returned'}_`);
           return;
         }
         await sock.sendMessage(msg.key.remoteJid, { image: r.buf, caption: `🔞 *${info.label}*\n_${prompt.slice(0, 120)}_` }, { quoted: msg });
@@ -502,17 +512,7 @@ function install(deps) {
 }
 
 module.exports = {
-  install,
-  RANDOM_CATS,
-  SEARCH_EPS,
-  DL_EPS,
-  IMG_GEN,
-  DC_ADULT_PATHS,
-  dcGet,
-  prexzyJson,
-  prexzyBin,
-  pickUrl,
-  streamToFile,
-  PREXZY_BASE,
-  DC_BASE,
+  install, RANDOM_CATS, SEARCH_EPS, DL_EPS, IMG_GEN, DC_ADULT_PATHS,
+  dcGet, prexzyJson, prexzyBin, nexrayAio, giftedFb, pickUrl, streamToFile, sendMedia, cleanTmp, _sniff,
+  PREXZY_BASE, DC_BASE,
 };

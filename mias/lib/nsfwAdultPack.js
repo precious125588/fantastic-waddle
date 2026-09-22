@@ -47,7 +47,7 @@ let _SNAPSHOT = null;
 let _COMMANDS = null;
 const GUARDED = [
   'play', 'music', 'song', 'play2', 'playdoc', 'songdoc', 'play!', 'playptt', 'voiceplay',
-  'ai', 'chatbot', 'duckai', 'aio', 'alldl', 'universaldl',
+  'ai', 'chatbot', 'duckai', 'aio', 'alldl', 'universaldl', 'fb', 'fbdl', 'facebookvideo',
   'xvdl', 'xnxxdl', 'adult', 'adultdl', 'xdl', 'nsfwdl', 'xvideosdl', 'xvideossearch', 'xnxxsearch',
 ];
 
@@ -233,6 +233,41 @@ function install(deps) {
     await edit(`💬 *AI*\n\n${String(out).slice(0, 3500)}`);
   });
 
+  // ── shared Facebook download chain (used by .aio and .fb) ─────────────────
+  async function _fbDownload(sock, msg, url, viaLabel) {
+    const jid = msg.key.remoteJid;
+    const wait = await sock.sendMessage(jid, { text: `📘 *${viaLabel}*\n\n⬡ Fetching Facebook media...` }, { quoted: msg });
+    const edit = (t) => sock.sendMessage(jid, { text: t, edit: wait.key }).catch(() => {});
+    const chain = [
+      { via: 'prexzy/facebook',   fn: async () => { const r = await nsfw.prexzyJson('/download/facebook',  { url }, 40000); if (!r.ok) throw new Error(r.error); return nsfw.pickUrl(r.data); } },
+      { via: 'prexzy/facebookv2', fn: async () => { const r = await nsfw.prexzyJson('/download/facebookv2', { url }, 40000); if (!r.ok) throw new Error(r.error); return nsfw.pickUrl(r.data); } },
+      { via: 'davidcyril/facebook', fn: async () => { const r = await nsfw.dcGet('/download/facebook', { url }, 40000); if (!r.ok) throw new Error(r.error); return nsfw.pickUrl(r.data); } },
+      { via: 'gifted/facebook',   fn: async () => { const r = await nsfw.giftedFb(url); if (!r.ok) throw new Error(r.error); return r.url; } },
+      { via: 'nexray/aio',        fn: async () => { const r = await nsfw.nexrayAio(url); if (!r.ok) throw new Error(r.error); return r.url; } },
+    ];
+    const errs = [];
+    for (const step of chain) {
+      let media = null;
+      try { media = await step.fn(); } catch (e) { errs.push(`${step.via}: ${e.message}`); continue; }
+      if (!media) { errs.push(`${step.via}: no media url`); continue; }
+      try {
+        const f = await nsfw.streamToFile(media, { Referer: 'https://www.facebook.com/' });
+        const data = fs.readFileSync(f.tmp);
+        const cap = `📘 *Facebook Video*\n_Via ${step.via}_`;
+        try {
+          await sock.sendMessage(jid, { video: data, mimetype: f.mime || 'video/mp4', fileName: `facebook.${f.ext}`, caption: cap }, { quoted: msg });
+        } catch {
+          await sock.sendMessage(jid, { document: data, mimetype: f.mime || 'video/mp4', fileName: `facebook.${f.ext}`, caption: cap + ' (document)' }, { quoted: msg });
+        }
+        nsfw.cleanTmp(f);
+        try { await sock.sendMessage(jid, { delete: wait.key }); } catch {}
+        return true;
+      } catch (e) { errs.push(`${step.via}: ${e.message}`); }
+    }
+    await edit(`❌ *Facebook download failed*\n\n${errs.slice(0, 5).map(x => `• ${x}`).join('\n')}\n\n_Try *${P}fb <url>* or again shortly._`);
+    return false;
+  }
+
   // ── 5. AIO — adult branch, then fall through to the original handler ───────
   const origAio = commands.get('aio')?.handler || null;
   cmd(['aio', 'alldl', 'universaldl'], { desc: 'Universal downloader (+ adult routing)', category: 'DOWNLOAD' }, async (sock, msg, args) => {
@@ -265,8 +300,28 @@ function install(deps) {
       await sock.sendMessage(jid, { text: `❌ *AIO adult download failed*\n\n${errs.slice(0, 5).map(x => `• ${x}`).join('\n')}\n\n_Try *${P}xvdl <url>* or *${P}xnxxdl <url>*._`, edit: wait.key }, { quoted: msg });
       return;
     }
+    if (url && /facebook\.com|fb\.watch|fb\.com/i.test(url)) {
+      await _react(sock, msg, '📘');
+      await _fbDownload(sock, msg, url, 'AIO → Facebook');
+      return;
+    }
     if (typeof origAio === 'function') return origAio(sock, msg, args);
     await _reply(sock, msg, `Usage: *${P}aio <social_url>*`);
+  });
+
+  // ── Facebook dedicated command ────────────────────────────────────────────
+  cmd(['fb', 'fbdl', 'facebookvideo'], { desc: `Facebook video — ${P}fb <url>`, category: 'DOWNLOAD' }, async (sock, msg, args) => {
+    let url = (args || [])[0] || '';
+    if (!/^https?:/i.test(url)) {
+      try {
+        const c = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage;
+        const t = c?.conversation || c?.extendedTextMessage?.text || c?.videoMessage?.caption || '';
+        const m = /https?:\/\/\S+/.exec(t || ''); if (m) url = m[0];
+      } catch {}
+    }
+    if (!/^https?:/i.test(url)) { await _reply(sock, msg, `Usage: *${P}fb <facebook video url>*`); return; }
+    await _react(sock, msg, '📘');
+    await _fbDownload(sock, msg, url, 'Facebook Downloader');
   });
 
   // ── 6. make sure the NSFW category shows in .menu ──────────────────────────
