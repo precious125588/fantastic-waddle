@@ -1544,3 +1544,37 @@ export async function handleAutoDownload(sock, msg, body, mode, isOwner) {
     cleanupTemp(tmpPath);
   }
 }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   ADULT PATH (Prexzy /nsfw/xvideos-dl + /nsfw/xnxx-dl — VERIFIED live)
+   Wraps the module-scope resolver so adult links never fall through to the
+   generic provider that returned "an error page instead of media".
+   ══════════════════════════════════════════════════════════════════════════ */
+try {
+  const __nsfw = require('./nsfwPrexzy.js');
+  if (typeof resolvePlatformMedia === 'function' && !globalThis.__NSFW_AUTODL_PATCHED__) {
+    globalThis.__NSFW_AUTODL_PATCHED__ = true;
+    const __origResolve = resolvePlatformMedia;
+    resolvePlatformMedia = async function (url, platform) {
+      if (platform === 'adult' || /xvideos\.|xnxx\./i.test(String(url))) {
+        const eps = /xnxx\./i.test(String(url))
+          ? ['/nsfw/xnxx-dl', '/nsfw/xvideos-dl', '/download/aio']
+          : ['/nsfw/xvideos-dl', '/nsfw/xnxx-dl', '/download/aio'];
+        for (const ep of eps) {
+          try {
+            const r = await __nsfw.prexzyJson(ep, { url }, 45000);
+            if (!r.ok) continue;
+            const u = __nsfw.pickUrl(r.data);
+            if (u) return { url: u, type: 'video', title: r.data?.title || 'Adult', _via: 'prexzy' + ep };
+          } catch {}
+        }
+        console.log('[nsfw-adult] all Prexzy adult providers missed, falling back to generic resolver');
+      }
+      return __origResolve.apply(this, arguments);
+    };
+    console.log('[nsfw-adult] ✅ autoDownloader adult path -> Prexzy /nsfw/xvideos-dl + /nsfw/xnxx-dl');
+  }
+} catch (e) {
+  console.log('[nsfw-adult] autoDownloader patch failed:', (e && e.message) || e);
+}
+/* __NSFW_ADULT_PACK__ */
