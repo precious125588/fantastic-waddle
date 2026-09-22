@@ -3411,6 +3411,25 @@ ${_atBotAdmin ? "✅ Message deleted." : "⚠️ Make me admin to auto-delete."}
                         _cbReply = await freeAI(body, "You are a helpful, friendly AI chatbot. Keep responses concise and natural.");
                       } catch (_cbe2) {}
                     }
+                    // 5) Extra providers so autochat never stays silent when enabled
+                    if (!_cbReply) {
+                      try {
+                        const _cbNx4 = await axios.get(`https://api.nexoracle.com/ai/gpt4?apikey=free_key@maher_apis&prompt=${encodeURIComponent(body)}`, { timeout: 18000 });
+                        _cbReply = _cbNx4.data?.result || _cbNx4.data?.response || _cbNx4.data?.message;
+                      } catch {}
+                    }
+                    if (!_cbReply) {
+                      try {
+                        const _cbRyz = await axios.get(`https://api.ryzendesu.vip/api/ai/chatgpt?text=${encodeURIComponent(body)}`, { timeout: 18000 });
+                        _cbRyz.data && (_cbReply = _cbRyz.data?.answer || _cbRyz.data?.result || _cbRyz.data?.response || (typeof _cbRyz.data === "string" ? _cbRyz.data : null));
+                      } catch {}
+                    }
+                    if (!_cbReply) {
+                      try {
+                        const _cbPx = await prexzyGet("/ai/gpt", { prompt: body }, 15000);
+                        if (_cbPx.ok) { const _cbPxd = _cbPx.data?.data || _cbPx.data; _cbReply = _cbPxd?.text || _cbPxd?.response || _cbPxd?.result || _cbPxd?.answer || (typeof _cbPxd === "string" ? _cbPxd : null); }
+                      } catch {}
+                    }
                     if (_cbReply) await sendReply(sock, msg, String(_cbReply).slice(0, 2000));
                   } catch (e) { console.error("[autochat]", e?.message); }
                   return;
@@ -7972,6 +7991,12 @@ function buildSettingsMenu(jid) {
 ┃ 29.1 ᴏꜰꜰ  ${s.autoDownload === 'off' || !s.autoDownload ? "✅" : ""}
 ┃ 29.2 ᴅᴍ ᴏɴʟʏ  ${s.autoDownload === 'dm' ? "✅" : ""}
 ┃ 29.3 ᴀʟʟ ᴄʜᴀᴛs  ${s.autoDownload === 'global' ? "✅" : ""}
+┃ _sᴏᴜʀᴄᴇs: ᴛɪᴋᴛᴏᴋ·ɪɢ·ꜰʙ·ʏᴛ·x·ꜱᴘᴏᴛɪꜰʏ·ꜱᴄ·ᴘɪɴᴛᴇʀᴇꜱᴛ·ᴛʜʀᴇᴀᴅs·ᴄᴀᴘᴄᴜᴛ·ʀᴇᴅᴅɪᴛ·ᴅᴏᴜʏɪɴ·ʟɪᴋᴇᴇ·ᴍᴇᴅɪᴀꜰɪʀᴇ·ɢᴅʀɪᴠᴇ·ᴛᴇʀᴀʙᴏx +ɴᴇxʀᴀʏ/ᴘʀᴇxᴢʏ ᴀɪᴏ_
+┃ _ʀᴇᴀᴄᴛɪᴏɴs: 🔄 ᴅᴇᴛᴇᴄᴛᴇᴅ · ✅ ᴅᴏɴᴇ · ❌ ᴇʀʀᴏʀ_
+╰━━━━━━━━━━━╯
+╭━━❮ *𝗔𝗜𝗢 𝗗𝗼𝘄𝗻𝗹𝗼𝗮𝗱𝗲𝗿* ❯━━╮
+┃ ᴜsᴇ ${CONFIG.PREFIX}aio <ʟɪɴᴋ> — ᴅᴇᴛᴇᴄᴛs ʟɪɴᴋ+ᴍᴇᴅɪᴀ ᴛʏᴘᴇ
+┃ _ᴀʟʟ ᴅʟ ᴇɴᴅᴘᴏɪɴᴛs (ɴᴇxʀᴀʏ/ᴘʀᴇxᴢʏ) ɪɴᴄʟᴜᴅᴇᴅ ᴀꜱ ꜰᴀʟʟʙᴀᴄᴋ_
 ╰━━━━━━━━━━━╯
 ╭━━❮ *𝗦𝘁𝗮𝘁𝘂𝘀 𝗙𝗼𝗿𝘄𝗮𝗿𝗱𝗲𝗿* ❯━━╮
 ┃ 30.1 ᴇɴᴀʙʟᴇ  ${s.statusForwarder ? "✅" : ""}
@@ -12321,6 +12346,12 @@ Examples:
       async () => { const { data } = await axios.get(`https://api.nexoracle.com/downloader/ytmp4?apikey=free_key@maher_apis&url=${encodeURIComponent(videoUrl)}`, { timeout: 30000 }); return data?.result?.download_url || data?.result?.url || data?.download_url; },
       async () => { const { data } = await axios.get(`https://api.davidcyril.name.ng/download/ytmp4?url=${encodeURIComponent(videoUrl)}`, { timeout: 30000 }); return data?.result?.download_url || data?.result?.url || data?.download_url; },
       async () => { const { data } = await axios.get(`https://api.princetechn.com/api/download/ytmp4?apikey=prince&url=${encodeURIComponent(videoUrl)}`, { timeout: 30000 }); return data?.result?.download_url || data?.result?.url; },
+      // ── Nexray fallback providers (api.nexray.eu.cc/category/downloader) ──
+      async () => { const { data } = await axios.get(`https://api.nexray.eu.cc/downloader/ytvideo?url=${encodeURIComponent(videoUrl)}`, { timeout: 30000 }); const d = data?.result || data?.data || data; return d?.url || d?.video || d?.download_url || d?.dl || d?.mp4; },
+      async () => { const { data } = await axios.get(`https://api.nexray.eu.cc/downloader/v2/youtube?url=${encodeURIComponent(videoUrl)}`, { timeout: 30000 }); const d = data?.result || data?.data || data; return d?.url || d?.video || d?.download_url || d?.dl || d?.mp4; },
+      async () => { const { data } = await axios.get(`https://api.nexray.eu.cc/downloader/v1/youtube?url=${encodeURIComponent(videoUrl)}`, { timeout: 30000 }); const d = data?.result || data?.data || data; return d?.url || d?.video || d?.download_url || d?.dl || d?.mp4; },
+      async () => { const { data } = await axios.get(`https://api.siputzx.my.id/api/d/ytmp4?url=${encodeURIComponent(videoUrl)}`, { timeout: 25000 }); return data?.data?.dl || data?.data?.url || data?.url; },
+      async () => { const { data } = await axios.get(`https://api.ryzendesu.vip/api/downloader/ytmp4?url=${encodeURIComponent(videoUrl)}`, { timeout: 25000 }); return data?.url || data?.result?.url || data?.data?.url; },
       async () => { const r = await prexzyGet("/download/ytmp4", { url: videoUrl, quality: isHD ? "1080" : "720" }, 30000); return r.data?.data?.url || r.data?.url || r.data?.download; },
       async () => { const { data } = await axios.post("https://co.wuk.sh/api/json", { url: videoUrl, downloadMode: "video", videoQuality: isHD ? "1080" : "720", filenameStyle: "basic" }, { headers: { Accept: "application/json", "Content-Type": "application/json" }, timeout: 30000 }); return data?.url; },
       async () => { const { data } = await axios.post("https://cobalt-api.kwiatekmiki.com/", { url: videoUrl, downloadMode: "video", videoQuality: isHD ? "1080" : "720" }, { headers: { Accept: "application/json", "Content-Type": "application/json" }, timeout: 30000 }); return data?.url; },
@@ -12331,6 +12362,12 @@ Examples:
       async () => { const { data } = await axios.get(`https://api.nexoracle.com/downloader/ytmp4?apikey=free_key@maher_apis&url=${encodeURIComponent(videoUrl)}`, { timeout: 30000 }); return data?.result?.download_url || data?.result?.url || data?.download_url; },
       async () => { const { data } = await axios.get(`https://api.davidcyril.name.ng/download/ytmp4?url=${encodeURIComponent(videoUrl)}`, { timeout: 30000 }); return data?.result?.download_url || data?.result?.url || data?.download_url; },
       async () => { const { data } = await axios.get(`https://api.princetechn.com/api/download/ytmp4?apikey=prince&url=${encodeURIComponent(videoUrl)}`, { timeout: 30000 }); return data?.result?.download_url || data?.result?.url; },
+      // ── Nexray fallback providers (api.nexray.eu.cc/category/downloader) ──
+      async () => { const { data } = await axios.get(`https://api.nexray.eu.cc/downloader/ytvideo?url=${encodeURIComponent(videoUrl)}`, { timeout: 30000 }); const d = data?.result || data?.data || data; return d?.url || d?.video || d?.download_url || d?.dl || d?.mp4; },
+      async () => { const { data } = await axios.get(`https://api.nexray.eu.cc/downloader/v2/youtube?url=${encodeURIComponent(videoUrl)}`, { timeout: 30000 }); const d = data?.result || data?.data || data; return d?.url || d?.video || d?.download_url || d?.dl || d?.mp4; },
+      async () => { const { data } = await axios.get(`https://api.nexray.eu.cc/downloader/v1/youtube?url=${encodeURIComponent(videoUrl)}`, { timeout: 30000 }); const d = data?.result || data?.data || data; return d?.url || d?.video || d?.download_url || d?.dl || d?.mp4; },
+      async () => { const { data } = await axios.get(`https://api.siputzx.my.id/api/d/ytmp4?url=${encodeURIComponent(videoUrl)}`, { timeout: 25000 }); return data?.data?.dl || data?.data?.url || data?.url; },
+      async () => { const { data } = await axios.get(`https://api.ryzendesu.vip/api/downloader/ytmp4?url=${encodeURIComponent(videoUrl)}`, { timeout: 25000 }); return data?.url || data?.result?.url || data?.data?.url; },
     ];
     for (const fn of videoDlApis) { try { dlUrl = await fn(); if (dlUrl) break; } catch {} }
     if (!dlUrl) { await editMessage(sock, jid, sKey, `📹 *MIAS MDX Video*\n\n❌ All download providers are busy or blocked for this link.\nTry again in a moment, or use *${CONFIG.PREFIX}play* → option *4* for the same video.`); return; }
@@ -22581,9 +22618,13 @@ cmd(["pick", "p"], { desc: "Pick randomly from options (A|B|C) OR download adult
         if (ttMode.kind === "video" && ttMode.videoNote) {
           let _ptvOk = false;
           try {
-            await sock.sendMessage(jid, {
-              video: (await _mfPrepareVideo(media)).buf, ptv: true, mimetype: "video/mp4",
-            }, { quoted: msg });
+            const _ptvB = (await _mfPrepareVideo(media)).buf;
+            try {
+              await sock.sendMessage(jid, { video: _ptvB, ptv: true, mimetype: "video/mp4" }, { quoted: msg });
+            } catch (_ptvQuotedErr) {
+              // Some clients reject a video-note when it carries a quoted payload — retry bare.
+              await sock.sendMessage(jid, { video: _ptvB, ptv: true, mimetype: "video/mp4" });
+            }
             _ptvOk = true;
           } catch (_ptvErr) {
             try {
@@ -23820,6 +23861,17 @@ cmd(["aio","alldl","universaldl"], { desc: "Universal downloader — TikTok, IG,
         if (ri2.ok && _di2) dlUrl = (Array.isArray(_di2) ? _di2[0]?.url : _di2?.url) || _di2?.video;
       } catch {}
     }
+  }
+
+  // ── Nexray universal fallback (all platforms — api.nexray.eu.cc/downloader/aio) ──
+  if (!dlUrl) {
+    try {
+      const _nxAio = await axios.get(`https://api.nexray.eu.cc/downloader/aio?url=${encodeURIComponent(url)}`, { timeout: 25000 });
+      const _nxd = _nxAio.data?.result || _nxAio.data?.data || _nxAio.data;
+      dlUrl = _nxd?.url || _nxd?.video || _nxd?.audio || _nxd?.download_url || _nxd?.dl || (typeof _nxd === "string" && /^https?:\/\//i.test(_nxd) ? _nxd : null);
+      title = title || _nxd?.title;
+      thumbUrl = thumbUrl || _nxd?.thumbnail || _nxd?.cover;
+    } catch {}
   }
 
   // ── SoundCloud: dedicated path ──
@@ -42543,6 +42595,22 @@ Please wait.`);
         }
       } else if (ttMode.document) {
         await sock.sendMessage(jid, { document: buf, mimetype: "video/mp4", fileName: "tiktok_video.mp4", caption: ttCaption }, { quoted: msg });
+      } else if (ttMode.videoNote) {
+        // 1.7 — round video note. Try quoted first, then unquoted (some clients
+        // reject ptv on quoted payloads), then plain video, then document.
+        try {
+          await sock.sendMessage(jid, { video: buf, ptv: true, mimetype: "video/mp4" }, { quoted: msg });
+        } catch (_vnErr1) {
+          try {
+            await sock.sendMessage(jid, { video: buf, ptv: true, mimetype: "video/mp4" });
+          } catch (_vnErr2) {
+            try {
+              await sock.sendMessage(jid, { video: buf, mimetype: "video/mp4", caption: `${ttCaption}\n📎 (video-note failed — sent as video)` }, { quoted: msg });
+            } catch (_vnErr3) {
+              await sock.sendMessage(jid, { document: buf, mimetype: "video/mp4", fileName: "tiktok_video_note.mp4", caption: `${ttCaption}\n📎 (client rejected round note — sent as file)` }, { quoted: msg });
+            }
+          }
+        }
       } else {
         await sock.sendMessage(jid, { video: buf, mimetype: "video/mp4", caption: ttCaption }, { quoted: msg });
       }

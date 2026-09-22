@@ -26,6 +26,7 @@ import {
   reactDownload,
   reactSuccess,
   reactFail,
+  reactCustom,
 } from "../handlers/reactionHandler.js";
 
 // Load @vreden/youtube_scraper (CommonJS) — same library used by .ytmp4/.ytmp3 commands
@@ -1392,6 +1393,8 @@ async function resolvePlatformMedia(url, platform) {
     if (cobalt?.url) return cobalt;
     const aio = await aioFallback(expanded, platform);
     if (aio.result?.url) return aio.result;
+    const _nxAdult = await nexrayFallback(expanded, platform).catch(() => null);
+    if (_nxAdult?.url) return _nxAdult;
     throw new Error(`All adult platform APIs failed — site may block bots`);
   }
 
@@ -1400,7 +1403,54 @@ async function resolvePlatformMedia(url, platform) {
   if (cobalt?.url) return cobalt;
   const aio = await aioFallback(expanded, platform);
   if (aio.result?.url) return aio.result;
+  const _nxGen = await nexrayFallback(expanded, platform).catch(() => null);
+  if (_nxGen?.url) return _nxGen;
   throw new Error(`All ${platform} APIs failed (${aio.errors?.slice(0, 8).join(" | ") || "no media"})`);
+}
+
+// ─── Nexray fallback — every downloader endpoint (api.nexray.eu.cc/category/downloader) ───
+// Old APIs stay first in the chain; Nexray is the final safety net for AIO +
+// auto-downloader so every source in the download API list is covered.
+async function nexrayFallback(url, platform) {
+  const NEX = "https://api.nexray.eu.cc";
+  const pickMedia = (d) => {
+    const r = d?.result || d?.data || d;
+    if (typeof r === "string" && /^https?:\/\//i.test(r)) return { url: r, type: null };
+    if (Array.isArray(r) && r[0]?.url) return { url: r[0].url, title: r[0]?.title, type: null };
+    const u = r?.url || r?.download || r?.download_url || r?.dl || r?.video || r?.hdplay || r?.play || r?.audio || r?.media || r?.mp4 || r?.mp3;
+    if (u && /^https?:\/\//i.test(String(u))) {
+      return { url: String(u), title: r?.title || r?.desc, type: r?.type || (r?.audio && !r?.video ? "audio" : null) };
+    }
+    return null;
+  };
+  const perPlatform = {
+    tiktok:    ["/downloader/tiktok", "/downloader/v2/tiktok", "/downloader/v1/tiktok"],
+    instagram: ["/downloader/instagram", "/downloader/reels"],
+    facebook:  ["/downloader/facebook"],
+    youtube:   ["/downloader/ytvideo", "/downloader/v2/youtube", "/downloader/v1/youtube"],
+    twitter:   ["/downloader/twitter", "/downloader/v1/twitter"],
+    pinterest: ["/downloader/pinterest"],
+    soundcloud:["/downloader/soundcloud"],
+    spotify:   ["/downloader/spotify"],
+    threads:   ["/downloader/threads"],
+    capcut:    ["/downloader/capcut"],
+    reddit:    ["/downloader/reddit"],
+    mediafire: ["/downloader/mediafire"],
+    gdrive:    ["/downloader/gdrive", "/downloader/googledrive"],
+    likee:     ["/downloader/likee"],
+    douyin:    ["/downloader/douyin"],
+    terabox:   ["/downloader/terabox"],
+    snackvideo:["/downloader/snackvideo"],
+  };
+  const paths = [...(perPlatform[platform] || []), "/downloader/aio", "/downloader/video"];
+  for (const p of paths) {
+    try {
+      const { data } = await axios.get(`${NEX}${p}?url=${encodeURIComponent(url)}`, { timeout: 25000, headers: { "User-Agent": UA } });
+      const got = pickMedia(data);
+      if (got?.url) return got;
+    } catch {}
+  }
+  return null;
 }
 
 // ─── Public API ────────────────────────────────────────────────────────────
@@ -1428,7 +1478,8 @@ export async function handleAutoDownload(sock, msg, body, mode, isOwner) {
   // as well — the command itself decides what to send.
   if (/^[.!#\/$,+\-]\s*[a-z0-9]/i.test(String(body || "").trim())) return false;
 
-  await reactDownload(sock, msg);
+  // User spec: react 🔄 when a link is detected, ✅ when done, ❌ on error.
+  await reactCustom(sock, msg, "🔄");
 
   const jid = msg.key.remoteJid;
   let tmpPath = null;

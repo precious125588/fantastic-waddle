@@ -910,6 +910,37 @@ function install(ctx) {
         const { data } = await axios.get(`${CONFIG.GIFTED_API}/api/download/ytmp3?apikey=${CONFIG.GIFTED_KEY}&url=${encodeURIComponent(ytUrl)}`, { timeout: 60000 });
         return data?.result?.download_url || data?.result?.url || data?.result?.audio || data?.result?.mp3 || null;
       });
+      // ── Extra providers: fixes 'Download failed: no valid audio file url' ──
+      if (ytUrl) tries.push(async () => {
+        const { data } = await axios.get(`https://api.nexray.eu.cc/downloader/ytaudio?url=${encodeURIComponent(ytUrl)}`, { timeout: 45000 });
+        const d = data?.result || data?.data || data;
+        return d?.url || d?.audio || d?.download_url || d?.dl || d?.mp3 || null;
+      });
+      if (ytUrl) tries.push(async () => {
+        const { data } = await axios.get(`https://api.nexray.eu.cc/downloader/ytmp3?url=${encodeURIComponent(ytUrl)}`, { timeout: 45000 });
+        const d = data?.result || data?.data || data;
+        return d?.url || d?.audio || d?.download_url || d?.dl || d?.mp3 || null;
+      });
+      if (ytUrl) tries.push(async () => {
+        const { data } = await axios.get(`https://api.nexoracle.com/downloader/ytmp3?apikey=free_key@maher_apis&url=${encodeURIComponent(ytUrl)}`, { timeout: 45000 });
+        return data?.result?.download_url || data?.result?.url || data?.result?.audio || data?.download_url || null;
+      });
+      if (ytUrl) tries.push(async () => {
+        const { data } = await axios.get(`https://api.siputzx.my.id/api/d/ytmp3?url=${encodeURIComponent(ytUrl)}`, { timeout: 45000 });
+        return data?.data?.dl || data?.data?.url || data?.url || null;
+      });
+      if (ytUrl) tries.push(async () => {
+        const { data } = await axios.get(`https://api.ryzendesu.vip/api/downloader/ytmp3?url=${encodeURIComponent(ytUrl)}`, { timeout: 45000 });
+        return data?.url || data?.result?.url || data?.data?.url || null;
+      });
+      if (ytUrl) tries.push(async () => {
+        const { data } = await axios.get(`https://api.princetechn.com/api/download/ytmp3?apikey=prince&url=${encodeURIComponent(ytUrl)}`, { timeout: 45000 });
+        return data?.result?.download_url || data?.result?.url || data?.result?.audio || null;
+      });
+      if (ytUrl) tries.push(async () => {
+        const { data } = await axios.post("https://co.wuk.sh/api/json", { url: ytUrl, downloadMode: "audio", audioFormat: "mp3", filenameStyle: "basic" }, { headers: { Accept: "application/json", "Content-Type": "application/json", "User-Agent": "Mozilla/5.0" }, timeout: 40000 });
+        return data?.url || data?.audio || null;
+      });
       for (const fn of tries) {
         try {
           const out = await fn();
