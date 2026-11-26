@@ -17750,57 +17750,129 @@ Usage:
 • ${CONFIG.PREFIX}ghostmode on
 • ${CONFIG.PREFIX}ghostmode off`);
 });
-cmd("tostatus", { desc: "Post text/image/video/audio to your WhatsApp status", category: "OWNER", ownerOnly: true }, async (sock, msg, args) => {
-  const q = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage;
+cmd(["scstatus", "tostatus", "status", "poststatus", "setstatus", "updatestatus"], {
+  desc: "Post text/image/video/audio to your WhatsApp status — .scstatus <text> or reply to media",
+  category: "OWNER",
+  ownerOnly: true
+}, async (sock, msg, args) => {
+  const ctx = (typeof getContextInfo === "function") ? getContextInfo(msg) : msg.message?.extendedTextMessage?.contextInfo;
+  let q = ctx?.quotedMessage || msg.message?.extendedTextMessage?.contextInfo?.quotedMessage;
+  for (let i = 0; i < 5 && q; i++) {
+    const inner = q.viewOnceMessage?.message
+      || q.viewOnceMessageV2?.message
+      || q.viewOnceMessageV2Extension?.message
+      || q.ephemeralMessage?.message
+      || q.documentWithCaptionMessage?.message;
+    if (!inner || inner === q) break;
+    q = inner;
+  }
   const img = q?.imageMessage || msg.message?.imageMessage;
   const vid = q?.videoMessage || msg.message?.videoMessage;
   const aud = q?.audioMessage || msg.message?.audioMessage;
-  const caption = args.join(" ") || "";
+  const caption = (args || []).join(" ") || img?.caption || vid?.caption || "";
   await react(sock, msg, "📤");
-  const jidList = [..._knownContacts].filter(j => typeof j === "string" && j.endsWith("@s.whatsapp.net"));
-  // FIX: Baileys requires the bot's own JID in statusJidList for status@broadcast to actually deliver
-  const _tosSelfJid = sock.user?.id ? sock.user.id.split(':')[0].split('@')[0] + '@s.whatsapp.net' : null;
-  if (_tosSelfJid && !jidList.includes(_tosSelfJid)) jidList.push(_tosSelfJid);
+
+  // Gather broad audience so the status is delivered and visible to contacts
+  const jidSet = new Set();
+  try {
+    const contacts = sock.store?.contacts || globalThis.store?.contacts || {};
+    for (const k of Object.keys(contacts)) {
+      if (k.endsWith("@s.whatsapp.net") && !k.includes(":")) jidSet.add(k);
+    }
+  } catch {}
+  try {
+    const chats = sock.store?.chats || globalThis.store?.chats || sock.chats || {};
+    for (const k of Object.keys(chats)) {
+      if (k.endsWith("@s.whatsapp.net") && !k.includes(":")) jidSet.add(k);
+    }
+  } catch {}
+  try {
+    if (typeof _knownContacts !== "undefined" && _knownContacts) {
+      for (const k of _knownContacts) {
+        if (typeof k === "string" && k.endsWith("@s.whatsapp.net") && !k.includes(":")) jidSet.add(k);
+      }
+    }
+  } catch {}
+  try {
+    const groups = await sock.groupFetchAllParticipating().catch(() => ({}));
+    for (const g of Object.values(groups || {})) {
+      for (const p of g.participants || []) {
+        const pj = typeof p.id === "string" ? p.id : String(p.id || "");
+        const clean = pj.includes(":") ? pj.split(":")[0] + "@s.whatsapp.net" : pj;
+        if (clean.endsWith("@s.whatsapp.net")) jidSet.add(clean);
+      }
+    }
+  } catch {}
+  const senderJid = (typeof getSender === "function") ? getSender(msg) : (msg.key.participant || msg.key.remoteJid);
+  if (senderJid && senderJid.endsWith("@s.whatsapp.net")) jidSet.add(senderJid);
+  const _tosSelfJid = sock.user?.id
+    ? (sock.user.id.includes(":") ? sock.user.id.split(":")[0] + "@s.whatsapp.net" : sock.user.id)
+    : null;
+  if (_tosSelfJid) jidSet.add(_tosSelfJid);
+
+  const jidList = Array.from(jidSet);
   const statusOpts = jidList.length > 0 ? { statusJidList: jidList } : {};
+
   const _postStatus = async (payload) => {
-    // FIX: propagate errors so the outer catch can report them — never swallow silently
-    let _psLastErr;
-    try { await sock.sendMessage("status@broadcast", payload, statusOpts); return; } catch (e) { _psLastErr = e; }
-    try { await sock.sendMessage("status@broadcast", payload); return; } catch (e2) { _psLastErr = e2; }
-    throw _psLastErr;
+    let sent = false;
+    let lastErr = null;
+    try {
+      const res = await sock.sendMessage("status@broadcast", payload, statusOpts);
+      if (res) sent = true;
+    } catch (e) { lastErr = e; }
+    if (!sent) {
+      try {
+        const res2 = await sock.sendMessage("status@broadcast", payload);
+        if (res2) sent = true;
+      } catch (e2) { lastErr = e2; }
+    }
+    if (!sent && lastErr) throw lastErr;
   };
+
   try {
     if (img) {
       const stream = await downloadContentFromMessage(img, "image");
       let buf = Buffer.from([]);
       for await (const c of stream) buf = Buffer.concat([buf, c]);
       await _postStatus({ image: buf, caption });
+      await react(sock, msg, "✅").catch(() => {});
       await sendReply(sock, msg, `✅ *Image posted to status!*${jidList.length > 0 ? ` (${jidList.length} contacts)` : ""}`);
     } else if (vid) {
       const stream = await downloadContentFromMessage(vid, "video");
       let buf = Buffer.from([]);
       for await (const c of stream) buf = Buffer.concat([buf, c]);
-      await _postStatus({ video: buf, caption, gifPlayback: false });
+      await _postStatus({ video: buf, caption, mimetype: "video/mp4", gifPlayback: false });
+      await react(sock, msg, "✅").catch(() => {});
       await sendReply(sock, msg, `✅ *Video posted to status!*${jidList.length > 0 ? ` (${jidList.length} contacts)` : ""}`);
     } else if (aud) {
       const stream = await downloadContentFromMessage(aud, "audio");
       let buf = Buffer.from([]);
       for await (const c of stream) buf = Buffer.concat([buf, c]);
       await _postStatus({ audio: buf, mimetype: aud.mimetype || "audio/ogg; codecs=opus", ptt: false });
+      await react(sock, msg, "✅").catch(() => {});
       await sendReply(sock, msg, `✅ *Audio posted to status!*${jidList.length > 0 ? ` (${jidList.length} contacts)` : ""}`);
     } else if (caption) {
-      await _postStatus({ text: caption });
+      await _postStatus({
+        text: caption,
+        backgroundColor: "#075E54",
+        font: 1
+      });
+      await react(sock, msg, "✅").catch(() => {});
       await sendReply(sock, msg, `✅ *Text posted to status!*${jidList.length > 0 ? ` (${jidList.length} contacts)` : ""}`);
     } else {
+      await react(sock, msg, "❌").catch(() => {});
       await sendReply(sock, msg,
-        `📤 *tostatus usage:*\n` +
-        `• *${CONFIG.PREFIX}tostatus <text>* — post text\n` +
-        `• Reply to image + *${CONFIG.PREFIX}tostatus [caption]*\n` +
-        `• Reply to video + *${CONFIG.PREFIX}tostatus [caption]*\n` +
-        `• Reply to audio + *${CONFIG.PREFIX}tostatus*\n\n` +
-        `_Visibility depends on your WhatsApp privacy settings_`);
+        `📤 *Status usage:*\n` +
+        `• *${CONFIG.PREFIX}scstatus <text>* — post text status\n` +
+        `• Reply to image + *${CONFIG.PREFIX}scstatus [caption]*\n` +
+        `• Reply to video + *${CONFIG.PREFIX}scstatus [caption]*\n` +
+        `• Reply to audio + *${CONFIG.PREFIX}scstatus*\n\n` +
+        `_Visibility depends on contacts and WhatsApp privacy settings_`);
     }
-  } catch (e) { await sendReply(sock, msg, `❌ tostatus failed: ${e.message}`); }
+  } catch (e) {
+    await react(sock, msg, "❌").catch(() => {});
+    await sendReply(sock, msg, `❌ Status post failed: ${e.message}`);
+  }
 });
 cmd(["checkupdate","update"], { desc: "Check for updates + show bot health report", category: "OWNER", ownerOnly: true }, async (sock, msg) => {
   await react(sock, msg, "🔄");

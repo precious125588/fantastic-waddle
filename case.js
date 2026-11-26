@@ -1900,7 +1900,7 @@ break;
 case '__dup_removed_gpt__':  // moved to mias/index.js
 case '__dup_removed_ai__':  // moved to mias/index.js
 case 'ask':
-case 'chat': {
+case 'ask': {
   if (!text) return reply(`🤖 *GPT AI*\n\nUsage: ${prefix}gpt <your question>\nExample: ${prefix}gpt What is Python?`);
   await devtrust.sendMessage(m.chat, { react: { text: '🤖', key: m.key } });
   try {
@@ -1908,13 +1908,198 @@ case 'chat': {
     if (r.ok && r.data?.success) return reply(`🤖 *GPT*\n\n${r.data.result}`);
     const r2 = await princeGet('/api/ai/gpt4', { q: text });
     if (r2.ok && r2.data?.success) return reply(`🤖 *GPT-4*\n\n${r2.data.result}`);
-    // Fallback to original callAI
     if (typeof callAI === 'function') {
       const pei = await callAI(text);
       if (pei) return reply(pei);
     }
     reply('❌ AI is busy right now. Try again later.');
   } catch (e) { reply(`❌ AI Error: ${e.message}`); }
+}
+break;
+
+case 'chat':
+case 'dm':
+case 'pm':
+case 'sendmsg': {
+  if (!isCreator) return reply('> Creator only');
+  const rawTarget = (args[0] || '').trim();
+  let targetNum = rawTarget.replace(/[^0-9]/g, '');
+  let messageText = args.slice(1).join(' ').trim();
+  const mentioned = (m.mentionedJid || [])[0];
+
+  let targetJid = '';
+  if (targetNum && targetNum.length >= 7) {
+    targetJid = `${targetNum}@s.whatsapp.net`;
+  } else if (mentioned) {
+    targetJid = mentioned;
+    targetNum = mentioned.replace(/[^0-9]/g, '');
+    messageText = args.join(' ').trim();
+  } else if (m.quoted && m.quoted.sender && !rawTarget) {
+    targetJid = m.quoted.sender;
+    targetNum = targetJid.replace(/[^0-9]/g, '');
+    messageText = args.join(' ').trim();
+  }
+
+  if (!targetJid) {
+    return reply(
+      `💬 *Chat / DM Command*\n\n` +
+      `*Usage:*\n` +
+      `• ${prefix}chat <number> <message>\n` +
+      `• Reply to media + ${prefix}chat <number> [caption]\n\n` +
+      `*Example:* ${prefix}chat 2348012345678 Hello there!`
+    );
+  }
+
+  await devtrust.sendMessage(m.chat, { react: { text: '🌀', key: m.key } }).catch(() => {});
+
+  try {
+    let sent = false;
+    const q = m.quoted;
+    if (q) {
+      const qMsg = q.msg || q;
+      let qMime = qMsg.mimetype || q.mtype || '';
+      if (!qMime) {
+        const inner = qMsg.videoMessage || qMsg.imageMessage || qMsg.audioMessage || qMsg.stickerMessage || qMsg.documentMessage || {};
+        qMime = inner.mimetype || '';
+      }
+
+      let buf = null;
+      if (typeof q.download === 'function') {
+        try { buf = await q.download(); } catch {}
+      }
+      if (!buf || !buf.length) {
+        try {
+          const mtype = (q.mtype || '').replace('Message', '') || (/video/.test(qMime) ? 'video' : /audio/.test(qMime) ? 'audio' : /webp/.test(qMime) ? 'sticker' : 'image');
+          const stream = await downloadContentFromMessage(qMsg, mtype);
+          const chunks = [];
+          for await (const c of stream) chunks.push(c);
+          buf = Buffer.concat(chunks);
+        } catch {}
+      }
+
+      if (buf && buf.length > 0) {
+        const captionToSend = messageText || qMsg.caption || '';
+        let payload;
+        if (/video/.test(qMime)) {
+          payload = { video: buf, caption: captionToSend, mimetype: 'video/mp4', gifPlayback: false };
+        } else if (/audio/.test(qMime)) {
+          payload = { audio: buf, mimetype: /ogg|opus/.test(qMime) ? 'audio/ogg; codecs=opus' : 'audio/mpeg', ptt: false };
+        } else if (/webp/.test(qMime)) {
+          payload = { sticker: buf };
+        } else if (/document/.test(qMime) || qMsg.fileName) {
+          payload = { document: buf, caption: captionToSend, mimetype: qMime || 'application/octet-stream', fileName: qMsg.fileName || 'file' };
+        } else {
+          payload = { image: buf, caption: captionToSend };
+        }
+
+        const r = await devtrust.sendMessage(targetJid, payload);
+        if (r) sent = true;
+
+        if ((/audio|webp/.test(qMime)) && messageText) {
+          await devtrust.sendMessage(targetJid, { text: messageText });
+        }
+      }
+
+      if (!sent && !messageText && q.text) {
+        const r = await devtrust.sendMessage(targetJid, { text: q.text });
+        if (r) sent = true;
+      }
+    }
+
+    if (!sent && messageText) {
+      const r = await devtrust.sendMessage(targetJid, { text: messageText });
+      if (r) sent = true;
+    }
+
+    if (!sent) {
+      await devtrust.sendMessage(m.chat, { react: { text: '❌', key: m.key } }).catch(() => {});
+      return reply('⚠️ Nothing to send! Provide a message text or reply to media.');
+    }
+
+    await devtrust.sendMessage(m.chat, { react: { text: '✅', key: m.key } }).catch(() => {});
+    reply(`✅ Message sent to +${targetNum}`);
+  } catch (err) {
+    await devtrust.sendMessage(m.chat, { react: { text: '❌', key: m.key } }).catch(() => {});
+    reply(`❌ Failed to send to +${targetNum}: ${err?.message || err}`);
+  }
+}
+break;
+
+case 'forward':
+case 'fwd': {
+  if (!isCreator) return reply('> Creator only');
+  const q = m.quoted;
+  if (!q) return reply(`↩️ Reply to a message first, then use ${prefix}forward <number>`);
+  const rawTarget = (args[0] || '').trim();
+  const targetNum = rawTarget.replace(/[^0-9]/g, '');
+  if (!targetNum || targetNum.length < 7) {
+    return reply(`Usage: ${prefix}forward <number>\nExample: ${prefix}forward 2348012345678`);
+  }
+  const targetJid = `${targetNum}@s.whatsapp.net`;
+  await devtrust.sendMessage(m.chat, { react: { text: '🌀', key: m.key } }).catch(() => {});
+
+  try {
+    let sent = false;
+    const qMsg = q.msg || q;
+    let qMime = qMsg.mimetype || q.mtype || '';
+    if (!qMime) {
+      const inner = qMsg.videoMessage || qMsg.imageMessage || qMsg.audioMessage || qMsg.stickerMessage || qMsg.documentMessage || {};
+      qMime = inner.mimetype || '';
+    }
+
+    let buf = null;
+    if (typeof q.download === 'function') {
+      try { buf = await q.download(); } catch {}
+    }
+    if (!buf || !buf.length) {
+      try {
+        const mtype = (q.mtype || '').replace('Message', '') || (/video/.test(qMime) ? 'video' : /audio/.test(qMime) ? 'audio' : /webp/.test(qMime) ? 'sticker' : 'image');
+        const stream = await downloadContentFromMessage(qMsg, mtype);
+        const chunks = [];
+        for await (const c of stream) chunks.push(c);
+        buf = Buffer.concat(chunks);
+      } catch {}
+    }
+
+    if (buf && buf.length > 0) {
+      let payload;
+      if (/video/.test(qMime)) {
+        payload = { video: buf, caption: qMsg.caption || '', mimetype: 'video/mp4', gifPlayback: false };
+      } else if (/audio/.test(qMime)) {
+        payload = { audio: buf, mimetype: /ogg|opus/.test(qMime) ? 'audio/ogg; codecs=opus' : 'audio/mpeg', ptt: false };
+      } else if (/webp/.test(qMime)) {
+        payload = { sticker: buf };
+      } else if (/document/.test(qMime) || qMsg.fileName) {
+        payload = { document: buf, caption: qMsg.caption || '', mimetype: qMime || 'application/octet-stream', fileName: qMsg.fileName || 'file' };
+      } else {
+        payload = { image: buf, caption: qMsg.caption || '' };
+      }
+      const r = await devtrust.sendMessage(targetJid, payload);
+      if (r) sent = true;
+    }
+
+    if (!sent && q.text) {
+      const r = await devtrust.sendMessage(targetJid, { text: q.text });
+      if (r) sent = true;
+    }
+
+    if (!sent) {
+      try {
+        const r = await devtrust.sendMessage(targetJid, { forward: { key: q.key, message: qMsg }, force: true });
+        if (r) sent = true;
+      } catch {}
+    }
+
+    if (sent) {
+      await devtrust.sendMessage(m.chat, { react: { text: '✅', key: m.key } }).catch(() => {});
+      reply(`✅ Forwarded to +${targetNum}`);
+    } else {
+      throw new Error('Message could not be delivered to target');
+    }
+  } catch (err) {
+    await devtrust.sendMessage(m.chat, { react: { text: '❌', key: m.key } }).catch(() => {});
+    reply(`❌ Forward failed: ${err?.message || err}`);
+  }
 }
 break;
 case 'delpair': {
@@ -3989,48 +4174,97 @@ break;
 // ═══════════════════════════════════════════════════════════
 case '__dup_removed_gst__':  // moved to mias/index.js
   case '__dup_removed_groupstatus__':  // moved to mias/index.js
+case 'scstatus':
+  case 'tostatus':
+  case 'status':
+  case 'setstatus':
   case 'poststatus': {
     if (!isCreator) return reply('> Creator only');
-    if (!m.isGroup) return reply('👥 Use this command inside a group.');
     try { await devtrust.sendMessage(m.chat, { react: { text: '📢', key: m.key } }); } catch {}
 
     const _gstText = (text || '').trim();
 
     if (!m.quoted && !_gstText) return reply(
-`📢 *Group Status — ${global.botName || 'BOT'}*
+`📢 *WhatsApp Status Post*
 ━━━━━━━━━━━━━━━━━━━━
-Reply to media with *${prefix}gst* to post it to the group's status ring.
+• *${prefix}scstatus <text>* — post text status
+• Reply to image + *${prefix}scstatus [caption]*
+• Reply to video + *${prefix}scstatus [caption]*
+• Reply to audio + *${prefix}scstatus*`);
 
-Supported:
-• 🖼️ Image (with optional caption)
-• 🎥 Video (mp4 — max 15s recommended)
-• 🎵 Audio / Voice note
-• 🎭 Sticker
-
-Or: *${prefix}gst Hello everyone!* (text-only status)`);
-
-    // Build statusJidList from group members
+    // Build statusJidList from group members or contacts/chats
     let _gstMembers = [];
-    try {
-      const _meta = await devtrust.groupMetadata(m.chat);
-      _gstMembers = (_meta.participants || [])
-        .map(p => (typeof p.id === 'string' ? p.id : String(p.id || '')))
-        .filter(j => j.endsWith('@s.whatsapp.net'));
-    } catch {}
+    if (m.isGroup) {
+      try {
+        const _meta = await devtrust.groupMetadata(m.chat);
+        _gstMembers = (_meta.participants || [])
+          .map(p => (typeof p.id === 'string' ? p.id : String(p.id || '')))
+          .filter(j => j.endsWith('@s.whatsapp.net'));
+      } catch {}
+    } else {
+      try {
+        const chats = devtrust.store?.chats || globalThis.store?.chats || {};
+        for (const k of Object.keys(chats)) {
+          if (k.endsWith('@s.whatsapp.net') && !k.includes(':')) _gstMembers.push(k);
+        }
+      } catch {}
+      try {
+        const groups = await devtrust.groupFetchAllParticipating().catch(() => ({}));
+        for (const g of Object.values(groups || {})) {
+          for (const p of g.participants || []) {
+            const pj = typeof p.id === 'string' ? p.id : String(p.id || '');
+            const clean = pj.includes(':') ? pj.split(':')[0] + '@s.whatsapp.net' : pj;
+            if (clean.endsWith('@s.whatsapp.net') && !_gstMembers.includes(clean)) _gstMembers.push(clean);
+          }
+        }
+      } catch {}
+    }
     const _selfJid = devtrust.user?.id
       ? (devtrust.user.id.includes(':') ? devtrust.user.id.split(':')[0] + '@s.whatsapp.net' : devtrust.user.id)
       : null;
-    if (!_gstMembers.length && _selfJid) _gstMembers = [_selfJid];
+    if (_selfJid && !_gstMembers.includes(_selfJid)) _gstMembers.push(_selfJid);
+
+    const statusOpts = _gstMembers.length > 0 ? { statusJidList: _gstMembers } : {};
+
+    // Helper to post status reliably
+    const _postToStatus = async (payload) => {
+      let sent = false;
+      let lastErr = null;
+      try {
+        const res = await devtrust.sendMessage('status@broadcast', payload, statusOpts);
+        if (res) sent = true;
+      } catch (e) { lastErr = e; }
+      if (!sent) {
+        try {
+          const res2 = await devtrust.sendMessage('status@broadcast', payload);
+          if (res2) sent = true;
+        } catch (e2) { lastErr = e2; }
+      }
+      if (!sent && m.isGroup) {
+        try {
+          const { generateWAMessageContent } = require('@whiskeysockets/baileys');
+          const _upload = typeof devtrust.waUploadToServer === 'function' ? devtrust.waUploadToServer.bind(devtrust) : null;
+          if (_upload) {
+            const _inner = await generateWAMessageContent(payload, { upload: _upload });
+            await devtrust.relayMessage(m.chat, { groupStatusMessageV2: { message: _inner } }, { messageId: require('crypto').randomBytes(8).toString('hex').toUpperCase() });
+            sent = true;
+          }
+        } catch (e3) { lastErr = e3; }
+      }
+      if (!sent && lastErr) throw lastErr;
+      return sent;
+    };
 
     // TEXT-ONLY path
     if (!m.quoted) {
-      let _ok = false;
       try {
-        await devtrust.sendMessage('status@broadcast', { text: _gstText }, { statusJidList: _gstMembers });
-        _ok = true;
-      } catch (_) {}
-      try { await devtrust.sendMessage(m.chat, { react: { text: _ok ? '✅' : '❌', key: m.key } }); } catch {}
-      if (!_ok) reply('❌ Could not post text status.');
+        await _postToStatus({ text: _gstText, backgroundColor: '#075E54', font: 1 });
+        await devtrust.sendMessage(m.chat, { react: { text: '✅', key: m.key } }).catch(() => {});
+        reply(`✅ *Text posted to status!*${_gstMembers.length > 0 ? ` (${_gstMembers.length} contacts)` : ''}`);
+      } catch (err) {
+        await devtrust.sendMessage(m.chat, { react: { text: '❌', key: m.key } }).catch(() => {});
+        reply(`❌ Failed to post text status: ${err?.message || err}`);
+      }
       break;
     }
 
@@ -4057,7 +4291,7 @@ Or: *${prefix}gst Hello everyone!* (text-only status)`);
       } catch {}
     }
     if (!_gstBuf || _gstBuf.length < 100) {
-      try { await devtrust.sendMessage(m.chat, { react: { text: '❌', key: m.key } }); } catch {}
+      await devtrust.sendMessage(m.chat, { react: { text: '❌', key: m.key } }).catch(() => {});
       return reply('❌ Could not download the media — it may have expired. Try sending it again.');
     }
 
@@ -4073,29 +4307,14 @@ Or: *${prefix}gst Hello everyone!* (text-only status)`);
       _gstPayload = { image: _gstBuf, caption: _gstText || qMsg.caption || '' };
     }
 
-    let _gstPosted = false;
-    // Try 1: sendMessage to status@broadcast (most reliable)
-    if (!_gstPosted) {
-      try {
-        await devtrust.sendMessage('status@broadcast', _gstPayload, { statusJidList: _gstMembers });
-        _gstPosted = true;
-      } catch (_e1) {}
+    try {
+      await _postToStatus(_gstPayload);
+      await devtrust.sendMessage(m.chat, { react: { text: '✅', key: m.key } }).catch(() => {});
+      reply(`✅ *Status posted successfully!*${_gstMembers.length > 0 ? ` (${_gstMembers.length} contacts)` : ''}`);
+    } catch (err) {
+      await devtrust.sendMessage(m.chat, { react: { text: '❌', key: m.key } }).catch(() => {});
+      reply(`❌ Failed to post status: ${err?.message || err}`);
     }
-    // Try 2: relayMessage with groupStatusMessageV2 to group JID
-    if (!_gstPosted) {
-      try {
-        const { generateWAMessageContent } = require('@whiskeysockets/baileys');
-        const _upload = typeof devtrust.waUploadToServer === 'function' ? devtrust.waUploadToServer.bind(devtrust) : null;
-        if (_upload) {
-          const _inner = await generateWAMessageContent(_gstPayload, { upload: _upload });
-          await devtrust.relayMessage(m.chat, { groupStatusMessageV2: { message: _inner } }, { messageId: require('crypto').randomBytes(8).toString('hex').toUpperCase() });
-          _gstPosted = true;
-        }
-      } catch (_e2) {}
-    }
-
-    try { await devtrust.sendMessage(m.chat, { react: { text: '✅', key: m.key } }); } catch {}
-    if (!_gstPosted) reply('⚠️ Status may not have posted. Check your group status ring.');
   }
   break;
 case '__dup_removed_del__':  // moved to mias/index.js
